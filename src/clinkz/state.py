@@ -302,6 +302,22 @@ class StateStore:
         await self._conn.commit()
         return aid
 
+    async def get_actions(self, engagement_id: str) -> list[dict[str, Any]]:
+        """Return all actions logged for an engagement.
+
+        Args:
+            engagement_id: Engagement UUID.
+
+        Returns:
+            List of action dicts (all columns from the actions table).
+        """
+        async with self._conn.execute(
+            "SELECT * FROM actions WHERE engagement_id=? ORDER BY created_at",
+            (engagement_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
     async def complete_action(
         self,
         action_id: str,

@@ -39,6 +39,7 @@ class Service(BaseModel):
     version: str = ""
     banner: str = ""
     extra_info: str = ""
+    scripts: dict[str, str] = Field(default_factory=dict, description="NSE script outputs keyed by script ID.")
 
 
 class Host(BaseModel):
