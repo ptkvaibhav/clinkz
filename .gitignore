@@ -71,6 +71,8 @@ clinkz-*.db
 reports/
 *.html
 *.pdf
+!src/**/templates/*.html
+!src/**/templates/*.css
 engagements/
 
 # Docker
