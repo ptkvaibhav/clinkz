@@ -113,7 +113,7 @@ class BaseAgent(ABC):
             action: AgentAction = await self.llm.reason(self.messages, tools=tool_schemas)
 
             # Done?
-            if action.final_answer:
+            if action.final_answer is not None:
                 self._logger.info("Agent '%s' done after %d iteration(s)", self.name, iteration + 1)
                 return action.final_answer
 
