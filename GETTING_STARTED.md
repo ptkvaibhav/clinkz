@@ -1,4 +1,4 @@
-# Getting Started: Building PentestAgent with Claude Code
+# Getting Started: Building Clinkz with Claude Code
 
 ## Step 0: Prerequisites
 
@@ -34,7 +34,7 @@ npm install -g @anthropic-ai/claude-code
 
 ```bash
 # Create project directory
-mkdir pentestagent && cd pentestagent
+mkdir clinkz && cd clinkz
 
 # Initialize git
 git init
@@ -146,7 +146,7 @@ localhost, and verify it runs a scan and stores results in the state store.
 
 ### Start every session right
 ```bash
-cd pentestagent
+cd clinkz
 claude
 ```
 Claude Code automatically reads your CLAUDE.md for project context.

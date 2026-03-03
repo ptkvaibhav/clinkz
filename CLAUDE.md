@@ -1,4 +1,4 @@
-# Agentic AI Penetration Testing System (PentestAgent)
+# Agentic AI Penetration Testing System (Clinkz)
 
 ## What This Is
 An autonomous, agentic AI system that performs end-to-end black-box penetration testing. It takes a target scope (IPs/domains) as input and produces a professional pentest report as output, with no human intervention in between.
@@ -13,7 +13,7 @@ An autonomous, agentic AI system that performs end-to-end black-box penetration 
 ## Tech Stack
 - Python 3.12+ with asyncio for concurrency
 - LangGraph for agent orchestration (fall back to custom ReAct if too complex)
-- **LLM-agnostic design** — all LLM calls go through `src/pentestagent/llm/client.py`
+- **LLM-agnostic design** — all LLM calls go through `src/clinkz/llm/client.py`
 - Supported LLM backends (implement in order):
   1. OpenAI API (GPT-4o / GPT-4o-mini) — first implementation, well-documented tool calling
   2. Anthropic API (Claude Sonnet / Opus) — add second
@@ -27,12 +27,12 @@ An autonomous, agentic AI system that performs end-to-end black-box penetration 
 
 ## Project Structure
 ```
-pentestagent/
+clinkz/
 ├── CLAUDE.md
 ├── pyproject.toml
 ├── README.md
 ├── src/
-│   ├── pentestagent/
+│   ├── clinkz/
 │   │   ├── __init__.py
 │   │   ├── cli.py                  # Typer CLI entry point
 │   │   ├── config.py               # Scope config, API keys, settings
@@ -98,8 +98,8 @@ pentestagent/
 ```
 
 ## Commands
-- `python -m pentestagent scan --target <domain> --scope <scope.json>`: Run full pentest
-- `python -m pentestagent recon --target <domain>`: Run only recon phase
+- `python -m clinkz scan --target <domain> --scope <scope.json>`: Run full pentest
+- `python -m clinkz recon --target <domain>`: Run only recon phase
 - `pytest tests/`: Run all tests
 - `pytest tests/test_tools/test_nmap.py -v`: Run single tool test
 - `docker compose -f docker/docker-compose.yml up -d`: Start test targets (Juice Shop, DVWA)
@@ -130,4 +130,4 @@ pentestagent/
 - NEVER scan targets outside the defined scope. Every tool wrapper must check scope
 - All tool outputs must be parsed into structured Pydantic models before the agent reasons over them
 - Test tool wrappers against real tool output (save sample outputs in tests/fixtures/)
-- Keep agent system prompts in separate files under src/pentestagent/agents/prompts/ for easy iteration
+- Keep agent system prompts in separate files under src/clinkz/agents/prompts/ for easy iteration
