@@ -1,0 +1,86 @@
+[
+  {
+    "target": "http://192.168.1.100/",
+    "http_status": 200,
+    "request_config": {
+      "headers": {"Accept": "text/html,application/xhtml+xml"},
+      "user_agent": "WhatWeb/0.5.5"
+    },
+    "plugins": {
+      "nginx": {
+        "string": ["nginx/1.24.0"],
+        "version": ["1.24.0"]
+      },
+      "HTTPServer": {
+        "string": ["nginx/1.24.0"]
+      },
+      "Title": {
+        "string": ["Welcome to nginx!"]
+      },
+      "Country": {
+        "string": ["RESERVED"],
+        "module": ["IANA"]
+      },
+      "IP": {
+        "string": ["192.168.1.100"]
+      }
+    }
+  },
+  {
+    "target": "http://192.168.1.100:8080/",
+    "http_status": 200,
+    "request_config": {
+      "headers": {},
+      "user_agent": "WhatWeb/0.5.5"
+    },
+    "plugins": {
+      "Apache-Tomcat": {
+        "string": ["Apache Tomcat/9.0.70"],
+        "version": ["9.0.70"]
+      },
+      "HTTPServer": {
+        "string": ["Apache-Coyote/1.1"]
+      },
+      "Java": {
+        "string": ["Java"]
+      },
+      "Title": {
+        "string": ["Apache Tomcat/9.0.70"]
+      },
+      "X-Powered-By": {
+        "string": ["Servlet/4.0"]
+      }
+    }
+  },
+  {
+    "target": "https://192.168.1.100/",
+    "http_status": 200,
+    "request_config": {
+      "headers": {},
+      "user_agent": "WhatWeb/0.5.5"
+    },
+    "plugins": {
+      "nginx": {
+        "string": ["nginx/1.24.0"],
+        "version": ["1.24.0"]
+      },
+      "HTTPServer": {
+        "string": ["nginx/1.24.0"]
+      },
+      "Title": {
+        "string": ["Secure Site — Example Corp"]
+      },
+      "Bootstrap": {
+        "string": ["Bootstrap"],
+        "version": ["5.3.0"]
+      },
+      "jQuery": {
+        "string": ["jQuery"],
+        "version": ["3.7.1"]
+      },
+      "Script": {
+        "string": ["text/javascript"]
+      }
+    }
+  }
+]

@@ -1,0 +1,62 @@
+version: "3.9"
+
+# Clinkz Docker Compose
+#
+# Services:
+#   tools       — Container with all security tools (nmap, nuclei, ffuf, etc.)
+#   juiceshop   — OWASP Juice Shop (intentionally vulnerable web app for testing)
+#   dvwa        — Damn Vulnerable Web Application
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml up -d
+#   docker compose -f docker/docker-compose.yml down
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Security tools container
+  # ---------------------------------------------------------------------------
+  tools:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.tools
+    image: clinkz-tools:latest
+    container_name: clinkz-tools
+    network_mode: host    # needs host networking to reach test targets
+    volumes:
+      - ../:/workspace    # mount project root for tool execution
+    environment:
+      - TERM=xterm-256color
+    tty: true
+    stdin_open: true
+
+  # ---------------------------------------------------------------------------
+  # Test target: OWASP Juice Shop
+  # ---------------------------------------------------------------------------
+  juiceshop:
+    image: bkimminich/juice-shop:latest
+    container_name: clinkz-juiceshop
+    ports:
+      - "3000:3000"
+    networks:
+      - pentest-targets
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Test target: DVWA (Damn Vulnerable Web Application)
+  # ---------------------------------------------------------------------------
+  dvwa:
+    image: vulnerables/web-dvwa:latest
+    container_name: clinkz-dvwa
+    ports:
+      - "8080:80"
+    networks:
+      - pentest-targets
+    restart: unless-stopped
+
+networks:
+  pentest-targets:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24

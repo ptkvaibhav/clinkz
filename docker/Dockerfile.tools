@@ -1,0 +1,58 @@
+# PentestAgent Tools Image
+# Contains all security tools needed by the agent's tool wrappers.
+#
+# Build: docker build -f docker/Dockerfile.tools -t pentestagent-tools .
+# Run:   docker compose -f docker/docker-compose.yml up -d
+
+FROM kalilinux/kali-rolling:latest
+
+# Avoid interactive prompts during package installs
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Network tools
+    nmap \
+    netcat-openbsd \
+    curl \
+    wget \
+    # Web tools (Golang-based, installed via official binaries below)
+    # nikto
+    nikto \
+    # SQLmap
+    sqlmap \
+    # WhatWeb
+    whatweb \
+    # Python
+    python3 \
+    python3-pip \
+    # Build tools
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go-based tools
+# Versions pinned for reproducibility — update regularly
+ENV GOPATH=/opt/go
+ENV PATH="${PATH}:/opt/go/bin"
+
+RUN apt-get update && apt-get install -y golang-go && rm -rf /var/lib/apt/lists/*
+
+# projectdiscovery tools
+RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest && \
+    go install github.com/projectdiscovery/httpx/cmd/httpx@latest && \
+    go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && \
+    go install github.com/projectdiscovery/katana/cmd/katana@latest
+
+# ffuf
+RUN go install github.com/ffuf/ffuf/v2@latest
+
+# wafw00f (Python)
+RUN pip3 install --no-cache-dir wafw00f
+
+# Update nuclei templates
+RUN nuclei -update-templates -silent || true
+
+# Install SecLists for ffuf wordlists
+RUN git clone --depth 1 https://github.com/danielmiessler/SecLists.git /usr/share/seclists
+
+WORKDIR /workspace
