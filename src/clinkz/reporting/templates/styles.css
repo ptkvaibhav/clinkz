@@ -1,0 +1,173 @@
+/* Clinkz Report Stylesheet */
+
+:root {
+  --color-critical: #d32f2f;
+  --color-high:     #f57c00;
+  --color-medium:   #f9a825;
+  --color-low:      #388e3c;
+  --color-info:     #1976d2;
+  --color-bg:       #f5f5f5;
+  --color-surface:  #ffffff;
+  --color-text:     #212121;
+  --color-border:   #e0e0e0;
+  --font-body:      'Segoe UI', Arial, sans-serif;
+  --font-mono:      'Courier New', Courier, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-body);
+  background: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.6;
+  font-size: 14px;
+}
+
+/* Header */
+header {
+  background: #1a1a2e;
+  color: white;
+  padding: 2rem 3rem;
+}
+header h1 { font-size: 1.4rem; font-weight: 400; opacity: 0.8; }
+header h2 { font-size: 2rem; margin-top: 0.25rem; }
+header .meta { margin-top: 0.75rem; opacity: 0.7; font-size: 0.9rem; }
+
+/* Main content */
+main { max-width: 1100px; margin: 2rem auto; padding: 0 2rem; }
+
+section {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+h2 {
+  font-size: 1.3rem;
+  border-bottom: 2px solid var(--color-border);
+  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+h3 { font-size: 1.05rem; margin: 1rem 0 0.5rem; }
+h4 { font-size: 0.95rem; margin: 0.75rem 0 0.25rem; color: #555; }
+
+/* Risk badge */
+.risk-badge {
+  display: inline-block;
+  padding: 0.3rem 1rem;
+  border-radius: 4px;
+  font-weight: bold;
+  color: white;
+  margin: 0.75rem 0;
+}
+.risk-critical { background: var(--color-critical); }
+.risk-high     { background: var(--color-high); }
+.risk-medium   { background: var(--color-medium); color: #333; }
+.risk-low      { background: var(--color-low); }
+.risk-informational { background: var(--color-info); }
+
+/* Severity count table */
+.severity-table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+.severity-table th, .severity-table td {
+  padding: 0.5rem 1.25rem;
+  text-align: center;
+  border: 1px solid var(--color-border);
+}
+.severity-table th { background: #f0f0f0; font-weight: 600; }
+.severity-table td.critical { color: var(--color-critical); font-weight: bold; font-size: 1.2rem; }
+.severity-table td.high     { color: var(--color-high);     font-weight: bold; font-size: 1.2rem; }
+.severity-table td.medium   { color: #c08000;               font-weight: bold; font-size: 1.2rem; }
+.severity-table td.low      { color: var(--color-low);      font-weight: bold; font-size: 1.2rem; }
+.severity-table td.info     { color: var(--color-info);     font-weight: bold; font-size: 1.2rem; }
+
+/* Hosts table */
+.hosts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.hosts-table th, .hosts-table td {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border);
+  text-align: left;
+}
+.hosts-table th { background: #f0f0f0; }
+
+/* Findings */
+.finding {
+  border: 1px solid var(--color-border);
+  border-left-width: 5px;
+  border-radius: 4px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+.finding-critical { border-left-color: var(--color-critical); }
+.finding-high     { border-left-color: var(--color-high); }
+.finding-medium   { border-left-color: var(--color-medium); }
+.finding-low      { border-left-color: var(--color-low); }
+.finding-info     { border-left-color: var(--color-info); }
+
+.finding-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.finding-header h3 { margin: 0; }
+
+.severity-badge {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  color: white;
+  white-space: nowrap;
+}
+.severity-critical { background: var(--color-critical); }
+.severity-high     { background: var(--color-high); }
+.severity-medium   { background: var(--color-medium); color: #333; }
+.severity-low      { background: var(--color-low); }
+.severity-info     { background: var(--color-info); }
+
+/* Evidence blocks */
+pre.evidence {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  padding: 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Lists */
+ul, ol { padding-left: 1.5rem; margin: 0.5rem 0; }
+li { margin: 0.25rem 0; }
+
+/* Links */
+a { color: var(--color-info); }
+
+/* Footer */
+footer {
+  text-align: center;
+  padding: 1.5rem;
+  color: #888;
+  font-size: 0.85rem;
+}
+
+/* Print / PDF tweaks */
+@media print {
+  body { background: white; }
+  section { break-inside: avoid; }
+  .finding { break-inside: avoid; }
+}

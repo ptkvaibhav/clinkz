@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///usr/bin/../share/nmap/nmap.xsl" type="text/xsl"?>
+<nmaprun scanner="nmap"
+         args="nmap -sV -sC -O -oX - -p 22,80,443,8080 192.168.1.100"
+         start="1741078000"
+         startstr="Tue Mar  4 09:06:40 2025"
+         version="7.94SVN"
+         xmloutputversion="1.05">
+  <scaninfo type="syn" protocol="tcp" numservices="4" services="22,80,443,8080"/>
+  <verbose level="0"/>
+  <debugging level="0"/>
+
+  <host starttime="1741078010" endtime="1741078060">
+    <status state="up" reason="echo-reply" reason_ttl="64"/>
+    <address addr="192.168.1.100" addrtype="ipv4"/>
+    <hostnames>
+      <hostname name="webserver.example.com" type="PTR"/>
+    </hostnames>
+
+    <ports>
+      <!-- Port 22 — OpenSSH 8.9 -->
+      <port protocol="tcp" portid="22">
+        <state state="open" reason="syn-ack" reason_ttl="64"/>
+        <service name="ssh"
+                 product="OpenSSH"
+                 version="8.9p1 Ubuntu 3ubuntu0.6"
+                 extrainfo="Ubuntu Linux; protocol 2.0"
+                 ostype="Linux"
+                 method="probed"
+                 conf="10">
+          <cpe>cpe:/a:openbsd:openssh:8.9p1</cpe>
+        </service>
+        <script id="ssh-hostkey" output="&#xa;  256 3f:2d:5a:08:4e:2a:6c:f7:8e:b4:d3:9e:1f:4b:7c:3a (ECDSA)&#xa;  256 4a:1e:8f:3b:7d:2c:9a:6e:5f:0c:8b:2d:4f:7a:1e:3d (ED25519)"/>
+        <script id="ssh-auth-methods" output="Supported authentication methods: publickey password"/>
+      </port>
+
+      <!-- Port 80 — nginx 1.24 HTTP -->
+      <port protocol="tcp" portid="80">
+        <state state="open" reason="syn-ack" reason_ttl="64"/>
+        <service name="http"
+                 product="nginx"
+                 version="1.24.0"
+                 extrainfo=""
+                 method="probed"
+                 conf="10">
+          <cpe>cpe:/a:nginx:nginx:1.24.0</cpe>
+        </service>
+        <script id="http-title" output="Welcome to nginx!"/>
+        <script id="http-server-header" output="nginx/1.24.0"/>
+        <script id="http-methods" output="Supported Methods: GET HEAD POST OPTIONS"/>
+        <script id="http-robots.txt" output="1 disallowed entry&#xa;  /admin"/>
+      </port>
+
+      <!-- Port 443 — nginx 1.24 HTTPS -->
+      <port protocol="tcp" portid="443">
+        <state state="open" reason="syn-ack" reason_ttl="64"/>
+        <service name="ssl/http"
+                 product="nginx"
+                 version="1.24.0"
+                 extrainfo=""
+                 tunnel="ssl"
+                 method="probed"
+                 conf="10">
+          <cpe>cpe:/a:nginx:nginx:1.24.0</cpe>
+        </service>
+        <script id="ssl-cert" output="Subject: commonName=webserver.example.com/organizationName=Example Corp/stateOrProvinceName=California/countryName=US&#xa;Subject Alternative Name: DNS:webserver.example.com, DNS:www.example.com&#xa;Not valid before: 2024-01-01T00:00:00&#xa;Not valid after:  2025-01-01T00:00:00"/>
+        <script id="ssl-date" output="2025-03-04T09:06:41+00:00; 0s from scanner time."/>
+        <script id="http-title" output="Secure Site — Example Corp"/>
+      </port>
+
+      <!-- Port 8080 — Apache Tomcat 9.0.x -->
+      <port protocol="tcp" portid="8080">
+        <state state="open" reason="syn-ack" reason_ttl="64"/>
+        <service name="http-proxy"
+                 product="Apache Tomcat"
+                 version="9.0.70"
+                 extrainfo=""
+                 method="probed"
+                 conf="10">
+          <cpe>cpe:/a:apache:tomcat:9.0.70</cpe>
+        </service>
+        <script id="http-title" output="Apache Tomcat/9.0.70"/>
+        <script id="http-server-header" output="Apache-Coyote/1.1"/>
+        <script id="http-auth-finder" output="&#xa;  Spidering limited to: maxdepth=1; statuscode=401&#xa;  /manager/html: Basic realm=Tomcat Manager Application"/>
+      </port>
+
+      <!-- Port 3306 — closed, should be excluded from output -->
+      <port protocol="tcp" portid="3306">
+        <state state="closed" reason="reset" reason_ttl="64"/>
+        <service name="mysql" method="table" conf="3"/>
+      </port>
+    </ports>
+
+    <os>
+      <portused state="open" proto="tcp" portid="22"/>
+      <!-- Highest accuracy match comes first -->
+      <osmatch name="Linux 5.4 - 5.15" accuracy="96" line="65535">
+        <osclass type="general purpose" vendor="Linux" osfamily="Linux" osgen="5.X" accuracy="96">
+          <cpe>cpe:/o:linux:linux_kernel:5</cpe>
+        </osclass>
+      </osmatch>
+      <osmatch name="Ubuntu 22.04 LTS (Jammy Jellyfish)" accuracy="94" line="65530">
+        <osclass type="general purpose" vendor="Canonical" osfamily="Linux" osgen="22.04" accuracy="94">
+          <cpe>cpe:/o:canonical:ubuntu_linux:22.04</cpe>
+        </osclass>
+      </osmatch>
+    </os>
+
+    <uptime seconds="86400" lastboot="Mon Mar  3 09:06:40 2025"/>
+    <times srtt="1234" rttvar="567" to="100000"/>
+  </host>
+
+  <runstats>
+    <finished time="1741078060"
+              timestr="Tue Mar  4 09:07:40 2025"
+              elapsed="50.12"
+              summary="Nmap done at Tue Mar  4 09:07:40 2025; 1 IP address (1 host up) scanned in 50.12 seconds"
+              exit="success"/>
+    <hosts up="1" down="0" total="1"/>
+  </runstats>
+</nmaprun>
