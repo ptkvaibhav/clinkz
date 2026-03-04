@@ -70,6 +70,17 @@ CREATE TABLE IF NOT EXISTS attempts (
     error           TEXT,
     created_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id                TEXT PRIMARY KEY,
+    engagement_id     TEXT NOT NULL REFERENCES engagements(id),
+    from_agent        TEXT NOT NULL,
+    to_agent          TEXT NOT NULL,
+    message_type      TEXT NOT NULL,
+    content_json      TEXT NOT NULL,
+    parent_message_id TEXT,
+    timestamp         TEXT NOT NULL
+);
 """
 
 
@@ -365,3 +376,65 @@ class StateStore:
         )
         await self._conn.commit()
         return attempt_id
+
+    # ------------------------------------------------------------------
+    # Agent messages (inter-agent communication audit trail)
+    # ------------------------------------------------------------------
+
+    async def save_message(self, message: "AgentMessage") -> None:  # noqa: F821
+        """Persist an AgentMessage to the audit trail.
+
+        Accepts any object that has the AgentMessage fields; typed as a
+        forward reference to avoid a circular import (comms → state).
+
+        Args:
+            message: AgentMessage to persist.
+        """
+        await self._conn.execute(
+            "INSERT OR IGNORE INTO agent_messages "
+            "(id, engagement_id, from_agent, to_agent, message_type, "
+            "content_json, parent_message_id, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                message.id,
+                message.engagement_id,
+                message.from_agent,
+                message.to_agent,
+                str(message.message_type),
+                json.dumps(message.content),
+                message.parent_message_id,
+                message.timestamp.isoformat(),
+            ),
+        )
+        await self._conn.commit()
+
+    async def get_messages(
+        self,
+        engagement_id: str,
+        agent_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return persisted agent messages for an engagement.
+
+        Args:
+            engagement_id: Engagement UUID.
+            agent_name: If provided, return only messages TO or FROM this agent.
+
+        Returns:
+            List of message dicts ordered by timestamp.
+        """
+        if agent_name:
+            query = (
+                "SELECT * FROM agent_messages "
+                "WHERE engagement_id=? AND (from_agent=? OR to_agent=?) "
+                "ORDER BY timestamp"
+            )
+            params: tuple[Any, ...] = (engagement_id, agent_name, agent_name)
+        else:
+            query = (
+                "SELECT * FROM agent_messages WHERE engagement_id=? ORDER BY timestamp"
+            )
+            params = (engagement_id,)
+
+        async with self._conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
