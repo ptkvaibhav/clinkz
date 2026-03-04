@@ -5,6 +5,7 @@ Sample fixture: tests/fixtures/nikto_output.xml
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from typing import Any
 
 from pydantic import BaseModel
@@ -30,9 +31,7 @@ class NiktoOutput(ToolOutput):
 class NiktoTool(ToolBase):
     """Nikto web server scanner.
 
-    Runs: nikto -h <target> -Format xml -output /dev/stdout
-
-    TODO: Parse Nikto XML output into NiktoFinding models.
+    Runs: nikto -h <target> -p <port> -Format xml -output /dev/stdout -nointeractive
     """
 
     @property
@@ -98,5 +97,52 @@ class NiktoTool(ToolBase):
         return stdout or stderr
 
     def parse_output(self, raw_output: str) -> NiktoOutput:
-        # TODO: parse Nikto XML with xml.etree.ElementTree
-        return NiktoOutput(tool_name=self.name, success=bool(raw_output), raw_output=raw_output)
+        """Parse Nikto XML output into NiktoFinding models.
+
+        Iterates over all ``<item>`` elements nested inside
+        ``<niktoscandetails>`` and extracts id, description, uri, and method.
+        Items without a description are skipped.
+
+        Args:
+            raw_output: Raw XML string from nikto -Format xml.
+
+        Returns:
+            NiktoOutput with one NiktoFinding per reported vulnerability.
+        """
+        if not raw_output or not raw_output.strip():
+            return NiktoOutput(tool_name=self.name, success=False, raw_output=raw_output)
+
+        try:
+            root = ET.fromstring(raw_output)
+        except ET.ParseError as exc:
+            return NiktoOutput(
+                tool_name=self.name,
+                success=False,
+                raw_output=raw_output,
+                error=f"XML parse error: {exc}",
+            )
+
+        findings: list[NiktoFinding] = []
+
+        for item_el in root.findall(".//niktoscandetails/item"):
+            item_id = item_el.get("id", "")
+            method = item_el.get("method", "GET")
+
+            desc_el = item_el.find("description")
+            description = (desc_el.text or "").strip() if desc_el is not None else ""
+            if not description:
+                continue
+
+            uri_el = item_el.find("uri")
+            uri = (uri_el.text or "").strip() if uri_el is not None else ""
+
+            findings.append(
+                NiktoFinding(id=item_id, description=description, uri=uri, method=method)
+            )
+
+        return NiktoOutput(
+            tool_name=self.name,
+            success=True,
+            raw_output=raw_output,
+            findings=findings,
+        )

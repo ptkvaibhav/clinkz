@@ -1,0 +1,23 @@
+                   __
+                  /\ \
+ __  __  __  ___ /\ \___   ___   ___   ___
+/\ \/\ \/\ \/' __`\ \  _ `\ / __`\ / __`\
+\ \ \_/ \_/ \/\ \_\ \ \ \ \ \/\ \_\ \/\ \_\ \
+ \ \___x___/'\ \__/\_\ \_\ \_\ \____/\ \____/
+  \/__//__/   \/__/\/_/\/_/\/_/\/___/  \/___/
+
+                 WAFW00F version 2.2.0
+             The Web Application Firewall Fingerprinting Toolkit
+
+[*] Checking https://shop.example.com
+[+] The site https://shop.example.com is behind Cloudflare (Cloudflare Inc.) WAF.
+[~] Number of requests: 2
+
+[*] Checking https://api.example.com
+[+] The site https://api.example.com is behind AWS WAF (Amazon) WAF.
+[~] Number of requests: 2
+
+[*] Checking https://blog.example.com
+[-] No WAF detected by the simple tests
+    Please try a more advanced scan with: --findall or --test
+[~] Number of requests: 7
