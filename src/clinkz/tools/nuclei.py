@@ -39,6 +39,9 @@ class NucleiTool(ToolBase):
     TODO: Parse nuclei JSONL output into NucleiFinding models.
     """
 
+    capabilities = ["vulnerability_scanning", "cve_detection", "template_based_scanning"]
+    category = "exploit"
+
     @property
     def name(self) -> str:
         return "nuclei"
