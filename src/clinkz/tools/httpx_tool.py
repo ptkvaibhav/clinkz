@@ -38,6 +38,9 @@ class HttpxTool(ToolBase):
     TODO: Parse JSONL output into HttpxResult models.
     """
 
+    capabilities = ["http_probing", "technology_detection", "service_fingerprinting", "alive_check"]
+    category = "recon"
+
     @property
     def name(self) -> str:
         return "httpx"

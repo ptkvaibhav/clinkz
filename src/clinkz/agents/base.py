@@ -11,14 +11,21 @@ The core loop is _react_loop():
     3. Act      — execute the chosen tool
     4. Reflect  — add tool result to history, repeat from Reason
     5. Done     — LLM returns a final_answer (no tool call)
+
+Between ReAct iterations the agent drains its inbox queue.  The lifecycle
+manager (or tests) can inject AgentMessage objects via receive_message()
+at any time; QUERY messages are folded into the LLM conversation so the
+agent can incorporate them without stopping its current task.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
+from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
 from clinkz.models.scope import EngagementScope
 from clinkz.state import StateStore
@@ -57,6 +64,7 @@ class BaseAgent(ABC):
         self.state = state
         self.engagement_id = engagement_id
         self.messages: list[LLMMessage] = []
+        self._inbox: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     # ------------------------------------------------------------------
@@ -88,6 +96,65 @@ class BaseAgent(ABC):
         ...
 
     # ------------------------------------------------------------------
+    # Inbox — mid-run message handling
+    # ------------------------------------------------------------------
+
+    def receive_message(self, msg: AgentMessage) -> None:
+        """Deliver a message to this agent's inbox for mid-run processing.
+
+        Called by the lifecycle manager (or tests) when routing an incoming
+        message to an agent that is already executing its ReAct loop.
+        QUERY messages are folded into the LLM conversation at the next
+        inter-iteration checkpoint.
+
+        Args:
+            msg: The incoming AgentMessage to queue.
+        """
+        self._inbox.put_nowait(msg)
+
+    def _get_tool_schemas(self) -> list[dict[str, Any]]:
+        """Return tool schemas to pass to the LLM for reasoning.
+
+        Subclasses can override this to expose a custom schema set — for
+        example, a capability-based meta-tool instead of raw tool schemas.
+
+        Returns:
+            List of OpenAI-compatible tool schema dicts.
+        """
+        return [t.get_schema() for t in self.tools.values()]
+
+    async def _process_inbox(self) -> None:
+        """Drain the inbox and inject pending messages into the conversation.
+
+        QUERY messages are appended as ``user`` messages so the LLM sees
+        them on the next reasoning step.  Other message types are logged
+        and discarded — they are not expected mid-loop for phase agents.
+        """
+        while True:
+            try:
+                msg = self._inbox.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            if msg.message_type == MessageType.QUERY:
+                query_text = msg.content.get("query", str(msg.content))
+                self._logger.info(
+                    "Mid-run query from '%s': %s", msg.from_agent, query_text
+                )
+                self.messages.append(
+                    LLMMessage(
+                        role="user",
+                        content=f"[Mid-run query from {msg.from_agent}]: {query_text}",
+                    )
+                )
+            else:
+                self._logger.debug(
+                    "Inbox: ignoring %s message from '%s'",
+                    msg.message_type,
+                    msg.from_agent,
+                )
+
+    # ------------------------------------------------------------------
     # ReAct loop
     # ------------------------------------------------------------------
 
@@ -104,7 +171,7 @@ class BaseAgent(ABC):
             LLMMessage(role="system", content=self.system_prompt),
             LLMMessage(role="user", content=initial_observation),
         ]
-        tool_schemas = [t.get_schema() for t in self.tools.values()]
+        tool_schemas = self._get_tool_schemas()
 
         for iteration in range(MAX_ITERATIONS):
             self._logger.debug("ReAct iteration %d/%d", iteration + 1, MAX_ITERATIONS)
@@ -134,6 +201,8 @@ class BaseAgent(ABC):
                         tool_call_id=action.tool_call.id,
                     )
                 )
+                # Check for incoming messages between ReAct iterations
+                await self._process_inbox()
             else:
                 # LLM returned a thought with no tool call and no final answer
                 self._logger.warning("LLM returned bare thought — treating as final answer")

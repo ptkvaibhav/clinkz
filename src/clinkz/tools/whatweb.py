@@ -36,6 +36,9 @@ class WhatWebTool(ToolBase):
     Runs: whatweb --aggression=<n> --log-json=- <target>
     """
 
+    capabilities = ["technology_fingerprinting", "cms_detection", "web_technology_detection"]
+    category = "recon"
+
     @property
     def name(self) -> str:
         return "whatweb"

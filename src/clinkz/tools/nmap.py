@@ -27,6 +27,9 @@ class NmapTool(ToolBase):
     TODO: Parse nmap XML output into Host / Service models.
     """
 
+    capabilities = ["port_scanning", "service_detection", "os_fingerprinting", "host_discovery"]
+    category = "recon"
+
     @property
     def name(self) -> str:
         return "nmap"
