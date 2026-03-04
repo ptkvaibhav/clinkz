@@ -15,6 +15,8 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Annotated
@@ -61,12 +63,39 @@ def scan(
 ) -> None:
     """Run a full penetration test: recon → crawl → exploit → report."""
     _setup_logging(verbose)
-    logger = logging.getLogger("cli.scan")
-    logger.info("Starting full scan — target: %s, provider: %s", target, provider)
+    log = logging.getLogger("cli.scan")
+    log.info("Starting full scan — target: %s, provider: %s", target, provider)
 
-    # TODO: wire up Orchestrator
-    typer.echo(f"[TODO] Full scan not yet implemented. Target: {target}")
-    raise typer.Exit(code=1)
+    from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
+    from clinkz.orchestrator.orchestrator import OrchestratorAgent
+
+    # Build engagement scope
+    if scope is not None:
+        scope_data = json.loads(scope.read_text(encoding="utf-8"))
+        scope_obj = EngagementScope.model_validate(scope_data)
+    else:
+        # Infer scope type from the target string
+        import ipaddress
+
+        try:
+            ipaddress.ip_network(target, strict=False)
+            scope_type = ScopeType.CIDR if "/" in target else ScopeType.IP
+        except ValueError:
+            scope_type = ScopeType.DOMAIN
+
+        scope_obj = EngagementScope(
+            name=target,
+            targets=[ScopeEntry(value=target, type=scope_type)],
+        )
+
+    async def _run() -> dict:
+        orchestrator = OrchestratorAgent(provider=provider)
+        return await orchestrator.run(scope_obj)
+
+    result = asyncio.run(_run())
+    status = result.get("status", "unknown")
+    summary = result.get("summary", "No summary.")
+    typer.echo(f"Engagement {status}: {summary}")
 
 
 # ---------------------------------------------------------------------------

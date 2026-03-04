@@ -44,6 +44,9 @@ class Wafw00fTool(ToolBase):
     Runs: wafw00f <target>
     """
 
+    capabilities = ["waf_detection", "firewall_detection"]
+    category = "recon"
+
     @property
     def name(self) -> str:
         return "wafw00f"

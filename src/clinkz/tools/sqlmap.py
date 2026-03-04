@@ -35,6 +35,9 @@ class SqlmapTool(ToolBase):
     TODO: Parse sqlmap output to detect vulnerable parameters and injection types.
     """
 
+    capabilities = ["sql_injection_testing", "sqli_detection", "database_fingerprinting"]
+    category = "exploit"
+
     @property
     def name(self) -> str:
         return "sqlmap"
