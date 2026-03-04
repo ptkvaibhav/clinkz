@@ -68,7 +68,19 @@ class SubfinderTool(ToolBase):
         return stdout or stderr
 
     def parse_output(self, raw_output: str) -> SubfinderOutput:
-        subdomains = [line.strip() for line in raw_output.splitlines() if line.strip()]
+        """Parse subfinder output — one subdomain per line.
+
+        Args:
+            raw_output: Raw stdout from subfinder -silent.
+
+        Returns:
+            SubfinderOutput with deduplicated, sorted subdomain list.
+        """
+        if not raw_output or not raw_output.strip():
+            return SubfinderOutput(tool_name=self.name, success=False, raw_output=raw_output)
+        subdomains = sorted(
+            {line.strip() for line in raw_output.splitlines() if line.strip()}
+        )
         return SubfinderOutput(
             tool_name=self.name,
             success=True,

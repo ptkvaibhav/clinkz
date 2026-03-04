@@ -1,0 +1,59 @@
+<?xml version="1.0" ?>
+<!DOCTYPE niktoscan PUBLIC "-//CIRT//DTD Nikto//EN" "http://www.cirt.net/nikto/DTD/nikto.dtd">
+<niktoscan hoststested="1" sitename="http://192.168.1.100/" siteip="192.168.1.100"
+           sitehostname="192.168.1.100" starttime="2025-03-04 09:00:00">
+
+  <niktoscandetails targetip="192.168.1.100" targetport="80"
+                    targetbanner="nginx/1.24.0 (Ubuntu)"
+                    starttime="2025-03-04 09:00:00"
+                    endtime="2025-03-04 09:05:12"
+                    numentries="6"
+                    sitename="http://192.168.1.100/">
+
+    <!-- Missing security headers -->
+    <item id="999103" osvdbid="0" osvdblink="" port="80" severity="1" method="GET">
+      <description>The anti-clickjacking X-Frame-Options header is not present.</description>
+      <uri>/</uri>
+      <namelink>http://192.168.1.100/</namelink>
+      <iplink>http://192.168.1.100/</iplink>
+    </item>
+
+    <item id="999986" osvdbid="0" osvdblink="" port="80" severity="1" method="GET">
+      <description>The X-XSS-Protection header is not defined. This header can hint to the user agent to protect against some forms of XSS.</description>
+      <uri>/</uri>
+      <namelink>http://192.168.1.100/</namelink>
+      <iplink>http://192.168.1.100/</iplink>
+    </item>
+
+    <item id="999957" osvdbid="0" osvdblink="" port="80" severity="1" method="GET">
+      <description>The site uses SSL and the Strict-Transport-Security HTTP header is not defined.</description>
+      <uri>/</uri>
+      <namelink>http://192.168.1.100/</namelink>
+      <iplink>http://192.168.1.100/</iplink>
+    </item>
+
+    <!-- Sensitive files found -->
+    <item id="600328" osvdbid="0" osvdblink="" port="80" severity="2" method="GET">
+      <description>/phpinfo.php: Output from the phpinfo() function was found.</description>
+      <uri>/phpinfo.php</uri>
+      <namelink>http://192.168.1.100/phpinfo.php</namelink>
+      <iplink>http://192.168.1.100/phpinfo.php</iplink>
+    </item>
+
+    <item id="601009" osvdbid="0" osvdblink="" port="80" severity="2" method="GET">
+      <description>/admin/: Admin login page/section found.</description>
+      <uri>/admin/</uri>
+      <namelink>http://192.168.1.100/admin/</namelink>
+      <iplink>http://192.168.1.100/admin/</iplink>
+    </item>
+
+    <!-- PUT method enabled -->
+    <item id="400148" osvdbid="397" osvdblink="https://osvdb.org/397" port="80" severity="3" method="PUT">
+      <description>HTTP method 'PUT' is enabled on this web server. This allows attackers to upload malicious files.</description>
+      <uri>/upload/</uri>
+      <namelink>http://192.168.1.100/upload/</namelink>
+      <iplink>http://192.168.1.100/upload/</iplink>
+    </item>
+
+  </niktoscandetails>
+</niktoscan>

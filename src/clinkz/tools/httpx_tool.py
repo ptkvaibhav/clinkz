@@ -104,6 +104,20 @@ class HttpxTool(ToolBase):
         return stdout or stderr
 
     def parse_output(self, raw_output: str) -> HttpxOutput:
+        """Parse httpx JSON-lines output into HttpxResult models.
+
+        Handles the real httpx JSON field names (status-code, content-length
+        with hyphens; technologies as the primary tech list key).
+        Invalid lines are silently skipped.
+
+        Args:
+            raw_output: Raw JSONL stdout from httpx -json -silent.
+
+        Returns:
+            HttpxOutput with one HttpxResult per successfully probed URL.
+        """
+        if not raw_output or not raw_output.strip():
+            return HttpxOutput(tool_name=self.name, success=False, raw_output=raw_output)
         results = []
         for line in raw_output.splitlines():
             line = line.strip()
@@ -111,18 +125,21 @@ class HttpxTool(ToolBase):
                 continue
             try:
                 data = json.loads(line)
-                results.append(
-                    HttpxResult(
-                        url=data.get("url", ""),
-                        status_code=data.get("status-code", 0),
-                        title=data.get("title", ""),
-                        tech=data.get("tech", []),
-                        content_length=data.get("content-length", 0),
-                        webserver=data.get("webserver", ""),
-                    )
-                )
             except json.JSONDecodeError:
                 continue
+            results.append(
+                HttpxResult(
+                    url=data.get("url", ""),
+                    status_code=data.get("status-code", data.get("status_code", 0)),
+                    title=data.get("title", ""),
+                    tech=data.get("technologies", data.get("tech", [])),
+                    content_length=data.get("content-length", data.get("content_length", 0)),
+                    webserver=data.get("webserver", ""),
+                )
+            )
         return HttpxOutput(
-            tool_name=self.name, success=True, raw_output=raw_output, results=results
+            tool_name=self.name,
+            success=True,
+            raw_output=raw_output,
+            results=results,
         )
