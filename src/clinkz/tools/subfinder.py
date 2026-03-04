@@ -24,6 +24,9 @@ class SubfinderTool(ToolBase):
     TODO: Parse subfinder output (one subdomain per line).
     """
 
+    capabilities = ["subdomain_enumeration", "passive_recon", "dns_enumeration"]
+    category = "recon"
+
     @property
     def name(self) -> str:
         return "subfinder"

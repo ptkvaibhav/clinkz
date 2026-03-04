@@ -34,6 +34,9 @@ class NiktoTool(ToolBase):
     Runs: nikto -h <target> -p <port> -Format xml -output /dev/stdout -nointeractive
     """
 
+    capabilities = ["web_vulnerability_scanning", "misconfiguration_detection", "header_analysis"]
+    category = "exploit"
+
     @property
     def name(self) -> str:
         return "nikto"

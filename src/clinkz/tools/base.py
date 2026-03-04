@@ -50,9 +50,17 @@ class ToolBase(ABC):
 
     Subclass this for every external tool (nmap, ffuf, nuclei, etc.).
 
+    Class-level attributes to override in each subclass:
+        capabilities: List of capability strings (e.g., ["port_scanning"]).
+                      Used by the ToolResolver for dynamic discovery.
+        category: Broad phase category — "recon", "scan", "exploit", or "utility".
+
     Example::
 
         class NmapTool(ToolBase):
+            capabilities = ["port_scanning", "service_detection"]
+            category = "recon"
+
             @property
             def name(self) -> str: return "nmap"
 
@@ -61,6 +69,12 @@ class ToolBase(ABC):
             async def execute(self, args) -> str: ...
             def parse_output(self, raw) -> NmapOutput: ...
     """
+
+    #: Override in subclasses — list of capability strings for the ToolResolver.
+    capabilities: list[str] = []
+
+    #: Override in subclasses — broad phase: "recon", "scan", "exploit", "utility".
+    category: str = "utility"
 
     def __init__(self, scope: EngagementScope, timeout: int = 300) -> None:
         self.scope = scope

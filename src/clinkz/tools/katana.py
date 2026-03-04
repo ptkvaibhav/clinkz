@@ -24,6 +24,9 @@ class KatanaTool(ToolBase):
     TODO: Parse discovered URLs and filter interesting endpoints.
     """
 
+    capabilities = ["web_crawling", "endpoint_discovery", "url_enumeration"]
+    category = "scan"
+
     @property
     def name(self) -> str:
         return "katana"

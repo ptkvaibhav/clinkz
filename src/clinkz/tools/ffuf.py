@@ -37,6 +37,9 @@ class FfufTool(ToolBase):
     TODO: Parse ffuf JSON output into FfufResult models.
     """
 
+    capabilities = ["directory_fuzzing", "parameter_fuzzing", "endpoint_discovery"]
+    category = "scan"
+
     @property
     def name(self) -> str:
         return "ffuf"
