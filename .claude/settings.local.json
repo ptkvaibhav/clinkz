@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(.venv/Scripts/pip show:*)",
+      "Bash(.venv/Scripts/ruff check:*)",
+      "Bash(.venv/Scripts/ruff format:*)",
+      "Bash(.venv/Scripts/pytest:*)",
+      "Bash(mv:*)",
+      "Bash(.venv/Scripts/pip:*)",
+      "Bash(where:*)",
+      "Bash(\"C:/Users/ptkva/AppData/Local/Python/bin/python.exe\" -m pytest --version)",
+      "Bash(.venv/Scripts/pytest.exe:*)",
+      "Bash(source:*)",
+      "Bash(python3:*)",
+      "Bash(pip install:*)",
+      "Bash(pytest:*)"
+    ]
+  }
+}
