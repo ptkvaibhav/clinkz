@@ -6,6 +6,7 @@ Never hardcode API keys — use .env.example as a template.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Literal
@@ -42,6 +43,10 @@ class Settings(BaseModel):
     # Tool execution
     tool_timeout: int = Field(default=300, description="Max seconds per tool invocation")
 
+    # MCP servers — list of server commands or URLs, JSON-encoded in .env
+    # Examples: ["burpsuite-mcp", "http://localhost:8080/mcp", "python my_server.py"]
+    mcp_servers: list[str] = Field(default_factory=list)
+
     @classmethod
     def from_env(cls) -> Settings:
         """Construct Settings from environment variables."""
@@ -55,6 +60,7 @@ class Settings(BaseModel):
             agent_model=os.getenv("AGENT_MODEL", "gpt-4o-mini"),
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
+            mcp_servers=json.loads(os.getenv("MCP_SERVERS", "[]")),
         )
 
 
