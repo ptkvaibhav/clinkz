@@ -40,6 +40,7 @@ from clinkz.agents.critic import CriticAgent
 from clinkz.agents.exploit import ExploitAgent
 from clinkz.agents.recon import ReconAgent
 from clinkz.agents.report import ReportAgent
+from clinkz.agents.scan import ScanAgent
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 
@@ -61,8 +62,8 @@ logger = logging.getLogger(__name__)
 #: canonical protocol name is "scan").
 _AGENT_CLASSES: dict[str, type[BaseAgent]] = {
     "recon": ReconAgent,
-    "scan": CrawlAgent,    # protocol name
-    "crawl": CrawlAgent,   # file/class name alias
+    "scan": ScanAgent,     # protocol name → full implementation
+    "crawl": CrawlAgent,   # legacy alias → stub
     "exploit": ExploitAgent,
     "report": ReportAgent,
     "critic": CriticAgent,
