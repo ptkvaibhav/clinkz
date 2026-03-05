@@ -28,7 +28,8 @@ class Settings(BaseModel):
     # API keys
     openai_api_key: str | None = Field(default=None)
     anthropic_api_key: str | None = Field(default=None)
-    google_api_key: str | None = Field(default=None)
+    gemini_api_key: str | None = Field(default=None)
+    google_api_key: str | None = Field(default=None)  # legacy alias for gemini_api_key
 
     # Ollama
     ollama_base_url: str = Field(default="http://localhost:11434")
@@ -36,6 +37,7 @@ class Settings(BaseModel):
     # Model selection
     orchestrator_model: str = Field(default="gpt-4o")
     agent_model: str = Field(default="gpt-4o-mini")
+    gemini_model: str = Field(default="gemini-2.5-flash")
 
     # State store
     db_path: Path = Field(default=Path("clinkz.db"))
@@ -54,10 +56,12 @@ class Settings(BaseModel):
             llm_provider=os.getenv("LLM_PROVIDER", "openai"),  # type: ignore[arg-type]
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            gemini_api_key=os.getenv("GEMINI_API_KEY"),
             google_api_key=os.getenv("GOOGLE_API_KEY"),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             orchestrator_model=os.getenv("ORCHESTRATOR_MODEL", "gpt-4o"),
             agent_model=os.getenv("AGENT_MODEL", "gpt-4o-mini"),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
             mcp_servers=json.loads(os.getenv("MCP_SERVERS", "[]")),
