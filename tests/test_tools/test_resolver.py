@@ -254,14 +254,17 @@ def test_find_tool_falls_back_to_local_when_no_mcp(resolver: ToolResolver) -> No
 
 def test_find_tool_prefers_mcp_over_local(resolver: ToolResolver) -> None:
     """When MCP server advertises a capability, it is preferred over local."""
-    mcp_server = {
-        "name": "mcp-recon",
-        "endpoint": "http://localhost:5000",
-        "capabilities": ["port_scanning"],
-    }
-    with patch.object(resolver, "check_mcp_servers", return_value=[mcp_server]):
-        with patch("clinkz.tools.resolver.shutil.which", return_value="/usr/bin/nmap"):
-            match = resolver.find_tool("port_scanning")
+    # Directly populate the internal cache as initialize() would do.
+    resolver._mcp_tools_cache.append(
+        {
+            "name": "mcp-recon",
+            "endpoint": "http://localhost:5000",
+            "capabilities": ["port_scanning"],
+            "server_key": "http://localhost:5000",
+        }
+    )
+    with patch("clinkz.tools.resolver.shutil.which", return_value="/usr/bin/nmap"):
+        match = resolver.find_tool("port_scanning")
 
     assert match is not None
     assert match.source == "mcp"
