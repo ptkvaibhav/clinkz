@@ -714,23 +714,24 @@ async def test_orchestrator_respins_recon_on_demand(tmp_path: Path) -> None:
 
 
 async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
-    """Lifecycle manager spins up Recon Agent and Scan/Crawl Agent as concurrent
+    """Lifecycle manager spins up Recon Agent and Scan Agent as concurrent
     asyncio.Tasks. Verifies both are in RUNNING state simultaneously before
     either executes, and that both result sets reach the state store.
 
     Uses the real AgentLifecycleManager (not patched).
 
-    Note: The protocol name "scan" maps to CrawlAgent whose canonical name is
-    "crawl" (CrawlAgent.name property). Assertions use the canonical name.
-    CrawlAgent.run() raises NotImplementedError; the lifecycle manager catches
-    it and delivers a stub RESULT — this is the expected in-progress stub behaviour.
+    Note: The protocol name "scan" maps to ScanAgent whose canonical name is
+    "scan" (ScanAgent.name property). Assertions use the canonical name.
+    The ScanAgent's ToolResolver is mocked so no real tools are invoked;
+    the shared LLM exhausts its sequence immediately for the scan agent,
+    causing it to return final_answer right away.
 
     Asserts:
     - Both agents are RUNNING simultaneously (concurrent asyncio.Tasks created
       before either has a chance to execute)
     - Both agents send RESULT messages to the Orchestrator bus
     - Recon-discovered hosts are persisted in the state store
-    - Scan (crawl) stub RESULT is persisted in the state store
+    - Scan RESULT is persisted in the state store
     """
     scope = CIDR_SCOPE
 
@@ -740,10 +741,22 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
 
         recon_llm = _ReconSequenceLLM()
 
-        with patch("clinkz.agents.recon.ToolResolver", return_value=_make_mock_resolver()):
+        # Patch "scan" back to CrawlAgent (NotImplementedError stub) so the shared
+        # LLM call counter is not consumed by the scan agent — only the recon
+        # agent calls the LLM in this test.  The real lifecycle uses ScanAgent;
+        # full ScanAgent behaviour is tested in tests/test_agents/test_scan.py.
+        from clinkz.agents.crawl import CrawlAgent
+        import clinkz.orchestrator.lifecycle as _lifecycle_mod
+
+        _patched_classes = {**_lifecycle_mod._AGENT_CLASSES, "scan": CrawlAgent}
+
+        with (
+            patch("clinkz.agents.recon.ToolResolver", return_value=_make_mock_resolver()),
+            patch("clinkz.orchestrator.lifecycle._AGENT_CLASSES", _patched_classes),
+        ):
             mgr = AgentLifecycleManager(
                 bus=bus,
-                llm=recon_llm,  # Only recon calls this; crawl raises NotImplementedError
+                llm=recon_llm,
                 scope=scope,
                 state=state,
                 engagement_id=eid,
@@ -755,7 +768,8 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
                 engagement_id=eid,
                 content={"task": "Full recon on 192.168.1.0/24"},
             )
-            # "scan" maps to CrawlAgent (canonical name "crawl")
+            # "scan" maps to CrawlAgent stub; raises NotImplementedError instantly,
+            # lifecycle manager catches it and sends a RESULT with status='not_implemented'.
             scan_task_msg = AgentMessage.task(
                 from_agent=ORCHESTRATOR,
                 to_agent="scan",
@@ -772,14 +786,14 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
             # No await has been issued since spin_up, so neither task has run yet.
             # The lifecycle manager marks both RUNNING upon task creation.
             running_snapshot = mgr.get_running_agents()
-            # CrawlAgent canonical name is "crawl" (CrawlAgent.name property)
+            # CrawlAgent canonical name is "crawl" when used as the scan stub
             assert "recon" in running_snapshot, (
                 f"Expected 'recon' in running agents immediately after both spin_ups. "
                 f"Got: {running_snapshot}"
             )
             assert "crawl" in running_snapshot, (
-                f"Expected 'crawl' (the scan/crawl agent) in running agents "
-                f"immediately after both spin_ups. Got: {running_snapshot}"
+                f"Expected 'crawl' (stub scan) in running agents immediately after "
+                f"both spin_ups. Got: {running_snapshot}"
             )
             assert len(running_snapshot) == 2, (
                 f"Expected exactly 2 concurrent asyncio tasks. Got: {running_snapshot}"
@@ -787,7 +801,7 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
 
             # ── Collect both RESULT messages ──────────────────────────────────
             # Yielding to the event loop via await lets both tasks execute.
-            # crawl sends its stub RESULT first (instant NotImplementedError catch).
+            # crawl stub sends its RESULT first (instant NotImplementedError catch).
             # recon sends its RESULT after completing the 3-step ReAct loop.
             received_results: list[AgentMessage] = []
             while len(received_results) < 2:
@@ -807,7 +821,7 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
             f"Expected RESULT from 'recon'. Got results from: {from_agents}"
         )
         assert "crawl" in from_agents, (
-            f"Expected RESULT from 'crawl' (scan stub). Got results from: {from_agents}"
+            f"Expected RESULT from 'crawl' (stub). Got results from: {from_agents}"
         )
 
         # ── Assertion: recon result carries expected content ───────────────────
@@ -823,7 +837,7 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
             f"Expected recon RESULT in state store. Senders: {result_senders}"
         )
         assert "crawl" in result_senders, (
-            f"Expected crawl/scan RESULT (stub) in state store. Senders: {result_senders}"
+            f"Expected crawl (stub) RESULT in state store. Senders: {result_senders}"
         )
 
         # ── Assertion: recon-discovered hosts are persisted ───────────────────
