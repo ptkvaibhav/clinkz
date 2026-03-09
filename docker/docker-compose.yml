@@ -22,7 +22,8 @@ services:
       dockerfile: docker/Dockerfile.tools
     image: clinkz-tools:latest
     container_name: clinkz-tools
-    network_mode: host    # needs host networking to reach test targets
+    networks:
+      - pentest-targets
     volumes:
       - ../:/workspace    # mount project root for tool execution
     environment:
