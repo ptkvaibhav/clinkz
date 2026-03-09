@@ -127,7 +127,7 @@ class NiktoTool(ToolBase):
 
         findings: list[NiktoFinding] = []
 
-        for item_el in root.findall(".//niktoscandetails/item"):
+        for item_el in root.findall(".//scandetails/item"):
             item_id = item_el.get("id", "")
             method = item_el.get("method", "GET")
 
