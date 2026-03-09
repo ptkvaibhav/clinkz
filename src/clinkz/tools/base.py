@@ -184,6 +184,10 @@ class ToolBase(ABC):
     async def _run_subprocess(self, cmd: list[str]) -> tuple[str, str, int]:
         """Execute a shell command and capture output.
 
+        When ``TOOL_EXEC_MODE=docker`` in config, the command is wrapped in
+        ``docker exec <DOCKER_CONTAINER> ...`` so that tools run inside the
+        security-tools container instead of on the host.
+
         Args:
             cmd: Command and arguments (no shell=True — avoids injection).
 
@@ -193,6 +197,11 @@ class ToolBase(ABC):
         Raises:
             asyncio.TimeoutError: If the command exceeds self.timeout seconds.
         """
+        from clinkz.config import settings
+
+        if settings.tool_exec_mode == "docker":
+            cmd = ["docker", "exec", settings.docker_container, *cmd]
+
         self._logger.debug("Executing: %s", " ".join(cmd))
         proc = await asyncio.create_subprocess_exec(
             *cmd,

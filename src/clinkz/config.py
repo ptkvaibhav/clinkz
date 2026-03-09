@@ -45,6 +45,12 @@ class Settings(BaseModel):
     # Tool execution
     tool_timeout: int = Field(default=300, description="Max seconds per tool invocation")
 
+    # Tool execution mode: "local" runs tools directly, "docker" runs via docker exec
+    tool_exec_mode: str = Field(default="local", description="'local' or 'docker'")
+    docker_container: str = Field(
+        default="clinkz-tools", description="Docker container name for tool execution"
+    )
+
     # MCP servers — list of server commands or URLs, JSON-encoded in .env
     # Examples: ["burpsuite-mcp", "http://localhost:8080/mcp", "python my_server.py"]
     mcp_servers: list[str] = Field(default_factory=list)
@@ -64,6 +70,8 @@ class Settings(BaseModel):
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
+            tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "local"),
+            docker_container=os.getenv("DOCKER_CONTAINER", "clinkz-tools"),
             mcp_servers=json.loads(os.getenv("MCP_SERVERS", "[]")),
         )
 

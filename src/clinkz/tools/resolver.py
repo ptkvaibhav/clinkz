@@ -325,14 +325,33 @@ class ToolResolver:
         return results
 
     def is_available(self, tool_name: str) -> bool:
-        """Check whether a tool binary is available on PATH.
+        """Check whether a tool binary is available.
+
+        When ``TOOL_EXEC_MODE=docker``, checks inside the configured Docker
+        container via ``docker exec ... which <tool>``.  Otherwise checks the
+        host PATH with ``shutil.which()``.
 
         Args:
             tool_name: Binary name (e.g., "nmap", "ffuf").
 
         Returns:
-            True if ``shutil.which(tool_name)`` finds the binary.
+            True if the binary is found.
         """
+        from clinkz.config import settings
+
+        if settings.tool_exec_mode == "docker":
+            import subprocess
+
+            try:
+                result = subprocess.run(
+                    ["docker", "exec", settings.docker_container, "which", tool_name],
+                    capture_output=True,
+                    timeout=5,
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
+
         return shutil.which(tool_name) is not None
 
     def get_all_capabilities(self) -> list[str]:
