@@ -95,12 +95,14 @@ def test_parse_output_invalid_xml() -> None:
 
 def test_parse_output_item_without_description_skipped() -> None:
     raw = """<?xml version="1.0" ?>
+<niktoscans>
 <niktoscan>
-  <niktoscandetails>
+  <scandetails>
     <item id="1" method="GET"><uri>/</uri></item>
     <item id="2" method="GET"><description>Real finding</description><uri>/x</uri></item>
-  </niktoscandetails>
-</niktoscan>"""
+  </scandetails>
+</niktoscan>
+</niktoscans>"""
     out = make_tool().parse_output(raw)
     assert len(out.findings) == 1
     assert out.findings[0].id == "2"

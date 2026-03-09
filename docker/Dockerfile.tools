@@ -1,7 +1,7 @@
-# PentestAgent Tools Image
+# Clinkz Tools Image
 # Contains all security tools needed by the agent's tool wrappers.
 #
-# Build: docker build -f docker/Dockerfile.tools -t pentestagent-tools .
+# Build: docker build -f docker/Dockerfile.tools -t clinkz-tools .
 # Run:   docker compose -f docker/docker-compose.yml up -d
 
 FROM kalilinux/kali-rolling:latest
@@ -9,47 +9,49 @@ FROM kalilinux/kali-rolling:latest
 # Avoid interactive prompts during package installs
 ENV DEBIAN_FRONTEND=noninteractive
 
+# --- System packages + tools available in Kali repos ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Network tools
+    # Network / recon
     nmap \
     netcat-openbsd \
     curl \
     wget \
-    # Web tools (Golang-based, installed via official binaries below)
-    # nikto
+    unzip \
+    # Web vuln scanners
     nikto \
-    # SQLmap
     sqlmap \
-    # WhatWeb
+    # Web tech fingerprinting
     whatweb \
-    # Python
+    # Projectdiscovery suite (Kali packages — no CGO required)
+    subfinder \
+    httpx-toolkit \
+    nuclei \
+    ffuf \
+    # Python (wafw00f)
     python3 \
     python3-pip \
-    # Build tools
+    # Build / utility
     git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go-based tools
-# Versions pinned for reproducibility — update regularly
-ENV GOPATH=/opt/go
-ENV PATH="${PATH}:/opt/go/bin"
+# --- katana: not in Kali repos; install pre-built binary from GitHub ---
+RUN KATANA_VERSION=$(curl -s https://api.github.com/repos/projectdiscovery/katana/releases/latest \
+        | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//') && \
+    curl -sL "https://github.com/projectdiscovery/katana/releases/latest/download/katana_${KATANA_VERSION}_linux_amd64.zip" \
+        -o /tmp/katana.zip && \
+    unzip /tmp/katana.zip katana -d /usr/local/bin/ && \
+    chmod +x /usr/local/bin/katana && \
+    rm /tmp/katana.zip
 
-RUN apt-get update && apt-get install -y golang-go && rm -rf /var/lib/apt/lists/*
+# httpx-toolkit installs as 'httpx-toolkit'; symlink to 'httpx' for tool wrappers
+RUN ln -sf /usr/bin/httpx-toolkit /usr/local/bin/httpx
 
-# projectdiscovery tools
-RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest && \
-    go install github.com/projectdiscovery/httpx/cmd/httpx@latest && \
-    go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && \
-    go install github.com/projectdiscovery/katana/cmd/katana@latest
+# --- wafw00f (Python) ---
+# --break-system-packages required on Kali/Debian with PEP 668 enforcement
+RUN pip3 install --no-cache-dir --break-system-packages wafw00f
 
-# ffuf
-RUN go install github.com/ffuf/ffuf/v2@latest
-
-# wafw00f (Python)
-RUN pip3 install --no-cache-dir wafw00f
-
-# Update nuclei templates
+# Update nuclei templates (best-effort; skip if no network at build time)
 RUN nuclei -update-templates -silent || true
 
 # Install SecLists for ffuf wordlists

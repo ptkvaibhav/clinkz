@@ -1,0 +1,646 @@
+<?xml version="1.0" ?>
+<!DOCTYPE niktoscans SYSTEM "/var/lib/nikto/docs/nikto.dtd">
+<niktoscans>
+<niktoscan hoststest="0" options="-h http://clinkz-juiceshop:3000 -Format xml -o /tmp/nikto2.xml -maxtime 120" version="2.5.0" scanstart="Mon Mar  9 06:19:59 2026" scanend="Thu Jan  1 00:00:00 1970" scanelapsed=" seconds" nxmlversion="1.2">
+
+<scandetails targetip="172.20.0.2" targethostname="clinkz-juiceshop" targetport="3000" targetbanner="" starttime="2026-03-09 06:19:59" sitename="http://clinkz-juiceshop:3000/" siteip="http://172.20.0.2:3000/" hostheader="clinkz-juiceshop" errors="0" checks="6954">
+
+
+<item id="999986" method="GET">
+<description><![CDATA[/: Retrieved access-control-allow-origin header: *.]]></description>
+<uri><![CDATA[/]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/]]></iplink>
+<references><![CDATA[]]></references>
+</item>
+
+<item id="999100" method="GET">
+<description><![CDATA[/: Uncommon header 'x-recruiting' found, with contents: /#/jobs.]]></description>
+<uri><![CDATA[/]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/]]></iplink>
+<references><![CDATA[]]></references>
+</item>
+
+<item id="999997" method="GET">
+<description><![CDATA[/robots.txt: Entry '/ftp/' is returned a non-forbidden or redirect HTTP code (200).]]></description>
+<uri><![CDATA[/ftp/]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/ftp/]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/ftp/]]></iplink>
+<references><![CDATA[https://portswigger.net/kb/issues/00600600_robots-txt-file]]></references>
+</item>
+
+<item id="999996" method="GET">
+<description><![CDATA[/robots.txt: contains 1 entry which should be manually viewed.]]></description>
+<uri><![CDATA[/robots.txt]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/robots.txt]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/robots.txt]]></iplink>
+<references><![CDATA[https://developer.mozilla.org/en-US/docs/Glossary/Robots.txt]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.war: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.war]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.war]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.war]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.tar: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.tar]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.tar]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.tar]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.egg: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.egg]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.egg]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.egg]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.pem: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.pem]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.pem]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.pem]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.tar.bz2: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.tar.bz2]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.tar.bz2]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.tar.bz2]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.tgz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.tgz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.tgz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.tgz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.alz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.alz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.alz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.alz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.tar.bz2: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.tar.bz2]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.tar.bz2]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.tar.bz2]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.alz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.alz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.alz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.alz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.jks: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.jks]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.jks]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.jks]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.tar: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.tar]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.tar]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.tar]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.jks: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.jks]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.jks]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.jks]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.tar.bz2: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.tar.bz2]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.tar.bz2]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.tar.bz2]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.war: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.war]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.war]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.war]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.cer: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.cer]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.cer]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.cer]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.tar: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.tar]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.tar]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.tar]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.tar.lzma: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.tar.lzma]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.tar.lzma]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.tar.lzma]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.pem: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.pem]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.pem]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.pem]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.cer: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.cer]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.cer]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.cer]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.egg: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.egg]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.egg]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.egg]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.cer: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.cer]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.cer]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.cer]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.egg: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.egg]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.egg]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.egg]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.jks: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.jks]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.jks]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.jks]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.tar.lzma: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.tar.lzma]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.tar.lzma]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.tar.lzma]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.tar.lzma: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.tar.lzma]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.tar.lzma]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.tar.lzma]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.alz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.alz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.alz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.alz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.alz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.alz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.alz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.alz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.war: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.war]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.war]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.war]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.tgz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.tgz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.tgz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.tgz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.war: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.war]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.war]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.war]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.pem: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.pem]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.pem]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.pem]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.egg: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.egg]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.egg]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.egg]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.egg: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.egg]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.egg]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.egg]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.jks: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.jks]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.jks]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.jks]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.tar.bz2: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.tar.bz2]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.tar.bz2]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.tar.bz2]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.egg: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.egg]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.egg]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.egg]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.cer: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.cer]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.cer]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.cer]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.tgz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.tgz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.tgz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.tgz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.jks: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.jks]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.jks]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.jks]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.pem: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.pem]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.pem]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.pem]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.jks: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.jks]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.jks]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.jks]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.tar: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.tar]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.tar]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.tar]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.tar.lzma: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.tar.lzma]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.tar.lzma]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.tar.lzma]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.tgz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.tgz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.tgz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.tgz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.alz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.alz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.alz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.alz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.tgz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.tgz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.tgz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.tgz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.alz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.alz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.alz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.alz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.alz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.alz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.alz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.alz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.tar.lzma: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.tar.lzma]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.tar.lzma]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.tar.lzma]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.jks: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.jks]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.jks]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.jks]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.egg: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.egg]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.egg]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.egg]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.pem: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.pem]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.pem]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.pem]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.tar.bz2: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.tar.bz2]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.tar.bz2]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.tar.bz2]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.cer: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.cer]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.cer]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.cer]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.cer: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.cer]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.cer]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.cer]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.pem: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.pem]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.pem]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.pem]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.war: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.war]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.war]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.war]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.tgz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.tgz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.tgz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.tgz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.tar: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.tar]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.tar]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.tar]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.tar.bz2: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.tar.bz2]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.tar.bz2]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.tar.bz2]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.tar.lzma: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.tar.lzma]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.tar.lzma]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.tar.lzma]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/172.20.0.2.cer: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/172.20.0.2.cer]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/172.20.0.2.cer]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/172.20.0.2.cer]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/site.tar.bz2: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/site.tar.bz2]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/site.tar.bz2]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/site.tar.bz2]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.war: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.war]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.war]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.war]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.tar.lzma: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.tar.lzma]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.tar.lzma]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.tar.lzma]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/clinkz-juiceshop.tar: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/clinkz-juiceshop.tar]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/clinkz-juiceshop.tar]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/clinkz-juiceshop.tar]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/archive.pem: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/archive.pem]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/archive.pem]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/archive.pem]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/backup.tgz: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/backup.tgz]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/backup.tgz]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/backup.tgz]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/dump.tar: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/dump.tar]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/dump.tar]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/dump.tar]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="740001" method="HEAD">
+<description><![CDATA[/database.war: Potentially interesting backup/cert file found. .]]></description>
+<uri><![CDATA[/database.war]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/database.war]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/database.war]]></iplink>
+<references><![CDATA[https://cwe.mitre.org/data/definitions/530.html]]></references>
+</item>
+
+<item id="999103" method="GET">
+<description><![CDATA[.: The X-Content-Type-Options header is not set. This could allow the user agent to render the content of the site in a different fashion to the MIME type.]]></description>
+<uri><![CDATA[.]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000.]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000.]]></iplink>
+<references><![CDATA[https://www.netsparker.com/web-vulnerability-scanner/vulnerabilities/missing-content-type-header/]]></references>
+</item>
+
+<item id="001675" method="GET">
+<description><![CDATA[/ftp/: This might be interesting.]]></description>
+<uri><![CDATA[/ftp/]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/ftp/]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/ftp/]]></iplink>
+<references><![CDATA[]]></references>
+</item>
+
+<item id="001811" method="GET">
+<description><![CDATA[/public/: This might be interesting.]]></description>
+<uri><![CDATA[/public/]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/public/]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/public/]]></iplink>
+<references><![CDATA[]]></references>
+</item>
+
+<item id="006737" method="POST">
+<description><![CDATA[/wp-content/plugins/nextgen-gallery/products/photocrati_nextgen/modules/nextgen_addgallery_page/static/jquery.filetree/connectors/jqueryFileTree.php: NextGEN Gallery LFI.]]></description>
+<uri><![CDATA[/wp-content/plugins/nextgen-gallery/products/photocrati_nextgen/modules/nextgen_addgallery_page/static/jquery.filetree/connectors/jqueryFileTree.php]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/wp-content/plugins/nextgen-gallery/products/photocrati_nextgen/modules/nextgen_addgallery_page/static/jquery.filetree/connectors/jqueryFileTree.php]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/wp-content/plugins/nextgen-gallery/products/photocrati_nextgen/modules/nextgen_addgallery_page/static/jquery.filetree/connectors/jqueryFileTree.php]]></iplink>
+<references><![CDATA[https://seclists.org/fulldisclosure/2014/Feb/171]]></references>
+</item>
+
+<item id="006737" method="POST">
+<description><![CDATA[/wordpress/wp-content/plugins/nextgen-gallery/products/photocrati_nextgen/modules/nextgen_addgallery_page/static/jquery.filetree/connectors/jqueryFileTree.php: NextGEN Gallery LFI.]]></description>
+<uri><![CDATA[/wordpress/wp-content/plugins/nextgen-gallery/products/photocrati_nextgen/modules/nextgen_addgallery_page/static/jquery.filetree/connectors/jqueryFileTree.php]]></uri>
+<namelink><![CDATA[http://clinkz-juiceshop:3000/wordpress/wp-content/plugins/nextgen-gallery/products/photocrati_nextgen/modules/nextgen_addgallery_page/static/jquery.filetree/connectors/jqueryFileTree.php]]></namelink>
+<iplink><![CDATA[http://172.20.0.2:3000/wordpress/wp-content/plugins/nextgen-gallery/products/photocrati_nextgen/modules/nextgen_addgallery_page/static/jquery.filetree/connectors/jqueryFileTree.php]]></iplink>
+<references><![CDATA[https://seclists.org/fulldisclosure/2014/Feb/171]]></references>
+</item>
+
+<statistics elapsed="94" itemsfound="79" itemstested="6954" endtime="2026-03-09 06:21:33" />
+</scandetails>
+</niktoscan>
+
+
+</niktoscans>

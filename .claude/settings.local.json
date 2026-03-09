@@ -15,7 +15,15 @@
       "Bash(source:*)",
       "Bash(python3:*)",
       "Bash(pip install:*)",
-      "Bash(pytest:*)"
+      "Bash(pytest:*)",
+      "Bash(docker build:*)",
+      "Bash(docker info:*)",
+      "Bash(docker context:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker cp:*)",
+      "Bash(git:*)"
     ]
   }
 }
