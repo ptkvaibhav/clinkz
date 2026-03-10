@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 from enum import StrEnum
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -68,22 +69,43 @@ class EngagementScope(BaseModel):
     )
 
     def contains(self, target: str) -> bool:
-        """Check if a target IP or domain is within scope.
+        """Check if a target IP, domain, or URL is within scope.
+
+        If *target* looks like a URL (has a ``://`` scheme), the hostname
+        is extracted and checked instead.  Port numbers are stripped so
+        that ``http://172.20.0.2:3000`` correctly matches a scope entry
+        of ``172.20.0.2``.
 
         Checks exclusions first (exclusions take precedence).
 
         Args:
-            target: IP address or hostname to check.
+            target: IP address, hostname, or URL to check.
 
         Returns:
             True if target is in scope and not excluded.
-
-        TODO: Implement full IP range / CIDR / wildcard domain matching.
         """
-        # Check exclusions first
-        if self._matches_any(target, self.excluded):
+        normalized = self._extract_host(target)
+        if self._matches_any(normalized, self.excluded):
             return False
-        return self._matches_any(target, self.targets)
+        return self._matches_any(normalized, self.targets)
+
+    @staticmethod
+    def _extract_host(target: str) -> str:
+        """Extract the bare hostname/IP from a target string.
+
+        Handles URLs (``http://1.2.3.4:8080/path``) and ``host:port``
+        notation.  Returns the input unchanged if it is already a bare
+        hostname or IP.
+        """
+        if "://" in target:
+            parsed = urlparse(target)
+            return parsed.hostname or target
+        # Strip a trailing port (e.g. "172.20.0.2:3000")
+        if ":" in target:
+            host, _, port = target.rpartition(":")
+            if port.isdigit():
+                return host
+        return target
 
     def _matches_any(self, target: str, entries: list[ScopeEntry]) -> bool:
         """Return True if target matches any entry in the list."""

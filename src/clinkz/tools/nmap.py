@@ -51,7 +51,7 @@ class NmapTool(ToolBase):
                     },
                     "ports": {
                         "type": "string",
-                        "description": "Port range to scan (e.g., '1-1000', '80,443,8080', '-' for all).",  # noqa: E501
+                        "description": "Port specification. ONLY accepts: comma-separated numbers like '80,443,3000' or ranges like '1-1000'. Never use words like 'common', 'top', 'all', or 'default'. Examples of VALID values: '22,80,443', '1-1000', '80,443,8000-9000'. Examples of INVALID values: 'common', 'top_1000', 'all'.",  # noqa: E501
                         "default": "1-1000",
                     },
                     "flags": {
@@ -69,9 +69,16 @@ class NmapTool(ToolBase):
         if not target:
             raise ValueError("'target' is required for nmap")
         self._check_scope(target)
+        import re
+
+        ports = args.get("ports", "1-1000")
+        # Reject non-numeric port specs (e.g. "common", "top_1000")
+        if not re.fullmatch(r'[\d,\- ]+', ports):
+            ports = "1-1000"
+
         return {
             "target": target,
-            "ports": args.get("ports", "1-1000"),
+            "ports": ports,
             "flags": args.get("flags", ""),
         }
 
