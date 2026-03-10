@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_CALLS_PER_MINUTE: int = 5
 _RATE_LIMIT_PERIOD: float = 60.0
-_MAX_RETRIES: int = 4
+_MAX_RETRIES: int = 6
 
 
 class _RateLimiter:
@@ -67,6 +67,36 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return code == 429 or "429" in msg or "resource exhausted" in msg or "quota" in msg
 
 
+def _extract_retry_delay(exc: Exception) -> float | None:
+    """Extract the server-recommended retry delay from a Gemini 429 error.
+
+    The error details include a ``RetryInfo`` entry like::
+
+        {'@type': '...RetryInfo', 'retryDelay': '46s'}
+
+    Also checks for ``"Please retry in Xs"`` in the error message.
+    Returns None if no delay can be extracted.
+    """
+    import re
+
+    # Try structured details first
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict):
+        for entry in details.get("error", {}).get("details", []):
+            if "RetryInfo" in str(entry.get("@type", "")):
+                delay_str = entry.get("retryDelay", "")
+                m = re.search(r"([\d.]+)", delay_str)
+                if m:
+                    return float(m.group(1)) + 1  # add 1s buffer
+
+    # Fallback: parse from error message
+    msg = str(exc)
+    m = re.search(r"retry in ([\d.]+)s", msg, re.IGNORECASE)
+    if m:
+        return float(m.group(1)) + 1
+    return None
+
+
 class GeminiClient(LLMClient):
     """Google Gemini client using gemini-2.5-flash.
 
@@ -87,7 +117,15 @@ class GeminiClient(LLMClient):
                 "Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set. "
                 "Add one to your .env file."
             )
-        self._client = genai.Client(api_key=api_key)
+        self._client = genai.Client(
+            api_key=api_key,
+            # Disable SDK-internal retries — we handle retries ourselves in
+            # _call_with_backoff().  The SDK's tenacity retries burn through
+            # free-tier daily quota because each retry counts as a request.
+            http_options=types.HttpOptions(
+                retryOptions=types.HttpRetryOptions(attempts=1),
+            ),
+        )
         self._model_name = model or settings.gemini_model
         self._rate_limiter = _RateLimiter(_MAX_CALLS_PER_MINUTE, _RATE_LIMIT_PERIOD)
         self._total_input_tokens: int = 0
@@ -188,8 +226,9 @@ class GeminiClient(LLMClient):
     ) -> Any:
         """Execute a coroutine factory with rate limiting and exponential backoff.
 
-        Retries up to ``_MAX_RETRIES`` times on 429 / quota errors, waiting
-        2^attempt seconds between attempts (1s, 2s, 4s, 8s).
+        Retries up to ``_MAX_RETRIES`` times on 429 / quota errors.  Tries to
+        extract the server-recommended retry delay from the error details;
+        falls back to exponential backoff (1s, 2s, 4s, 8s, 16s, 32s).
 
         Args:
             coro_factory: Callable that returns a fresh coroutine each time.
@@ -200,9 +239,9 @@ class GeminiClient(LLMClient):
                 return await coro_factory()
             except Exception as exc:
                 if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES - 1:
-                    wait = 2**attempt
+                    wait = _extract_retry_delay(exc) or 2**attempt
                     logger.warning(
-                        "Rate limit hit (attempt %d/%d) — retrying in %ds: %s",
+                        "Rate limit hit (attempt %d/%d) — retrying in %.0fs: %s",
                         attempt + 1,
                         _MAX_RETRIES,
                         wait,
