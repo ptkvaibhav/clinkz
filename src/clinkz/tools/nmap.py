@@ -51,7 +51,7 @@ class NmapTool(ToolBase):
                     },
                     "ports": {
                         "type": "string",
-                        "description": "Port range to scan (e.g., '1-1000', '80,443,8080', '-' for all).",  # noqa: E501
+                        "description": "Comma-separated port numbers or ranges, e.g. '22,80,443' or '1-1000' or '1-65535'. Do NOT use words like 'common' or 'top_1000'.",  # noqa: E501
                         "default": "1-1000",
                     },
                     "flags": {
