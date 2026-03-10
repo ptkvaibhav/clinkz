@@ -39,8 +39,9 @@ def make_tool(scope: EngagementScope = SCOPE) -> HttpxTool:
 def test_schema_has_required_fields() -> None:
     schema = make_tool().get_schema()
     assert schema["name"] == "httpx"
+    assert "target" in schema["parameters"]["properties"]
     assert "targets" in schema["parameters"]["properties"]
-    assert "targets" in schema["parameters"]["required"]
+    assert "target" in schema["parameters"]["required"]
 
 
 # ---------------------------------------------------------------------------
@@ -48,24 +49,46 @@ def test_schema_has_required_fields() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_validate_input_accepts_in_scope() -> None:
+def test_validate_input_accepts_targets_list() -> None:
     result = make_tool().validate_input({"targets": ["192.168.1.100"]})
     assert result["targets"] == ["192.168.1.100"]
     assert result["follow_redirects"] is True
 
 
+def test_validate_input_accepts_single_target() -> None:
+    result = make_tool().validate_input({"target": "192.168.1.100"})
+    assert result["targets"] == ["192.168.1.100"]
+    assert result["follow_redirects"] is True
+
+
+def test_validate_input_merges_target_and_targets() -> None:
+    result = make_tool().validate_input({
+        "target": "192.168.1.100",
+        "targets": ["192.168.1.101"],
+    })
+    assert result["targets"] == ["192.168.1.100", "192.168.1.101"]
+
+
+def test_validate_input_deduplicates() -> None:
+    result = make_tool().validate_input({
+        "target": "192.168.1.100",
+        "targets": ["192.168.1.100", "192.168.1.101"],
+    })
+    assert result["targets"] == ["192.168.1.100", "192.168.1.101"]
+
+
 def test_validate_input_checks_scope() -> None:
     with pytest.raises(ValueError, match="outside the engagement scope"):
-        make_tool(OUT_OF_SCOPE).validate_input({"targets": ["192.168.1.100"]})
+        make_tool(OUT_OF_SCOPE).validate_input({"target": "192.168.1.100"})
 
 
-def test_validate_input_requires_targets() -> None:
-    with pytest.raises(ValueError, match="'targets' list is required"):
+def test_validate_input_requires_target() -> None:
+    with pytest.raises(ValueError, match="'target' or 'targets' is required"):
         make_tool().validate_input({})
 
 
 def test_validate_input_empty_targets_list() -> None:
-    with pytest.raises(ValueError, match="'targets' list is required"):
+    with pytest.raises(ValueError, match="'target' or 'targets' is required"):
         make_tool().validate_input({"targets": []})
 
 
