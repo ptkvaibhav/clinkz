@@ -6,6 +6,7 @@ Sample fixture: tests/fixtures/whatweb_output.json
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from pydantic import BaseModel
@@ -79,6 +80,7 @@ class WhatWebTool(ToolBase):
         cmd = [
             "whatweb",
             f"--aggression={args['aggression']}",
+            "--color=never",
             "--log-json=-",
             args["target"],
         ]
@@ -101,8 +103,11 @@ class WhatWebTool(ToolBase):
         if not raw_output or not raw_output.strip():
             return WhatWebOutput(tool_name=self.name, success=False, raw_output=raw_output)
 
+        # Strip ANSI escape codes that WhatWeb emits when run inside Docker
+        cleaned = re.sub(r'\x1b\[[0-9;]*m', '', raw_output)
+
         try:
-            data = json.loads(raw_output)
+            data = json.loads(cleaned)
         except json.JSONDecodeError as exc:
             return WhatWebOutput(
                 tool_name=self.name,
