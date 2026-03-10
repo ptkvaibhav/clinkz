@@ -56,10 +56,14 @@ class HttpxTool(ToolBase):
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Required. URL or IP to probe (single target).",
+                    },
                     "targets": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of URLs or hosts to probe.",
+                        "description": "List of URLs or IPs to probe (alternative to 'target').",
                     },
                     "follow_redirects": {
                         "type": "boolean",
@@ -67,31 +71,43 @@ class HttpxTool(ToolBase):
                         "default": True,
                     },
                 },
-                "required": ["targets"],
+                "required": ["target"],
             },
         }
 
+    def _normalize_targets(self, args: dict[str, Any]) -> list[str]:
+        """Accept both 'target' (string) and 'targets' (list) params."""
+        targets = args.get("targets") or []
+        target = args.get("target")
+        if target:
+            if isinstance(target, str):
+                targets = [target] + list(targets)
+            else:
+                targets = list(target) + list(targets)
+        # deduplicate while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for t in targets:
+            if t not in seen:
+                seen.add(t)
+                unique.append(t)
+        return unique
+
     def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
-        targets = args.get("targets", [])
+        targets = self._normalize_targets(args)
         if not targets:
-            raise ValueError("'targets' list is required for httpx")
+            raise ValueError("'target' or 'targets' is required for httpx")
         for t in targets:
             self._check_scope(t)
         return {"targets": targets, "follow_redirects": bool(args.get("follow_redirects", True))}
 
     async def execute(self, args: dict[str, Any]) -> str:
-        import pathlib
-        import tempfile
+        from clinkz.config import settings
 
         targets_str = "\n".join(args["targets"])
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write(targets_str)
-            tmp = f.name
 
         cmd = [
             "httpx",
-            "-l",
-            tmp,
             "-json",
             "-title",
             "-tech-detect",
@@ -102,8 +118,21 @@ class HttpxTool(ToolBase):
         if args.get("follow_redirects"):
             cmd.append("-follow-redirects")
 
-        stdout, stderr, _ = await self._run_subprocess(cmd)
-        pathlib.Path(tmp).unlink(missing_ok=True)
+        if settings.tool_exec_mode == "docker":
+            # In docker mode, pipe targets via stdin instead of a temp file
+            # (temp files on the host are not accessible inside the container).
+            stdout, stderr, _ = await self._run_subprocess_stdin(cmd, targets_str)
+        else:
+            import pathlib
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+                f.write(targets_str)
+                tmp = f.name
+            cmd.extend(["-l", tmp])
+            stdout, stderr, _ = await self._run_subprocess(cmd)
+            pathlib.Path(tmp).unlink(missing_ok=True)
+
         return stdout or stderr
 
     def parse_output(self, raw_output: str) -> HttpxOutput:
