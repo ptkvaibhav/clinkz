@@ -59,7 +59,7 @@ class HttpxTool(ToolBase):
                     "targets": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of URLs or hosts to probe.",
+                        "description": "Required. List of URLs or IPs to probe.",
                     },
                     "follow_redirects": {
                         "type": "boolean",
@@ -80,18 +80,12 @@ class HttpxTool(ToolBase):
         return {"targets": targets, "follow_redirects": bool(args.get("follow_redirects", True))}
 
     async def execute(self, args: dict[str, Any]) -> str:
-        import pathlib
-        import tempfile
+        from clinkz.config import settings
 
         targets_str = "\n".join(args["targets"])
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write(targets_str)
-            tmp = f.name
 
         cmd = [
             "httpx",
-            "-l",
-            tmp,
             "-json",
             "-title",
             "-tech-detect",
@@ -102,8 +96,21 @@ class HttpxTool(ToolBase):
         if args.get("follow_redirects"):
             cmd.append("-follow-redirects")
 
-        stdout, stderr, _ = await self._run_subprocess(cmd)
-        pathlib.Path(tmp).unlink(missing_ok=True)
+        if settings.tool_exec_mode == "docker":
+            # In docker mode, pipe targets via stdin instead of a temp file
+            # (temp files on the host are not accessible inside the container).
+            stdout, stderr, _ = await self._run_subprocess_stdin(cmd, targets_str)
+        else:
+            import pathlib
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+                f.write(targets_str)
+                tmp = f.name
+            cmd.extend(["-l", tmp])
+            stdout, stderr, _ = await self._run_subprocess(cmd)
+            pathlib.Path(tmp).unlink(missing_ok=True)
+
         return stdout or stderr
 
     def parse_output(self, raw_output: str) -> HttpxOutput:

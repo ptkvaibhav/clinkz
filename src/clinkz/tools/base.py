@@ -217,3 +217,44 @@ class ToolBase(ABC):
         stdout = stdout_bytes.decode(errors="replace")
         stderr = stderr_bytes.decode(errors="replace")
         return stdout, stderr, returncode
+
+    async def _run_subprocess_stdin(
+        self, cmd: list[str], stdin_data: str
+    ) -> tuple[str, str, int]:
+        """Execute a command with data piped to stdin.
+
+        Like :meth:`_run_subprocess` but feeds *stdin_data* to the process.
+        When ``TOOL_EXEC_MODE=docker``, uses ``docker exec -i`` so that stdin
+        is forwarded into the container.
+
+        Args:
+            cmd: Command and arguments.
+            stdin_data: Text to write to the process's stdin.
+
+        Returns:
+            (stdout, stderr, returncode)
+
+        Raises:
+            asyncio.TimeoutError: If the command exceeds self.timeout seconds.
+        """
+        from clinkz.config import settings
+
+        if settings.tool_exec_mode == "docker":
+            cmd = ["docker", "exec", "-i", settings.docker_container, *cmd]
+
+        self._logger.debug("Executing (stdin): %s", " ".join(cmd))
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(input=stdin_data.encode()),
+            timeout=self.timeout,
+        )
+        returncode = proc.returncode or 0
+        self._logger.debug("Exit code: %d", returncode)
+        stdout = stdout_bytes.decode(errors="replace")
+        stderr = stderr_bytes.decode(errors="replace")
+        return stdout, stderr, returncode
