@@ -1,0 +1,109 @@
+{
+  "commandline": "ffuf -u http://172.20.0.2/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common.txt -of json -o /dev/stdout -fc 404 -t 40 -s",
+  "time": "2026-03-09T14:32:01Z",
+  "results": [
+    {
+      "input": {
+        "FUZZ": "admin"
+      },
+      "position": 42,
+      "status": 301,
+      "length": 169,
+      "words": 5,
+      "lines": 8,
+      "content-type": "text/html; charset=utf-8",
+      "redirectlocation": "http://172.20.0.2/admin/",
+      "url": "http://172.20.0.2/admin",
+      "resultfile": "",
+      "host": "172.20.0.2",
+      "duration": 5234567
+    },
+    {
+      "input": {
+        "FUZZ": "api"
+      },
+      "position": 58,
+      "status": 200,
+      "length": 3748,
+      "words": 167,
+      "lines": 53,
+      "content-type": "application/json; charset=utf-8",
+      "redirectlocation": "",
+      "url": "http://172.20.0.2/api",
+      "resultfile": "",
+      "host": "172.20.0.2",
+      "duration": 3124890
+    },
+    {
+      "input": {
+        "FUZZ": "assets"
+      },
+      "position": 71,
+      "status": 301,
+      "length": 179,
+      "words": 5,
+      "lines": 8,
+      "content-type": "text/html; charset=utf-8",
+      "redirectlocation": "http://172.20.0.2/assets/",
+      "url": "http://172.20.0.2/assets",
+      "resultfile": "",
+      "host": "172.20.0.2",
+      "duration": 4891234
+    },
+    {
+      "input": {
+        "FUZZ": "ftp"
+      },
+      "position": 201,
+      "status": 200,
+      "length": 11429,
+      "words": 834,
+      "lines": 232,
+      "content-type": "text/html; charset=utf-8",
+      "redirectlocation": "",
+      "url": "http://172.20.0.2/ftp",
+      "resultfile": "",
+      "host": "172.20.0.2",
+      "duration": 6723456
+    },
+    {
+      "input": {
+        "FUZZ": "profile"
+      },
+      "position": 378,
+      "status": 500,
+      "length": 2345,
+      "words": 102,
+      "lines": 41,
+      "content-type": "text/html; charset=utf-8",
+      "redirectlocation": "",
+      "url": "http://172.20.0.2/profile",
+      "resultfile": "",
+      "host": "172.20.0.2",
+      "duration": 8456789
+    },
+    {
+      "input": {
+        "FUZZ": "robots.txt"
+      },
+      "position": 412,
+      "status": 200,
+      "length": 28,
+      "words": 3,
+      "lines": 2,
+      "content-type": "text/plain",
+      "redirectlocation": "",
+      "url": "http://172.20.0.2/robots.txt",
+      "resultfile": "",
+      "host": "172.20.0.2",
+      "duration": 2345678
+    }
+  ],
+  "config": {
+    "json": true,
+    "method": "GET",
+    "url": "http://172.20.0.2/FUZZ",
+    "wordlists": ["/usr/share/seclists/Discovery/Web-Content/common.txt"],
+    "fsbsize": 40
+  }
+}

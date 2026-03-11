@@ -176,6 +176,23 @@ class BaseAgent(ABC):
         for iteration in range(MAX_ITERATIONS):
             self._logger.debug("ReAct iteration %d/%d", iteration + 1, MAX_ITERATIONS)
 
+            # Warn the LLM when it's about to hit the iteration limit
+            if iteration == MAX_ITERATIONS - 2:
+                self._logger.info(
+                    "Agent '%s' approaching max iterations — injecting wrap-up prompt",
+                    self.name,
+                )
+                self.messages.append(
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "You have 2 iterations remaining before the hard limit. "
+                            "Summarize your findings and return final_answer now. "
+                            "Do not start new tool calls."
+                        ),
+                    )
+                )
+
             # Reason
             action: AgentAction = await self.llm.reason(self.messages, tools=tool_schemas)
 

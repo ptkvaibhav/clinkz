@@ -34,9 +34,9 @@ class NucleiOutput(ToolOutput):
 class NucleiTool(ToolBase):
     """Nuclei vulnerability scanner.
 
-    Runs: nuclei -u <target> -severity <severity> -json
+    Runs: nuclei -u <target> -severity <severity> -jsonl
 
-    TODO: Parse nuclei JSONL output into NucleiFinding models.
+    Nuclei v3+ uses -jsonl (not -json) for JSON-lines output.
     """
 
     capabilities = ["vulnerability_scanning", "cve_detection", "template_based_scanning"]
@@ -97,7 +97,7 @@ class NucleiTool(ToolBase):
             args["target"],
             "-severity",
             args["severity"],
-            "-json",
+            "-jsonl",
             "-silent",
         ]
         if args.get("tags"):
