@@ -72,6 +72,16 @@ class SqlmapTool(ToolBase):
                         "description": "Risk level 1-3 (default: 1, max recommended: 2).",
                         "default": 1,
                     },
+                    "cookie": {
+                        "type": "string",
+                        "description": "Cookie string for authenticated testing (e.g., 'PHPSESSID=abc123; security=low').",
+                        "default": "",
+                    },
+                    "forms": {
+                        "type": "boolean",
+                        "description": "Automatically detect and test forms on the target page.",
+                        "default": False,
+                    },
                 },
                 "required": ["url"],
             },
@@ -86,7 +96,14 @@ class SqlmapTool(ToolBase):
         self._check_scope(urlparse(url).netloc)
         level = min(int(args.get("level", 2)), 3)  # cap at 3 for safety
         risk = min(int(args.get("risk", 1)), 2)  # cap at 2 for safety
-        return {"url": url, "data": args.get("data", ""), "level": level, "risk": risk}
+        return {
+            "url": url,
+            "data": args.get("data", ""),
+            "level": level,
+            "risk": risk,
+            "cookie": args.get("cookie", ""),
+            "forms": bool(args.get("forms", False)),
+        }
 
     async def execute(self, args: dict[str, Any]) -> str:
         import tempfile
@@ -104,6 +121,10 @@ class SqlmapTool(ToolBase):
         ]
         if args.get("data"):
             cmd.extend(["--data", args["data"]])
+        if args.get("cookie"):
+            cmd.extend(["--cookie", args["cookie"]])
+        if args.get("forms"):
+            cmd.append("--forms")
         stdout, stderr, _ = await self._run_subprocess(cmd)
         return stdout or stderr
 

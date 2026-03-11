@@ -1,16 +1,20 @@
 """ffuf tool wrapper — fast web fuzzer for directory and parameter discovery.
 
-Sample fixture: tests/fixtures/ffuf_output.json
+Sample fixture: tests/fixtures/real_ffuf.json
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from pydantic import BaseModel
 
 from clinkz.tools.base import ToolBase, ToolOutput
+
+# Regex to strip ANSI escape sequences (common in Docker exec output)
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
 
 
 class FfufResult(BaseModel):
@@ -21,20 +25,24 @@ class FfufResult(BaseModel):
     length: int
     words: int
     lines: int
+    content_type: str = ""
+    redirect_location: str = ""
+    host: str = ""
+    input_data: dict[str, str] = {}
+    duration_ns: int = 0
 
 
 class FfufOutput(ToolOutput):
     """Structured output from ffuf."""
 
     results: list[FfufResult] = []
+    command_line: str = ""
 
 
 class FfufTool(ToolBase):
     """ffuf directory and parameter fuzzer.
 
     Runs: ffuf -u <url>/FUZZ -w <wordlist> -of json -o /dev/stdout
-
-    TODO: Parse ffuf JSON output into FfufResult models.
     """
 
     capabilities = ["directory_fuzzing", "parameter_fuzzing", "endpoint_discovery"]
@@ -120,18 +128,74 @@ class FfufTool(ToolBase):
         return stdout or stderr
 
     def parse_output(self, raw_output: str) -> FfufOutput:
+        """Parse ffuf JSON output into structured results.
+
+        Handles ANSI escape codes from Docker exec and extracts JSON from
+        mixed output (banner text + JSON).
+        """
+        if not raw_output or not raw_output.strip():
+            return FfufOutput(tool_name=self.name, success=False, raw_output=raw_output)
+
+        # Strip ANSI escape codes (common in Docker exec output)
+        cleaned = _ANSI_RE.sub('', raw_output)
+
+        # Extract JSON object from potentially mixed output — find the
+        # outermost { ... } block (ffuf outputs a single JSON object)
+        json_str = cleaned
+        start = cleaned.find('{')
+        if start == -1:
+            return FfufOutput(
+                tool_name=self.name,
+                success=False,
+                raw_output=raw_output,
+                error="No JSON object found in ffuf output",
+            )
+        # Find matching closing brace by scanning from the end
+        end = cleaned.rfind('}')
+        if end == -1 or end <= start:
+            return FfufOutput(
+                tool_name=self.name,
+                success=False,
+                raw_output=raw_output,
+                error="Malformed JSON in ffuf output",
+            )
+        json_str = cleaned[start:end + 1]
+
         try:
-            data = json.loads(raw_output)
-            results = [
-                FfufResult(
-                    url=r.get("url", ""),
-                    status=r.get("status", 0),
-                    length=r.get("length", 0),
-                    words=r.get("words", 0),
-                    lines=r.get("lines", 0),
-                )
-                for r in data.get("results", [])
-            ]
-        except json.JSONDecodeError:
-            results = []
-        return FfufOutput(tool_name=self.name, success=True, raw_output=raw_output, results=results)
+            data = json.loads(json_str)
+        except json.JSONDecodeError as exc:
+            return FfufOutput(
+                tool_name=self.name,
+                success=False,
+                raw_output=raw_output,
+                error=f"JSON parse error: {exc}",
+            )
+
+        # ffuf wraps results in a top-level object with "results" array
+        raw_results = data.get("results") or []
+        command_line = data.get("commandline", "")
+
+        results = [
+            FfufResult(
+                url=r.get("url", ""),
+                status=r.get("status", 0),
+                length=r.get("length", 0),
+                words=r.get("words", 0),
+                lines=r.get("lines", 0),
+                content_type=r.get("content-type", ""),
+                redirect_location=r.get("redirectlocation", ""),
+                host=r.get("host", ""),
+                input_data=r.get("input", {}),
+                duration_ns=r.get("duration", 0),
+            )
+            for r in raw_results
+            if isinstance(r, dict)
+        ]
+
+        return FfufOutput(
+            tool_name=self.name,
+            success=True,
+            raw_output=raw_output,
+            results=results,
+            command_line=command_line,
+        )
