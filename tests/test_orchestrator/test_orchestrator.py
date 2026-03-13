@@ -419,6 +419,10 @@ async def test_messages_persisted_in_state_store() -> None:
 
     orchestrator = OrchestratorAgent(llm=llm, db_path=":memory:")
 
+    mock_cred_store = MagicMock()
+    mock_cred_store.initialize = AsyncMock()
+    mock_cred_store.get = AsyncMock(return_value=[])
+
     with patch(
         "clinkz.orchestrator.orchestrator.StateStore",
         return_value=mock_state,
@@ -427,7 +431,11 @@ async def test_messages_persisted_in_state_store() -> None:
             "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
             return_value=mock_lifecycle,
         ):
-            result = await orchestrator.run(SCOPE)
+            with patch(
+                "clinkz.orchestrator.orchestrator.CredentialStore",
+                return_value=mock_cred_store,
+            ):
+                result = await orchestrator.run(SCOPE)
 
     # save_message must have been called at least once (the route_message)
     assert mock_state.save_message.call_count >= 1, (
