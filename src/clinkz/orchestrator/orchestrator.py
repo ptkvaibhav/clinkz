@@ -29,6 +29,7 @@ from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.config import settings
+from clinkz.credentials.store import CredentialStore
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
 from clinkz.llm.factory import get_llm_client
 from clinkz.models.scope import EngagementScope
@@ -191,6 +192,7 @@ class OrchestratorAgent:
         self._bus: MessageBus | None = None
         self._lifecycle: AgentLifecycleManager | None = None
         self._resolver: ToolResolver | None = None
+        self._cred_store: CredentialStore | None = None
         self._scope: EngagementScope | None = None
         self._engagement_id: str | None = None
         self._summary: dict[str, Any] = {}
@@ -231,11 +233,14 @@ class OrchestratorAgent:
                 engagement_id=engagement_id,
             )
             resolver = ToolResolver()
+            cred_store = CredentialStore(state)
+            await cred_store.initialize()
 
             self._state = state
             self._bus = bus
             self._lifecycle = lifecycle
             self._resolver = resolver
+            self._cred_store = cred_store
             self._scope = scope
             self._engagement_id = engagement_id
 
@@ -274,6 +279,7 @@ class OrchestratorAgent:
         history: list[LLMMessage] = []
         first_iteration = True
         idle_count = 0
+        force_reason = False  # Set after LLM errors to retry reasoning
 
         while True:
             # Drain all pending messages addressed to the orchestrator
@@ -282,7 +288,8 @@ class OrchestratorAgent:
             running = self._lifecycle.get_running_agents()
 
             # Decide whether to call the LLM this iteration
-            should_reason = first_iteration or bool(pending)
+            should_reason = first_iteration or bool(pending) or force_reason
+            force_reason = False
 
             if not should_reason:
                 if not running:
@@ -333,6 +340,12 @@ class OrchestratorAgent:
                 )
             except Exception as exc:
                 self._logger.error("LLM reasoning failed: %s", exc, exc_info=True)
+                # Remove the unanswered context message to avoid corrupting
+                # the conversation history (e.g., orphaned user messages that
+                # break function_call/response adjacency for Gemini).
+                if history and history[-1].role == "user":
+                    history.pop()
+                force_reason = True  # retry on next iteration
                 await asyncio.sleep(_POLL_INTERVAL)
                 continue
 
@@ -425,17 +438,54 @@ class OrchestratorAgent:
         if stopped:
             lines.append(f"Completed: {', '.join(stopped)}")
 
-        # Findings count
+        # Findings with severity breakdown
         try:
             findings = await self._state.get_findings(self._engagement_id)
             validated = [f for f in findings if f.get("validated")]
+            severity_counts: dict[str, int] = {}
+            for f in findings:
+                sev = f.get("severity", "unknown")
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
             lines.append("")
             lines.append("=== FINDINGS ===")
             lines.append(
                 f"{len(findings)} total, {len(validated)} validated by Critic"
             )
+            if severity_counts:
+                sev_parts = [f"{sev}: {cnt}" for sev, cnt in sorted(severity_counts.items())]
+                lines.append(f"By severity: {', '.join(sev_parts)}")
+            # Brief summary of confirmed findings
+            confirmed = [f for f in findings if f.get("confirmed")]
+            for cf in confirmed[:10]:
+                title = cf.get("title", "Untitled")
+                sev = cf.get("severity", "?")
+                target = cf.get("target", "?")
+                lines.append(f"  - [{sev.upper()}] {title} @ {target}")
+            if len(confirmed) > 10:
+                lines.append(f"  ... and {len(confirmed) - 10} more confirmed findings")
         except Exception as exc:
             self._logger.warning("Could not fetch findings: %s", exc)
+
+        # Credential store status
+        try:
+            assert self._cred_store is not None
+            all_creds = await self._cred_store.get(self._engagement_id)
+            valid_creds = [c for c in all_creds if c.valid is True]
+            untested = [c for c in all_creds if c.valid is None]
+            invalid = [c for c in all_creds if c.valid is False]
+            lines.append("")
+            lines.append("=== CREDENTIAL STORE ===")
+            lines.append(
+                f"{len(all_creds)} total: {len(valid_creds)} valid, "
+                f"{len(untested)} untested, {len(invalid)} invalid"
+            )
+            for vc in valid_creds:
+                lines.append(
+                    f"  - VALID: {vc.username}:{vc.password} "
+                    f"({vc.technology or 'generic'}) @ {vc.url or 'no URL'}"
+                )
+        except Exception as exc:
+            self._logger.warning("Could not fetch credentials: %s", exc)
 
         # Available tool capabilities
         try:
@@ -581,6 +631,11 @@ def _trim_history(
     """Return the most recent ``max_turns`` messages from history.
 
     Keeps the conversation context bounded to avoid token overflow.
+    Ensures the trimmed list does not start with a ``tool`` message
+    (orphaned function_response) or an ``assistant`` message with
+    tool_calls that lost its following tool response — both would
+    cause a 400 error from LLM providers like Gemini that require
+    strict function_call / function_response adjacency.
 
     Args:
         history: Full conversation history.
@@ -591,4 +646,23 @@ def _trim_history(
     """
     if len(history) <= max_turns:
         return history
-    return history[-max_turns:]
+
+    trimmed = history[-max_turns:]
+
+    # Drop leading tool messages (orphaned function_responses)
+    while trimmed and trimmed[0].role == "tool":
+        trimmed = trimmed[1:]
+
+    # Drop leading assistant messages with tool_calls whose responses were cut
+    while (
+        trimmed
+        and trimmed[0].role == "assistant"
+        and trimmed[0].tool_calls
+        and (len(trimmed) < 2 or trimmed[1].role != "tool")
+    ):
+        trimmed = trimmed[1:]
+        # Also drop any following orphaned tool messages
+        while trimmed and trimmed[0].role == "tool":
+            trimmed = trimmed[1:]
+
+    return trimmed

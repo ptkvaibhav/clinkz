@@ -37,6 +37,8 @@ For each finding submitted for review:
 - The description is so vague that exploitation cannot be verified
 - The "confirmed" status is claimed but evidence only shows a probe or automated
   scanner output with no manual validation
+- The finding says "scanner reported X" without actual HTTP request/response evidence
+  proving the vulnerability — scanner output alone is NOT sufficient proof
 - Remediation is absent or is generic boilerplate without specifics
 
 ## Response Format
@@ -76,3 +78,8 @@ template match with no manual confirmation. Requires manual exploitation evidenc
 - If a CVSS score is wrong but the finding is real, reject it with guidance to correct
   the score (the Exploit Agent can re-submit with the corrected score)
 - Informational findings (severity: info) do not require exploitation evidence
+- **Evidence standard**: Findings MUST include actual HTTP evidence — the exact request
+  sent and the server response received. A finding that only references scanner output
+  (e.g., "Nuclei detected X" or "sqlmap found Y") without showing the raw HTTP
+  request/response pair that proves the vulnerability should be REJECTED with a request
+  to re-test manually and capture evidence
