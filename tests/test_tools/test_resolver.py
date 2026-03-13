@@ -36,6 +36,8 @@ _EXPECTED_TOOLS = {
     "nikto",
     "nuclei",
     "sqlmap",
+    "http_client",
+    "tool_installer",
 }
 
 # A sample capability → expected tool name mapping for lookup assertions
