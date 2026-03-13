@@ -61,6 +61,8 @@ _TOOL_MODULES = [
     "clinkz.tools.nikto",
     "clinkz.tools.nuclei",
     "clinkz.tools.sqlmap",
+    "clinkz.tools.http_client",
+    "clinkz.tools.installer",
 ]
 
 # ---------------------------------------------------------------------------
