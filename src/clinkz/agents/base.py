@@ -33,7 +33,18 @@ from clinkz.tools.base import ToolBase
 
 logger = logging.getLogger(__name__)
 
-MAX_ITERATIONS = 20
+# Default iteration limits per agent type.  Agents override via the
+# ``max_iterations`` property so each phase gets the budget it needs.
+DEFAULT_MAX_ITERATIONS: dict[str, int] = {
+    "recon": 10,
+    "scan": 15,
+    "exploit": 25,
+    "report": 10,
+    "critic": 10,
+}
+
+# Fallback when an agent name is not in the map above.
+_FALLBACK_MAX_ITERATIONS = 20
 
 
 class BaseAgent(ABC):
@@ -66,6 +77,22 @@ class BaseAgent(ABC):
         self.messages: list[LLMMessage] = []
         self._inbox: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+
+    # ------------------------------------------------------------------
+    # Iteration limit — per-agent, configurable
+    # ------------------------------------------------------------------
+
+    @property
+    def max_iterations(self) -> int:
+        """Maximum ReAct iterations for this agent.
+
+        Looks up the agent's ``name`` in ``DEFAULT_MAX_ITERATIONS``.
+        Subclasses can override this property to set a custom limit.
+
+        Returns:
+            Iteration budget for the ReAct loop.
+        """
+        return DEFAULT_MAX_ITERATIONS.get(self.name, _FALLBACK_MAX_ITERATIONS)
 
     # ------------------------------------------------------------------
     # Abstract interface — implement in each phase agent
@@ -172,12 +199,13 @@ class BaseAgent(ABC):
             LLMMessage(role="user", content=initial_observation),
         ]
         tool_schemas = self._get_tool_schemas()
+        limit = self.max_iterations
 
-        for iteration in range(MAX_ITERATIONS):
-            self._logger.debug("ReAct iteration %d/%d", iteration + 1, MAX_ITERATIONS)
+        for iteration in range(limit):
+            self._logger.debug("ReAct iteration %d/%d", iteration + 1, limit)
 
             # Warn the LLM when it's about to hit the iteration limit
-            if iteration == MAX_ITERATIONS - 2:
+            if iteration == limit - 2:
                 self._logger.info(
                     "Agent '%s' approaching max iterations — injecting wrap-up prompt",
                     self.name,
@@ -226,7 +254,7 @@ class BaseAgent(ABC):
                 return action.thought
 
         self._logger.warning(
-            "Max iterations (%d) reached for agent '%s'", MAX_ITERATIONS, self.name
+            "Max iterations (%d) reached for agent '%s'", limit, self.name
         )
         return "Max iterations reached without a final answer."
 
