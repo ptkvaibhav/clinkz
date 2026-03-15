@@ -540,6 +540,28 @@ class OrchestratorAgent:
         except Exception as exc:
             self._logger.warning("Could not fetch credentials: %s", exc)
 
+        # Authenticated sessions (for cross-agent handoff)
+        try:
+            sessions = await self._state.get_sessions(self._engagement_id)
+            if sessions:
+                lines.append("")
+                lines.append("=== AUTHENTICATED SESSIONS ===")
+                for sess in sessions:
+                    cookie_names = list(sess.get("cookies", {}).keys())
+                    jar = sess.get("cookie_jar_path", "")
+                    lines.append(
+                        f"  - From '{sess['agent']}': cookies={cookie_names}, "
+                        f"jar={jar}"
+                    )
+                lines.append(
+                    "IMPORTANT: When spinning up Exploit or other agents, include "
+                    "valid credentials and session cookies from above so the agent "
+                    "does NOT waste iterations on login. Pass the cookie_jar_path "
+                    "so tools can reuse the authenticated session."
+                )
+        except Exception as exc:
+            self._logger.warning("Could not fetch sessions: %s", exc)
+
         # Available tool capabilities
         try:
             caps = self._resolver.get_all_capabilities()

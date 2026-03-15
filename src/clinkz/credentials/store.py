@@ -185,16 +185,41 @@ class CredentialStore:
             for row in rows
         ]
 
-    async def mark_valid(self, credential_id: str) -> None:
-        """Mark a credential as confirmed valid.
+    async def mark_valid(
+        self,
+        credential_id: str,
+        session_cookies: dict[str, str] | None = None,
+        cookie_jar_path: str = "",
+        engagement_id: str = "",
+        agent: str = "",
+    ) -> None:
+        """Mark a credential as confirmed valid and optionally store the session.
+
+        When ``session_cookies`` or ``cookie_jar_path`` are provided, the
+        session is persisted to the state store so later agents can reuse
+        the authenticated session without re-authenticating.
 
         Args:
             credential_id: Credential UUID.
+            session_cookies: Session cookies obtained during login.
+            cookie_jar_path: Path to the curl cookie jar file.
+            engagement_id: Engagement UUID (required when storing session).
+            agent: Agent that performed the authentication (e.g., "scan").
         """
         await self._state._conn.execute(
             "UPDATE credentials SET valid=1 WHERE id=?", (credential_id,)
         )
         await self._state._conn.commit()
+
+        # Persist the session for cross-agent handoff
+        if (session_cookies or cookie_jar_path) and engagement_id:
+            await self._state.save_session(
+                engagement_id=engagement_id,
+                agent=agent or "unknown",
+                cookies=session_cookies or {},
+                cookie_jar_path=cookie_jar_path,
+                metadata={"credential_id": credential_id},
+            )
 
     async def mark_invalid(self, credential_id: str) -> None:
         """Mark a credential as confirmed invalid.

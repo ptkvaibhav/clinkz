@@ -28,11 +28,65 @@ class HTTPClientOutput(ToolOutput):
     response_time_ms: float = 0.0
 
 
+def _cookie_jar_path(engagement_id: str) -> str:
+    """Return the shared cookie jar file path for an engagement.
+
+    All curl calls within the same engagement share this file, so cookies
+    obtained during authentication persist across agents and tool invocations.
+
+    Args:
+        engagement_id: UUID of the active engagement.
+
+    Returns:
+        Absolute path string (``/tmp/clinkz_{engagement_id}_cookies.txt``).
+    """
+    return f"/tmp/clinkz_{engagement_id}_cookies.txt"
+
+
+def get_session_cookies(engagement_id: str) -> dict[str, str]:
+    """Read the Netscape-format cookie jar and return cookies as a dict.
+
+    Args:
+        engagement_id: UUID of the active engagement.
+
+    Returns:
+        Dict of cookie_name → cookie_value.  Empty dict if the jar
+        does not exist or is empty.
+    """
+    import os
+
+    jar_path = _cookie_jar_path(engagement_id)
+    cookies: dict[str, str] = {}
+
+    if not os.path.isfile(jar_path):
+        return cookies
+
+    try:
+        with open(jar_path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                # Skip comments and blank lines
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 7:
+                    # Netscape cookie format: domain, flag, path, secure, exp, name, value
+                    cookies[parts[5]] = parts[6]
+    except OSError:
+        pass
+
+    return cookies
+
+
 class HTTPClientTool(ToolBase):
     """Send arbitrary HTTP requests for manual testing and exploitation.
 
     In Docker mode, uses curl via ``docker exec`` so requests come from the
     container network. In local mode, uses aiohttp on the host.
+
+    Args:
+        engagement_id: If provided, a per-engagement cookie jar is used so
+            session cookies persist across all requests in the engagement.
     """
 
     capabilities = [
@@ -42,6 +96,19 @@ class HTTPClientTool(ToolBase):
         "manual_exploitation",
     ]
     category = "utility"
+
+    def __init__(
+        self,
+        scope: Any = None,
+        timeout: int = 300,
+        engagement_id: str | None = None,
+    ) -> None:
+        if scope is None:
+            from clinkz.models.scope import EngagementScope
+
+            scope = EngagementScope(name="default", targets=[])
+        super().__init__(scope=scope, timeout=timeout)
+        self._engagement_id = engagement_id
 
     @property
     def name(self) -> str:
@@ -138,8 +205,12 @@ class HTTPClientTool(ToolBase):
         cookies: dict[str, str] = args.get("cookies") or {}
         follow_redirects: bool = args.get("follow_redirects", False)
 
-        # We use a unique cookie jar path inside the container
-        cookie_jar = "/tmp/clinkz_cookies.txt"
+        # Per-engagement cookie jar so sessions persist across all requests
+        cookie_jar = (
+            _cookie_jar_path(self._engagement_id)
+            if self._engagement_id
+            else "/tmp/clinkz_cookies.txt"
+        )
 
         # Build curl command
         cmd: list[str] = [
