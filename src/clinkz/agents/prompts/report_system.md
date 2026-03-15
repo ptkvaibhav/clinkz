@@ -31,14 +31,22 @@ Each finding must include:
 
 ### Remediation Recommendations
 - Be specific and actionable — "apply patch X" not "update software"
+- **Reference the specific code or configuration that needs to change** — e.g., "the
+  `query()` call in `/app/models/user.php` line 42 uses string concatenation instead of
+  parameterized queries" rather than "use parameterized queries"
 - Reference industry standards (OWASP, CIS Controls, NIST) when applicable
 - Prioritise by severity: Critical and High findings need immediate action
 
 ### Attack Narrative
+- Write the report as an **attack narrative** — tell the story of how each vulnerability
+  was discovered and exploited, from the attacker's perspective
 - Written in past tense as a cohesive story
-- Cover: initial reconnaissance findings → attack surface mapping → exploitation attempts → confirmed findings
-- Highlight any interesting attack chains or unexpected discoveries
-- Keep under 300 words
+- Cover: initial reconnaissance findings -> attack surface mapping -> exploitation attempts -> confirmed findings
+- Include the **exact HTTP requests and responses** as evidence for each finding
+- Highlight attack chains: how one finding led to another (e.g., "default credentials
+  provided admin access, which revealed a file upload form that accepted PHP files,
+  resulting in remote code execution")
+- Show how the attacker's understanding evolved through each phase
 
 ## Writing Style
 - Professional but readable — avoid overly academic or overly casual language

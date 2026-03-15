@@ -29,6 +29,7 @@ from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.config import settings
+from clinkz.credentials.store import CredentialStore
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
 from clinkz.llm.factory import get_llm_client
 from clinkz.models.scope import EngagementScope
@@ -147,6 +148,9 @@ _POLL_INTERVAL = 1.0
 # Max consecutive idle iterations before forcing completion (safety valve).
 _MAX_IDLE_ITERATIONS = 300
 
+# Block an agent after this many consecutive identical errors.
+_MAX_SAME_ERROR = 2
+
 
 # ---------------------------------------------------------------------------
 # OrchestratorAgent
@@ -191,9 +195,16 @@ class OrchestratorAgent:
         self._bus: MessageBus | None = None
         self._lifecycle: AgentLifecycleManager | None = None
         self._resolver: ToolResolver | None = None
+        self._cred_store: CredentialStore | None = None
         self._scope: EngagementScope | None = None
         self._engagement_id: str | None = None
         self._summary: dict[str, Any] = {}
+
+        # Failure escalation: tracks consecutive errors per agent.
+        # Key = agent_type, value = list of recent error strings.
+        # When the same error appears 2+ times in a row, the agent is
+        # blocked from retry and the Orchestrator moves on.
+        self._agent_failures: dict[str, list[str]] = {}
 
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
@@ -231,11 +242,14 @@ class OrchestratorAgent:
                 engagement_id=engagement_id,
             )
             resolver = ToolResolver()
+            cred_store = CredentialStore(state)
+            await cred_store.initialize()
 
             self._state = state
             self._bus = bus
             self._lifecycle = lifecycle
             self._resolver = resolver
+            self._cred_store = cred_store
             self._scope = scope
             self._engagement_id = engagement_id
 
@@ -274,15 +288,20 @@ class OrchestratorAgent:
         history: list[LLMMessage] = []
         first_iteration = True
         idle_count = 0
+        force_reason = False  # Set after LLM errors to retry reasoning
 
         while True:
             # Drain all pending messages addressed to the orchestrator
             pending = await self._bus.get_pending(ORCHESTRATOR)
 
+            # Track agent failures/successes for escalation logic
+            self._track_agent_outcomes(pending)
+
             running = self._lifecycle.get_running_agents()
 
             # Decide whether to call the LLM this iteration
-            should_reason = first_iteration or bool(pending)
+            should_reason = first_iteration or bool(pending) or force_reason
+            force_reason = False
 
             if not should_reason:
                 if not running:
@@ -333,6 +352,12 @@ class OrchestratorAgent:
                 )
             except Exception as exc:
                 self._logger.error("LLM reasoning failed: %s", exc, exc_info=True)
+                # Remove the unanswered context message to avoid corrupting
+                # the conversation history (e.g., orphaned user messages that
+                # break function_call/response adjacency for Gemini).
+                if history and history[-1].role == "user":
+                    history.pop()
+                force_reason = True  # retry on next iteration
                 await asyncio.sleep(_POLL_INTERVAL)
                 continue
 
@@ -373,6 +398,36 @@ class OrchestratorAgent:
 
             if is_complete:
                 break
+
+    # ------------------------------------------------------------------
+    # Failure escalation
+    # ------------------------------------------------------------------
+
+    def _track_agent_outcomes(self, pending: list[AgentMessage]) -> None:
+        """Update the failure tracker based on incoming agent messages.
+
+        ERROR messages append to the agent's failure list.
+        RESULT messages with a successful outcome clear the failure list.
+
+        Args:
+            pending: Messages just drained from the orchestrator queue.
+        """
+        for msg in pending:
+            agent = msg.from_agent
+            if msg.message_type in (MessageType.ERROR, "error"):
+                error_str = msg.content.get("error", str(msg.content))
+                self._agent_failures.setdefault(agent, []).append(error_str)
+                self._logger.debug(
+                    "Failure tracker: %s error #%d: %s",
+                    agent,
+                    len(self._agent_failures[agent]),
+                    error_str[:120],
+                )
+            elif msg.message_type in (MessageType.RESULT, "result"):
+                status = msg.content.get("status", "")
+                if status != "not_implemented":
+                    # Successful result — reset failure counter
+                    self._agent_failures.pop(agent, None)
 
     # ------------------------------------------------------------------
     # Context builder
@@ -425,17 +480,87 @@ class OrchestratorAgent:
         if stopped:
             lines.append(f"Completed: {', '.join(stopped)}")
 
-        # Findings count
+        # Blocked agents (repeated failures)
+        blocked = []
+        for agent, errors in self._agent_failures.items():
+            if (
+                len(errors) >= _MAX_SAME_ERROR
+                and len(set(errors[-_MAX_SAME_ERROR:])) == 1
+            ):
+                blocked.append(f"{agent} (error: {errors[-1][:100]})")
+        if blocked:
+            lines.append(f"BLOCKED (repeated failures): {'; '.join(blocked)}")
+
+        # Findings with severity breakdown
         try:
             findings = await self._state.get_findings(self._engagement_id)
             validated = [f for f in findings if f.get("validated")]
+            severity_counts: dict[str, int] = {}
+            for f in findings:
+                sev = f.get("severity", "unknown")
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
             lines.append("")
             lines.append("=== FINDINGS ===")
             lines.append(
                 f"{len(findings)} total, {len(validated)} validated by Critic"
             )
+            if severity_counts:
+                sev_parts = [f"{sev}: {cnt}" for sev, cnt in sorted(severity_counts.items())]
+                lines.append(f"By severity: {', '.join(sev_parts)}")
+            # Brief summary of confirmed findings
+            confirmed = [f for f in findings if f.get("confirmed")]
+            for cf in confirmed[:10]:
+                title = cf.get("title", "Untitled")
+                sev = cf.get("severity", "?")
+                target = cf.get("target", "?")
+                lines.append(f"  - [{sev.upper()}] {title} @ {target}")
+            if len(confirmed) > 10:
+                lines.append(f"  ... and {len(confirmed) - 10} more confirmed findings")
         except Exception as exc:
             self._logger.warning("Could not fetch findings: %s", exc)
+
+        # Credential store status
+        try:
+            assert self._cred_store is not None
+            all_creds = await self._cred_store.get(self._engagement_id)
+            valid_creds = [c for c in all_creds if c.valid is True]
+            untested = [c for c in all_creds if c.valid is None]
+            invalid = [c for c in all_creds if c.valid is False]
+            lines.append("")
+            lines.append("=== CREDENTIAL STORE ===")
+            lines.append(
+                f"{len(all_creds)} total: {len(valid_creds)} valid, "
+                f"{len(untested)} untested, {len(invalid)} invalid"
+            )
+            for vc in valid_creds:
+                lines.append(
+                    f"  - VALID: {vc.username}:{vc.password} "
+                    f"({vc.technology or 'generic'}) @ {vc.url or 'no URL'}"
+                )
+        except Exception as exc:
+            self._logger.warning("Could not fetch credentials: %s", exc)
+
+        # Authenticated sessions (for cross-agent handoff)
+        try:
+            sessions = await self._state.get_sessions(self._engagement_id)
+            if sessions:
+                lines.append("")
+                lines.append("=== AUTHENTICATED SESSIONS ===")
+                for sess in sessions:
+                    cookie_names = list(sess.get("cookies", {}).keys())
+                    jar = sess.get("cookie_jar_path", "")
+                    lines.append(
+                        f"  - From '{sess['agent']}': cookies={cookie_names}, "
+                        f"jar={jar}"
+                    )
+                lines.append(
+                    "IMPORTANT: When spinning up Exploit or other agents, include "
+                    "valid credentials and session cookies from above so the agent "
+                    "does NOT waste iterations on login. Pass the cookie_jar_path "
+                    "so tools can reuse the authenticated session."
+                )
+        except Exception as exc:
+            self._logger.warning("Could not fetch sessions: %s", exc)
 
         # Available tool capabilities
         try:
@@ -496,6 +621,31 @@ class OrchestratorAgent:
         if name == "spin_up_agent":
             agent_type: str = args["agent_type"]
             task_text: str = args["task"]
+
+            # Escalation check: if this agent has failed with the same error
+            # _MAX_SAME_ERROR times in a row, refuse the retry.
+            recent = self._agent_failures.get(agent_type, [])
+            if (
+                len(recent) >= _MAX_SAME_ERROR
+                and len(set(recent[-_MAX_SAME_ERROR:])) == 1
+            ):
+                blocked_err = recent[-1]
+                self._logger.warning(
+                    "ESCALATION: agent '%s' failed %d times with the same error "
+                    "— blocking retry. Error: %s",
+                    agent_type,
+                    _MAX_SAME_ERROR,
+                    blocked_err,
+                )
+                result = (
+                    f"BLOCKED: {agent_type} agent has failed {_MAX_SAME_ERROR} "
+                    f"consecutive times with the same error: {blocked_err[:200]}. "
+                    f"Do NOT retry this agent with the same approach. "
+                    f"Either try a completely different strategy, use a different "
+                    f"agent, or skip this phase and move on."
+                )
+                return result, False
+
             task_msg = AgentMessage.task(
                 from_agent=ORCHESTRATOR,
                 to_agent=agent_type,
@@ -581,6 +731,11 @@ def _trim_history(
     """Return the most recent ``max_turns`` messages from history.
 
     Keeps the conversation context bounded to avoid token overflow.
+    Ensures the trimmed list does not start with a ``tool`` message
+    (orphaned function_response) or an ``assistant`` message with
+    tool_calls that lost its following tool response — both would
+    cause a 400 error from LLM providers like Gemini that require
+    strict function_call / function_response adjacency.
 
     Args:
         history: Full conversation history.
@@ -591,4 +746,23 @@ def _trim_history(
     """
     if len(history) <= max_turns:
         return history
-    return history[-max_turns:]
+
+    trimmed = history[-max_turns:]
+
+    # Drop leading tool messages (orphaned function_responses)
+    while trimmed and trimmed[0].role == "tool":
+        trimmed = trimmed[1:]
+
+    # Drop leading assistant messages with tool_calls whose responses were cut
+    while (
+        trimmed
+        and trimmed[0].role == "assistant"
+        and trimmed[0].tool_calls
+        and (len(trimmed) < 2 or trimmed[1].role != "tool")
+    ):
+        trimmed = trimmed[1:]
+        # Also drop any following orphaned tool messages
+        while trimmed and trimmed[0].role == "tool":
+            trimmed = trimmed[1:]
+
+    return trimmed
