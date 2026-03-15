@@ -148,6 +148,9 @@ _POLL_INTERVAL = 1.0
 # Max consecutive idle iterations before forcing completion (safety valve).
 _MAX_IDLE_ITERATIONS = 300
 
+# Block an agent after this many consecutive identical errors.
+_MAX_SAME_ERROR = 2
+
 
 # ---------------------------------------------------------------------------
 # OrchestratorAgent
@@ -196,6 +199,12 @@ class OrchestratorAgent:
         self._scope: EngagementScope | None = None
         self._engagement_id: str | None = None
         self._summary: dict[str, Any] = {}
+
+        # Failure escalation: tracks consecutive errors per agent.
+        # Key = agent_type, value = list of recent error strings.
+        # When the same error appears 2+ times in a row, the agent is
+        # blocked from retry and the Orchestrator moves on.
+        self._agent_failures: dict[str, list[str]] = {}
 
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
@@ -284,6 +293,9 @@ class OrchestratorAgent:
         while True:
             # Drain all pending messages addressed to the orchestrator
             pending = await self._bus.get_pending(ORCHESTRATOR)
+
+            # Track agent failures/successes for escalation logic
+            self._track_agent_outcomes(pending)
 
             running = self._lifecycle.get_running_agents()
 
@@ -388,6 +400,36 @@ class OrchestratorAgent:
                 break
 
     # ------------------------------------------------------------------
+    # Failure escalation
+    # ------------------------------------------------------------------
+
+    def _track_agent_outcomes(self, pending: list[AgentMessage]) -> None:
+        """Update the failure tracker based on incoming agent messages.
+
+        ERROR messages append to the agent's failure list.
+        RESULT messages with a successful outcome clear the failure list.
+
+        Args:
+            pending: Messages just drained from the orchestrator queue.
+        """
+        for msg in pending:
+            agent = msg.from_agent
+            if msg.message_type in (MessageType.ERROR, "error"):
+                error_str = msg.content.get("error", str(msg.content))
+                self._agent_failures.setdefault(agent, []).append(error_str)
+                self._logger.debug(
+                    "Failure tracker: %s error #%d: %s",
+                    agent,
+                    len(self._agent_failures[agent]),
+                    error_str[:120],
+                )
+            elif msg.message_type in (MessageType.RESULT, "result"):
+                status = msg.content.get("status", "")
+                if status != "not_implemented":
+                    # Successful result — reset failure counter
+                    self._agent_failures.pop(agent, None)
+
+    # ------------------------------------------------------------------
     # Context builder
     # ------------------------------------------------------------------
 
@@ -437,6 +479,17 @@ class OrchestratorAgent:
         stopped = [n for n, s in all_status.items() if s == "stopped"]
         if stopped:
             lines.append(f"Completed: {', '.join(stopped)}")
+
+        # Blocked agents (repeated failures)
+        blocked = []
+        for agent, errors in self._agent_failures.items():
+            if (
+                len(errors) >= _MAX_SAME_ERROR
+                and len(set(errors[-_MAX_SAME_ERROR:])) == 1
+            ):
+                blocked.append(f"{agent} (error: {errors[-1][:100]})")
+        if blocked:
+            lines.append(f"BLOCKED (repeated failures): {'; '.join(blocked)}")
 
         # Findings with severity breakdown
         try:
@@ -546,6 +599,31 @@ class OrchestratorAgent:
         if name == "spin_up_agent":
             agent_type: str = args["agent_type"]
             task_text: str = args["task"]
+
+            # Escalation check: if this agent has failed with the same error
+            # _MAX_SAME_ERROR times in a row, refuse the retry.
+            recent = self._agent_failures.get(agent_type, [])
+            if (
+                len(recent) >= _MAX_SAME_ERROR
+                and len(set(recent[-_MAX_SAME_ERROR:])) == 1
+            ):
+                blocked_err = recent[-1]
+                self._logger.warning(
+                    "ESCALATION: agent '%s' failed %d times with the same error "
+                    "— blocking retry. Error: %s",
+                    agent_type,
+                    _MAX_SAME_ERROR,
+                    blocked_err,
+                )
+                result = (
+                    f"BLOCKED: {agent_type} agent has failed {_MAX_SAME_ERROR} "
+                    f"consecutive times with the same error: {blocked_err[:200]}. "
+                    f"Do NOT retry this agent with the same approach. "
+                    f"Either try a completely different strategy, use a different "
+                    f"agent, or skip this phase and move on."
+                )
+                return result, False
+
             task_msg = AgentMessage.task(
                 from_agent=ORCHESTRATOR,
                 to_agent=agent_type,

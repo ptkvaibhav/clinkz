@@ -144,14 +144,18 @@ class GeminiClient(LLMClient):
 
         All declarations are bundled in a single Tool object.
         """
-        declarations = [
-            types.FunctionDeclaration(
-                name=tool["name"],
-                description=tool.get("description", ""),
-                parameters=tool.get("parameters", {}),
+        declarations = []
+        for tool in tools:
+            # Support both flat format {"name": ...} and OpenAI wrapper
+            # format {"type": "function", "function": {"name": ...}}
+            spec = tool.get("function", tool) if "function" in tool else tool
+            declarations.append(
+                types.FunctionDeclaration(
+                    name=spec["name"],
+                    description=spec.get("description", ""),
+                    parameters=spec.get("parameters", {}),
+                )
             )
-            for tool in tools
-        ]
         return [types.Tool(function_declarations=declarations)]
 
     def _to_gemini_contents(
