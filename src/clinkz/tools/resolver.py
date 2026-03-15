@@ -61,6 +61,8 @@ _TOOL_MODULES = [
     "clinkz.tools.nikto",
     "clinkz.tools.nuclei",
     "clinkz.tools.sqlmap",
+    "clinkz.tools.http_client",
+    "clinkz.tools.installer",
 ]
 
 # ---------------------------------------------------------------------------
@@ -324,19 +326,31 @@ class ToolResolver:
 
         return results
 
+    # Tools that don't need a binary check — they're Python-native or
+    # use other binaries internally (e.g., http_client uses aiohttp,
+    # tool_installer uses apt-get/pip inside Docker).
+    _ALWAYS_AVAILABLE: set[str] = {"http_client", "tool_installer"}
+
     def is_available(self, tool_name: str) -> bool:
         """Check whether a tool binary is available.
 
-        When ``TOOL_EXEC_MODE=docker``, checks inside the configured Docker
-        container via ``docker exec ... which <tool>``.  Otherwise checks the
-        host PATH with ``shutil.which()``.
+        Tools in ``_ALWAYS_AVAILABLE`` are Python-native and don't need a
+        binary check.  For all others, when ``TOOL_EXEC_MODE=docker``, checks
+        inside the configured Docker container via ``docker exec ... which <tool>``.
+        Otherwise checks the host PATH with ``shutil.which()``.
 
         Args:
             tool_name: Binary name (e.g., "nmap", "ffuf").
 
         Returns:
             True if the binary is found.
+
+        Raises:
+            RuntimeError: If the Docker container is not running.
         """
+        if tool_name in self._ALWAYS_AVAILABLE:
+            return True
+
         from clinkz.config import settings
 
         if settings.tool_exec_mode == "docker":
@@ -348,7 +362,16 @@ class ToolResolver:
                     capture_output=True,
                     timeout=5,
                 )
+                if result.returncode != 0:
+                    stderr = result.stderr.decode(errors="replace").lower()
+                    if "is not running" in stderr or "no such container" in stderr:
+                        raise RuntimeError(
+                            f"Docker container '{settings.docker_container}' is not "
+                            f"running. Start it with: docker start {settings.docker_container}"
+                        )
                 return result.returncode == 0
+            except RuntimeError:
+                raise
             except Exception:
                 return False
 

@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS agent_messages (
     parent_message_id TEXT,
     timestamp         TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id              TEXT PRIMARY KEY,
+    engagement_id   TEXT NOT NULL REFERENCES engagements(id),
+    agent           TEXT NOT NULL,
+    cookies_json    TEXT NOT NULL DEFAULT '{}',
+    cookie_jar_path TEXT NOT NULL DEFAULT '',
+    metadata_json   TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
 """
 
 
@@ -407,6 +418,85 @@ class StateStore:
             ),
         )
         await self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Sessions (authenticated session handoff between agents)
+    # ------------------------------------------------------------------
+
+    async def save_session(
+        self,
+        engagement_id: str,
+        agent: str,
+        cookies: dict[str, str],
+        cookie_jar_path: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Persist an authenticated session for cross-agent handoff.
+
+        When an agent (e.g., Scan) successfully authenticates, it stores
+        the session cookies here so later agents (e.g., Exploit) can reuse
+        the authenticated state without re-authenticating.
+
+        Args:
+            engagement_id: Parent engagement UUID.
+            agent: Agent name that created the session (e.g., "scan").
+            cookies: Session cookies as key-value pairs.
+            cookie_jar_path: Path to the Netscape cookie jar file on disk.
+            metadata: Arbitrary extra data (e.g., login URL, technology).
+
+        Returns:
+            Session UUID.
+        """
+        sid = self._new_id()
+        now = self._now()
+        await self._conn.execute(
+            "INSERT INTO sessions "
+            "(id, engagement_id, agent, cookies_json, cookie_jar_path, "
+            "metadata_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                sid,
+                engagement_id,
+                agent,
+                json.dumps(cookies),
+                cookie_jar_path,
+                json.dumps(metadata or {}),
+                now,
+                now,
+            ),
+        )
+        await self._conn.commit()
+        logger.debug("Saved session %s from agent '%s'", sid, agent)
+        return sid
+
+    async def get_sessions(self, engagement_id: str) -> list[dict[str, Any]]:
+        """Return all saved sessions for an engagement.
+
+        Args:
+            engagement_id: Engagement UUID.
+
+        Returns:
+            List of session dicts with deserialized cookies and metadata.
+        """
+        async with self._conn.execute(
+            "SELECT * FROM sessions WHERE engagement_id=? ORDER BY created_at",
+            (engagement_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            results.append({
+                "id": row["id"],
+                "engagement_id": row["engagement_id"],
+                "agent": row["agent"],
+                "cookies": json.loads(row["cookies_json"]),
+                "cookie_jar_path": row["cookie_jar_path"],
+                "metadata": json.loads(row["metadata_json"]),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            })
+        return results
 
     async def get_messages(
         self,
