@@ -193,6 +193,10 @@ class BaseAgent(ABC):
     async def _react_loop(self, initial_observation: str) -> str:
         """Run the Observe → Reason → Act → Reflect loop.
 
+        Includes failure tracking: if the same tool fails 3 consecutive times
+        with the same error, a skip message is injected so the LLM moves on
+        to the next checklist item instead of retrying endlessly.
+
         Args:
             initial_observation: The task description / starting context.
 
@@ -205,6 +209,11 @@ class BaseAgent(ABC):
         ]
         tool_schemas = self._get_tool_schemas()
         limit = self.max_iterations
+
+        # Failure tracking: (tool_name, error_message) → consecutive count
+        _last_failure_key: tuple[str, str] | None = None
+        _consecutive_failures: int = 0
+        _MAX_CONSECUTIVE_FAILURES = 3
 
         for iteration in range(limit):
             self._logger.debug("ReAct iteration %d/%d", iteration + 1, limit)
@@ -244,6 +253,37 @@ class BaseAgent(ABC):
                     )
                 )
                 tool_result = await self._execute_tool(action.tool_call)
+
+                # Track consecutive failures for the same tool+error
+                is_failure = tool_result.startswith(("Error:", "Tool '")) and "failed" in tool_result
+                if is_failure:
+                    failure_key = (action.tool_call.name, tool_result)
+                    if failure_key == _last_failure_key:
+                        _consecutive_failures += 1
+                    else:
+                        _last_failure_key = failure_key
+                        _consecutive_failures = 1
+
+                    if _consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                        self._logger.warning(
+                            "Tool '%s' failed %d times with same error — injecting skip directive",
+                            action.tool_call.name,
+                            _consecutive_failures,
+                        )
+                        tool_result += (
+                            f"\n\n[SYSTEM] Tool '{action.tool_call.name}' has failed "
+                            f"{_consecutive_failures} consecutive times with the same error. "
+                            "Stop retrying this tool and move on to the next item in your "
+                            "checklist. Mark this attempt as failed and proceed."
+                        )
+                        # Reset so we can detect a new loop on a different tool
+                        _last_failure_key = None
+                        _consecutive_failures = 0
+                else:
+                    # Success — reset failure tracking
+                    _last_failure_key = None
+                    _consecutive_failures = 0
+
                 self.messages.append(
                     LLMMessage(
                         role="tool",

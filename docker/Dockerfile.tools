@@ -30,6 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Python (wafw00f)
     python3 \
     python3-pip \
+    # Wordlists
+    seclists \
     # Build / utility
     git \
     ca-certificates \
@@ -53,8 +55,5 @@ RUN pip3 install --no-cache-dir --break-system-packages wafw00f
 
 # Update nuclei templates (best-effort; skip if no network at build time)
 RUN nuclei -update-templates -silent || true
-
-# Install SecLists for ffuf wordlists
-RUN git clone --depth 1 https://github.com/danielmiessler/SecLists.git /usr/share/seclists
 
 WORKDIR /workspace
