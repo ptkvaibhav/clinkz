@@ -39,6 +39,7 @@ from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.config import settings
 from clinkz.credentials.store import CredentialStore
+from clinkz.knowledge.query import KnowledgeBase
 from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.llm.factory import get_llm_client
 from clinkz.models.scope import EngagementScope
@@ -136,12 +137,17 @@ class OrchestratorAgent:
                 scope.name, scope.model_dump()
             )
             bus = MessageBus(state=state)
+            knowledge_base = KnowledgeBase()
+            self._logger.info(
+                "KnowledgeBase loaded: %s", knowledge_base.stats()
+            )
             lifecycle = AgentLifecycleManager(
                 bus=bus,
                 llm=self._llm,
                 scope=scope,
                 state=state,
                 engagement_id=engagement_id,
+                knowledge_base=knowledge_base,
             )
             resolver = ToolResolver()
             cred_store = CredentialStore(state)

@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from clinkz.agents.base import BaseAgent
+
+if TYPE_CHECKING:
+    from clinkz.knowledge.query import KnowledgeBase
 from clinkz.llm.base import LLMClient, ToolCall
 from clinkz.models.scope import EngagementScope
 from clinkz.state import StateStore
@@ -113,6 +116,7 @@ class ReconAgent(BaseAgent):
         state: StateStore,
         engagement_id: str,
         resolver: ToolResolver | None = None,
+        knowledge_base: KnowledgeBase | None = None,
     ) -> None:
         super().__init__(
             llm=llm,
@@ -120,6 +124,7 @@ class ReconAgent(BaseAgent):
             scope=scope,
             state=state,
             engagement_id=engagement_id,
+            knowledge_base=knowledge_base,
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
         self._discovered_hosts: list[dict[str, Any]] = []
