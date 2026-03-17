@@ -1,0 +1,1594 @@
+[
+  {
+    "category_id": "INFO",
+    "category_name": "Information Gathering",
+    "tests": [
+      {
+        "id": "WSTG-INFO-01",
+        "name": "Conduct Search Engine Discovery Reconnaissance for Information Leakage",
+        "description": "Use search engines to discover sensitive information about the target that has been indexed, including exposed documents, configuration files, and credentials.",
+        "test_steps": [
+          "Search for site:target.com in Google, Bing, and DuckDuckGo",
+          "Check Google cache and cached versions of discovered pages",
+          "Search for sensitive file types (filetype:pdf, filetype:xls, filetype:doc, filetype:sql)",
+          "Check robots.txt and sitemap.xml for hidden paths",
+          "Search for exposed credentials or configuration files using Google dorks",
+          "Review Shodan and Censys for indexed services"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client"],
+        "severity_if_found": "INFORMATIONAL"
+      },
+      {
+        "id": "WSTG-INFO-02",
+        "name": "Fingerprint Web Server",
+        "description": "Determine the type and version of the web server software running on the target to identify known vulnerabilities and misconfigurations specific to that server.",
+        "test_steps": [
+          "Send HTTP requests and analyze Server response headers",
+          "Analyze HTTP response header ordering and default error pages",
+          "Use automated fingerprinting tools to identify server version",
+          "Send malformed requests to trigger revealing error messages",
+          "Compare responses against known server signature databases"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["whatweb", "nmap", "http_client"],
+        "severity_if_found": "INFORMATIONAL"
+      },
+      {
+        "id": "WSTG-INFO-03",
+        "name": "Review Webserver Metafiles for Information Leakage",
+        "description": "Analyze webserver metafiles such as robots.txt, sitemap.xml, and security.txt to discover hidden directories, sensitive paths, and application structure.",
+        "test_steps": [
+          "Retrieve and analyze robots.txt for disallowed paths",
+          "Retrieve and parse sitemap.xml for complete URL listing",
+          "Check for .well-known/security.txt and humans.txt",
+          "Look for META tags in HTML source that reveal application info",
+          "Check for crossdomain.xml and clientaccesspolicy.xml"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "katana"],
+        "severity_if_found": "INFORMATIONAL"
+      },
+      {
+        "id": "WSTG-INFO-04",
+        "name": "Enumerate Applications on Webserver",
+        "description": "Discover all web applications hosted on the target web server, including those on non-standard ports, virtual hosts, and hidden paths.",
+        "test_steps": [
+          "Scan for web applications on different ports using port scanning",
+          "Enumerate virtual hosts using DNS brute-forcing and reverse DNS lookups",
+          "Discover applications on non-obvious URL paths via directory brute-forcing",
+          "Check for applications running on subdomains",
+          "Identify different web applications sharing the same server via IP-based enumeration"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["nmap", "ffuf", "katana", "http_client"],
+        "severity_if_found": "INFORMATIONAL"
+      },
+      {
+        "id": "WSTG-INFO-05",
+        "name": "Review Webpage Content for Information Leakage",
+        "description": "Analyze webpage source code and content for comments, metadata, and other information that may reveal sensitive details about the application.",
+        "test_steps": [
+          "Review HTML source code for developer comments revealing logic or credentials",
+          "Check for version information in JavaScript files and libraries",
+          "Analyze META tags for framework and CMS information",
+          "Search for hardcoded API keys, tokens, or credentials in client-side code",
+          "Review JavaScript source maps for original source code exposure"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["katana", "http_client"],
+        "severity_if_found": "LOW"
+      },
+      {
+        "id": "WSTG-INFO-06",
+        "name": "Identify Application Entry Points",
+        "description": "Identify all entry points of the application including forms, APIs, file uploads, and any other input mechanisms that accept user data.",
+        "test_steps": [
+          "Crawl the application to map all pages and forms",
+          "Identify all HTTP methods accepted by each endpoint",
+          "Map all parameters (GET, POST, headers, cookies) for each entry point",
+          "Identify file upload functionalities and their accepted types",
+          "Document API endpoints and their input parameters",
+          "Identify WebSocket and other non-HTTP entry points"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["katana", "ffuf", "http_client", "burp"],
+        "severity_if_found": "INFORMATIONAL"
+      },
+      {
+        "id": "WSTG-INFO-07",
+        "name": "Map Execution Paths Through Application",
+        "description": "Map the execution paths through the application to understand the application's workflow, business logic, and data flow between components.",
+        "test_steps": [
+          "Crawl the application and map all navigational paths",
+          "Identify multi-step processes and their required sequences",
+          "Map authentication and authorization decision points",
+          "Document data flow between client and server components",
+          "Identify conditional paths based on user roles or input"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["katana", "burp", "http_client"],
+        "severity_if_found": "INFORMATIONAL"
+      },
+      {
+        "id": "WSTG-INFO-08",
+        "name": "Fingerprint Web Application Framework",
+        "description": "Identify the web application framework and its version to discover known vulnerabilities and default configurations specific to that framework.",
+        "test_steps": [
+          "Analyze HTTP response headers for framework-specific headers (X-Powered-By, X-AspNet-Version)",
+          "Check for framework-specific cookies and cookie naming conventions",
+          "Identify default files and directory structures specific to frameworks",
+          "Analyze HTML source for framework-specific patterns and tags",
+          "Use automated fingerprinting tools to identify framework and version"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["whatweb", "http_client", "nuclei"],
+        "severity_if_found": "INFORMATIONAL"
+      },
+      {
+        "id": "WSTG-INFO-09",
+        "name": "Fingerprint Web Application",
+        "description": "Identify the specific web application (CMS, e-commerce platform, wiki, etc.) running on the target to determine known vulnerabilities and attack vectors.",
+        "test_steps": [
+          "Check for application-specific default pages and admin panels",
+          "Analyze HTML source for application-specific markers and comments",
+          "Identify application by its CSS, JavaScript, and image file paths",
+          "Check for application-specific files (wp-login.php, administrator/index.php)",
+          "Use automated CMS detection tools to identify the application"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["whatweb", "nuclei", "http_client"],
+        "severity_if_found": "INFORMATIONAL"
+      },
+      {
+        "id": "WSTG-INFO-10",
+        "name": "Map Application Architecture",
+        "description": "Understand the overall architecture of the application including network topology, server infrastructure, load balancers, firewalls, and backend components.",
+        "test_steps": [
+          "Identify load balancers and reverse proxies via response header analysis",
+          "Detect WAF presence using WAF detection tools",
+          "Map network infrastructure using traceroute and DNS analysis",
+          "Identify backend databases and application servers from error messages",
+          "Document CDN usage and caching infrastructure",
+          "Identify microservice architecture patterns from API responses"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["nmap", "wafw00f", "whatweb", "http_client"],
+        "severity_if_found": "INFORMATIONAL"
+      }
+    ]
+  },
+  {
+    "category_id": "CONF",
+    "category_name": "Configuration and Deployment Management Testing",
+    "tests": [
+      {
+        "id": "WSTG-CONF-01",
+        "name": "Test Network Infrastructure Configuration",
+        "description": "Review the network infrastructure configuration for known vulnerabilities, unnecessary services, and default settings that could be exploited.",
+        "test_steps": [
+          "Scan for open ports and running services on the target",
+          "Check for unnecessary services and default installations",
+          "Verify administrative interfaces are not publicly accessible",
+          "Test for known vulnerabilities in identified network services",
+          "Review firewall rules and network segmentation"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["nmap", "nuclei"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CONF-02",
+        "name": "Test Application Platform Configuration",
+        "description": "Review the application platform configuration including web server, application server, and database server for security misconfigurations.",
+        "test_steps": [
+          "Check for default credentials on application platforms",
+          "Verify unnecessary HTTP methods are disabled (TRACE, PUT, DELETE)",
+          "Check directory listing is disabled",
+          "Review server configuration for information leakage",
+          "Test for platform-specific vulnerabilities and misconfigurations"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["nikto", "nmap", "http_client", "nuclei"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CONF-03",
+        "name": "Test File Extensions Handling for Sensitive Information",
+        "description": "Determine how the web server handles different file extensions and whether sensitive backup or configuration files can be accessed.",
+        "test_steps": [
+          "Test for backup file extensions (.bak, .old, .orig, .copy, .tmp)",
+          "Request files with common source code extensions (.java, .py, .php~)",
+          "Check for configuration file extensions (.conf, .cfg, .ini, .xml)",
+          "Test for compressed archive files (.zip, .tar.gz, .rar)",
+          "Verify the server properly handles unknown file extensions"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["ffuf", "nikto", "http_client"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CONF-04",
+        "name": "Review Old Backup and Unreferenced Files for Sensitive Information",
+        "description": "Find and examine backup files, unreferenced files, and old versions that may contain sensitive information or source code.",
+        "test_steps": [
+          "Brute-force common backup file names and paths",
+          "Check for version control metadata directories (.git, .svn, .hg)",
+          "Test for editor backup files (.swp, .swo, ~)",
+          "Look for database dump files and SQL backups",
+          "Search for log files accessible via the web server",
+          "Check for deployment artifacts and build files"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["ffuf", "nikto", "http_client", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CONF-05",
+        "name": "Enumerate Infrastructure and Application Admin Interfaces",
+        "description": "Identify administrative interfaces for the infrastructure and application that could provide elevated access if compromised.",
+        "test_steps": [
+          "Brute-force common admin paths (/admin, /manager, /console, /phpmyadmin)",
+          "Check for admin interfaces on non-standard ports",
+          "Search for administrative interfaces referenced in robots.txt or sitemap",
+          "Test for default credentials on discovered admin panels",
+          "Verify admin interfaces require strong authentication"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["ffuf", "nikto", "nuclei", "http_client"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CONF-06",
+        "name": "Test HTTP Methods",
+        "description": "Enumerate the HTTP methods supported by the web server and application to identify potentially dangerous methods that could be exploited.",
+        "test_steps": [
+          "Send OPTIONS request to enumerate supported methods",
+          "Test for TRACE method to check for cross-site tracing",
+          "Test PUT and DELETE methods for arbitrary file upload/deletion",
+          "Check for WebDAV methods (PROPFIND, MKCOL, COPY, MOVE)",
+          "Verify methods are consistently restricted across all endpoints"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "nmap", "nikto"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CONF-07",
+        "name": "Test HTTP Strict Transport Security",
+        "description": "Verify that the application properly implements HTTP Strict Transport Security (HSTS) to prevent protocol downgrade attacks and cookie hijacking.",
+        "test_steps": [
+          "Check for the Strict-Transport-Security response header",
+          "Verify HSTS max-age is sufficiently long (at least 31536000 seconds)",
+          "Check if includeSubDomains directive is present",
+          "Verify the preload directive is set if applicable",
+          "Test if the application redirects HTTP to HTTPS before setting HSTS"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "sslyze", "testssl"],
+        "severity_if_found": "LOW"
+      },
+      {
+        "id": "WSTG-CONF-08",
+        "name": "Test RIA Cross Domain Policy",
+        "description": "Review Rich Internet Application cross-domain policy files to ensure they do not grant overly permissive access to external domains.",
+        "test_steps": [
+          "Retrieve and analyze crossdomain.xml for Flash policies",
+          "Retrieve and analyze clientaccesspolicy.xml for Silverlight policies",
+          "Check for overly permissive allow-access-from domains (wildcard *)",
+          "Verify CORS headers are not overly permissive",
+          "Test if cross-domain policies expose sensitive endpoints"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "nuclei"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CONF-09",
+        "name": "Test File Permission",
+        "description": "Verify that file permissions on the web server are configured correctly to prevent unauthorized access to sensitive files and directories.",
+        "test_steps": [
+          "Check for world-readable sensitive files (configuration, logs, databases)",
+          "Verify web server process runs with minimal privileges",
+          "Test for directory traversal to access files outside web root",
+          "Check upload directories for execute permissions",
+          "Verify temporary files are properly protected"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "nikto", "ffuf"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CONF-10",
+        "name": "Test for Subdomain Takeover",
+        "description": "Identify subdomains that point to external services that are no longer active, which could allow an attacker to claim the subdomain.",
+        "test_steps": [
+          "Enumerate all subdomains of the target domain",
+          "Check DNS CNAME records for subdomains pointing to external services",
+          "Verify if the external service endpoint is still claimed by the target",
+          "Test for dangling DNS records pointing to deprovisioned cloud resources",
+          "Check for expired or unclaimed third-party service registrations"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["nmap", "http_client", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CONF-11",
+        "name": "Test Cloud Storage",
+        "description": "Identify and test cloud storage resources (S3 buckets, Azure blobs, GCP buckets) associated with the target for misconfigurations and unauthorized access.",
+        "test_steps": [
+          "Enumerate cloud storage bucket names associated with the target",
+          "Test for publicly listable bucket contents",
+          "Test for publicly readable objects in storage buckets",
+          "Test for publicly writable storage buckets",
+          "Check for sensitive data exposure in public cloud storage",
+          "Verify bucket policies and access control lists"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "nuclei"],
+        "severity_if_found": "HIGH"
+      }
+    ]
+  },
+  {
+    "category_id": "IDNT",
+    "category_name": "Identity Management Testing",
+    "tests": [
+      {
+        "id": "WSTG-IDNT-01",
+        "name": "Test Role Definitions",
+        "description": "Verify that user roles are clearly defined with appropriate access permissions and that privilege escalation between roles is not possible.",
+        "test_steps": [
+          "Enumerate all defined user roles in the application",
+          "Map permissions and accessible resources for each role",
+          "Verify role hierarchy is properly enforced",
+          "Test for horizontal privilege escalation between same-level roles",
+          "Check for undocumented or hidden roles with elevated privileges"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-IDNT-02",
+        "name": "Test User Registration Process",
+        "description": "Analyze the user registration process for vulnerabilities including identity spoofing, duplicate registrations, and information disclosure.",
+        "test_steps": [
+          "Test if registration can be completed with duplicate usernames or emails",
+          "Check for user enumeration via registration error messages",
+          "Verify email/identity verification is required before account activation",
+          "Test registration with malicious input (XSS, SQL injection payloads)",
+          "Check for rate limiting on the registration endpoint"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "ffuf"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-IDNT-03",
+        "name": "Test Account Provisioning Process",
+        "description": "Review the account provisioning and deprovisioning process to ensure accounts are created, modified, and deleted securely.",
+        "test_steps": [
+          "Verify account provisioning requires proper authorization",
+          "Check if deprovisioned accounts are fully deactivated",
+          "Test for residual data after account deprovisioning",
+          "Verify provisioning process enforces required security controls",
+          "Check if accounts can be provisioned with elevated privileges without authorization"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-IDNT-04",
+        "name": "Testing for Account Enumeration and Guessable User Account",
+        "description": "Determine whether it is possible to enumerate valid usernames or accounts through different application responses to valid and invalid credentials.",
+        "test_steps": [
+          "Test login form responses for differences between valid and invalid usernames",
+          "Check password reset functionality for user enumeration",
+          "Analyze registration form for username existence disclosure",
+          "Compare HTTP response codes, timing, and content length for valid vs invalid users",
+          "Test for user enumeration via API endpoints",
+          "Check for predictable username patterns (admin, user1, user2)"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["ffuf", "http_client", "burp", "hydra"],
+        "severity_if_found": "LOW"
+      },
+      {
+        "id": "WSTG-IDNT-05",
+        "name": "Testing for Weak or Unenforced Username Policy",
+        "description": "Assess the username policy to ensure it prevents creation of easily guessable or weak usernames and enforces proper naming conventions.",
+        "test_steps": [
+          "Test registration with very short usernames (single character)",
+          "Test for usernames with special characters and encoding issues",
+          "Verify minimum username length requirements",
+          "Check if common default usernames are blocked (admin, test, root)",
+          "Test for case sensitivity issues in usernames"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "LOW"
+      }
+    ]
+  },
+  {
+    "category_id": "ATHN",
+    "category_name": "Authentication Testing",
+    "tests": [
+      {
+        "id": "WSTG-ATHN-01",
+        "name": "Testing for Credentials Transported over an Encrypted Channel",
+        "description": "Verify that user credentials are always transmitted over an encrypted channel (HTTPS/TLS) and never sent in plaintext.",
+        "test_steps": [
+          "Check if the login page is served over HTTPS",
+          "Verify the login form submits credentials over HTTPS",
+          "Test for HTTP to HTTPS redirect before credential submission",
+          "Check for mixed content on authentication pages",
+          "Verify API authentication endpoints enforce TLS"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["sslyze", "testssl", "http_client"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-ATHN-02",
+        "name": "Testing for Default Credentials",
+        "description": "Test for default credentials on the application, administrative interfaces, and supporting infrastructure components.",
+        "test_steps": [
+          "Test common default username/password combinations on login forms",
+          "Check for default credentials on discovered admin interfaces",
+          "Test default credentials for identified frameworks and platforms",
+          "Verify database and infrastructure services are not using defaults",
+          "Check for hardcoded credentials in publicly accessible files"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["hydra", "nuclei", "http_client"],
+        "severity_if_found": "CRITICAL"
+      },
+      {
+        "id": "WSTG-ATHN-03",
+        "name": "Testing for Weak Lock Out Mechanism",
+        "description": "Evaluate the account lockout mechanism to determine if it effectively prevents brute-force attacks while avoiding denial of service to legitimate users.",
+        "test_steps": [
+          "Attempt multiple failed logins to determine lockout threshold",
+          "Measure lockout duration and reset behavior",
+          "Test if lockout applies consistently across all authentication endpoints",
+          "Check if account lockout can be used for denial of service",
+          "Verify lockout notifications are sent to account owners",
+          "Test for CAPTCHA or progressive delays as alternative mechanisms"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["hydra", "http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-ATHN-04",
+        "name": "Testing for Bypassing Authentication Schema",
+        "description": "Attempt to bypass the authentication mechanism by direct page requests, parameter modification, session ID prediction, or SQL injection.",
+        "test_steps": [
+          "Attempt to access protected pages directly without authentication",
+          "Modify authentication parameters or tokens to bypass checks",
+          "Test for forced browsing to authenticated resources",
+          "Check for authentication bypass via parameter pollution",
+          "Test for SQL injection in authentication fields",
+          "Attempt to replay authentication tokens or session IDs"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "sqlmap", "burp", "nuclei"],
+        "severity_if_found": "CRITICAL"
+      },
+      {
+        "id": "WSTG-ATHN-05",
+        "name": "Testing for Vulnerable Remember Password",
+        "description": "Analyze the remember password/remember me functionality for vulnerabilities that could allow credential theft or session hijacking.",
+        "test_steps": [
+          "Check if remember-me tokens are stored securely in cookies",
+          "Verify remember-me tokens are not predictable or guessable",
+          "Test if remember-me functionality persists after password change",
+          "Check if credentials are stored in browser autocomplete-friendly fields",
+          "Verify remember-me tokens expire after a reasonable period"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-ATHN-06",
+        "name": "Testing for Browser Cache Weaknesses",
+        "description": "Verify that the application properly instructs browsers not to cache sensitive authentication data including credentials and session tokens.",
+        "test_steps": [
+          "Check Cache-Control and Pragma headers on authentication pages",
+          "Verify sensitive pages include no-store and no-cache directives",
+          "Test if credentials are cached in browser history after form submission",
+          "Check for autocomplete attributes on password fields",
+          "Verify back button does not reveal authenticated content after logout"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "LOW"
+      },
+      {
+        "id": "WSTG-ATHN-07",
+        "name": "Testing for Weak Password Policy",
+        "description": "Evaluate the password policy to ensure it requires sufficiently complex passwords and prevents the use of common or easily guessable passwords.",
+        "test_steps": [
+          "Test minimum and maximum password length requirements",
+          "Verify complexity requirements (uppercase, lowercase, numbers, special characters)",
+          "Test if common passwords from well-known wordlists are accepted",
+          "Check if password history is enforced to prevent reuse",
+          "Verify password policy is consistently enforced across all password change mechanisms"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-ATHN-08",
+        "name": "Testing for Weak Security Question Answer",
+        "description": "Evaluate security questions used for account recovery or additional authentication for weaknesses that could allow an attacker to guess or research the answers.",
+        "test_steps": [
+          "Review the security questions offered for guessability",
+          "Test if security question answers are case-sensitive",
+          "Check if answers can be brute-forced without lockout",
+          "Verify security questions cannot be changed without re-authentication",
+          "Test for self-chosen questions that may be trivially answerable"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-ATHN-09",
+        "name": "Testing for Weak Password Change or Reset Functionality",
+        "description": "Evaluate password change and reset mechanisms for vulnerabilities including token predictability, lack of expiration, and missing old password verification.",
+        "test_steps": [
+          "Test if password change requires the current password",
+          "Verify password reset tokens are random and unpredictable",
+          "Check if password reset tokens expire within a reasonable time",
+          "Test for user enumeration through the password reset process",
+          "Verify password reset invalidates existing sessions",
+          "Test if reset links can be reused after password change"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-ATHN-10",
+        "name": "Testing for Weaker Authentication in Alternative Channel",
+        "description": "Identify alternative authentication channels (mobile app, API, call center) and verify they enforce the same security controls as the primary channel.",
+        "test_steps": [
+          "Identify all authentication channels (web, mobile, API, legacy endpoints)",
+          "Compare authentication strength across all channels",
+          "Test for weaker lockout policies on alternative channels",
+          "Check if alternative channels support MFA consistently",
+          "Verify password policies are enforced across all channels"
+        ],
+        "applicable_to": ["web", "api", "mobile_web"],
+        "tools": ["http_client", "burp", "nmap"],
+        "severity_if_found": "MEDIUM"
+      }
+    ]
+  },
+  {
+    "category_id": "ATHZ",
+    "category_name": "Authorization Testing",
+    "tests": [
+      {
+        "id": "WSTG-ATHZ-01",
+        "name": "Testing Directory Traversal File Include",
+        "description": "Test for directory traversal and file inclusion vulnerabilities that could allow unauthorized access to files and directories outside the web root.",
+        "test_steps": [
+          "Test URL parameters with directory traversal sequences (../, ..\\)",
+          "Attempt to read sensitive system files (/etc/passwd, win.ini)",
+          "Test for local file inclusion (LFI) in include/template parameters",
+          "Test for remote file inclusion (RFI) with external URLs",
+          "Use encoding techniques to bypass traversal filters (URL encoding, double encoding, null bytes)",
+          "Test file path parameters in API endpoints"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["ffuf", "http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-ATHZ-02",
+        "name": "Testing for Bypassing Authorization Schema",
+        "description": "Test whether authorization controls can be bypassed to access resources or functionality belonging to other users or higher privilege levels.",
+        "test_steps": [
+          "Access resources belonging to other users by changing identifiers (IDOR)",
+          "Test horizontal privilege escalation by switching user context",
+          "Test vertical privilege escalation by accessing admin functions as regular user",
+          "Attempt to access API endpoints without proper authorization tokens",
+          "Test for missing function-level access control on sensitive operations",
+          "Modify role or group parameters in requests to elevate privileges"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "CRITICAL"
+      },
+      {
+        "id": "WSTG-ATHZ-03",
+        "name": "Testing for Privilege Escalation",
+        "description": "Test whether an authenticated user can escalate their privileges to gain unauthorized access to higher-level functions or other users' data.",
+        "test_steps": [
+          "Map accessible functionality for each user role",
+          "Attempt to access higher-privileged functions with lower-privileged accounts",
+          "Test for IDOR in resource identifiers (user IDs, document IDs)",
+          "Modify user role parameters in requests (role=admin, isAdmin=true)",
+          "Test API endpoints for missing authorization checks on state-changing operations"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "CRITICAL"
+      },
+      {
+        "id": "WSTG-ATHZ-04",
+        "name": "Testing for Insecure Direct Object References",
+        "description": "Test for insecure direct object references (IDOR) where user-supplied input is used to directly access objects without proper authorization checks.",
+        "test_steps": [
+          "Identify parameters referencing internal objects (IDs, filenames, keys)",
+          "Modify object reference parameters to access other users' resources",
+          "Test with sequential IDs, UUIDs, and encoded references",
+          "Check for authorization bypass in file download and API endpoints",
+          "Test mass assignment vulnerabilities in object update operations"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "ffuf"],
+        "severity_if_found": "HIGH"
+      }
+    ]
+  },
+  {
+    "category_id": "SESS",
+    "category_name": "Session Management Testing",
+    "tests": [
+      {
+        "id": "WSTG-SESS-01",
+        "name": "Testing for Session Management Schema",
+        "description": "Analyze the session management implementation to ensure session tokens are generated, transmitted, and stored securely throughout their lifecycle.",
+        "test_steps": [
+          "Analyze session token format, length, and randomness",
+          "Check if session tokens are transmitted via secure cookies",
+          "Verify session cookies have Secure, HttpOnly, and SameSite flags",
+          "Test session token entropy and predictability",
+          "Verify session tokens are not exposed in URLs or logs"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-SESS-02",
+        "name": "Testing for Cookies Attributes",
+        "description": "Verify that session cookies are configured with proper security attributes to prevent interception, theft, and unauthorized access.",
+        "test_steps": [
+          "Check for Secure flag on all session cookies",
+          "Check for HttpOnly flag to prevent JavaScript access",
+          "Verify SameSite attribute is set to Strict or Lax",
+          "Check cookie Domain and Path scope for over-broad settings",
+          "Verify cookie expiration is appropriately configured",
+          "Test for sensitive data stored in cookies"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-SESS-03",
+        "name": "Testing for Session Fixation",
+        "description": "Test whether the application is vulnerable to session fixation attacks where an attacker can force a known session ID onto a user.",
+        "test_steps": [
+          "Obtain a session token before authentication",
+          "Authenticate and check if the session token changes",
+          "Test if a pre-set session token is accepted by the application",
+          "Check if session tokens can be set via URL parameters",
+          "Verify the application generates a new session after login"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-SESS-04",
+        "name": "Testing for Exposed Session Variables",
+        "description": "Determine if session tokens or sensitive session data are exposed through URLs, logs, error messages, or other client-accessible mechanisms.",
+        "test_steps": [
+          "Check if session IDs appear in URLs or query strings",
+          "Verify session tokens are not logged in access logs",
+          "Test for session token exposure in Referer headers",
+          "Check if session data is exposed in client-side storage (localStorage, sessionStorage)",
+          "Verify sensitive session variables are not cached by browsers or proxies"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-SESS-05",
+        "name": "Testing for Cross Site Request Forgery",
+        "description": "Test whether the application is vulnerable to CSRF attacks that could allow an attacker to perform unauthorized actions on behalf of authenticated users.",
+        "test_steps": [
+          "Identify state-changing operations (form submissions, API calls)",
+          "Check for anti-CSRF tokens in forms and AJAX requests",
+          "Test if anti-CSRF tokens are properly validated server-side",
+          "Check for SameSite cookie attribute as CSRF mitigation",
+          "Attempt to forge requests to state-changing endpoints without valid CSRF tokens",
+          "Test if CSRF tokens are tied to the user session"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-SESS-06",
+        "name": "Testing for Logout Functionality",
+        "description": "Verify that the logout function properly terminates the user session and invalidates all associated tokens both client-side and server-side.",
+        "test_steps": [
+          "Capture session token before logout",
+          "Perform logout and verify session cookie is cleared",
+          "Attempt to access protected resources using the captured session token",
+          "Verify server-side session is invalidated on logout",
+          "Check for single sign-out in SSO environments"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-SESS-07",
+        "name": "Testing Session Timeout",
+        "description": "Verify that sessions expire after an appropriate period of inactivity to minimize the window for session hijacking.",
+        "test_steps": [
+          "Determine the session idle timeout by waiting and re-accessing protected resources",
+          "Verify absolute session timeout is configured regardless of activity",
+          "Test if session timeout is enforced server-side, not just client-side",
+          "Check if concurrent sessions are limited per user",
+          "Verify expired sessions cannot be reused"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "LOW"
+      },
+      {
+        "id": "WSTG-SESS-08",
+        "name": "Testing for Session Puzzling",
+        "description": "Test for session variable overloading where the same session variable is used for different purposes across multiple application flows, potentially leading to authentication bypass.",
+        "test_steps": [
+          "Map all application flows that modify session variables",
+          "Identify session variables shared between different flows",
+          "Test if accessing one flow affects the session state of another",
+          "Attempt to bypass authentication by manipulating shared session variables",
+          "Check for race conditions in session variable updates"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-SESS-09",
+        "name": "Testing for Session Hijacking",
+        "description": "Test the application's resistance to session hijacking attacks where an attacker takes over a legitimate user's session through token theft or prediction.",
+        "test_steps": [
+          "Analyze session token randomness and unpredictability",
+          "Test for session token prediction by collecting and analyzing multiple tokens",
+          "Check if session tokens are transmitted only over encrypted channels",
+          "Verify session is bound to client characteristics (IP, User-Agent)",
+          "Test for session token theft via XSS, network sniffing, or log exposure"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "sslyze"],
+        "severity_if_found": "HIGH"
+      }
+    ]
+  },
+  {
+    "category_id": "INPV",
+    "category_name": "Input Validation Testing",
+    "tests": [
+      {
+        "id": "WSTG-INPV-01",
+        "name": "Testing for Reflected Cross Site Scripting",
+        "description": "Test for reflected XSS vulnerabilities where user-supplied input is immediately returned in the server response without proper sanitization.",
+        "test_steps": [
+          "Identify all parameters reflected in application responses",
+          "Inject basic XSS payloads (<script>alert(1)</script>) in reflected parameters",
+          "Test with encoding variations to bypass input filters",
+          "Test XSS in HTTP headers reflected in responses",
+          "Verify both GET and POST parameters for reflected XSS",
+          "Test for DOM-based reflection through server responses"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["nuclei", "http_client", "burp", "ffuf"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-02",
+        "name": "Testing for Stored Cross Site Scripting",
+        "description": "Test for stored XSS vulnerabilities where malicious input is permanently stored on the server and served to other users viewing the affected content.",
+        "test_steps": [
+          "Identify all input fields that store data (comments, profiles, messages)",
+          "Inject XSS payloads into stored data fields",
+          "Verify if payloads execute when content is viewed by other users",
+          "Test rich text editors and file upload names for stored XSS",
+          "Check for XSS in administrative views of user-submitted data",
+          "Test SVG and HTML file uploads for stored XSS"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["nuclei", "http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-03",
+        "name": "Testing for HTTP Verb Tampering",
+        "description": "Test whether the application properly validates HTTP methods and whether security controls can be bypassed by using unexpected HTTP verbs.",
+        "test_steps": [
+          "Test accessing protected resources with different HTTP methods (GET, POST, PUT, HEAD)",
+          "Send requests with arbitrary HTTP verbs to bypass security filters",
+          "Test if method override headers (X-HTTP-Method-Override) bypass controls",
+          "Verify authorization checks are method-agnostic",
+          "Check for REST API method confusion (GET vs POST for state changes)"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-INPV-04",
+        "name": "Testing for HTTP Parameter Pollution",
+        "description": "Test for HTTP parameter pollution vulnerabilities where duplicate parameters are handled inconsistently to bypass security controls or alter application logic.",
+        "test_steps": [
+          "Send requests with duplicate parameters containing different values",
+          "Test parameter pollution across different HTTP methods",
+          "Check if WAF/security filters can be bypassed via parameter pollution",
+          "Test for server-side parameter precedence issues",
+          "Verify parameter handling consistency between frontend and backend"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-INPV-05",
+        "name": "Testing for SQL Injection",
+        "description": "Test for SQL injection vulnerabilities that could allow an attacker to interact with the application's database, potentially reading, modifying, or deleting data.",
+        "test_steps": [
+          "Identify all input parameters that may interact with databases",
+          "Test for error-based SQL injection using single quotes and syntax errors",
+          "Test for blind SQL injection using boolean-based and time-based techniques",
+          "Test UNION-based SQL injection to extract data from other tables",
+          "Test for second-order SQL injection in stored data",
+          "Use automated tools to comprehensively test all injection points"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["sqlmap", "nuclei", "http_client", "burp"],
+        "severity_if_found": "CRITICAL"
+      },
+      {
+        "id": "WSTG-INPV-06",
+        "name": "Testing for LDAP Injection",
+        "description": "Test for LDAP injection vulnerabilities in applications that construct LDAP queries using user-supplied input.",
+        "test_steps": [
+          "Identify input fields that may interact with LDAP directories",
+          "Inject LDAP metacharacters (*, (, ), \\, NUL) into input fields",
+          "Test for LDAP injection in authentication mechanisms",
+          "Attempt to modify LDAP queries to bypass access controls",
+          "Test for information disclosure through LDAP error messages"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-07",
+        "name": "Testing for XML Injection",
+        "description": "Test for XML injection vulnerabilities where user input is incorporated into XML documents without proper sanitization, potentially altering document structure.",
+        "test_steps": [
+          "Identify endpoints that accept XML input",
+          "Inject XML metacharacters to alter document structure",
+          "Test for XML external entity (XXE) injection",
+          "Test for XML entity expansion (billion laughs) denial of service",
+          "Check for XPath injection in XML processing",
+          "Test SOAP endpoints for XML injection"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-08",
+        "name": "Testing for SSI Injection",
+        "description": "Test for Server-Side Include (SSI) injection vulnerabilities where user input is processed by SSI directives on the web server.",
+        "test_steps": [
+          "Identify if the web server supports SSI processing",
+          "Inject SSI directives (<!--#exec cmd=\"id\"--> ) in input fields",
+          "Test for SSI injection in file upload functionality",
+          "Check for SSI processing in user-controlled content areas",
+          "Test for command execution through SSI directives"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-09",
+        "name": "Testing for XPath Injection",
+        "description": "Test for XPath injection vulnerabilities in applications that use XPath queries to navigate XML documents based on user-supplied input.",
+        "test_steps": [
+          "Identify input fields used in XML/XPath-based queries",
+          "Inject XPath syntax characters (' , \") to trigger errors",
+          "Test for authentication bypass using XPath injection (string='or '1'='1)",
+          "Attempt to extract XML document contents via XPath injection",
+          "Test for blind XPath injection using boolean conditions"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-10",
+        "name": "Testing for IMAP SMTP Injection",
+        "description": "Test for email header injection and IMAP/SMTP command injection in application features that interact with mail servers.",
+        "test_steps": [
+          "Identify functionality that sends or processes emails (contact forms, registration)",
+          "Inject SMTP header separators (\\r\\n) in email-related fields",
+          "Test for additional recipient injection (CC, BCC)",
+          "Test IMAP command injection in webmail-type applications",
+          "Check for email content injection and mail relay abuse"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-INPV-11",
+        "name": "Testing for Code Injection",
+        "description": "Test for server-side code injection vulnerabilities where user input is evaluated as code by the application runtime.",
+        "test_steps": [
+          "Identify parameters that may be passed to eval() or similar functions",
+          "Inject language-specific code payloads (PHP, Python, Node.js, Ruby)",
+          "Test for template injection in server-side template engines",
+          "Check for code execution through deserialization of user input",
+          "Test file upload functionality for executable code injection",
+          "Verify input validation prevents code execution patterns"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["nuclei", "http_client", "burp"],
+        "severity_if_found": "CRITICAL"
+      },
+      {
+        "id": "WSTG-INPV-12",
+        "name": "Testing for Command Injection",
+        "description": "Test for OS command injection vulnerabilities where user input is passed to system shell commands without proper sanitization.",
+        "test_steps": [
+          "Identify parameters passed to system commands (ping, traceroute, file ops)",
+          "Inject command separators (; | & || && \\n) with additional commands",
+          "Test for blind command injection using time delays (sleep, ping -c)",
+          "Test for out-of-band command injection (DNS, HTTP callbacks)",
+          "Test with encoding and escaping to bypass input filters",
+          "Verify command injection in file upload filenames and paths"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["nuclei", "http_client", "burp"],
+        "severity_if_found": "CRITICAL"
+      },
+      {
+        "id": "WSTG-INPV-13",
+        "name": "Testing for Format String Injection",
+        "description": "Test for format string vulnerabilities where user-supplied input is used as a format string parameter in functions like printf().",
+        "test_steps": [
+          "Identify input fields that may be processed by format string functions",
+          "Inject format string specifiers (%s, %x, %n, %p) in input fields",
+          "Monitor application responses for memory disclosure or crashes",
+          "Test for format string injection in logging mechanisms",
+          "Verify the application does not pass user input as format strings"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-14",
+        "name": "Testing for Incubated Vulnerability",
+        "description": "Test for incubated (second-order) vulnerabilities where malicious input is stored and later executed in a different context or by a different function.",
+        "test_steps": [
+          "Identify stored input that is used in different application contexts",
+          "Inject payloads in registration/profile data that may be processed later",
+          "Test for second-order SQL injection through stored data",
+          "Check for stored XSS that triggers in admin or reporting interfaces",
+          "Test file uploads that are processed asynchronously by backend services"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "sqlmap"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-15",
+        "name": "Testing for HTTP Splitting Smuggling",
+        "description": "Test for HTTP request splitting and smuggling vulnerabilities that exploit differences in how frontend and backend servers parse HTTP requests.",
+        "test_steps": [
+          "Test for HTTP response splitting by injecting CRLF in headers",
+          "Test for HTTP request smuggling using CL.TE and TE.CL techniques",
+          "Inject CRLF sequences in input parameters reflected in headers",
+          "Test for header injection in redirect URLs and cookie values",
+          "Check for differences in Content-Length and Transfer-Encoding handling"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-16",
+        "name": "Testing for HTTP Incoming Requests",
+        "description": "Test how the application handles unexpected or malformed incoming HTTP requests, including oversized headers, malformed URLs, and protocol violations.",
+        "test_steps": [
+          "Send requests with extremely long URLs and headers",
+          "Test with malformed HTTP request syntax",
+          "Send requests with unexpected Content-Type headers",
+          "Test for request smuggling via malformed chunk encoding",
+          "Verify the application handles edge cases in HTTP parsing securely"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-INPV-17",
+        "name": "Testing for Host Header Injection",
+        "description": "Test for host header injection vulnerabilities where the Host header is used in application logic such as password reset links, redirects, or cache keys.",
+        "test_steps": [
+          "Modify the Host header and observe application behavior",
+          "Test for password reset poisoning via manipulated Host header",
+          "Check for cache poisoning using different Host header values",
+          "Test X-Forwarded-Host and X-Host header injection",
+          "Verify the application validates the Host header against an allowlist",
+          "Test for SSRF via Host header manipulation"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-INPV-18",
+        "name": "Testing for Server-Side Template Injection",
+        "description": "Test for server-side template injection (SSTI) vulnerabilities where user input is embedded into server-side templates, potentially leading to remote code execution.",
+        "test_steps": [
+          "Identify input reflected in template-rendered output",
+          "Inject template syntax for common engines ({{7*7}}, ${7*7}, <%= 7*7 %>)",
+          "Determine the template engine from successful math execution",
+          "Escalate from template injection to code execution",
+          "Test for sandbox escape in template engines with restricted contexts",
+          "Check error messages for template engine identification"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["nuclei", "http_client", "burp"],
+        "severity_if_found": "CRITICAL"
+      },
+      {
+        "id": "WSTG-INPV-19",
+        "name": "Testing for Server-Side Request Forgery",
+        "description": "Test for server-side request forgery (SSRF) vulnerabilities where the application can be tricked into making requests to unintended internal or external resources.",
+        "test_steps": [
+          "Identify parameters that accept URLs or hostnames as input",
+          "Test for SSRF by requesting internal resources (127.0.0.1, localhost, internal IPs)",
+          "Attempt to access cloud metadata endpoints (169.254.169.254)",
+          "Test SSRF with various URL schemes (file://, gopher://, dict://)",
+          "Check for blind SSRF using out-of-band detection (DNS, HTTP callbacks)",
+          "Test bypasses for SSRF filters (IP encoding, DNS rebinding, redirects)"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      }
+    ]
+  },
+  {
+    "category_id": "ERRH",
+    "category_name": "Error Handling Testing",
+    "tests": [
+      {
+        "id": "WSTG-ERRH-01",
+        "name": "Testing for Improper Error Handling",
+        "description": "Test for improper error handling that reveals sensitive information such as stack traces, database details, internal paths, or software versions.",
+        "test_steps": [
+          "Trigger application errors with invalid input and observe error responses",
+          "Request non-existent pages and resources to check custom error pages",
+          "Submit unexpected data types and malformed requests",
+          "Check for stack traces, SQL errors, and debug information in responses",
+          "Test different request methods on endpoints to trigger errors",
+          "Verify error messages do not disclose internal architecture details"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "nikto", "nuclei", "burp"],
+        "severity_if_found": "LOW"
+      },
+      {
+        "id": "WSTG-ERRH-02",
+        "name": "Testing for Stack Traces",
+        "description": "Verify that the application does not expose stack traces or detailed debug information to users, which could reveal sensitive internal implementation details.",
+        "test_steps": [
+          "Trigger exceptions through various injection techniques",
+          "Send malformed JSON/XML payloads to trigger parsing errors",
+          "Test API endpoints with unexpected data types and missing parameters",
+          "Check for verbose error modes enabled in production (DEBUG=True)",
+          "Verify custom error handlers mask internal details"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "nikto", "burp"],
+        "severity_if_found": "LOW"
+      }
+    ]
+  },
+  {
+    "category_id": "CRYP",
+    "category_name": "Cryptography Testing",
+    "tests": [
+      {
+        "id": "WSTG-CRYP-01",
+        "name": "Testing for Weak Transport Layer Security",
+        "description": "Assess the TLS/SSL configuration of the server to identify weak protocols, cipher suites, and certificate issues that could compromise transport security.",
+        "test_steps": [
+          "Test for support of deprecated protocols (SSLv2, SSLv3, TLS 1.0, TLS 1.1)",
+          "Enumerate supported cipher suites and identify weak ones",
+          "Check for certificate validity, chain, and trust issues",
+          "Test for known TLS vulnerabilities (BEAST, CRIME, POODLE, Heartbleed, DROWN)",
+          "Verify HSTS and certificate pinning implementation",
+          "Check for proper certificate hostname matching"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["sslyze", "testssl", "nmap"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CRYP-02",
+        "name": "Testing for Padding Oracle",
+        "description": "Test for padding oracle vulnerabilities in applications using block cipher encryption with padding, which could allow decryption of encrypted data.",
+        "test_steps": [
+          "Identify encrypted values in cookies, parameters, and tokens",
+          "Modify ciphertext bytes and observe application error responses",
+          "Look for differences in error responses indicating padding validity",
+          "Test for padding oracle in viewstate, authentication tokens, and session data",
+          "Use automated tools to exploit confirmed padding oracle vulnerabilities"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CRYP-03",
+        "name": "Testing for Sensitive Information Sent via Unencrypted Channels",
+        "description": "Verify that all sensitive data (credentials, personal information, tokens) is transmitted exclusively over encrypted channels.",
+        "test_steps": [
+          "Check if any application pages transmit data over HTTP instead of HTTPS",
+          "Verify login forms and authentication APIs use HTTPS exclusively",
+          "Test for mixed content where secure pages load resources over HTTP",
+          "Check for sensitive data in URL query parameters visible in logs",
+          "Verify API communications enforce TLS for all data exchanges"
+        ],
+        "applicable_to": ["web", "api", "mobile_web"],
+        "tools": ["sslyze", "testssl", "http_client"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CRYP-04",
+        "name": "Testing for Weak Encryption",
+        "description": "Identify the use of weak or obsolete cryptographic algorithms and implementations that could be exploited to compromise data confidentiality or integrity.",
+        "test_steps": [
+          "Identify cryptographic algorithms used by the application",
+          "Check for weak algorithms (MD5, SHA1, DES, RC4, ECB mode)",
+          "Test for insufficient key lengths in encryption implementations",
+          "Verify random number generation uses cryptographically secure sources",
+          "Check for custom or home-grown cryptographic implementations",
+          "Test for cryptographic key exposure in client-side code or configuration"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["sslyze", "testssl", "http_client", "nuclei"],
+        "severity_if_found": "MEDIUM"
+      }
+    ]
+  },
+  {
+    "category_id": "BUSL",
+    "category_name": "Business Logic Testing",
+    "tests": [
+      {
+        "id": "WSTG-BUSL-01",
+        "name": "Test Business Logic Data Validation",
+        "description": "Verify that the application properly validates business logic data to prevent processing of invalid, unexpected, or manipulated data values.",
+        "test_steps": [
+          "Identify business rules governing data input (price ranges, quantities, dates)",
+          "Submit boundary values and out-of-range data for business fields",
+          "Test negative values where only positive are expected (negative prices, quantities)",
+          "Submit data in unexpected formats or types for business-critical fields",
+          "Test for logic bypass by manipulating hidden or calculated fields"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-BUSL-02",
+        "name": "Test Ability to Forge Requests",
+        "description": "Test whether an attacker can forge or manipulate requests to bypass intended business logic flows and achieve unauthorized outcomes.",
+        "test_steps": [
+          "Identify multi-step business processes and their expected sequence",
+          "Attempt to skip intermediate steps in multi-step workflows",
+          "Replay and modify captured legitimate requests",
+          "Test for timestamp and sequence manipulation in business transactions",
+          "Verify server-side validation of all business-critical parameters"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-BUSL-03",
+        "name": "Test Integrity Checks",
+        "description": "Verify that the application enforces integrity checks to prevent unauthorized modification of data during transmission and processing.",
+        "test_steps": [
+          "Modify hidden form fields and verify server-side validation",
+          "Tamper with pricing and quantity data in purchase workflows",
+          "Test for client-side-only validation of critical business data",
+          "Modify API request bodies between steps in multi-step processes",
+          "Check for HMAC or signature validation on sensitive parameters"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-BUSL-04",
+        "name": "Test for Process Timing",
+        "description": "Test whether business processes can be exploited through timing manipulation, including race conditions and time-of-check/time-of-use vulnerabilities.",
+        "test_steps": [
+          "Identify time-sensitive operations (promotions, auctions, one-time-use codes)",
+          "Test race conditions by sending concurrent identical requests",
+          "Exploit TOCTOU vulnerabilities in balance checks and resource allocation",
+          "Test for double-spending in payment and point redemption systems",
+          "Verify atomic operations for critical business transactions"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-BUSL-05",
+        "name": "Test Number of Times a Function Can Be Used Limits",
+        "description": "Verify that business functions with intended usage limits are properly enforced and cannot be used more than the allowed number of times.",
+        "test_steps": [
+          "Identify functions with usage limits (discount codes, free trials, votes)",
+          "Attempt to use limited functions beyond their allowed count",
+          "Test for rate limit bypass through parameter manipulation",
+          "Check if limits are enforced per session, per user, or per IP",
+          "Test for limit reset by creating new accounts or sessions"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "ffuf"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-BUSL-06",
+        "name": "Testing for the Circumvention of Work Flows",
+        "description": "Test whether the application's intended workflow sequence can be circumvented to reach unintended states or bypass required steps.",
+        "test_steps": [
+          "Map the complete workflow with all required steps",
+          "Attempt to access later steps directly without completing earlier ones",
+          "Test for workflow bypass by modifying step-tracking parameters",
+          "Skip payment or verification steps in purchase workflows",
+          "Test if completed workflow steps can be revisited and modified"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-BUSL-07",
+        "name": "Test Defenses Against Application Misuse",
+        "description": "Verify the application has adequate defenses against misuse such as automation, scraping, and abuse of legitimate functionality.",
+        "test_steps": [
+          "Test for rate limiting on sensitive operations",
+          "Verify CAPTCHA or other anti-automation mechanisms are in place",
+          "Test for account lockout after excessive failed operations",
+          "Check for monitoring and alerting on suspicious usage patterns",
+          "Test if anti-abuse mechanisms can be bypassed"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "ffuf", "hydra"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-BUSL-08",
+        "name": "Test Upload of Unexpected File Types",
+        "description": "Test whether the application properly restricts file uploads to only expected types and prevents upload of potentially malicious files.",
+        "test_steps": [
+          "Identify all file upload functionality in the application",
+          "Attempt to upload files with dangerous extensions (.php, .asp, .jsp, .exe)",
+          "Test content-type manipulation to bypass upload restrictions",
+          "Upload files with double extensions (file.php.jpg) and null bytes",
+          "Verify server-side validation of file content, not just extension",
+          "Test for upload of oversized files and zip bombs"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-BUSL-09",
+        "name": "Test Upload of Malicious Files",
+        "description": "Test whether uploaded files are properly scanned and sandboxed to prevent execution of malicious payloads on the server or against other users.",
+        "test_steps": [
+          "Upload web shells in various formats (PHP, ASP, JSP)",
+          "Test for execution of uploaded files by accessing them directly",
+          "Upload files containing XSS payloads (SVG, HTML, XML)",
+          "Test for path traversal in upload filename handling",
+          "Verify uploaded files are stored outside the web root",
+          "Check if uploaded files retain their original dangerous content type"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "CRITICAL"
+      }
+    ]
+  },
+  {
+    "category_id": "CLNT",
+    "category_name": "Client-side Testing",
+    "tests": [
+      {
+        "id": "WSTG-CLNT-01",
+        "name": "Testing for DOM-Based Cross Site Scripting",
+        "description": "Test for DOM-based XSS vulnerabilities where the attack payload is executed as a result of modifying the DOM environment in the victim's browser.",
+        "test_steps": [
+          "Identify DOM sinks (innerHTML, document.write, eval, location) in JavaScript",
+          "Trace data flow from DOM sources (location.hash, document.referrer) to sinks",
+          "Inject XSS payloads via URL fragments and DOM-accessible inputs",
+          "Test for DOM XSS in client-side JavaScript frameworks",
+          "Verify client-side input sanitization of DOM-sourced data",
+          "Check for postMessage handlers that process untrusted data"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CLNT-02",
+        "name": "Testing for JavaScript Execution",
+        "description": "Test for JavaScript execution vulnerabilities where user-controlled data is passed to JavaScript execution functions without proper sanitization.",
+        "test_steps": [
+          "Identify code using eval(), setTimeout(), setInterval() with user data",
+          "Test for script injection in dynamically created script elements",
+          "Check for JavaScript execution via protocol handlers (javascript:)",
+          "Test event handler attributes for injection (onclick, onerror)",
+          "Verify Content Security Policy headers restrict inline script execution"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CLNT-03",
+        "name": "Testing for HTML Injection",
+        "description": "Test for HTML injection vulnerabilities where user input is embedded into the HTML response without proper encoding, allowing injection of arbitrary HTML elements.",
+        "test_steps": [
+          "Identify input parameters reflected in HTML responses",
+          "Inject HTML tags and verify they render in the page",
+          "Test for HTML injection in error messages and user-generated content",
+          "Check for phishing attacks through injected HTML forms",
+          "Verify HTML encoding is applied to all user-controlled output contexts"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CLNT-04",
+        "name": "Testing for Client-side URL Redirect",
+        "description": "Test for open redirect vulnerabilities where user-controlled input is used in client-side URL redirections without proper validation.",
+        "test_steps": [
+          "Identify parameters used in client-side redirects (window.location, meta refresh)",
+          "Test redirect parameters with external domain URLs",
+          "Test for redirect bypass techniques (//evil.com, /\\evil.com)",
+          "Check for JavaScript protocol in redirect parameters",
+          "Verify redirect URL validation uses an allowlist approach"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CLNT-05",
+        "name": "Testing for CSS Injection",
+        "description": "Test for CSS injection vulnerabilities where user input is incorporated into CSS styles, potentially leading to data exfiltration or UI manipulation.",
+        "test_steps": [
+          "Identify user input reflected in CSS contexts (style attributes, stylesheets)",
+          "Inject CSS to modify page appearance and create phishing overlays",
+          "Test for data exfiltration using CSS selectors and background-image URLs",
+          "Check for CSS expression() execution in older browsers",
+          "Verify CSS input sanitization prevents malicious style injection"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CLNT-06",
+        "name": "Testing for Client-side Resource Manipulation",
+        "description": "Test for vulnerabilities where user-controlled input can manipulate resources loaded by the client, such as script sources, image URLs, or iframe targets.",
+        "test_steps": [
+          "Identify user input used in resource URLs (src, href, action attributes)",
+          "Test for JavaScript source manipulation to load malicious scripts",
+          "Check for iframe source manipulation for clickjacking or phishing",
+          "Test for link injection in dynamically generated resource references",
+          "Verify resource URLs are validated against an allowlist"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CLNT-07",
+        "name": "Testing Cross Origin Resource Sharing",
+        "description": "Test CORS configuration for overly permissive settings that could allow unauthorized cross-origin access to sensitive application data.",
+        "test_steps": [
+          "Check Access-Control-Allow-Origin header for wildcard or reflective values",
+          "Test if arbitrary origins are reflected in CORS response headers",
+          "Verify Access-Control-Allow-Credentials is not used with wildcard origin",
+          "Test for CORS misconfiguration on sensitive API endpoints",
+          "Check if null origin is allowed in CORS policy",
+          "Verify pre-flight requests are properly validated"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CLNT-08",
+        "name": "Testing for Cross Site Flashing",
+        "description": "Test Flash cross-domain policies and Flash-based functionality for vulnerabilities that could allow cross-site data access or code execution.",
+        "test_steps": [
+          "Identify Flash content and SWF files served by the application",
+          "Review crossdomain.xml for overly permissive policies",
+          "Test for FlashVars manipulation for XSS or data injection",
+          "Check for insecure ExternalInterface calls in Flash objects",
+          "Verify Flash content does not expose sensitive functionality"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CLNT-09",
+        "name": "Testing for Clickjacking",
+        "description": "Test whether the application is vulnerable to clickjacking attacks where transparent overlays trick users into clicking on hidden elements.",
+        "test_steps": [
+          "Check for X-Frame-Options header (DENY or SAMEORIGIN)",
+          "Verify Content-Security-Policy frame-ancestors directive",
+          "Attempt to embed the application in an iframe on an external page",
+          "Test for frame-busting JavaScript and its bypass potential",
+          "Check critical functionality pages for framing protection",
+          "Test for partial clickjacking on specific UI elements"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CLNT-10",
+        "name": "Testing WebSockets",
+        "description": "Test WebSocket implementations for security vulnerabilities including authentication, authorization, input validation, and cross-site WebSocket hijacking.",
+        "test_steps": [
+          "Identify WebSocket endpoints and their connection handshake",
+          "Test for cross-site WebSocket hijacking (CSWSH) via Origin validation",
+          "Check for authentication and authorization in WebSocket connections",
+          "Test for injection vulnerabilities in WebSocket messages",
+          "Verify WebSocket connections use secure transport (wss://)",
+          "Test for denial of service through message flooding"
+        ],
+        "applicable_to": ["web", "api"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-CLNT-11",
+        "name": "Testing Web Messaging",
+        "description": "Test HTML5 Web Messaging (postMessage) implementations for vulnerabilities in origin validation and message handling that could lead to XSS or data theft.",
+        "test_steps": [
+          "Identify postMessage senders and receivers in JavaScript code",
+          "Check if message receivers validate the origin of incoming messages",
+          "Test for XSS through postMessage data passed to dangerous sinks",
+          "Verify sensitive data is not sent via postMessage to untrusted origins",
+          "Test for message handler confusion between different message types"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CLNT-12",
+        "name": "Testing Browser Storage",
+        "description": "Test client-side storage mechanisms (localStorage, sessionStorage, IndexedDB, cookies) for sensitive data exposure and injection vulnerabilities.",
+        "test_steps": [
+          "Enumerate data stored in localStorage and sessionStorage",
+          "Check for sensitive data (tokens, PII, credentials) in browser storage",
+          "Verify stored data is properly cleared on logout",
+          "Test for injection through data loaded from browser storage",
+          "Check for cross-origin access to stored data",
+          "Verify IndexedDB databases do not contain sensitive information"
+        ],
+        "applicable_to": ["web", "mobile_web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      },
+      {
+        "id": "WSTG-CLNT-13",
+        "name": "Testing for Cross Site Script Inclusion",
+        "description": "Test for cross-site script inclusion (XSSI) vulnerabilities where sensitive data in JavaScript files can be stolen by including them from an attacker-controlled page.",
+        "test_steps": [
+          "Identify dynamic JavaScript files that contain user-specific data",
+          "Test if sensitive JavaScript endpoints can be included cross-origin",
+          "Check for JSONP endpoints that return sensitive data without token validation",
+          "Verify authentication is required for JavaScript files containing sensitive data",
+          "Test for data leakage through JavaScript variable overriding"
+        ],
+        "applicable_to": ["web"],
+        "tools": ["http_client", "burp"],
+        "severity_if_found": "MEDIUM"
+      }
+    ]
+  },
+  {
+    "category_id": "APIT",
+    "category_name": "API Testing",
+    "tests": [
+      {
+        "id": "WSTG-APIT-01",
+        "name": "Testing GraphQL",
+        "description": "Test GraphQL API implementations for security vulnerabilities including introspection exposure, injection, authorization bypass, and denial of service.",
+        "test_steps": [
+          "Test for introspection query exposure to enumerate the full schema",
+          "Check for authorization bypass in GraphQL resolvers",
+          "Test for injection vulnerabilities in GraphQL query parameters",
+          "Test for denial of service through deeply nested or complex queries",
+          "Verify query depth and complexity limits are enforced",
+          "Check for sensitive data exposure in GraphQL error messages"
+        ],
+        "applicable_to": ["api", "web"],
+        "tools": ["http_client", "burp", "nuclei"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-APIT-02",
+        "name": "Testing REST API",
+        "description": "Test REST API implementations for security vulnerabilities including authentication weaknesses, broken access control, injection, and improper data exposure.",
+        "test_steps": [
+          "Enumerate API endpoints and HTTP methods through documentation and fuzzing",
+          "Test authentication mechanisms (API keys, OAuth, JWT) for weaknesses",
+          "Test for IDOR and broken access control across API endpoints",
+          "Check for mass assignment vulnerabilities in object creation/update",
+          "Test for injection vulnerabilities in API parameters and headers",
+          "Verify rate limiting and throttling on API endpoints"
+        ],
+        "applicable_to": ["api", "web", "mobile_web"],
+        "tools": ["http_client", "ffuf", "nuclei", "burp", "sqlmap"],
+        "severity_if_found": "HIGH"
+      },
+      {
+        "id": "WSTG-APIT-03",
+        "name": "Testing SOAP API",
+        "description": "Test SOAP API implementations for security vulnerabilities including XML-based attacks, WSDL exposure, and improper input validation.",
+        "test_steps": [
+          "Retrieve and analyze WSDL file for exposed operations and data types",
+          "Test for XML external entity (XXE) injection in SOAP requests",
+          "Test for SQL injection in SOAP message parameters",
+          "Check for SOAP action spoofing attacks",
+          "Test for XML bomb and entity expansion denial of service",
+          "Verify WS-Security implementation for authentication and message integrity"
+        ],
+        "applicable_to": ["api", "web"],
+        "tools": ["http_client", "burp", "sqlmap", "nuclei"],
+        "severity_if_found": "HIGH"
+      }
+    ]
+  }
+]

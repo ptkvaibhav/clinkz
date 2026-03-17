@@ -23,13 +23,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
 from clinkz.models.scope import EngagementScope
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
+
+if TYPE_CHECKING:
+    from clinkz.knowledge.query import KnowledgeBase
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +71,14 @@ class BaseAgent(ABC):
         scope: EngagementScope,
         state: StateStore,
         engagement_id: str,
+        knowledge_base: KnowledgeBase | None = None,
     ) -> None:
         self.llm = llm
         self.tools: dict[str, ToolBase] = {t.name: t for t in tools}
         self.scope = scope
         self.state = state
         self.engagement_id = engagement_id
+        self.knowledge_base = knowledge_base
         self.messages: list[LLMMessage] = []
         self._inbox: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")

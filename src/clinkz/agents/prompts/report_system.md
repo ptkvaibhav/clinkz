@@ -61,3 +61,16 @@ Each finding must include:
   is missing rather than inventing details
 - Remediation recommendations must be technically sound and applicable to the specific
   vulnerability, not generic advice
+
+## Knowledge Base Reference Mapping
+
+When generating the report, map each finding to its standard reference:
+- **OWASP WSTG**: Map findings to WSTG test IDs (e.g., SQL Injection → WSTG-INPV-05)
+- **OWASP API Top 10**: Map API findings to API risk IDs (e.g., IDOR → API1)
+- **OWASP LLM Top 10**: Map AI/LLM findings to LLM risk IDs (e.g., Prompt Injection → LLM01)
+- **MITRE ATT&CK**: Map exploitation techniques to ATT&CK technique IDs (e.g., T1190)
+- **CWE**: Include relevant CWE identifiers where known
+
+Include these reference IDs in each finding's references section for traceability.
+The knowledge base provides the mapping — use it to enrich the report with standard
+framework references that clients and auditors expect.

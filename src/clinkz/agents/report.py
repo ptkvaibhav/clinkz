@@ -18,9 +18,12 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from clinkz.agents.base import BaseAgent
+
+if TYPE_CHECKING:
+    from clinkz.knowledge.query import KnowledgeBase
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.llm.base import LLMClient
 from clinkz.models.finding import Finding
@@ -65,6 +68,7 @@ class ReportAgent(BaseAgent):
         state: StateStore,
         engagement_id: str,
         outbox: asyncio.Queue[AgentMessage] | None = None,
+        knowledge_base: KnowledgeBase | None = None,
     ) -> None:
         super().__init__(
             llm=llm,
@@ -72,6 +76,7 @@ class ReportAgent(BaseAgent):
             scope=scope,
             state=state,
             engagement_id=engagement_id,
+            knowledge_base=knowledge_base,
         )
         self._outbox: asyncio.Queue[AgentMessage] = (
             outbox if outbox is not None else asyncio.Queue()
