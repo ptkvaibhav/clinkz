@@ -516,8 +516,10 @@ class OrchestratorAgent:
     def _extract_technologies(self, recon_result: dict[str, Any]) -> list[str]:
         """Extract technology names from recon results.
 
-        Looks for common keys in the result dict where technology info
-        might be stored (tech, technologies, tech_stack, etc.).
+        Searches multiple levels of the result dict:
+        1. Top-level ``tech`` / ``technologies`` / ``tech_stack`` keys.
+        2. Nested host/service dicts (``hosts[].services[].product``).
+        3. Free-text ``summary`` field — regex-matches common technology names.
 
         Args:
             recon_result: Recon phase result dict.
@@ -525,28 +527,85 @@ class OrchestratorAgent:
         Returns:
             Deduplicated list of technology name strings.
         """
+        import re
+
         techs: set[str] = set()
 
         # Direct tech lists
         for key in ("tech", "technologies", "tech_stack"):
             val = recon_result.get(key)
             if isinstance(val, list):
-                techs.update(str(t).lower() for t in val)
-            elif isinstance(val, str):
-                techs.add(val.lower())
+                techs.update(str(t).lower().strip() for t in val if str(t).strip())
+            elif isinstance(val, str) and val.strip():
+                techs.add(val.lower().strip())
 
-        # Nested in host/service results
+        # Nested in host/service results — look for product/version in services
         for key in ("hosts", "services", "results"):
             items = recon_result.get(key)
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict):
-                        for sub_key in ("tech", "technologies", "technology"):
-                            sub_val = item.get(sub_key)
-                            if isinstance(sub_val, list):
-                                techs.update(str(t).lower() for t in sub_val)
-                            elif isinstance(sub_val, str):
-                                techs.add(sub_val.lower())
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                # Direct tech keys on the item
+                for sub_key in ("tech", "technologies", "technology", "tech_stack"):
+                    sub_val = item.get(sub_key)
+                    if isinstance(sub_val, list):
+                        techs.update(str(t).lower().strip() for t in sub_val if str(t).strip())
+                    elif isinstance(sub_val, str) and sub_val.strip():
+                        techs.add(sub_val.lower().strip())
+                # Services with product/version (nmap-style output)
+                for svc in item.get("services") or []:
+                    if not isinstance(svc, dict):
+                        continue
+                    product = svc.get("product", "").strip()
+                    version = svc.get("version", "").strip()
+                    if product:
+                        tech = f"{product} {version}".strip().lower()
+                        techs.add(tech)
+                    name = svc.get("name", "").strip()
+                    if name and name not in ("tcp", "udp", "unknown"):
+                        techs.add(name.lower())
+
+        # Parse the summary text for common technology names
+        summary = recon_result.get("summary", "")
+        if isinstance(summary, str) and summary:
+            # Match well-known technologies (case-insensitive)
+            known_patterns = [
+                r"apache(?:\s+httpd)?(?:\s+[\d.]+)?",
+                r"nginx(?:\s+[\d.]+)?",
+                r"php(?:\s+[\d.]+)?",
+                r"mysql(?:\s+[\d.]+)?",
+                r"mariadb(?:\s+[\d.]+)?",
+                r"postgresql(?:\s+[\d.]+)?",
+                r"dvwa",
+                r"tomcat(?:\s+[\d.]+)?",
+                r"iis(?:\s+[\d.]+)?",
+                r"wordpress(?:\s+[\d.]+)?",
+                r"node\.?js(?:\s+[\d.]+)?",
+                r"express(?:\s+[\d.]+)?",
+                r"django(?:\s+[\d.]+)?",
+                r"flask(?:\s+[\d.]+)?",
+                r"openssh(?:\s+[\d.]+)?",
+                r"openssl(?:\s+[\d.]+)?",
+                r"jquery(?:\s+[\d.]+)?",
+                r"bootstrap(?:\s+[\d.]+)?",
+                r"react(?:\s+[\d.]+)?",
+                r"vue\.?js(?:\s+[\d.]+)?",
+                r"jenkins(?:\s+[\d.]+)?",
+                r"grafana(?:\s+[\d.]+)?",
+                r"redis(?:\s+[\d.]+)?",
+                r"mongodb(?:\s+[\d.]+)?",
+                r"elasticsearch(?:\s+[\d.]+)?",
+                r"vsftpd(?:\s+[\d.]+)?",
+                r"proftpd(?:\s+[\d.]+)?",
+            ]
+            for pattern in known_patterns:
+                for match in re.finditer(pattern, summary, re.IGNORECASE):
+                    techs.add(match.group(0).strip().lower())
+
+        # Remove empty strings
+        techs.discard("")
 
         return sorted(techs)
 
