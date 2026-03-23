@@ -83,3 +83,14 @@ template match with no manual confirmation. Requires manual exploitation evidenc
   (e.g., "Nuclei detected X" or "sqlmap found Y") without showing the raw HTTP
   request/response pair that proves the vulnerability should be REJECTED with a request
   to re-test manually and capture evidence
+
+## Knowledge Base Cross-Reference
+
+When validating findings, cross-reference against the security knowledge base:
+- Match finding titles to OWASP WSTG test IDs (e.g., SQL Injection → WSTG-INPV-05)
+- Verify CVSS scores against standard severity guidelines for the vulnerability class
+- Check that the described severity aligns with OWASP/MITRE categorization
+- Ensure remediation references industry standards where applicable
+
+If a finding maps to a known test (WSTG, API Top 10, ATT&CK), note the reference ID
+in your validation response for the Report Agent to include in the final report.

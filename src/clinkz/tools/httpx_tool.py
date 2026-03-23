@@ -60,6 +60,10 @@ class HttpxTool(ToolBase):
                         "type": "string",
                         "description": "Required. URL or IP to probe (single target).",
                     },
+                    "url": {
+                        "type": "string",
+                        "description": "Alias for 'target'. URL or IP to probe.",
+                    },
                     "targets": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -76,9 +80,12 @@ class HttpxTool(ToolBase):
         }
 
     def _normalize_targets(self, args: dict[str, Any]) -> list[str]:
-        """Accept both 'target' (string) and 'targets' (list) params."""
+        """Accept 'target', 'url', and 'targets' (list) params.
+
+        The LLM sometimes uses 'url' instead of 'target', so we accept both.
+        """
         targets = args.get("targets") or []
-        target = args.get("target")
+        target = args.get("target") or args.get("url")
         if target:
             if isinstance(target, str):
                 targets = [target] + list(targets)

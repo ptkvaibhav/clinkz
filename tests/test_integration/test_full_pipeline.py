@@ -749,106 +749,22 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
         return mock_lifecycle
 
     # ------------------------------------------------------------------
-    # Orchestrator LLM sequence — 9 actions for the full pipeline
-    #
-    # Phases:
-    #   1. spin_up recon    ← first_iteration trigger
-    #   2. shut_down recon  ← triggered by recon RESULT in pending
-    #      on_shut_down → STATUS message put on bus
-    #   3. spin_up scan     ← triggered by STATUS from shut_down
-    #   4. shut_down scan   ← triggered by scan RESULT
-    #   5. spin_up exploit  ← triggered by STATUS from shut_down
-    #   6. shut_down exploit ← triggered by exploit RESULT
-    #   7. spin_up critic   ← triggered by STATUS from shut_down
-    #   8. spin_up report   ← triggered by critic RESULT
-    #   9. complete         ← triggered by report RESULT
+    # Orchestrator LLM — deterministic orchestrator only uses LLM for
+    # generate_text() (query answering). Phase order is hardcoded.
     # ------------------------------------------------------------------
 
-    orch_llm = _SequenceLLM([
-        # 1. Kick off reconnaissance
-        AgentAction(
-            thought="Starting reconnaissance phase.",
-            tool_call=_tc(
-                "spin_up_agent",
-                agent_type="recon",
-                task=(
-                    f"Perform full reconnaissance on {TARGET_IP}: "
-                    "subdomain enumeration, port scanning, service fingerprinting."
-                ),
-            ),
-        ),
-        # 2. Recon RESULT received → shut down recon agent
-        AgentAction(
-            thought="Recon complete. Shutting down recon agent.",
-            tool_call=_tc("shut_down_agent", agent_name="recon"),
-        ),
-        # 3. STATUS (recon shut down) received → start scan phase
-        AgentAction(
-            thought="Recon agent stopped. Starting scan phase.",
-            tool_call=_tc(
-                "spin_up_agent",
-                agent_type="scan",
-                task=(
-                    f"Map the attack surface on {TARGET_IP}: "
-                    "crawl web application, fuzz directories, discover parameters."
-                ),
-            ),
-        ),
-        # 4. Scan RESULT received → shut down scan agent
-        AgentAction(
-            thought="Scan complete. Shutting down scan agent.",
-            tool_call=_tc("shut_down_agent", agent_name="scan"),
-        ),
-        # 5. STATUS (scan shut down) received → start exploitation phase
-        AgentAction(
-            thought="Scan agent stopped. Starting exploitation phase.",
-            tool_call=_tc(
-                "spin_up_agent",
-                agent_type="exploit",
-                task=(
-                    f"Test all discovered services on {TARGET_IP} for vulnerabilities. "
-                    "Focus on web endpoints: /login, /api/users, /admin."
-                ),
-            ),
-        ),
-        # 6. Exploit RESULT received → shut down exploit agent
-        AgentAction(
-            thought="Exploitation complete. Shutting down exploit agent.",
-            tool_call=_tc("shut_down_agent", agent_name="exploit"),
-        ),
-        # 7. STATUS (exploit shut down) received → critic validates findings
-        AgentAction(
-            thought="Exploit agent stopped. Spinning up critic to validate findings.",
-            tool_call=_tc(
-                "spin_up_agent",
-                agent_type="critic",
-                task="Validate all findings reported by the exploit agent.",
-            ),
-        ),
-        # 8. Critic RESULT received → generate final report
-        AgentAction(
-            thought="Critic validation complete. Spinning up report agent.",
-            tool_call=_tc(
-                "spin_up_agent",
-                agent_type="report",
-                task="Generate the final penetration test report.",
-            ),
-        ),
-        # 9. Report RESULT received → declare engagement complete
-        AgentAction(
-            thought="Report delivered. Declaring engagement complete.",
-            tool_call=_tc(
-                "complete_engagement",
-                summary=(
-                    "Engagement complete. Found 1 HIGH-severity SQL injection vulnerability "
-                    f"on {TARGET_IP}. Report generated and delivered."
-                ),
-            ),
-        ),
-    ])
+    class _SimpleOrchestratorLLM(LLMClient):
+        async def reason(self, messages, tools=None):
+            raise NotImplementedError("Deterministic orchestrator does not call reason()")
+
+        async def research(self, query: str) -> str:
+            return ""
+
+        async def generate_text(self, prompt: str) -> str:
+            return "Response based on available engagement data."
 
     orchestrator = OrchestratorAgent(
-        llm=orch_llm,
+        llm=_SimpleOrchestratorLLM(),
         db_path=str(tmp_path / "pipeline.db"),
     )
 
@@ -863,8 +779,8 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
     assert result["status"] == "completed", (
         f"Expected status='completed'. Got: {result}"
     )
-    assert "1 HIGH" in result.get("summary", ""), (
-        f"Expected summary to mention the HIGH finding. Got: {result.get('summary')}"
+    assert "phases" in result, (
+        f"Expected 'phases' in result. Got keys: {list(result.keys())}"
     )
 
     # ── Assertion 2: all five phases were spun up in the correct order ────
@@ -874,8 +790,8 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
         f"Actual: {spun_up_types}"
     )
 
-    # ── Assertion 3: recon/scan/exploit were explicitly shut down ─────────
-    for phase in ("recon", "scan", "exploit"):
+    # ── Assertion 3: all phases were shut down by the deterministic loop ──
+    for phase in ("recon", "scan", "exploit", "critic", "report"):
         assert phase in shut_down_calls, (
             f"Expected '{phase}' in shut_down_calls. Actual: {shut_down_calls}"
         )

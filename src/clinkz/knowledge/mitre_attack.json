@@ -1,0 +1,1841 @@
+[
+  {
+    "tactic_id": "TA0043",
+    "tactic_name": "Reconnaissance",
+    "techniques": [
+      {
+        "id": "T1595",
+        "name": "Active Scanning",
+        "description": "Adversaries may execute active reconnaissance scans to gather information that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1595.001", "name": "Scanning IP Blocks", "description": "Adversaries may scan victim IP blocks to gather information about network topology and live hosts."},
+          {"id": "T1595.002", "name": "Vulnerability Scanning", "description": "Adversaries may scan victims for vulnerabilities that can be used during targeting."},
+          {"id": "T1595.003", "name": "Wordlist Scanning", "description": "Adversaries may iteratively probe infrastructure using brute-forcing and crawling techniques to discover content and infrastructure."}
+        ],
+        "applicable_to": ["network", "infrastructure", "web"],
+        "pentest_actions": ["Perform port scanning", "Run vulnerability scanners", "Brute-force directories and files"],
+        "tools": ["nmap", "nuclei", "ffuf", "gobuster", "nikto"]
+      },
+      {
+        "id": "T1592",
+        "name": "Gather Victim Host Information",
+        "description": "Adversaries may gather information about the victim's hosts that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1592.001", "name": "Hardware", "description": "Adversaries may gather information about the victim's host hardware."},
+          {"id": "T1592.002", "name": "Software", "description": "Adversaries may gather information about the victim's host software that can be used during targeting."},
+          {"id": "T1592.003", "name": "Firmware", "description": "Adversaries may gather information about the victim's host firmware."},
+          {"id": "T1592.004", "name": "Client Configurations", "description": "Adversaries may gather information about the victim's client configurations."}
+        ],
+        "applicable_to": ["network", "infrastructure", "endpoint"],
+        "pentest_actions": ["Fingerprint operating systems", "Identify software versions", "Enumerate installed services"],
+        "tools": ["nmap", "whatweb", "httpx"]
+      },
+      {
+        "id": "T1589",
+        "name": "Gather Victim Identity Information",
+        "description": "Adversaries may gather information about the victim's identity that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1589.001", "name": "Credentials", "description": "Adversaries may gather credentials that can be used during targeting, from breach dumps or OSINT."},
+          {"id": "T1589.002", "name": "Email Addresses", "description": "Adversaries may gather email addresses that can be used during targeting."},
+          {"id": "T1589.003", "name": "Employee Names", "description": "Adversaries may gather employee names that can be used during targeting."}
+        ],
+        "applicable_to": ["web", "active_directory", "saas", "cloud"],
+        "pentest_actions": ["Search breach databases for leaked credentials", "Harvest email addresses", "Enumerate users via login portals"],
+        "tools": ["curl", "http_client", "hydra"]
+      },
+      {
+        "id": "T1590",
+        "name": "Gather Victim Network Information",
+        "description": "Adversaries may gather information about the victim's networks that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1590.001", "name": "Domain Properties", "description": "Adversaries may gather information about the victim's domain properties."},
+          {"id": "T1590.002", "name": "DNS", "description": "Adversaries may gather DNS information about the victim."},
+          {"id": "T1590.004", "name": "Network Topology", "description": "Adversaries may gather information about the victim's network topology."},
+          {"id": "T1590.005", "name": "IP Addresses", "description": "Adversaries may gather IP address ranges belonging to the victim."},
+          {"id": "T1590.006", "name": "Network Security Appliances", "description": "Adversaries may gather information about network security appliances such as firewalls and WAFs."}
+        ],
+        "applicable_to": ["network", "infrastructure", "cloud"],
+        "pentest_actions": ["Perform DNS enumeration", "Map network topology", "Identify WAFs and security appliances"],
+        "tools": ["subfinder", "nmap", "wafw00f", "httpx"]
+      },
+      {
+        "id": "T1591",
+        "name": "Gather Victim Org Information",
+        "description": "Adversaries may gather information about the victim's organization that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1591.001", "name": "Determine Physical Locations", "description": "Adversaries may gather the victim's physical location(s)."},
+          {"id": "T1591.002", "name": "Business Relationships", "description": "Adversaries may gather information about the victim's business relationships."},
+          {"id": "T1591.004", "name": "Identify Roles", "description": "Adversaries may gather information about identities and roles within the victim organization."}
+        ],
+        "applicable_to": ["web", "saas", "cloud"],
+        "pentest_actions": ["Research organizational structure", "Identify key personnel and roles", "Map business relationships"],
+        "tools": ["curl", "http_client"]
+      },
+      {
+        "id": "T1596",
+        "name": "Search Open Technical Databases",
+        "description": "Adversaries may search freely available technical databases for information about victims.",
+        "sub_techniques": [
+          {"id": "T1596.001", "name": "DNS/Passive DNS", "description": "Adversaries may search DNS data for information about victims."},
+          {"id": "T1596.002", "name": "WHOIS", "description": "Adversaries may search WHOIS data for information about victims."},
+          {"id": "T1596.003", "name": "Digital Certificates", "description": "Adversaries may search digital certificate data for information about victims."},
+          {"id": "T1596.004", "name": "CDNs", "description": "Adversaries may search content delivery network data for information about victims."},
+          {"id": "T1596.005", "name": "Scan Databases", "description": "Adversaries may search within public scan databases (Shodan, Censys) for information about victims."}
+        ],
+        "applicable_to": ["network", "infrastructure", "web", "cloud"],
+        "pentest_actions": ["Query Shodan/Censys for exposed services", "Lookup WHOIS records", "Search certificate transparency logs"],
+        "tools": ["subfinder", "curl", "http_client", "nmap"]
+      },
+      {
+        "id": "T1593",
+        "name": "Search Open Websites/Domains",
+        "description": "Adversaries may search freely available websites and/or domains for information about victims.",
+        "sub_techniques": [
+          {"id": "T1593.001", "name": "Social Media", "description": "Adversaries may search social media for information about victims."},
+          {"id": "T1593.002", "name": "Search Engines", "description": "Adversaries may use search engines to collect information about victims."},
+          {"id": "T1593.003", "name": "Code Repositories", "description": "Adversaries may search public code repositories for information about victims."}
+        ],
+        "applicable_to": ["web", "saas", "cloud"],
+        "pentest_actions": ["Search GitHub for exposed secrets", "Google dork for sensitive files", "Enumerate subdomains from public sources"],
+        "tools": ["subfinder", "curl", "http_client"]
+      },
+      {
+        "id": "T1594",
+        "name": "Search Victim-Owned Websites",
+        "description": "Adversaries may search websites owned by the victim for information that can be used during targeting.",
+        "sub_techniques": [],
+        "applicable_to": ["web", "api"],
+        "pentest_actions": ["Crawl target websites for information", "Analyze robots.txt and sitemap.xml", "Extract metadata from published content"],
+        "tools": ["katana", "httpx", "curl", "whatweb"]
+      },
+      {
+        "id": "T1597",
+        "name": "Search Closed Sources",
+        "description": "Adversaries may search and gather information from closed sources that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1597.001", "name": "Threat Intel Vendors", "description": "Adversaries may search private threat intelligence vendor data."},
+          {"id": "T1597.002", "name": "Purchase Technical Data", "description": "Adversaries may purchase technical data about victims from information brokers."}
+        ],
+        "applicable_to": ["network", "infrastructure"],
+        "pentest_actions": ["Research target in threat intelligence platforms", "Check dark web for leaked data"],
+        "tools": ["curl", "http_client"]
+      },
+      {
+        "id": "T1598",
+        "name": "Phishing for Information",
+        "description": "Adversaries may send phishing messages to elicit sensitive information that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1598.001", "name": "Spearphishing Service", "description": "Adversaries may send spearphishing messages via third-party services to elicit information."},
+          {"id": "T1598.002", "name": "Spearphishing Attachment", "description": "Adversaries may send spearphishing emails with a malicious attachment to elicit information."},
+          {"id": "T1598.003", "name": "Spearphishing Link", "description": "Adversaries may send spearphishing emails with a malicious link to elicit information."}
+        ],
+        "applicable_to": ["web", "saas", "endpoint"],
+        "pentest_actions": ["Craft phishing pretexts", "Test email security controls", "Simulate social engineering attacks"],
+        "tools": ["curl", "http_client"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0042",
+    "tactic_name": "Resource Development",
+    "techniques": [
+      {
+        "id": "T1583",
+        "name": "Acquire Infrastructure",
+        "description": "Adversaries may buy, lease, or rent infrastructure that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1583.001", "name": "Domains", "description": "Adversaries may acquire domains that can be used during targeting."},
+          {"id": "T1583.003", "name": "Virtual Private Server", "description": "Adversaries may rent VPS infrastructure for operations."},
+          {"id": "T1583.006", "name": "Web Services", "description": "Adversaries may register accounts with web services for infrastructure."}
+        ],
+        "applicable_to": ["network", "infrastructure", "cloud"],
+        "pentest_actions": ["Set up attack infrastructure", "Configure C2 servers", "Register lookalike domains"],
+        "tools": ["curl", "ssh"]
+      },
+      {
+        "id": "T1584",
+        "name": "Compromise Infrastructure",
+        "description": "Adversaries may compromise third-party infrastructure that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1584.001", "name": "Domains", "description": "Adversaries may hijack domains to support operations."},
+          {"id": "T1584.004", "name": "Server", "description": "Adversaries may compromise third-party servers to use during targeting."}
+        ],
+        "applicable_to": ["network", "infrastructure"],
+        "pentest_actions": ["Identify compromisable infrastructure", "Test domain takeover vulnerabilities"],
+        "tools": ["subfinder", "httpx", "nuclei"]
+      },
+      {
+        "id": "T1587",
+        "name": "Develop Capabilities",
+        "description": "Adversaries may build capabilities that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1587.001", "name": "Malware", "description": "Adversaries may develop malware and malware components."},
+          {"id": "T1587.002", "name": "Code Signing Certificates", "description": "Adversaries may create self-signed code signing certificates."},
+          {"id": "T1587.003", "name": "Digital Certificates", "description": "Adversaries may create self-signed SSL/TLS certificates."},
+          {"id": "T1587.004", "name": "Exploits", "description": "Adversaries may develop exploits to use during targeting."}
+        ],
+        "applicable_to": ["endpoint", "network", "web"],
+        "pentest_actions": ["Develop custom exploits for identified vulnerabilities", "Create payload variants to bypass defenses"],
+        "tools": ["metasploit", "curl"]
+      },
+      {
+        "id": "T1588",
+        "name": "Obtain Capabilities",
+        "description": "Adversaries may buy and/or steal capabilities that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1588.001", "name": "Malware", "description": "Adversaries may obtain malware to support operations."},
+          {"id": "T1588.002", "name": "Tool", "description": "Adversaries may obtain tools to support operations."},
+          {"id": "T1588.005", "name": "Exploits", "description": "Adversaries may obtain exploits that can be used during targeting."},
+          {"id": "T1588.006", "name": "Vulnerabilities", "description": "Adversaries may acquire information about vulnerabilities."}
+        ],
+        "applicable_to": ["endpoint", "network", "web"],
+        "pentest_actions": ["Research public exploits for target technology", "Download and configure exploitation tools"],
+        "tools": ["metasploit", "nuclei", "curl"]
+      },
+      {
+        "id": "T1585",
+        "name": "Establish Accounts",
+        "description": "Adversaries may create and cultivate accounts with services to support targeting.",
+        "sub_techniques": [
+          {"id": "T1585.001", "name": "Social Media Accounts", "description": "Adversaries may create social media accounts for use in operations."},
+          {"id": "T1585.002", "name": "Email Accounts", "description": "Adversaries may create email accounts for operations."}
+        ],
+        "applicable_to": ["saas", "web"],
+        "pentest_actions": ["Create accounts for social engineering", "Register on target platforms"],
+        "tools": ["curl", "http_client"]
+      },
+      {
+        "id": "T1586",
+        "name": "Compromise Accounts",
+        "description": "Adversaries may compromise accounts with services that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1586.001", "name": "Social Media Accounts", "description": "Adversaries may compromise social media accounts."},
+          {"id": "T1586.002", "name": "Email Accounts", "description": "Adversaries may compromise email accounts."}
+        ],
+        "applicable_to": ["saas", "web"],
+        "pentest_actions": ["Test for credential stuffing", "Attempt account takeover"],
+        "tools": ["hydra", "curl", "http_client"]
+      },
+      {
+        "id": "T1608",
+        "name": "Stage Capabilities",
+        "description": "Adversaries may upload, install, or otherwise set up capabilities that can be used during targeting.",
+        "sub_techniques": [
+          {"id": "T1608.001", "name": "Upload Malware", "description": "Adversaries may upload malware to third-party or victim infrastructure."},
+          {"id": "T1608.002", "name": "Upload Tool", "description": "Adversaries may upload tools to support operations."},
+          {"id": "T1608.003", "name": "Install Digital Certificate", "description": "Adversaries may install SSL/TLS certificates for use in operations."},
+          {"id": "T1608.005", "name": "Link Target", "description": "Adversaries may put in place resources to link targets to infrastructure."}
+        ],
+        "applicable_to": ["network", "infrastructure", "web"],
+        "pentest_actions": ["Stage payloads on attack infrastructure", "Host exploit files for delivery"],
+        "tools": ["curl", "wget", "nc", "http_client"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0001",
+    "tactic_name": "Initial Access",
+    "techniques": [
+      {
+        "id": "T1189",
+        "name": "Drive-by Compromise",
+        "description": "Adversaries may gain access to a system through a user visiting a website over the normal course of browsing.",
+        "sub_techniques": [],
+        "applicable_to": ["web", "endpoint"],
+        "pentest_actions": ["Identify vulnerable web components", "Test for browser exploitation vectors", "Check for malicious redirects"],
+        "tools": ["nuclei", "nikto", "burp", "curl"]
+      },
+      {
+        "id": "T1190",
+        "name": "Exploit Public-Facing Application",
+        "description": "Adversaries may attempt to exploit a weakness in an Internet-facing host or system to gain access.",
+        "sub_techniques": [],
+        "applicable_to": ["web", "api", "infrastructure", "cloud"],
+        "pentest_actions": ["Test for SQL injection", "Test for command injection", "Test for authentication bypass", "Test for SSRF", "Test for file upload vulnerabilities", "Test for deserialization flaws"],
+        "tools": ["sqlmap", "nuclei", "nikto", "burp", "curl", "http_client", "metasploit"]
+      },
+      {
+        "id": "T1133",
+        "name": "External Remote Services",
+        "description": "Adversaries may leverage external-facing remote services to initially access a network.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "infrastructure", "cloud"],
+        "pentest_actions": ["Test VPN authentication", "Test RDP access", "Test SSH access", "Enumerate exposed management interfaces"],
+        "tools": ["nmap", "hydra", "ssh", "metasploit", "crackmapexec"]
+      },
+      {
+        "id": "T1200",
+        "name": "Hardware Additions",
+        "description": "Adversaries may introduce computer accessories or networking hardware into a system to gain access.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "infrastructure"],
+        "pentest_actions": ["Test for rogue device detection", "Assess physical security controls"],
+        "tools": ["nmap"]
+      },
+      {
+        "id": "T1566",
+        "name": "Phishing",
+        "description": "Adversaries may send phishing messages to gain access to victim systems.",
+        "sub_techniques": [
+          {"id": "T1566.001", "name": "Spearphishing Attachment", "description": "Adversaries may send spearphishing emails with a malicious attachment."},
+          {"id": "T1566.002", "name": "Spearphishing Link", "description": "Adversaries may send spearphishing emails with a malicious link."},
+          {"id": "T1566.003", "name": "Spearphishing via Service", "description": "Adversaries may send spearphishing messages via third-party services."}
+        ],
+        "applicable_to": ["endpoint", "web", "saas"],
+        "pentest_actions": ["Craft phishing emails", "Test email gateway filtering", "Simulate spearphishing campaigns"],
+        "tools": ["curl", "http_client"]
+      },
+      {
+        "id": "T1091",
+        "name": "Replication Through Removable Media",
+        "description": "Adversaries may move onto systems via removable media containing malicious content.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test USB autorun policies", "Assess removable media controls"],
+        "tools": []
+      },
+      {
+        "id": "T1195",
+        "name": "Supply Chain Compromise",
+        "description": "Adversaries may manipulate products or delivery mechanisms prior to receipt by a final consumer.",
+        "sub_techniques": [
+          {"id": "T1195.001", "name": "Compromise Software Dependencies and Development Tools", "description": "Adversaries may manipulate software dependencies or build tools."},
+          {"id": "T1195.002", "name": "Compromise Software Supply Chain", "description": "Adversaries may manipulate application software prior to distribution."}
+        ],
+        "applicable_to": ["web", "endpoint", "cloud"],
+        "pentest_actions": ["Audit software dependencies for known vulnerabilities", "Check for compromised packages"],
+        "tools": ["nuclei", "curl"]
+      },
+      {
+        "id": "T1199",
+        "name": "Trusted Relationship",
+        "description": "Adversaries may breach or otherwise leverage organizations who have access to intended victims.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "cloud", "saas"],
+        "pentest_actions": ["Identify trusted third-party connections", "Test trust relationships between domains"],
+        "tools": ["nmap", "bloodhound", "ldapsearch"]
+      },
+      {
+        "id": "T1078",
+        "name": "Valid Accounts",
+        "description": "Adversaries may obtain and abuse credentials of existing accounts to gain access.",
+        "sub_techniques": [
+          {"id": "T1078.001", "name": "Default Accounts", "description": "Adversaries may use default credentials to gain access."},
+          {"id": "T1078.002", "name": "Domain Accounts", "description": "Adversaries may use domain account credentials."},
+          {"id": "T1078.003", "name": "Local Accounts", "description": "Adversaries may use local account credentials."},
+          {"id": "T1078.004", "name": "Cloud Accounts", "description": "Adversaries may use cloud account credentials."}
+        ],
+        "applicable_to": ["network", "web", "active_directory", "cloud", "infrastructure"],
+        "pentest_actions": ["Test default credentials", "Attempt credential stuffing", "Test password spraying", "Check for leaked credentials"],
+        "tools": ["hydra", "crackmapexec", "metasploit", "curl", "http_client"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0002",
+    "tactic_name": "Execution",
+    "techniques": [
+      {
+        "id": "T1059",
+        "name": "Command and Scripting Interpreter",
+        "description": "Adversaries may abuse command and script interpreters to execute commands, scripts, or binaries.",
+        "sub_techniques": [
+          {"id": "T1059.001", "name": "PowerShell", "description": "Adversaries may abuse PowerShell to execute commands and scripts."},
+          {"id": "T1059.003", "name": "Windows Command Shell", "description": "Adversaries may abuse the Windows command shell (cmd.exe)."},
+          {"id": "T1059.004", "name": "Unix Shell", "description": "Adversaries may abuse Unix shell to execute commands and scripts."},
+          {"id": "T1059.006", "name": "Python", "description": "Adversaries may abuse Python to execute commands."},
+          {"id": "T1059.007", "name": "JavaScript", "description": "Adversaries may abuse JavaScript for execution."},
+          {"id": "T1059.009", "name": "Cloud API", "description": "Adversaries may abuse cloud APIs to execute commands."}
+        ],
+        "applicable_to": ["endpoint", "web", "cloud", "infrastructure"],
+        "pentest_actions": ["Test for OS command injection", "Attempt reverse shell execution", "Test web shell upload", "Test for SSTI leading to RCE"],
+        "tools": ["metasploit", "nc", "curl", "burp", "http_client"]
+      },
+      {
+        "id": "T1203",
+        "name": "Exploitation for Client Execution",
+        "description": "Adversaries may exploit software vulnerabilities in client applications to execute code.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "web"],
+        "pentest_actions": ["Deliver exploits via web browser", "Test client-side vulnerabilities", "Check for XSS to RCE chains"],
+        "tools": ["metasploit", "burp", "nuclei"]
+      },
+      {
+        "id": "T1047",
+        "name": "Windows Management Instrumentation",
+        "description": "Adversaries may abuse WMI to execute malicious commands and payloads.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "active_directory"],
+        "pentest_actions": ["Execute commands via WMI", "Enumerate system info via WMI"],
+        "tools": ["impacket", "crackmapexec", "metasploit"]
+      },
+      {
+        "id": "T1569",
+        "name": "System Services",
+        "description": "Adversaries may abuse system services or daemons to execute commands or programs.",
+        "sub_techniques": [
+          {"id": "T1569.001", "name": "Launchctl", "description": "Adversaries may abuse launchctl to execute commands on macOS."},
+          {"id": "T1569.002", "name": "Service Execution", "description": "Adversaries may abuse the Windows service control manager to execute malicious commands."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Create or modify services for execution", "Test service abuse scenarios"],
+        "tools": ["impacket", "crackmapexec", "metasploit"]
+      },
+      {
+        "id": "T1204",
+        "name": "User Execution",
+        "description": "An adversary may rely upon specific actions by a user in order to gain execution.",
+        "sub_techniques": [
+          {"id": "T1204.001", "name": "Malicious Link", "description": "An adversary may rely upon a user clicking a malicious link."},
+          {"id": "T1204.002", "name": "Malicious File", "description": "An adversary may rely upon a user opening a malicious file."}
+        ],
+        "applicable_to": ["endpoint", "web"],
+        "pentest_actions": ["Craft malicious payloads for user interaction", "Test download and execute scenarios"],
+        "tools": ["metasploit", "curl"]
+      },
+      {
+        "id": "T1072",
+        "name": "Software Deployment Tools",
+        "description": "Adversaries may gain access to and use third-party software deployment tools to execute code.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure", "active_directory"],
+        "pentest_actions": ["Identify deployment tools in environment", "Test for unauthorized access to deployment systems"],
+        "tools": ["nmap", "crackmapexec"]
+      },
+      {
+        "id": "T1053",
+        "name": "Scheduled Task/Job",
+        "description": "Adversaries may abuse task scheduling functionality to facilitate execution.",
+        "sub_techniques": [
+          {"id": "T1053.002", "name": "At", "description": "Adversaries may abuse the at utility to schedule execution."},
+          {"id": "T1053.003", "name": "Cron", "description": "Adversaries may abuse the cron utility to schedule execution."},
+          {"id": "T1053.005", "name": "Scheduled Task", "description": "Adversaries may abuse the Windows Task Scheduler."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Create scheduled tasks for persistence or execution", "Enumerate existing scheduled tasks"],
+        "tools": ["impacket", "crackmapexec", "metasploit"]
+      },
+      {
+        "id": "T1129",
+        "name": "Shared Modules",
+        "description": "Adversaries may execute malicious payloads via loading shared modules.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test DLL side-loading", "Check for writable shared library paths"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1106",
+        "name": "Native API",
+        "description": "Adversaries may interact with the native OS API to execute behaviors.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Use native API calls for execution", "Bypass security controls via direct API access"],
+        "tools": ["metasploit"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0003",
+    "tactic_name": "Persistence",
+    "techniques": [
+      {
+        "id": "T1098",
+        "name": "Account Manipulation",
+        "description": "Adversaries may manipulate accounts to maintain access to victim systems.",
+        "sub_techniques": [
+          {"id": "T1098.001", "name": "Additional Cloud Credentials", "description": "Adversaries may add adversary-controlled credentials to cloud accounts."},
+          {"id": "T1098.002", "name": "Additional Email Delegate Permissions", "description": "Adversaries may grant additional permission levels to adversary-controlled accounts."},
+          {"id": "T1098.003", "name": "Additional Cloud Roles", "description": "Adversaries may add additional roles or permissions to cloud accounts."},
+          {"id": "T1098.004", "name": "SSH Authorized Keys", "description": "Adversaries may modify SSH authorized_keys file for persistence."}
+        ],
+        "applicable_to": ["active_directory", "cloud", "infrastructure"],
+        "pentest_actions": ["Add SSH keys for persistence", "Modify account permissions", "Add cloud credentials"],
+        "tools": ["ssh", "crackmapexec", "impacket"]
+      },
+      {
+        "id": "T1197",
+        "name": "BITS Jobs",
+        "description": "Adversaries may abuse BITS jobs to persistently execute code.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Create BITS jobs for persistence", "Check for existing malicious BITS jobs"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1547",
+        "name": "Boot or Logon Autostart Execution",
+        "description": "Adversaries may configure system settings to automatically execute a program during boot or logon.",
+        "sub_techniques": [
+          {"id": "T1547.001", "name": "Registry Run Keys / Startup Folder", "description": "Adversaries may achieve persistence by adding a program to a startup folder or run key."},
+          {"id": "T1547.004", "name": "Winlogon Helper DLL", "description": "Adversaries may abuse Winlogon helper features."},
+          {"id": "T1547.009", "name": "Shortcut Modification", "description": "Adversaries may modify shortcuts for persistence."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Add registry run keys", "Place binaries in startup folders", "Modify logon scripts"],
+        "tools": ["metasploit", "evil-winrm"]
+      },
+      {
+        "id": "T1037",
+        "name": "Boot or Logon Initialization Scripts",
+        "description": "Adversaries may use scripts automatically executed at boot or logon to establish persistence.",
+        "sub_techniques": [
+          {"id": "T1037.001", "name": "Logon Script (Windows)", "description": "Adversaries may use Windows logon scripts for persistence."},
+          {"id": "T1037.004", "name": "RC Scripts", "description": "Adversaries may modify RC scripts for persistence on Unix."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Modify logon/startup scripts", "Add malicious RC scripts"],
+        "tools": ["metasploit", "ssh"]
+      },
+      {
+        "id": "T1136",
+        "name": "Create Account",
+        "description": "Adversaries may create an account to maintain access to victim systems.",
+        "sub_techniques": [
+          {"id": "T1136.001", "name": "Local Account", "description": "Adversaries may create a local account to maintain access."},
+          {"id": "T1136.002", "name": "Domain Account", "description": "Adversaries may create a domain account."},
+          {"id": "T1136.003", "name": "Cloud Account", "description": "Adversaries may create a cloud account."}
+        ],
+        "applicable_to": ["endpoint", "active_directory", "cloud"],
+        "pentest_actions": ["Create backdoor local accounts", "Create domain accounts for persistence"],
+        "tools": ["crackmapexec", "impacket", "evil-winrm"]
+      },
+      {
+        "id": "T1543",
+        "name": "Create or Modify System Process",
+        "description": "Adversaries may create or modify system-level processes to execute malicious payloads as part of persistence.",
+        "sub_techniques": [
+          {"id": "T1543.002", "name": "Systemd Service", "description": "Adversaries may create or modify systemd services for persistence."},
+          {"id": "T1543.003", "name": "Windows Service", "description": "Adversaries may create or modify Windows services for persistence."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Create malicious systemd services", "Install backdoor Windows services"],
+        "tools": ["metasploit", "impacket", "crackmapexec"]
+      },
+      {
+        "id": "T1546",
+        "name": "Event Triggered Execution",
+        "description": "Adversaries may establish persistence using system mechanisms that trigger execution based on specific events.",
+        "sub_techniques": [
+          {"id": "T1546.001", "name": "Change Default File Association", "description": "Adversaries may change file associations to execute a program."},
+          {"id": "T1546.003", "name": "Windows Management Instrumentation Event Subscription", "description": "Adversaries may use WMI event subscriptions for persistence."},
+          {"id": "T1546.008", "name": "Accessibility Features", "description": "Adversaries may use accessibility features for persistence (sticky keys)."},
+          {"id": "T1546.015", "name": "Component Object Model Hijacking", "description": "Adversaries may hijack COM objects for persistence."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Set up WMI event subscriptions", "Abuse accessibility features for persistence"],
+        "tools": ["metasploit", "impacket"]
+      },
+      {
+        "id": "T1574",
+        "name": "Hijack Execution Flow",
+        "description": "Adversaries may execute their own malicious payloads by hijacking the way operating systems run programs.",
+        "sub_techniques": [
+          {"id": "T1574.001", "name": "DLL Search Order Hijacking", "description": "Adversaries may hijack DLL search order to execute their payloads."},
+          {"id": "T1574.002", "name": "DLL Side-Loading", "description": "Adversaries may side-load DLLs to execute malicious payloads."},
+          {"id": "T1574.004", "name": "Dylib Hijacking", "description": "Adversaries may hijack macOS dylib loading."},
+          {"id": "T1574.006", "name": "Dynamic Linker Hijacking", "description": "Adversaries may hijack dynamic linker environment variables on Linux."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test for DLL hijacking opportunities", "Check for writable PATH directories", "Test LD_PRELOAD abuse"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1556",
+        "name": "Modify Authentication Process",
+        "description": "Adversaries may modify authentication mechanisms and processes to access user credentials or enable otherwise unwarranted access.",
+        "sub_techniques": [
+          {"id": "T1556.001", "name": "Domain Controller Authentication", "description": "Adversaries may patch domain controller authentication process (Skeleton Key)."},
+          {"id": "T1556.003", "name": "Pluggable Authentication Modules", "description": "Adversaries may modify PAM for persistence on Linux."}
+        ],
+        "applicable_to": ["active_directory", "infrastructure", "endpoint"],
+        "pentest_actions": ["Test for Skeleton Key attack", "Check for modified PAM modules"],
+        "tools": ["mimikatz", "impacket"]
+      },
+      {
+        "id": "T1505",
+        "name": "Server Software Component",
+        "description": "Adversaries may abuse legitimate extensible development features of servers to establish persistent access.",
+        "sub_techniques": [
+          {"id": "T1505.003", "name": "Web Shell", "description": "Adversaries may backdoor web servers with web shells to establish persistent access."},
+          {"id": "T1505.004", "name": "IIS Components", "description": "Adversaries may install malicious IIS components."},
+          {"id": "T1505.001", "name": "SQL Stored Procedures", "description": "Adversaries may abuse SQL stored procedures for persistence."}
+        ],
+        "applicable_to": ["web", "api", "infrastructure"],
+        "pentest_actions": ["Upload web shells", "Inject malicious stored procedures", "Test for web shell upload vulnerabilities"],
+        "tools": ["nuclei", "nikto", "sqlmap", "burp", "curl", "http_client"]
+      },
+      {
+        "id": "T1137",
+        "name": "Office Application Startup",
+        "description": "Adversaries may leverage Microsoft Office applications for persistence through macros and add-ins.",
+        "sub_techniques": [
+          {"id": "T1137.001", "name": "Office Template Macros", "description": "Adversaries may abuse Microsoft Office templates to obtain persistence."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Plant malicious Office templates", "Test for macro execution policies"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1542",
+        "name": "Pre-OS Boot",
+        "description": "Adversaries may abuse pre-OS boot mechanisms as a way to establish persistence on a system.",
+        "sub_techniques": [
+          {"id": "T1542.001", "name": "System Firmware", "description": "Adversaries may modify system firmware to persist on systems."},
+          {"id": "T1542.003", "name": "Bootkit", "description": "Adversaries may use bootkits to persist on systems."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Check firmware integrity", "Assess boot security controls"],
+        "tools": ["nmap"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0004",
+    "tactic_name": "Privilege Escalation",
+    "techniques": [
+      {
+        "id": "T1548",
+        "name": "Abuse Elevation Control Mechanism",
+        "description": "Adversaries may circumvent mechanisms designed to control elevated privileges to gain higher-level permissions.",
+        "sub_techniques": [
+          {"id": "T1548.001", "name": "Setuid and Setgid", "description": "Adversaries may abuse SUID/SGID bits for privilege escalation on Linux."},
+          {"id": "T1548.002", "name": "Bypass User Account Control", "description": "Adversaries may bypass UAC mechanisms to elevate privileges on Windows."},
+          {"id": "T1548.003", "name": "Sudo and Sudo Caching", "description": "Adversaries may abuse sudo configurations for privilege escalation."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Find SUID/SGID binaries", "Test UAC bypass techniques", "Check sudo misconfigurations"],
+        "tools": ["metasploit", "ssh"]
+      },
+      {
+        "id": "T1134",
+        "name": "Access Token Manipulation",
+        "description": "Adversaries may modify access tokens to operate under a different user or system security context.",
+        "sub_techniques": [
+          {"id": "T1134.001", "name": "Token Impersonation/Theft", "description": "Adversaries may duplicate and impersonate another user's existing token."},
+          {"id": "T1134.002", "name": "Create Process with Token", "description": "Adversaries may create a new process with an existing token."},
+          {"id": "T1134.005", "name": "SID-History Injection", "description": "Adversaries may use SID-History injection for privilege escalation."}
+        ],
+        "applicable_to": ["endpoint", "active_directory"],
+        "pentest_actions": ["Steal and impersonate tokens", "Perform token manipulation for privilege escalation"],
+        "tools": ["mimikatz", "metasploit", "impacket"]
+      },
+      {
+        "id": "T1068",
+        "name": "Exploitation for Privilege Escalation",
+        "description": "Adversaries may exploit software vulnerabilities in an attempt to elevate privileges.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure", "web", "containers"],
+        "pentest_actions": ["Search for kernel exploits", "Test for local privilege escalation vulnerabilities", "Check for unpatched services"],
+        "tools": ["metasploit", "nuclei"]
+      },
+      {
+        "id": "T1055",
+        "name": "Process Injection",
+        "description": "Adversaries may inject code into processes in order to evade process-based defenses as well as elevate privileges.",
+        "sub_techniques": [
+          {"id": "T1055.001", "name": "Dynamic-link Library Injection", "description": "Adversaries may inject DLLs into processes."},
+          {"id": "T1055.003", "name": "Thread Execution Hijacking", "description": "Adversaries may hijack threads of existing processes."},
+          {"id": "T1055.008", "name": "Ptrace System Calls", "description": "Adversaries may abuse ptrace for process injection on Linux."},
+          {"id": "T1055.012", "name": "Process Hollowing", "description": "Adversaries may inject code into suspended and hollowed processes."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test process injection techniques", "Perform DLL injection for privilege escalation"],
+        "tools": ["metasploit", "mimikatz"]
+      },
+      {
+        "id": "T1078",
+        "name": "Valid Accounts",
+        "description": "Adversaries may obtain and abuse credentials of existing accounts for privilege escalation.",
+        "sub_techniques": [
+          {"id": "T1078.002", "name": "Domain Accounts", "description": "Adversaries may use domain account credentials for privilege escalation."},
+          {"id": "T1078.003", "name": "Local Accounts", "description": "Adversaries may use local account credentials for privilege escalation."},
+          {"id": "T1078.004", "name": "Cloud Accounts", "description": "Adversaries may use cloud account credentials for privilege escalation."}
+        ],
+        "applicable_to": ["active_directory", "cloud", "endpoint"],
+        "pentest_actions": ["Escalate via compromised privileged accounts", "Test for over-privileged service accounts"],
+        "tools": ["crackmapexec", "impacket", "bloodhound", "rubeus"]
+      },
+      {
+        "id": "T1543",
+        "name": "Create or Modify System Process",
+        "description": "Adversaries may create or modify system-level processes for privilege escalation.",
+        "sub_techniques": [
+          {"id": "T1543.002", "name": "Systemd Service", "description": "Adversaries may create or modify systemd services for privilege escalation."},
+          {"id": "T1543.003", "name": "Windows Service", "description": "Adversaries may create or modify Windows services for privilege escalation."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Abuse writable service configurations", "Create services running as SYSTEM"],
+        "tools": ["metasploit", "impacket", "crackmapexec"]
+      },
+      {
+        "id": "T1053",
+        "name": "Scheduled Task/Job",
+        "description": "Adversaries may abuse task scheduling for privilege escalation.",
+        "sub_techniques": [
+          {"id": "T1053.005", "name": "Scheduled Task", "description": "Adversaries may abuse the Windows Task Scheduler for privilege escalation."},
+          {"id": "T1053.003", "name": "Cron", "description": "Adversaries may abuse cron for privilege escalation."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Abuse writable cron jobs", "Create scheduled tasks with elevated privileges"],
+        "tools": ["impacket", "ssh", "metasploit"]
+      },
+      {
+        "id": "T1546",
+        "name": "Event Triggered Execution",
+        "description": "Adversaries may use event-triggered execution for privilege escalation.",
+        "sub_techniques": [
+          {"id": "T1546.008", "name": "Accessibility Features", "description": "Adversaries may abuse accessibility features (sticky keys) for escalation."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Abuse accessibility features", "Replace accessibility binaries with cmd.exe"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1574",
+        "name": "Hijack Execution Flow",
+        "description": "Adversaries may hijack the way operating systems run programs for privilege escalation.",
+        "sub_techniques": [
+          {"id": "T1574.001", "name": "DLL Search Order Hijacking", "description": "Adversaries may hijack DLL search order for privilege escalation."},
+          {"id": "T1574.002", "name": "DLL Side-Loading", "description": "Adversaries may side-load DLLs for privilege escalation."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Find DLL hijacking opportunities in privileged services", "Test PATH-based privilege escalation"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1547",
+        "name": "Boot or Logon Autostart Execution",
+        "description": "Adversaries may configure system settings to automatically execute a program for privilege escalation during boot or logon.",
+        "sub_techniques": [
+          {"id": "T1547.001", "name": "Registry Run Keys / Startup Folder", "description": "Adversaries may use run keys or startup folders for privilege escalation."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Abuse autostart mechanisms for escalation", "Check for writable autostart locations"],
+        "tools": ["metasploit", "evil-winrm"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0005",
+    "tactic_name": "Defense Evasion",
+    "techniques": [
+      {
+        "id": "T1548",
+        "name": "Abuse Elevation Control Mechanism",
+        "description": "Adversaries may circumvent mechanisms designed to control elevated privileges.",
+        "sub_techniques": [
+          {"id": "T1548.002", "name": "Bypass User Account Control", "description": "Adversaries may bypass UAC to evade defenses."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test UAC bypass techniques", "Evade elevation prompts"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1140",
+        "name": "Deobfuscate/Decode Files or Information",
+        "description": "Adversaries may use obfuscated files or information to hide artifacts of an intrusion.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "web"],
+        "pentest_actions": ["Encode payloads to evade detection", "Obfuscate malicious scripts"],
+        "tools": ["metasploit", "burp"]
+      },
+      {
+        "id": "T1562",
+        "name": "Impair Defenses",
+        "description": "Adversaries may maliciously modify components of a victim environment in order to hinder or disable defensive mechanisms.",
+        "sub_techniques": [
+          {"id": "T1562.001", "name": "Disable or Modify Tools", "description": "Adversaries may disable security tools."},
+          {"id": "T1562.002", "name": "Disable Windows Event Logging", "description": "Adversaries may disable Windows event logging."},
+          {"id": "T1562.004", "name": "Disable or Modify System Firewall", "description": "Adversaries may disable or modify the system firewall."},
+          {"id": "T1562.006", "name": "Indicator Blocking", "description": "Adversaries may block indicators or events from being gathered."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure", "cloud"],
+        "pentest_actions": ["Disable AV/EDR", "Modify firewall rules", "Disable logging"],
+        "tools": ["metasploit", "evil-winrm"]
+      },
+      {
+        "id": "T1070",
+        "name": "Indicator Removal",
+        "description": "Adversaries may delete or modify artifacts generated on a host system to remove evidence of their presence.",
+        "sub_techniques": [
+          {"id": "T1070.001", "name": "Clear Windows Event Logs", "description": "Adversaries may clear Windows Event Logs to hide activity."},
+          {"id": "T1070.002", "name": "Clear Linux or Mac System Logs", "description": "Adversaries may clear system logs on Linux/Mac."},
+          {"id": "T1070.003", "name": "Clear Command History", "description": "Adversaries may clear command history to hide their actions."},
+          {"id": "T1070.004", "name": "File Deletion", "description": "Adversaries may delete files left behind by their actions."},
+          {"id": "T1070.006", "name": "Timestomp", "description": "Adversaries may modify file timestamps to mimic other files."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Clear logs after operations", "Remove tool artifacts", "Clean command history"],
+        "tools": ["metasploit", "ssh"]
+      },
+      {
+        "id": "T1036",
+        "name": "Masquerading",
+        "description": "Adversaries may attempt to manipulate features of their artifacts to make them appear legitimate.",
+        "sub_techniques": [
+          {"id": "T1036.003", "name": "Rename System Utilities", "description": "Adversaries may rename legitimate system utilities to evade detection."},
+          {"id": "T1036.005", "name": "Match Legitimate Name or Location", "description": "Adversaries may match or approximate names/locations of legitimate files."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Rename tools to appear legitimate", "Place payloads in expected directories"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1027",
+        "name": "Obfuscated Files or Information",
+        "description": "Adversaries may attempt to make an executable or file difficult to discover or analyze by obfuscating its contents.",
+        "sub_techniques": [
+          {"id": "T1027.001", "name": "Binary Padding", "description": "Adversaries may add junk data to change file hashes."},
+          {"id": "T1027.002", "name": "Software Packing", "description": "Adversaries may use software packing to conceal their code."},
+          {"id": "T1027.005", "name": "Indicator Removal from Tools", "description": "Adversaries may remove indicators from tools."},
+          {"id": "T1027.010", "name": "Command Obfuscation", "description": "Adversaries may obfuscate commands to evade detection."}
+        ],
+        "applicable_to": ["endpoint", "web"],
+        "pentest_actions": ["Obfuscate payloads", "Pack executables", "Encode commands to bypass filters"],
+        "tools": ["metasploit", "burp"]
+      },
+      {
+        "id": "T1218",
+        "name": "System Binary Proxy Execution",
+        "description": "Adversaries may bypass process and/or signature-based defenses by proxying execution of malicious content with signed binaries.",
+        "sub_techniques": [
+          {"id": "T1218.001", "name": "Compiled HTML File", "description": "Adversaries may abuse Compiled HTML files (.chm) for proxy execution."},
+          {"id": "T1218.003", "name": "CMSTP", "description": "Adversaries may abuse CMSTP for proxy execution."},
+          {"id": "T1218.005", "name": "Mshta", "description": "Adversaries may abuse mshta.exe for proxy execution."},
+          {"id": "T1218.010", "name": "Regsvr32", "description": "Adversaries may abuse Regsvr32 for proxy execution."},
+          {"id": "T1218.011", "name": "Rundll32", "description": "Adversaries may abuse rundll32.exe for proxy execution."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Use LOLBins for execution", "Bypass application whitelisting via signed binaries"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1553",
+        "name": "Subvert Trust Controls",
+        "description": "Adversaries may undermine security controls that will either warn users of untrusted activity or prevent execution of untrusted programs.",
+        "sub_techniques": [
+          {"id": "T1553.002", "name": "Code Signing", "description": "Adversaries may create, acquire, or steal code signing materials."},
+          {"id": "T1553.004", "name": "Install Root Certificate", "description": "Adversaries may install a root certificate on a compromised system."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test code signing bypass", "Install rogue root certificates for MITM"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1014",
+        "name": "Rootkit",
+        "description": "Adversaries may use rootkits to hide the presence of programs, files, network connections, services, drivers, and other system components.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Detect rootkits on compromised systems", "Test rootkit deployment"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1497",
+        "name": "Virtualization/Sandbox Evasion",
+        "description": "Adversaries may employ various means to detect and avoid virtualization and analysis environments.",
+        "sub_techniques": [
+          {"id": "T1497.001", "name": "System Checks", "description": "Adversaries may check for VM-related artifacts."},
+          {"id": "T1497.003", "name": "Time Based Evasion", "description": "Adversaries may use time-based evasion techniques."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test sandbox detection mechanisms", "Implement anti-analysis techniques"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1006",
+        "name": "Direct Volume Access",
+        "description": "Adversaries may directly access a volume to bypass file access controls and file system monitoring.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Access raw disk volumes to bypass controls"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1112",
+        "name": "Modify Registry",
+        "description": "Adversaries may interact with the Windows Registry to hide configuration information, remove information, or aid in persistence.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Modify registry for defense evasion", "Hide malicious configurations in registry"],
+        "tools": ["metasploit", "evil-winrm"]
+      },
+      {
+        "id": "T1207",
+        "name": "Rogue Domain Controller",
+        "description": "Adversaries may register a rogue domain controller to manipulate AD data (DCShadow).",
+        "sub_techniques": [],
+        "applicable_to": ["active_directory"],
+        "pentest_actions": ["Perform DCShadow attack", "Register rogue DC for AD manipulation"],
+        "tools": ["mimikatz", "impacket"]
+      },
+      {
+        "id": "T1134",
+        "name": "Access Token Manipulation",
+        "description": "Adversaries may modify access tokens to evade defenses.",
+        "sub_techniques": [
+          {"id": "T1134.001", "name": "Token Impersonation/Theft", "description": "Adversaries may duplicate tokens to evade access controls."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Manipulate tokens to evade detection"],
+        "tools": ["mimikatz", "metasploit"]
+      },
+      {
+        "id": "T1480",
+        "name": "Execution Guardrails",
+        "description": "Adversaries may use execution guardrails to constrain execution to specific environments.",
+        "sub_techniques": [
+          {"id": "T1480.001", "name": "Environmental Keying", "description": "Adversaries may use environmental keying to limit payload execution."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Implement environment-aware payloads"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1211",
+        "name": "Exploitation for Defense Evasion",
+        "description": "Adversaries may exploit a system or application vulnerability to bypass security features.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Exploit vulnerabilities to bypass security controls"],
+        "tools": ["metasploit", "nuclei"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0006",
+    "tactic_name": "Credential Access",
+    "techniques": [
+      {
+        "id": "T1110",
+        "name": "Brute Force",
+        "description": "Adversaries may use brute force techniques to gain access to accounts when passwords are unknown or password hashes are obtained.",
+        "sub_techniques": [
+          {"id": "T1110.001", "name": "Password Guessing", "description": "Adversaries may guess passwords to attempt access to accounts."},
+          {"id": "T1110.002", "name": "Password Cracking", "description": "Adversaries may use password cracking to recover usable credentials from hashes."},
+          {"id": "T1110.003", "name": "Password Spraying", "description": "Adversaries may use a single common password against many accounts."},
+          {"id": "T1110.004", "name": "Credential Stuffing", "description": "Adversaries may use credentials obtained from breach dumps."}
+        ],
+        "applicable_to": ["web", "api", "network", "active_directory", "cloud"],
+        "pentest_actions": ["Brute force login portals", "Password spray against AD", "Crack captured hashes", "Credential stuff from breach data"],
+        "tools": ["hydra", "john", "hashcat", "crackmapexec", "burp", "metasploit"]
+      },
+      {
+        "id": "T1187",
+        "name": "Forced Authentication",
+        "description": "Adversaries may gather credential material by invoking or forcing a user to automatically provide authentication information through a mechanism.",
+        "sub_techniques": [],
+        "applicable_to": ["active_directory", "network"],
+        "pentest_actions": ["Force NTLM authentication via malicious files", "Capture credentials via responder"],
+        "tools": ["responder", "impacket", "metasploit"]
+      },
+      {
+        "id": "T1606",
+        "name": "Forge Web Credentials",
+        "description": "Adversaries may forge credential materials that can be used to gain access to web applications.",
+        "sub_techniques": [
+          {"id": "T1606.001", "name": "Web Cookies", "description": "Adversaries may forge web cookies to gain access to web applications."},
+          {"id": "T1606.002", "name": "SAML Tokens", "description": "Adversaries may forge SAML tokens (Golden SAML)."}
+        ],
+        "applicable_to": ["web", "api", "cloud", "saas"],
+        "pentest_actions": ["Forge session cookies", "Test JWT manipulation", "Attempt Golden SAML attacks"],
+        "tools": ["burp", "curl", "http_client"]
+      },
+      {
+        "id": "T1056",
+        "name": "Input Capture",
+        "description": "Adversaries may use methods of capturing user input to obtain credentials or collect information.",
+        "sub_techniques": [
+          {"id": "T1056.001", "name": "Keylogging", "description": "Adversaries may log keystrokes to intercept credentials."},
+          {"id": "T1056.003", "name": "Web Portal Capture", "description": "Adversaries may install code on externally facing portals to capture credentials."},
+          {"id": "T1056.004", "name": "Credential API Hooking", "description": "Adversaries may hook API functions to collect credentials."}
+        ],
+        "applicable_to": ["endpoint", "web"],
+        "pentest_actions": ["Deploy keyloggers post-exploitation", "Capture credentials from web portals"],
+        "tools": ["metasploit", "mimikatz"]
+      },
+      {
+        "id": "T1557",
+        "name": "Adversary-in-the-Middle",
+        "description": "Adversaries may attempt to position themselves between two or more networked devices to support follow-on behaviors.",
+        "sub_techniques": [
+          {"id": "T1557.001", "name": "LLMNR/NBT-NS Poisoning and SMB Relay", "description": "Adversaries may spoof LLMNR/NBT-NS responses to capture credentials via SMB/NTLMv2."},
+          {"id": "T1557.002", "name": "ARP Cache Poisoning", "description": "Adversaries may poison ARP caches to position themselves between hosts."},
+          {"id": "T1557.003", "name": "DHCP Spoofing", "description": "Adversaries may spoof DHCP responses for adversary-in-the-middle positioning."}
+        ],
+        "applicable_to": ["network", "active_directory"],
+        "pentest_actions": ["Run LLMNR/NBT-NS poisoning", "Perform SMB relay attacks", "Execute ARP spoofing"],
+        "tools": ["responder", "impacket", "metasploit", "wireshark"]
+      },
+      {
+        "id": "T1040",
+        "name": "Network Sniffing",
+        "description": "Adversaries may sniff network traffic to capture information, including credentials, sent over an insecure network.",
+        "sub_techniques": [],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Capture network traffic for credentials", "Sniff unencrypted protocols"],
+        "tools": ["wireshark", "tcpdump", "responder"]
+      },
+      {
+        "id": "T1003",
+        "name": "OS Credential Dumping",
+        "description": "Adversaries may attempt to dump credentials to obtain account login and credential material.",
+        "sub_techniques": [
+          {"id": "T1003.001", "name": "LSASS Memory", "description": "Adversaries may access credentials stored in LSASS process memory."},
+          {"id": "T1003.002", "name": "Security Account Manager", "description": "Adversaries may attempt to extract credential material from the SAM database."},
+          {"id": "T1003.003", "name": "NTDS", "description": "Adversaries may access the Active Directory domain database (NTDS.dit)."},
+          {"id": "T1003.004", "name": "LSA Secrets", "description": "Adversaries may access LSA secrets stored in the registry."},
+          {"id": "T1003.005", "name": "Cached Domain Credentials", "description": "Adversaries may access cached domain credentials (DCC2)."},
+          {"id": "T1003.006", "name": "DCSync", "description": "Adversaries may abuse the DC replication protocol to extract credentials (DCSync)."},
+          {"id": "T1003.008", "name": "/etc/passwd and /etc/shadow", "description": "Adversaries may dump password hashes from /etc/shadow."}
+        ],
+        "applicable_to": ["endpoint", "active_directory", "infrastructure"],
+        "pentest_actions": ["Dump LSASS memory", "Extract SAM database", "Perform DCSync", "Dump NTDS.dit", "Extract /etc/shadow"],
+        "tools": ["mimikatz", "impacket", "crackmapexec", "metasploit"]
+      },
+      {
+        "id": "T1528",
+        "name": "Steal Application Access Token",
+        "description": "Adversaries can steal application access tokens as a means of acquiring credentials to access resources.",
+        "sub_techniques": [],
+        "applicable_to": ["cloud", "saas", "web", "api"],
+        "pentest_actions": ["Steal OAuth tokens", "Capture API keys from application responses", "Test for token leakage"],
+        "tools": ["burp", "curl", "http_client"]
+      },
+      {
+        "id": "T1558",
+        "name": "Steal or Forge Kerberos Tickets",
+        "description": "Adversaries may attempt to steal or forge Kerberos tickets for lateral movement and persistence.",
+        "sub_techniques": [
+          {"id": "T1558.001", "name": "Golden Ticket", "description": "Adversaries may forge Kerberos TGTs (Golden Ticket) using the KRBTGT hash."},
+          {"id": "T1558.002", "name": "Silver Ticket", "description": "Adversaries may forge Kerberos TGS tickets (Silver Ticket)."},
+          {"id": "T1558.003", "name": "Kerberoasting", "description": "Adversaries may request service tickets for service accounts and crack them offline."},
+          {"id": "T1558.004", "name": "AS-REP Roasting", "description": "Adversaries may request AS-REP for accounts without pre-authentication."}
+        ],
+        "applicable_to": ["active_directory"],
+        "pentest_actions": ["Perform Kerberoasting", "Perform AS-REP Roasting", "Forge Golden/Silver Tickets"],
+        "tools": ["rubeus", "impacket", "hashcat", "john", "mimikatz", "bloodhound"]
+      },
+      {
+        "id": "T1539",
+        "name": "Steal Web Session Cookie",
+        "description": "Adversaries may steal web application or service session cookies to gain access as an authenticated user.",
+        "sub_techniques": [],
+        "applicable_to": ["web", "saas"],
+        "pentest_actions": ["Steal session cookies via XSS", "Test for cookie theft vulnerabilities"],
+        "tools": ["burp", "curl", "http_client"]
+      },
+      {
+        "id": "T1552",
+        "name": "Unsecured Credentials",
+        "description": "Adversaries may search compromised systems to find and obtain insecurely stored credentials.",
+        "sub_techniques": [
+          {"id": "T1552.001", "name": "Credentials In Files", "description": "Adversaries may search files for insecurely stored credentials."},
+          {"id": "T1552.002", "name": "Credentials in Registry", "description": "Adversaries may search the registry for insecurely stored credentials."},
+          {"id": "T1552.004", "name": "Private Keys", "description": "Adversaries may search for private key certificate files (e.g., .pfx, .pem)."},
+          {"id": "T1552.006", "name": "Group Policy Preferences", "description": "Adversaries may find credentials in Group Policy Preferences (GPP)."}
+        ],
+        "applicable_to": ["endpoint", "active_directory", "cloud", "web"],
+        "pentest_actions": ["Search for credentials in config files", "Check for hardcoded passwords", "Find exposed private keys", "Extract GPP passwords"],
+        "tools": ["crackmapexec", "metasploit", "impacket", "ssh"]
+      },
+      {
+        "id": "T1111",
+        "name": "Multi-Factor Authentication Interception",
+        "description": "Adversaries may target MFA mechanisms to gain access to credentials.",
+        "sub_techniques": [],
+        "applicable_to": ["web", "cloud", "saas"],
+        "pentest_actions": ["Test MFA bypass techniques", "Attempt MFA fatigue attacks"],
+        "tools": ["burp", "curl", "http_client"]
+      },
+      {
+        "id": "T1621",
+        "name": "Multi-Factor Authentication Request Generation",
+        "description": "Adversaries may attempt to bypass MFA by generating excessive authentication requests (MFA fatigue/bombing).",
+        "sub_techniques": [],
+        "applicable_to": ["cloud", "saas", "active_directory"],
+        "pentest_actions": ["Test MFA fatigue attack viability", "Assess MFA rate limiting"],
+        "tools": ["curl", "http_client"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0007",
+    "tactic_name": "Discovery",
+    "techniques": [
+      {
+        "id": "T1087",
+        "name": "Account Discovery",
+        "description": "Adversaries may attempt to get a listing of accounts on a system or within an environment.",
+        "sub_techniques": [
+          {"id": "T1087.001", "name": "Local Account", "description": "Adversaries may enumerate local accounts."},
+          {"id": "T1087.002", "name": "Domain Account", "description": "Adversaries may enumerate domain accounts."},
+          {"id": "T1087.003", "name": "Email Account", "description": "Adversaries may enumerate email accounts."},
+          {"id": "T1087.004", "name": "Cloud Account", "description": "Adversaries may enumerate cloud accounts."}
+        ],
+        "applicable_to": ["endpoint", "active_directory", "cloud"],
+        "pentest_actions": ["Enumerate local users", "Enumerate domain users", "List cloud IAM principals"],
+        "tools": ["crackmapexec", "enum4linux", "ldapsearch", "bloodhound", "impacket"]
+      },
+      {
+        "id": "T1482",
+        "name": "Domain Trust Discovery",
+        "description": "Adversaries may attempt to gather information on domain trust relationships.",
+        "sub_techniques": [],
+        "applicable_to": ["active_directory"],
+        "pentest_actions": ["Enumerate domain trusts", "Map trust relationships", "Identify cross-forest trusts"],
+        "tools": ["bloodhound", "crackmapexec", "ldapsearch", "impacket"]
+      },
+      {
+        "id": "T1083",
+        "name": "File and Directory Discovery",
+        "description": "Adversaries may enumerate files and directories or search for specific information within a file system.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Search for sensitive files", "Enumerate web root directories", "Find configuration files"],
+        "tools": ["ssh", "metasploit", "ffuf", "gobuster"]
+      },
+      {
+        "id": "T1046",
+        "name": "Network Service Discovery",
+        "description": "Adversaries may attempt to get a listing of services running on remote hosts and local network infrastructure devices.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "infrastructure"],
+        "pentest_actions": ["Scan for open ports and services", "Enumerate service versions", "Discover network services"],
+        "tools": ["nmap", "httpx", "nuclei"]
+      },
+      {
+        "id": "T1135",
+        "name": "Network Share Discovery",
+        "description": "Adversaries may look for folders and drives shared on remote systems as a means of identifying sources of information.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "active_directory"],
+        "pentest_actions": ["Enumerate SMB shares", "Find accessible network shares", "Check for anonymous share access"],
+        "tools": ["smbclient", "crackmapexec", "enum4linux", "nmap"]
+      },
+      {
+        "id": "T1069",
+        "name": "Permission Groups Discovery",
+        "description": "Adversaries may attempt to discover group and permission settings.",
+        "sub_techniques": [
+          {"id": "T1069.001", "name": "Local Groups", "description": "Adversaries may enumerate local groups."},
+          {"id": "T1069.002", "name": "Domain Groups", "description": "Adversaries may enumerate domain groups."},
+          {"id": "T1069.003", "name": "Cloud Groups", "description": "Adversaries may enumerate cloud permission groups."}
+        ],
+        "applicable_to": ["endpoint", "active_directory", "cloud"],
+        "pentest_actions": ["Enumerate local groups", "Enumerate domain groups", "Find privileged group members"],
+        "tools": ["bloodhound", "crackmapexec", "ldapsearch", "enum4linux"]
+      },
+      {
+        "id": "T1018",
+        "name": "Remote System Discovery",
+        "description": "Adversaries may attempt to get a listing of other systems by IP address, hostname, or other logical identifier.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "active_directory"],
+        "pentest_actions": ["Discover hosts on the network", "Enumerate active systems", "Map network infrastructure"],
+        "tools": ["nmap", "crackmapexec", "enum4linux"]
+      },
+      {
+        "id": "T1082",
+        "name": "System Information Discovery",
+        "description": "Adversaries may attempt to get detailed information about the operating system and hardware.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Gather OS version info", "Enumerate system architecture", "Identify installed patches"],
+        "tools": ["nmap", "metasploit", "crackmapexec"]
+      },
+      {
+        "id": "T1016",
+        "name": "System Network Configuration Discovery",
+        "description": "Adversaries may look for details about the network configuration and settings.",
+        "sub_techniques": [
+          {"id": "T1016.001", "name": "Internet Connection Discovery", "description": "Adversaries may check for internet connectivity."}
+        ],
+        "applicable_to": ["endpoint", "network"],
+        "pentest_actions": ["Discover network interfaces", "Map routing tables", "Identify DNS settings"],
+        "tools": ["nmap", "metasploit"]
+      },
+      {
+        "id": "T1049",
+        "name": "System Network Connections Discovery",
+        "description": "Adversaries may attempt to get a listing of network connections to or from the compromised system.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "network"],
+        "pentest_actions": ["Enumerate active connections", "Identify outbound connections", "Map network connections"],
+        "tools": ["metasploit", "nmap"]
+      },
+      {
+        "id": "T1580",
+        "name": "Cloud Infrastructure Discovery",
+        "description": "Adversaries may attempt to discover infrastructure and resources available within a cloud environment.",
+        "sub_techniques": [],
+        "applicable_to": ["cloud"],
+        "pentest_actions": ["Enumerate cloud resources", "Discover storage buckets", "Map cloud infrastructure"],
+        "tools": ["curl", "http_client"]
+      },
+      {
+        "id": "T1526",
+        "name": "Cloud Service Discovery",
+        "description": "Adversaries may attempt to enumerate the cloud services running on a system.",
+        "sub_techniques": [],
+        "applicable_to": ["cloud", "saas"],
+        "pentest_actions": ["Enumerate cloud services", "Discover exposed cloud APIs"],
+        "tools": ["curl", "http_client", "nmap"]
+      },
+      {
+        "id": "T1613",
+        "name": "Container and Resource Discovery",
+        "description": "Adversaries may attempt to discover containers and other resources available within a containers environment.",
+        "sub_techniques": [],
+        "applicable_to": ["containers"],
+        "pentest_actions": ["Enumerate running containers", "Discover container orchestration platforms"],
+        "tools": ["nmap", "curl"]
+      },
+      {
+        "id": "T1201",
+        "name": "Password Policy Discovery",
+        "description": "Adversaries may attempt to access detailed information about the password policy used within an enterprise network.",
+        "sub_techniques": [],
+        "applicable_to": ["active_directory", "endpoint"],
+        "pentest_actions": ["Enumerate password policies", "Identify lockout thresholds for spray attacks"],
+        "tools": ["crackmapexec", "enum4linux", "ldapsearch"]
+      },
+      {
+        "id": "T1057",
+        "name": "Process Discovery",
+        "description": "Adversaries may attempt to get information about running processes on a system.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Enumerate running processes", "Identify security products running"],
+        "tools": ["metasploit", "crackmapexec"]
+      },
+      {
+        "id": "T1518",
+        "name": "Software Discovery",
+        "description": "Adversaries may attempt to get a listing of software and software versions that are installed on a system.",
+        "sub_techniques": [
+          {"id": "T1518.001", "name": "Security Software Discovery", "description": "Adversaries may enumerate security software installed on the system."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Enumerate installed software", "Identify security products", "Find vulnerable software versions"],
+        "tools": ["metasploit", "crackmapexec", "nmap"]
+      },
+      {
+        "id": "T1033",
+        "name": "System Owner/User Discovery",
+        "description": "Adversaries may attempt to identify the primary user, currently logged in user, or set of users that commonly use a system.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Identify logged-in users", "Enumerate user sessions"],
+        "tools": ["crackmapexec", "metasploit"]
+      },
+      {
+        "id": "T1007",
+        "name": "System Service Discovery",
+        "description": "Adversaries may try to gather information about registered local system services.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Enumerate running services", "Identify vulnerable services"],
+        "tools": ["nmap", "metasploit", "crackmapexec"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0008",
+    "tactic_name": "Lateral Movement",
+    "techniques": [
+      {
+        "id": "T1210",
+        "name": "Exploitation of Remote Services",
+        "description": "Adversaries may exploit remote services to gain unauthorized access to internal systems.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "infrastructure", "active_directory"],
+        "pentest_actions": ["Exploit vulnerable network services", "Target unpatched services for lateral movement", "Test for EternalBlue and similar exploits"],
+        "tools": ["metasploit", "crackmapexec", "nmap", "nuclei"]
+      },
+      {
+        "id": "T1534",
+        "name": "Internal Spearphishing",
+        "description": "Adversaries may use internal spearphishing to gain access to additional information or exploit other users within the same organization.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "saas"],
+        "pentest_actions": ["Send phishing emails from compromised internal accounts"],
+        "tools": ["curl", "http_client"]
+      },
+      {
+        "id": "T1570",
+        "name": "Lateral Tool Transfer",
+        "description": "Adversaries may transfer tools or other files between systems in a compromised environment.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "infrastructure"],
+        "pentest_actions": ["Transfer tools to compromised systems", "Stage payloads on internal hosts"],
+        "tools": ["smbclient", "curl", "wget", "nc", "ssh", "impacket"]
+      },
+      {
+        "id": "T1563",
+        "name": "Remote Service Session Hijacking",
+        "description": "Adversaries may take control of preexisting sessions with remote services.",
+        "sub_techniques": [
+          {"id": "T1563.001", "name": "SSH Hijacking", "description": "Adversaries may hijack a legitimate user's SSH session."},
+          {"id": "T1563.002", "name": "RDP Hijacking", "description": "Adversaries may hijack a legitimate user's RDP session."}
+        ],
+        "applicable_to": ["network", "infrastructure"],
+        "pentest_actions": ["Hijack SSH sessions", "Hijack RDP sessions for lateral movement"],
+        "tools": ["ssh", "metasploit"]
+      },
+      {
+        "id": "T1021",
+        "name": "Remote Services",
+        "description": "Adversaries may use valid accounts to log into a service specifically designed to accept remote connections.",
+        "sub_techniques": [
+          {"id": "T1021.001", "name": "Remote Desktop Protocol", "description": "Adversaries may use RDP to log into computers."},
+          {"id": "T1021.002", "name": "SMB/Windows Admin Shares", "description": "Adversaries may use SMB admin shares for lateral movement."},
+          {"id": "T1021.003", "name": "Distributed Component Object Model", "description": "Adversaries may use DCOM for lateral movement."},
+          {"id": "T1021.004", "name": "SSH", "description": "Adversaries may use SSH for lateral movement."},
+          {"id": "T1021.006", "name": "Windows Remote Management", "description": "Adversaries may use WinRM for lateral movement."}
+        ],
+        "applicable_to": ["network", "active_directory", "infrastructure"],
+        "pentest_actions": ["Use PSExec for remote execution", "Connect via SMB admin shares", "Use WinRM for remote command execution", "SSH with stolen credentials"],
+        "tools": ["impacket", "crackmapexec", "evil-winrm", "ssh", "smbclient", "metasploit"]
+      },
+      {
+        "id": "T1091",
+        "name": "Replication Through Removable Media",
+        "description": "Adversaries may move onto systems via removable media.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test USB-based lateral movement"],
+        "tools": []
+      },
+      {
+        "id": "T1072",
+        "name": "Software Deployment Tools",
+        "description": "Adversaries may gain access to and use third-party software deployment tools to move laterally.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "active_directory"],
+        "pentest_actions": ["Abuse SCCM or other deployment tools for lateral movement"],
+        "tools": ["crackmapexec", "impacket"]
+      },
+      {
+        "id": "T1080",
+        "name": "Taint Shared Content",
+        "description": "Adversaries may deliver payloads to remote systems by adding content to shared storage locations.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "active_directory"],
+        "pentest_actions": ["Place malicious files on network shares", "Taint shared content for lateral movement"],
+        "tools": ["smbclient", "impacket"]
+      },
+      {
+        "id": "T1550",
+        "name": "Use Alternate Authentication Material",
+        "description": "Adversaries may use alternate authentication material, such as password hashes, Kerberos tickets, and tokens, to move laterally.",
+        "sub_techniques": [
+          {"id": "T1550.001", "name": "Application Access Token", "description": "Adversaries may use stolen application access tokens."},
+          {"id": "T1550.002", "name": "Pass the Hash", "description": "Adversaries may authenticate using password hashes without cracking."},
+          {"id": "T1550.003", "name": "Pass the Ticket", "description": "Adversaries may authenticate using Kerberos tickets."},
+          {"id": "T1550.004", "name": "Web Session Cookie", "description": "Adversaries may use stolen web session cookies to authenticate."}
+        ],
+        "applicable_to": ["active_directory", "network", "web", "cloud"],
+        "pentest_actions": ["Perform Pass the Hash", "Perform Pass the Ticket", "Overpass the Hash", "Use stolen session cookies"],
+        "tools": ["impacket", "mimikatz", "crackmapexec", "rubeus", "evil-winrm"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0009",
+    "tactic_name": "Collection",
+    "techniques": [
+      {
+        "id": "T1557",
+        "name": "Adversary-in-the-Middle",
+        "description": "Adversaries may attempt to position themselves between two or more networked devices to collect data in transit.",
+        "sub_techniques": [
+          {"id": "T1557.001", "name": "LLMNR/NBT-NS Poisoning and SMB Relay", "description": "Adversaries may spoof LLMNR/NBT-NS to capture data."}
+        ],
+        "applicable_to": ["network", "active_directory"],
+        "pentest_actions": ["Intercept network traffic", "Capture credentials via MITM"],
+        "tools": ["responder", "impacket", "wireshark"]
+      },
+      {
+        "id": "T1560",
+        "name": "Archive Collected Data",
+        "description": "Adversaries may compress and/or encrypt collected data prior to exfiltration.",
+        "sub_techniques": [
+          {"id": "T1560.001", "name": "Archive via Utility", "description": "Adversaries may use utilities to compress collected data."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Compress collected data for exfiltration", "Encrypt data before transfer"],
+        "tools": ["metasploit", "ssh"]
+      },
+      {
+        "id": "T1119",
+        "name": "Automated Collection",
+        "description": "Adversaries may use automated techniques for collecting internal data on a compromised system.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "cloud"],
+        "pentest_actions": ["Automate data collection from compromised systems"],
+        "tools": ["metasploit", "crackmapexec"]
+      },
+      {
+        "id": "T1530",
+        "name": "Data from Cloud Storage",
+        "description": "Adversaries may access data from improperly secured cloud storage.",
+        "sub_techniques": [],
+        "applicable_to": ["cloud", "saas"],
+        "pentest_actions": ["Enumerate open S3 buckets", "Access misconfigured cloud storage", "Download exposed cloud data"],
+        "tools": ["curl", "http_client"]
+      },
+      {
+        "id": "T1213",
+        "name": "Data from Information Repositories",
+        "description": "Adversaries may leverage information repositories to mine valuable information.",
+        "sub_techniques": [
+          {"id": "T1213.001", "name": "Confluence", "description": "Adversaries may collect data from Confluence wikis."},
+          {"id": "T1213.002", "name": "Sharepoint", "description": "Adversaries may collect data from SharePoint."},
+          {"id": "T1213.003", "name": "Code Repositories", "description": "Adversaries may collect data from code repositories."}
+        ],
+        "applicable_to": ["saas", "web", "cloud"],
+        "pentest_actions": ["Access internal wikis and documentation", "Mine code repositories for secrets", "Search SharePoint for sensitive documents"],
+        "tools": ["curl", "http_client", "burp"]
+      },
+      {
+        "id": "T1005",
+        "name": "Data from Local System",
+        "description": "Adversaries may search local system sources such as file systems and configuration files for information of interest.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Search for sensitive files on compromised systems", "Extract configuration files"],
+        "tools": ["metasploit", "ssh"]
+      },
+      {
+        "id": "T1039",
+        "name": "Data from Network Shared Drive",
+        "description": "Adversaries may search network shares on computers they have compromised to find files of interest.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "active_directory"],
+        "pentest_actions": ["Enumerate and access network shares", "Search for sensitive files on shares"],
+        "tools": ["smbclient", "crackmapexec", "enum4linux"]
+      },
+      {
+        "id": "T1114",
+        "name": "Email Collection",
+        "description": "Adversaries may collect emails to gather intelligence or steal sensitive data.",
+        "sub_techniques": [
+          {"id": "T1114.001", "name": "Local Email Collection", "description": "Adversaries may collect emails from local mail clients."},
+          {"id": "T1114.002", "name": "Remote Email Collection", "description": "Adversaries may access external-facing mail services."},
+          {"id": "T1114.003", "name": "Email Forwarding Rule", "description": "Adversaries may set up email forwarding rules to collect emails."}
+        ],
+        "applicable_to": ["endpoint", "saas", "cloud"],
+        "pentest_actions": ["Access mailboxes post-compromise", "Set up email forwarding rules", "Search emails for sensitive data"],
+        "tools": ["impacket", "curl", "http_client"]
+      },
+      {
+        "id": "T1185",
+        "name": "Browser Session Hijacking",
+        "description": "Adversaries may take advantage of security vulnerabilities and inherent functionality in browser software to change content or modify user behavior.",
+        "sub_techniques": [],
+        "applicable_to": ["web", "endpoint"],
+        "pentest_actions": ["Hijack browser sessions", "Inject content into browser sessions"],
+        "tools": ["burp", "metasploit"]
+      },
+      {
+        "id": "T1113",
+        "name": "Screen Capture",
+        "description": "Adversaries may attempt to take screen captures of the desktop to gather information.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Capture screenshots post-exploitation"],
+        "tools": ["metasploit"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0011",
+    "tactic_name": "Command and Control",
+    "techniques": [
+      {
+        "id": "T1071",
+        "name": "Application Layer Protocol",
+        "description": "Adversaries may communicate using OSI application layer protocols to avoid detection.",
+        "sub_techniques": [
+          {"id": "T1071.001", "name": "Web Protocols", "description": "Adversaries may use HTTP/HTTPS for C2 communication."},
+          {"id": "T1071.002", "name": "File Transfer Protocols", "description": "Adversaries may use FTP for C2 communication."},
+          {"id": "T1071.003", "name": "Mail Protocols", "description": "Adversaries may use SMTP/IMAP for C2 communication."},
+          {"id": "T1071.004", "name": "DNS", "description": "Adversaries may use DNS for C2 communication."}
+        ],
+        "applicable_to": ["network", "infrastructure"],
+        "pentest_actions": ["Establish C2 over HTTP/HTTPS", "Use DNS tunneling for C2", "Test egress filtering"],
+        "tools": ["metasploit", "chisel", "curl", "nc"]
+      },
+      {
+        "id": "T1132",
+        "name": "Data Encoding",
+        "description": "Adversaries may encode data to make the content of C2 communications more difficult to detect.",
+        "sub_techniques": [
+          {"id": "T1132.001", "name": "Standard Encoding", "description": "Adversaries may use standard encoding (Base64) for C2 data."},
+          {"id": "T1132.002", "name": "Non-Standard Encoding", "description": "Adversaries may use non-standard encoding for C2 data."}
+        ],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Encode C2 traffic to evade detection"],
+        "tools": ["metasploit", "chisel"]
+      },
+      {
+        "id": "T1001",
+        "name": "Data Obfuscation",
+        "description": "Adversaries may obfuscate command and control traffic to make it more difficult to detect.",
+        "sub_techniques": [
+          {"id": "T1001.001", "name": "Junk Data", "description": "Adversaries may add junk data to C2 communications."},
+          {"id": "T1001.002", "name": "Steganography", "description": "Adversaries may use steganography to hide data within images."},
+          {"id": "T1001.003", "name": "Protocol Impersonation", "description": "Adversaries may impersonate legitimate protocols."}
+        ],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Obfuscate C2 traffic", "Use steganography for data hiding"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1573",
+        "name": "Encrypted Channel",
+        "description": "Adversaries may employ an encryption algorithm to conceal command and control traffic.",
+        "sub_techniques": [
+          {"id": "T1573.001", "name": "Symmetric Cryptography", "description": "Adversaries may use symmetric encryption for C2."},
+          {"id": "T1573.002", "name": "Asymmetric Cryptography", "description": "Adversaries may use asymmetric encryption for C2."}
+        ],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Use encrypted channels for C2", "Test TLS-encrypted C2 tunnels"],
+        "tools": ["metasploit", "chisel", "ssh"]
+      },
+      {
+        "id": "T1105",
+        "name": "Ingress Tool Transfer",
+        "description": "Adversaries may transfer tools or other files from an external system into a compromised environment.",
+        "sub_techniques": [],
+        "applicable_to": ["network", "endpoint"],
+        "pentest_actions": ["Download tools to compromised systems", "Transfer payloads via HTTP/HTTPS"],
+        "tools": ["curl", "wget", "nc", "metasploit"]
+      },
+      {
+        "id": "T1095",
+        "name": "Non-Application Layer Protocol",
+        "description": "Adversaries may use OSI non-application layer protocols for communication.",
+        "sub_techniques": [],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Use ICMP tunneling for C2", "Test non-standard protocol C2"],
+        "tools": ["metasploit", "nc"]
+      },
+      {
+        "id": "T1572",
+        "name": "Protocol Tunneling",
+        "description": "Adversaries may tunnel network communications to and from a victim system within a separate protocol to avoid detection.",
+        "sub_techniques": [],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Set up SSH tunnels", "Use chisel/ligolo for pivoting", "Create SOCKS proxies"],
+        "tools": ["chisel", "ligolo", "ssh", "metasploit", "nc"]
+      },
+      {
+        "id": "T1090",
+        "name": "Proxy",
+        "description": "Adversaries may use a connection proxy to direct network traffic between systems or act as an intermediary.",
+        "sub_techniques": [
+          {"id": "T1090.001", "name": "Internal Proxy", "description": "Adversaries may use internal proxy to direct C2 traffic."},
+          {"id": "T1090.002", "name": "External Proxy", "description": "Adversaries may use an external proxy to mask C2 traffic."},
+          {"id": "T1090.003", "name": "Multi-hop Proxy", "description": "Adversaries may chain together multiple proxies."}
+        ],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Set up proxy chains for pivoting", "Use SOCKS proxies for lateral movement"],
+        "tools": ["chisel", "ligolo", "ssh", "metasploit"]
+      },
+      {
+        "id": "T1219",
+        "name": "Remote Access Software",
+        "description": "Adversaries may use legitimate remote access tools to establish C2 channels.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "network"],
+        "pentest_actions": ["Use remote access tools for persistent access", "Deploy remote management software"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1568",
+        "name": "Dynamic Resolution",
+        "description": "Adversaries may dynamically establish connections to C2 infrastructure.",
+        "sub_techniques": [
+          {"id": "T1568.002", "name": "Domain Generation Algorithms", "description": "Adversaries may use DGAs to dynamically identify C2 domains."}
+        ],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Test DGA-based C2 techniques"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1571",
+        "name": "Non-Standard Port",
+        "description": "Adversaries may communicate using a protocol and port pairing that are typically not associated.",
+        "sub_techniques": [],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Use non-standard ports for C2", "Test egress on non-standard ports"],
+        "tools": ["nc", "metasploit", "nmap"]
+      },
+      {
+        "id": "T1104",
+        "name": "Multi-Stage Channels",
+        "description": "Adversaries may create multiple stages for C2 that are employed under different conditions.",
+        "sub_techniques": [],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Set up multi-stage C2 infrastructure"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1102",
+        "name": "Web Service",
+        "description": "Adversaries may use legitimate external web services as a means for relaying data to/from a compromised system.",
+        "sub_techniques": [
+          {"id": "T1102.001", "name": "Dead Drop Resolver", "description": "Adversaries may use web services to host information that points to C2 infrastructure."},
+          {"id": "T1102.002", "name": "Bidirectional Communication", "description": "Adversaries may use web services for bidirectional C2."}
+        ],
+        "applicable_to": ["network", "cloud"],
+        "pentest_actions": ["Use cloud services for C2", "Test C2 via legitimate web services"],
+        "tools": ["curl", "metasploit"]
+      },
+      {
+        "id": "T1008",
+        "name": "Fallback Channels",
+        "description": "Adversaries may use fallback or alternate communication channels if the primary channel is compromised.",
+        "sub_techniques": [],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Set up redundant C2 channels"],
+        "tools": ["metasploit"]
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0010",
+    "tactic_name": "Exfiltration",
+    "techniques": [
+      {
+        "id": "T1020",
+        "name": "Automated Exfiltration",
+        "description": "Adversaries may exfiltrate data, such as sensitive documents, through the use of automated processing.",
+        "sub_techniques": [
+          {"id": "T1020.001", "name": "Traffic Duplication", "description": "Adversaries may duplicate traffic to exfiltrate data."}
+        ],
+        "applicable_to": ["network", "cloud"],
+        "pentest_actions": ["Set up automated data exfiltration", "Mirror traffic for data extraction"],
+        "tools": ["metasploit", "tcpdump"]
+      },
+      {
+        "id": "T1030",
+        "name": "Data Transfer Size Limits",
+        "description": "Adversaries may exfiltrate data in fixed-size chunks to avoid triggering network data transfer threshold alerts.",
+        "sub_techniques": [],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Chunk data for stealthy exfiltration", "Test DLP evasion"],
+        "tools": ["curl", "nc"]
+      },
+      {
+        "id": "T1048",
+        "name": "Exfiltration Over Alternative Protocol",
+        "description": "Adversaries may steal data by exfiltrating it over a different protocol than the existing C2 channel.",
+        "sub_techniques": [
+          {"id": "T1048.001", "name": "Exfiltration Over Symmetric Encrypted Non-C2 Protocol", "description": "Adversaries may use encrypted non-C2 protocols for exfiltration."},
+          {"id": "T1048.002", "name": "Exfiltration Over Asymmetric Encrypted Non-C2 Protocol", "description": "Adversaries may use asymmetric encrypted non-C2 protocols."},
+          {"id": "T1048.003", "name": "Exfiltration Over Unencrypted Non-C2 Protocol", "description": "Adversaries may use unencrypted non-C2 protocols for exfiltration."}
+        ],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Exfiltrate data over DNS", "Use ICMP for data exfiltration", "Test exfiltration via alternate protocols"],
+        "tools": ["nc", "curl", "ssh"]
+      },
+      {
+        "id": "T1041",
+        "name": "Exfiltration Over C2 Channel",
+        "description": "Adversaries may steal data by exfiltrating it over an existing C2 channel.",
+        "sub_techniques": [],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Exfiltrate data through established C2 channel"],
+        "tools": ["metasploit", "chisel"]
+      },
+      {
+        "id": "T1567",
+        "name": "Exfiltration Over Web Service",
+        "description": "Adversaries may use an existing legitimate external web service to exfiltrate data.",
+        "sub_techniques": [
+          {"id": "T1567.001", "name": "Exfiltration to Code Repository", "description": "Adversaries may exfiltrate data to code repositories."},
+          {"id": "T1567.002", "name": "Exfiltration to Cloud Storage", "description": "Adversaries may exfiltrate data to cloud storage services."}
+        ],
+        "applicable_to": ["cloud", "network"],
+        "pentest_actions": ["Exfiltrate data to cloud storage", "Test egress via web services"],
+        "tools": ["curl", "http_client"]
+      },
+      {
+        "id": "T1029",
+        "name": "Scheduled Transfer",
+        "description": "Adversaries may schedule data exfiltration to be performed only at certain times of day or at certain intervals.",
+        "sub_techniques": [],
+        "applicable_to": ["network"],
+        "pentest_actions": ["Schedule data exfiltration during off-hours"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1537",
+        "name": "Transfer Data to Cloud Account",
+        "description": "Adversaries may exfiltrate data by transferring the data to another cloud account they control.",
+        "sub_techniques": [],
+        "applicable_to": ["cloud"],
+        "pentest_actions": ["Transfer data to adversary-controlled cloud accounts"],
+        "tools": ["curl", "http_client"]
+      },
+      {
+        "id": "T1011",
+        "name": "Exfiltration Over Other Network Medium",
+        "description": "Adversaries may attempt to exfiltrate data over a different network medium than the C2 channel.",
+        "sub_techniques": [
+          {"id": "T1011.001", "name": "Exfiltration Over Bluetooth", "description": "Adversaries may exfiltrate data over Bluetooth."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test exfiltration via alternate network interfaces"],
+        "tools": []
+      },
+      {
+        "id": "T1052",
+        "name": "Exfiltration Over Physical Medium",
+        "description": "Adversaries may attempt to exfiltrate data via a physical medium such as a removable drive.",
+        "sub_techniques": [
+          {"id": "T1052.001", "name": "Exfiltration over USB", "description": "Adversaries may exfiltrate data over a USB connected physical device."}
+        ],
+        "applicable_to": ["endpoint"],
+        "pentest_actions": ["Test USB data exfiltration controls"],
+        "tools": []
+      }
+    ]
+  },
+  {
+    "tactic_id": "TA0040",
+    "tactic_name": "Impact",
+    "techniques": [
+      {
+        "id": "T1531",
+        "name": "Account Access Removal",
+        "description": "Adversaries may interrupt availability of system and network resources by inhibiting access to accounts used by legitimate users.",
+        "sub_techniques": [],
+        "applicable_to": ["active_directory", "cloud", "endpoint"],
+        "pentest_actions": ["Test account lockout impact", "Assess account deletion controls"],
+        "tools": ["crackmapexec", "impacket"]
+      },
+      {
+        "id": "T1485",
+        "name": "Data Destruction",
+        "description": "Adversaries may destroy data and files on specific systems or in large numbers on a network.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure", "cloud"],
+        "pentest_actions": ["Assess data destruction impact scenarios", "Test backup recovery procedures"],
+        "tools": ["metasploit", "ssh"]
+      },
+      {
+        "id": "T1486",
+        "name": "Data Encrypted for Impact",
+        "description": "Adversaries may encrypt data on target systems to interrupt availability (ransomware).",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure", "cloud"],
+        "pentest_actions": ["Simulate ransomware scenarios", "Test ransomware detection controls"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1565",
+        "name": "Data Manipulation",
+        "description": "Adversaries may insert, delete, or manipulate data in order to influence external outcomes or hide activity.",
+        "sub_techniques": [
+          {"id": "T1565.001", "name": "Stored Data Manipulation", "description": "Adversaries may modify data at rest to influence outcomes."},
+          {"id": "T1565.002", "name": "Transmitted Data Manipulation", "description": "Adversaries may modify data in transit."},
+          {"id": "T1565.003", "name": "Runtime Data Manipulation", "description": "Adversaries may modify data in memory or runtime."}
+        ],
+        "applicable_to": ["web", "api", "endpoint", "infrastructure"],
+        "pentest_actions": ["Test for data integrity vulnerabilities", "Assess database manipulation impact", "Test for MITM data manipulation"],
+        "tools": ["sqlmap", "burp", "curl", "http_client"]
+      },
+      {
+        "id": "T1491",
+        "name": "Defacement",
+        "description": "Adversaries may modify visual content available internally or externally to an enterprise network.",
+        "sub_techniques": [
+          {"id": "T1491.001", "name": "Internal Defacement", "description": "Adversaries may deface internal-facing systems."},
+          {"id": "T1491.002", "name": "External Defacement", "description": "Adversaries may deface external-facing web applications."}
+        ],
+        "applicable_to": ["web", "infrastructure"],
+        "pentest_actions": ["Test for web defacement vulnerabilities", "Assess content modification controls"],
+        "tools": ["nuclei", "nikto", "burp", "curl"]
+      },
+      {
+        "id": "T1499",
+        "name": "Endpoint Denial of Service",
+        "description": "Adversaries may perform endpoint denial of service attacks to degrade or block availability of services.",
+        "sub_techniques": [
+          {"id": "T1499.001", "name": "OS Exhaustion Flood", "description": "Adversaries may target operating systems to cause a DoS."},
+          {"id": "T1499.002", "name": "Service Exhaustion Flood", "description": "Adversaries may target services to cause a DoS."},
+          {"id": "T1499.003", "name": "Application Exhaustion Flood", "description": "Adversaries may target application features to cause a DoS."},
+          {"id": "T1499.004", "name": "Application or System Exploitation", "description": "Adversaries may exploit vulnerabilities to cause a DoS."}
+        ],
+        "applicable_to": ["web", "api", "network", "infrastructure"],
+        "pentest_actions": ["Test application-layer DoS resilience", "Assess rate limiting controls", "Test for ReDoS vulnerabilities"],
+        "tools": ["nuclei", "curl", "http_client"]
+      },
+      {
+        "id": "T1498",
+        "name": "Network Denial of Service",
+        "description": "Adversaries may perform network denial of service attacks to degrade or block availability of targeted resources.",
+        "sub_techniques": [
+          {"id": "T1498.001", "name": "Direct Network Flood", "description": "Adversaries may send a high volume of traffic to cause a network DoS."},
+          {"id": "T1498.002", "name": "Reflection Amplification", "description": "Adversaries may use reflection/amplification for network DoS."}
+        ],
+        "applicable_to": ["network", "infrastructure"],
+        "pentest_actions": ["Assess DDoS mitigation controls", "Test network flood resilience"],
+        "tools": ["nmap"]
+      },
+      {
+        "id": "T1561",
+        "name": "Disk Wipe",
+        "description": "Adversaries may wipe or corrupt raw disk data on specific systems or in large numbers.",
+        "sub_techniques": [
+          {"id": "T1561.001", "name": "Disk Content Wipe", "description": "Adversaries may erase the contents of storage devices."},
+          {"id": "T1561.002", "name": "Disk Structure Wipe", "description": "Adversaries may corrupt or wipe the disk data structures."}
+        ],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Assess disk wipe detection capabilities", "Test recovery controls"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1495",
+        "name": "Firmware Corruption",
+        "description": "Adversaries may overwrite or corrupt the flash memory contents of system BIOS or other firmware.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Assess firmware integrity controls"],
+        "tools": []
+      },
+      {
+        "id": "T1490",
+        "name": "Inhibit System Recovery",
+        "description": "Adversaries may delete or remove built-in data to inhibit system recovery.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Test backup deletion scenarios", "Assess recovery mechanism protections"],
+        "tools": ["metasploit"]
+      },
+      {
+        "id": "T1489",
+        "name": "Service Stop",
+        "description": "Adversaries may stop or disable services on a system to render those services unavailable.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Test service disruption impact", "Assess service monitoring controls"],
+        "tools": ["metasploit", "crackmapexec"]
+      },
+      {
+        "id": "T1529",
+        "name": "System Shutdown/Reboot",
+        "description": "Adversaries may shutdown/reboot systems to interrupt access to or aid in destruction of those systems.",
+        "sub_techniques": [],
+        "applicable_to": ["endpoint", "infrastructure"],
+        "pentest_actions": ["Assess shutdown/reboot impact", "Test for unauthorized restart capabilities"],
+        "tools": ["metasploit", "crackmapexec"]
+      }
+    ]
+  }
+]
