@@ -65,10 +65,12 @@ cover/
 ehthumbs.db
 Thumbs.db
 
+# Databases
+*.db
+
 # Clinkz
-clinkz.db
-clinkz-*.db
 reports/
+outputs/
 *.html
 *.pdf
 !src/**/templates/*.html
@@ -80,3 +82,9 @@ docker/volumes/
 
 # Fixtures (large tool outputs, keep sample fixtures in tests/fixtures/)
 tests/fixtures/real_outputs/
+
+# Windows
+nul
+
+# sqlmap temp output
+sqlmap_*/
