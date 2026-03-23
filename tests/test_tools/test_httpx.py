@@ -62,18 +62,22 @@ def test_validate_input_accepts_single_target() -> None:
 
 
 def test_validate_input_merges_target_and_targets() -> None:
-    result = make_tool().validate_input({
-        "target": "192.168.1.100",
-        "targets": ["192.168.1.101"],
-    })
+    result = make_tool().validate_input(
+        {
+            "target": "192.168.1.100",
+            "targets": ["192.168.1.101"],
+        }
+    )
     assert result["targets"] == ["192.168.1.100", "192.168.1.101"]
 
 
 def test_validate_input_deduplicates() -> None:
-    result = make_tool().validate_input({
-        "target": "192.168.1.100",
-        "targets": ["192.168.1.100", "192.168.1.101"],
-    })
+    result = make_tool().validate_input(
+        {
+            "target": "192.168.1.100",
+            "targets": ["192.168.1.100", "192.168.1.101"],
+        }
+    )
     assert result["targets"] == ["192.168.1.100", "192.168.1.101"]
 
 

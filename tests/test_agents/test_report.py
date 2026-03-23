@@ -418,9 +418,7 @@ async def test_query_orchestrator_timeout(tmp_path: Path) -> None:
             eid = await state.create_engagement("Test", SCOPE.model_dump())
 
             llm = MockReportLLM(responses=["Summary.", "Narrative."])
-            agent = ReportAgent(
-                llm=llm, tools=[], scope=SCOPE, state=state, engagement_id=eid
-            )
+            agent = ReportAgent(llm=llm, tools=[], scope=SCOPE, state=state, engagement_id=eid)
             answer = await agent._query_orchestrator("Any clarification needed?")
     finally:
         report_module._QUERY_TIMEOUT_SECONDS = original_timeout
@@ -438,9 +436,7 @@ async def test_lifecycle_manager_sends_result_to_bus(tmp_path: Path) -> None:
         bus = MessageBus(state=state)
         llm = MockReportLLM()
 
-        mgr = AgentLifecycleManager(
-            bus=bus, llm=llm, scope=SCOPE, state=state, engagement_id=eid
-        )
+        mgr = AgentLifecycleManager(bus=bus, llm=llm, scope=SCOPE, state=state, engagement_id=eid)
         task_msg = AgentMessage.task(
             from_agent=ORCHESTRATOR,
             to_agent="report",

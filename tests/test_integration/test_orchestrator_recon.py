@@ -447,14 +447,14 @@ async def test_full_recon_engagement_via_orchestrator(tmp_path: Path) -> None:
     class _SimpleOrchLLM(LLMClient):
         async def reason(self, messages, tools=None):
             raise NotImplementedError
+
         async def research(self, query: str) -> str:
             return ""
+
         async def generate_text(self, prompt: str) -> str:
             return "Mock response."
 
-    orchestrator = OrchestratorAgent(
-        llm=_SimpleOrchLLM(), db_path=str(tmp_path / "test1.db")
-    )
+    orchestrator = OrchestratorAgent(llm=_SimpleOrchLLM(), db_path=str(tmp_path / "test1.db"))
 
     with patch(
         "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
@@ -490,9 +490,7 @@ async def test_full_recon_engagement_via_orchestrator(tmp_path: Path) -> None:
     )
 
     # ── Assertion: host metadata (OS, services) persisted correctly ───────────
-    nmap_host = next(
-        (t for t in targets if t.get("ip") == "192.168.1.100"), None
-    )
+    nmap_host = next((t for t in targets if t.get("ip") == "192.168.1.100"), None)
     assert nmap_host is not None, "192.168.1.100 not found in persisted targets"
     assert nmap_host.get("os") == "Linux", (
         f"Expected os='Linux' for persisted host. Got: {nmap_host}"
@@ -627,14 +625,14 @@ async def test_orchestrator_respins_recon_on_demand(tmp_path: Path) -> None:
     class _SimpleOrchLLM(LLMClient):
         async def reason(self, messages, tools=None):
             raise NotImplementedError
+
         async def research(self, query: str) -> str:
             return ""
+
         async def generate_text(self, prompt: str) -> str:
             return "Mock response based on available data."
 
-    orchestrator = OrchestratorAgent(
-        llm=_SimpleOrchLLM(), db_path=str(tmp_path / "test2.db")
-    )
+    orchestrator = OrchestratorAgent(llm=_SimpleOrchLLM(), db_path=str(tmp_path / "test2.db"))
 
     with patch(
         "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
@@ -659,7 +657,8 @@ async def test_orchestrator_respins_recon_on_demand(tmp_path: Path) -> None:
         messages = await state.get_messages(eid_holder[0])
 
     query_msgs = [
-        m for m in messages
+        m
+        for m in messages
         if m["message_type"] == MessageType.QUERY and m["from_agent"] == "exploit"
     ]
     assert len(query_msgs) >= 1, (
@@ -765,9 +764,7 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
             # recon sends its RESULT after completing the 3-step ReAct loop.
             received_results: list[AgentMessage] = []
             while len(received_results) < 2:
-                msg = await asyncio.wait_for(
-                    bus.receive(ORCHESTRATOR), timeout=15.0
-                )
+                msg = await asyncio.wait_for(bus.receive(ORCHESTRATOR), timeout=15.0)
                 if msg.message_type == MessageType.RESULT:
                     received_results.append(msg)
 

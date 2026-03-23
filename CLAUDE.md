@@ -144,15 +144,16 @@ clinkz/
 ├── src/
 │   ├── clinkz/
 │   │   ├── __init__.py
+│   │   ├── __main__.py             # python -m clinkz entry point
 │   │   ├── cli.py                  # Typer CLI entry point
 │   │   ├── config.py               # Scope config, API keys, settings
 │   │   ├── state.py                # Engagement state store + message store (SQLite)
+│   │   ├── orchestrator.py         # Legacy orchestrator module (thin wrapper)
 │   │   │
 │   │   ├── orchestrator/
 │   │   │   ├── __init__.py
 │   │   │   ├── orchestrator.py     # Orchestrator Agent — the central brain
 │   │   │   ├── lifecycle.py        # Agent lifecycle manager (spin up/down)
-│   │   │   ├── router.py           # Message routing logic
 │   │   │   └── prompts/
 │   │   │       └── orchestrator_system.md
 │   │   │
@@ -161,6 +162,7 @@ clinkz/
 │   │   │   ├── base.py             # Base agent class with message handling + ReAct loop
 │   │   │   ├── recon.py            # Reconnaissance agent
 │   │   │   ├── scan.py             # Scanning/crawling/fuzzing agent
+│   │   │   ├── crawl.py            # Crawl agent (Katana/ffuf integration)
 │   │   │   ├── exploit.py          # Exploitation agent
 │   │   │   ├── report.py           # Report generation agent
 │   │   │   ├── critic.py           # Finding validation agent
@@ -177,12 +179,20 @@ clinkz/
 │   │   │   ├── bus.py              # Message bus (async queue-based, Orchestrator-mediated)
 │   │   │   └── protocol.py         # Communication protocol definitions
 │   │   │
+│   │   ├── credentials/
+│   │   │   ├── __init__.py
+│   │   │   └── store.py            # Credential store + default credential database
+│   │   │
+│   │   ├── knowledge/
+│   │   │   ├── __init__.py
+│   │   │   └── query.py            # MITRE ATT&CK + OWASP WSTG knowledge base queries
+│   │   │
 │   │   ├── llm/
 │   │   │   ├── __init__.py
 │   │   │   ├── base.py             # Abstract LLMClient interface
 │   │   │   ├── openai_client.py    # OpenAI GPT-4o / GPT-4o-mini
 │   │   │   ├── anthropic_client.py # Claude Sonnet / Opus (stub)
-│   │   │   ├── gemini_client.py    # Gemini Flash / Pro (stub)
+│   │   │   ├── gemini_client.py    # Gemini Flash / Pro
 │   │   │   ├── ollama_client.py    # Local models via Ollama (stub)
 │   │   │   └── factory.py          # Returns correct client based on config
 │   │   │
@@ -191,6 +201,8 @@ clinkz/
 │   │   │   ├── base.py             # ToolBase ABC (local CLI tool wrapper)
 │   │   │   ├── resolver.py         # Tool Resolver — finds tools by capability
 │   │   │   ├── mcp_client.py       # MCP client for connecting to MCP tool servers
+│   │   │   ├── installer.py        # Tool availability checker and installer
+│   │   │   ├── http_client.py      # Built-in HTTP client tool
 │   │   │   ├── nmap.py             # Nmap wrapper (local)
 │   │   │   ├── ffuf.py             # ffuf wrapper (local)
 │   │   │   ├── nuclei.py           # Nuclei wrapper (local)
@@ -200,8 +212,7 @@ clinkz/
 │   │   │   ├── httpx_tool.py       # httpx wrapper (local)
 │   │   │   ├── katana.py           # Katana crawler wrapper (local)
 │   │   │   ├── whatweb.py          # WhatWeb wrapper (local)
-│   │   │   ├── wafw00f.py          # WAF detection wrapper (local)
-│   │   │   └── ...                 # Additional tool wrappers
+│   │   │   └── wafw00f.py          # WAF detection wrapper (local)
 │   │   │
 │   │   ├── research/
 │   │   │   ├── __init__.py
@@ -225,6 +236,8 @@ clinkz/
 ├── docker/
 │   ├── Dockerfile.tools
 │   └── docker-compose.yml
+├── scripts/
+│   └── live_full_pipeline.py       # Demo / example scripts
 ├── tests/
 │   ├── __init__.py
 │   ├── test_tools/                 # Tool wrapper unit tests

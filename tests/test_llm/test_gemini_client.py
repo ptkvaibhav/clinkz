@@ -19,6 +19,7 @@ from clinkz.llm.base import AgentAction, LLMMessage, ToolCall
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_settings(api_key: str = "fake-key", model: str = "gemini-2.5-flash") -> MagicMock:
     s = MagicMock()
     s.gemini_api_key = api_key
@@ -43,6 +44,7 @@ def _make_client(settings_mock: MagicMock | None = None) -> Any:
 # ---------------------------------------------------------------------------
 # 1. Schema conversion: OpenAI tool schema → Gemini FunctionDeclarations
 # ---------------------------------------------------------------------------
+
 
 class TestToGeminiTools:
     def test_single_tool_name_and_description(self) -> None:
@@ -118,6 +120,7 @@ class TestToGeminiTools:
 # 2. Rate limiter logic
 # ---------------------------------------------------------------------------
 
+
 class TestRateLimiter:
     def test_allows_up_to_max_calls_immediately(self) -> None:
         from clinkz.llm.gemini_client import _RateLimiter
@@ -173,6 +176,7 @@ class TestRateLimiter:
 # ---------------------------------------------------------------------------
 # 3. Exponential backoff on 429 errors
 # ---------------------------------------------------------------------------
+
 
 class TestBackoff:
     @pytest.mark.asyncio
@@ -240,7 +244,9 @@ class TestBackoff:
         async def fake_sleep(seconds: float) -> None:
             sleep_calls.append(seconds)
 
-        mock_response = MagicMock(candidates=[MagicMock(content=MagicMock(parts=[]))], usage_metadata=None)
+        mock_response = MagicMock(
+            candidates=[MagicMock(content=MagicMock(parts=[]))], usage_metadata=None
+        )
 
         async def fail_3_times() -> Any:
             nonlocal call_count
@@ -260,6 +266,7 @@ class TestBackoff:
 # ---------------------------------------------------------------------------
 # 4. Factory returns GeminiClient for provider="gemini"
 # ---------------------------------------------------------------------------
+
 
 class TestFactory:
     def test_factory_returns_gemini_client_for_gemini_provider(self) -> None:
@@ -304,6 +311,7 @@ class TestFactory:
 # 5. Token tracking
 # ---------------------------------------------------------------------------
 
+
 class TestTokenTracking:
     @pytest.mark.asyncio
     async def test_tokens_accumulate_across_calls(self) -> None:
@@ -311,7 +319,9 @@ class TestTokenTracking:
 
         def _make_response(inp: int, out: int) -> MagicMock:
             r = MagicMock()
-            r.candidates = [MagicMock(content=MagicMock(parts=[MagicMock(text="hello", function_call=None)]))]
+            r.candidates = [
+                MagicMock(content=MagicMock(parts=[MagicMock(text="hello", function_call=None)]))
+            ]
             r.usage_metadata = MagicMock(prompt_token_count=inp, candidates_token_count=out)
             r.text = "hello"
             return r
@@ -338,6 +348,7 @@ class TestTokenTracking:
 # ---------------------------------------------------------------------------
 # 6. Message conversion
 # ---------------------------------------------------------------------------
+
 
 class TestToGeminiContents:
     def test_system_message_extracted_as_instruction(self) -> None:
@@ -368,7 +379,9 @@ class TestToGeminiContents:
             LLMMessage(
                 role="assistant",
                 content="",
-                tool_calls=[ToolCall(id="run_nmap", name="run_nmap", arguments={"target": "1.2.3.4"})],
+                tool_calls=[
+                    ToolCall(id="run_nmap", name="run_nmap", arguments={"target": "1.2.3.4"})
+                ],
             )
         ]
         _, contents = client._to_gemini_contents(messages)

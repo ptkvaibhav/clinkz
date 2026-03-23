@@ -283,7 +283,9 @@ async def test_llm_invalid_verdict_rejects_finding(tmp_path: Path) -> None:
 
     assert len(result["validated"]) == 0
     assert len(result["rejected"]) == 1
-    assert "CVSS" in result["rejected"][0]["reason"] or "overstated" in result["rejected"][0]["reason"]
+    assert (
+        "CVSS" in result["rejected"][0]["reason"] or "overstated" in result["rejected"][0]["reason"]
+    )
     assert len(llm.generate_text_calls) == 1  # LLM was consulted
 
 
@@ -311,9 +313,7 @@ async def test_multiple_findings_mixed_results(tmp_path: Path) -> None:
         eid = await state.create_engagement("Test", SCOPE.model_dump())
 
         valid_finding = _make_finding(title="Valid High SQLi", severity="high")
-        missing_evidence = _make_finding(
-            title="No Evidence Finding", severity="high", evidence=[]
-        )
+        missing_evidence = _make_finding(title="No Evidence Finding", severity="high", evidence=[])
         info_finding = _make_finding(
             title="Info Finding", severity="info", evidence=[], cvss_score=None, remediation=""
         )
@@ -329,7 +329,7 @@ async def test_multiple_findings_mixed_results(tmp_path: Path) -> None:
         result = await agent.run({"findings": findings})
 
     assert len(result["validated"]) == 2  # valid high + info
-    assert len(result["rejected"]) == 1   # no evidence
+    assert len(result["rejected"]) == 1  # no evidence
     assert result["rejected"][0]["finding"]["title"] == "No Evidence Finding"
     assert result["status"] == "complete"
 

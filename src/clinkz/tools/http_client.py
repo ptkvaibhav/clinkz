@@ -127,7 +127,7 @@ class HTTPClientTool(ToolBase):
                 "properties": {
                     "method": {
                         "type": "string",
-                        "description": "HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS).",
+                        "description": "HTTP method (GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS).",
                         "default": "GET",
                     },
                     "url": {

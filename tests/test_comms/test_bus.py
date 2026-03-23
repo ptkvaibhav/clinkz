@@ -205,8 +205,10 @@ async def test_broadcast_reaches_all_known_agents() -> None:
 async def test_broadcast_with_exclude() -> None:
     bus = MessageBus()
     msg = AgentMessage.status(
-        from_agent=ORCHESTRATOR, to_agent=ORCHESTRATOR,
-        engagement_id=EID, content={"status": "ok"},
+        from_agent=ORCHESTRATOR,
+        to_agent=ORCHESTRATOR,
+        engagement_id=EID,
+        content={"status": "ok"},
     )
     await bus.broadcast(msg, exclude={RECON, SCAN})
 
@@ -226,8 +228,10 @@ async def test_messages_persisted_to_state_store(tmp_path: Path) -> None:
         bus = MessageBus(state=state)
 
         msg = AgentMessage.task(
-            from_agent=ORCHESTRATOR, to_agent=RECON,
-            engagement_id=eid, content={"task": "start recon"},
+            from_agent=ORCHESTRATOR,
+            to_agent=RECON,
+            engagement_id=eid,
+            content={"task": "start recon"},
         )
         await bus.send(msg)
 
@@ -263,8 +267,10 @@ async def test_broadcast_persisted_once(tmp_path: Path) -> None:
         bus = MessageBus(state=state)
 
         msg = AgentMessage.status(
-            from_agent=ORCHESTRATOR, to_agent=ORCHESTRATOR,
-            engagement_id=eid, content={"status": "go"},
+            from_agent=ORCHESTRATOR,
+            to_agent=ORCHESTRATOR,
+            engagement_id=eid,
+            content={"status": "go"},
         )
         await bus.broadcast(msg)
         rows = await state.get_messages(eid)
@@ -282,8 +288,10 @@ async def test_message_content_persisted_as_json(tmp_path: Path) -> None:
 
         payload = {"hosts": ["192.168.1.1", "192.168.1.2"], "count": 2}
         msg = AgentMessage.result(
-            from_agent=RECON, to_agent=ORCHESTRATOR,
-            engagement_id=eid, content=payload,
+            from_agent=RECON,
+            to_agent=ORCHESTRATOR,
+            engagement_id=eid,
+            content=payload,
         )
         await bus.send(msg)
 

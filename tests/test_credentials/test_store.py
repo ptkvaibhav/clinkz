@@ -171,9 +171,7 @@ async def test_seed_defaults(store) -> None:
 @pytest.mark.asyncio
 async def test_add_with_url(store) -> None:
     cred_store, eid, _ = store
-    await cred_store.add(
-        eid, "admin", "pass", url="http://target.com/login", source="discovered"
-    )
+    await cred_store.add(eid, "admin", "pass", url="http://target.com/login", source="discovered")
 
     creds = await cred_store.get(eid)
     assert creds[0].url == "http://target.com/login"

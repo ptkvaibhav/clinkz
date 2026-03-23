@@ -160,11 +160,7 @@ class _MockKatanaTool(ToolBase):
         return args
 
     async def execute(self, args: dict[str, Any]) -> str:
-        return (
-            "http://example.com/login\n"
-            "http://example.com/api/v1/users\n"
-            "http://example.com/about"
-        )
+        return "http://example.com/login\nhttp://example.com/api/v1/users\nhttp://example.com/about"
 
     def parse_output(self, raw_output: str) -> _CrawlOutput:
         endpoints = [line.strip() for line in raw_output.splitlines() if line.strip()]
@@ -407,8 +403,7 @@ async def test_all_scan_results_in_state_store(tmp_path: Path) -> None:
 
     # 3 endpoints + 2 paths + 2 parameters = 7 entries
     assert len(targets) >= 7, (
-        f"Expected at least 7 target entries, got {len(targets)}: "
-        f"{[t.get('ip') for t in targets]}"
+        f"Expected at least 7 target entries, got {len(targets)}: {[t.get('ip') for t in targets]}"
     )
 
 
@@ -563,11 +558,7 @@ async def test_mid_run_query_injected_into_llm_messages(tmp_path: Path) -> None:
     await agent.run({"urls": ["http://example.com"]})
     await state.close()
 
-    injected = [
-        m
-        for m in agent.messages
-        if m.role == "user" and query_text in (m.content or "")
-    ]
+    injected = [m for m in agent.messages if m.role == "user" and query_text in (m.content or "")]
     assert injected, (
         f"Query '{query_text}' was not found in agent.messages. "
         f"Messages: {[m.content for m in agent.messages if m.role == 'user']}"
@@ -591,9 +582,7 @@ async def test_multiple_queries_all_injected(tmp_path: Path) -> None:
     await state.close()
 
     assert result["status"] == "complete"
-    injected = [
-        m for m in agent.messages if m.role == "user" and "Scan query" in (m.content or "")
-    ]
+    injected = [m for m in agent.messages if m.role == "user" and "Scan query" in (m.content or "")]
     assert len(injected) == 3
 
 
@@ -656,9 +645,7 @@ async def test_lifecycle_sends_result_to_orchestrator_bus(tmp_path: Path) -> Non
 
         await mgr.spin_up("scan", task_msg)
 
-        result_msg = await asyncio.wait_for(
-            bus.receive(ORCHESTRATOR), timeout=15.0
-        )
+        result_msg = await asyncio.wait_for(bus.receive(ORCHESTRATOR), timeout=15.0)
 
     assert result_msg.message_type == MessageType.RESULT, (
         f"Expected RESULT message, got {result_msg.message_type}"

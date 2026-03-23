@@ -394,8 +394,7 @@ async def test_all_targets_in_state_store(tmp_path: Path) -> None:
 
     # 3 subdomains + 1 nmap host = 4 entries
     assert len(targets) >= 4, (
-        f"Expected at least 4 target entries, got {len(targets)}: "
-        f"{[t.get('ip') for t in targets]}"
+        f"Expected at least 4 target entries, got {len(targets)}: {[t.get('ip') for t in targets]}"
     )
 
 
@@ -551,11 +550,7 @@ async def test_mid_run_query_injected_into_llm_messages(tmp_path: Path) -> None:
     await agent.run({"targets": ["example.com"]})
     await state.close()
 
-    injected = [
-        m
-        for m in agent.messages
-        if m.role == "user" and query_text in (m.content or "")
-    ]
+    injected = [m for m in agent.messages if m.role == "user" and query_text in (m.content or "")]
     assert injected, (
         f"Query '{query_text}' was not found in agent.messages. "
         f"Messages: {[m.content for m in agent.messages if m.role == 'user']}"
@@ -579,7 +574,9 @@ async def test_multiple_queries_all_injected(tmp_path: Path) -> None:
     await state.close()
 
     assert result["status"] == "complete"
-    injected = [m for m in agent.messages if m.role == "user" and "Query number" in (m.content or "")]
+    injected = [
+        m for m in agent.messages if m.role == "user" and "Query number" in (m.content or "")
+    ]
     assert len(injected) == 3
 
 
@@ -617,9 +614,7 @@ async def test_lifecycle_sends_result_to_orchestrator_bus(tmp_path: Path) -> Non
         await mgr.spin_up("recon", task_msg)
 
         # Block until a message arrives on the Orchestrator queue (RESULT expected)
-        result_msg = await asyncio.wait_for(
-            bus.receive(ORCHESTRATOR), timeout=15.0
-        )
+        result_msg = await asyncio.wait_for(bus.receive(ORCHESTRATOR), timeout=15.0)
 
     assert result_msg.message_type == MessageType.RESULT, (
         f"Expected RESULT message, got {result_msg.message_type}"

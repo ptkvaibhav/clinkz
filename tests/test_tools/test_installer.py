@@ -58,28 +58,34 @@ def test_validate_pip_package() -> None:
 
 def test_validate_go_install() -> None:
     tool = make_tool()
-    result = tool.validate_input({
-        "tool_name": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder",
-        "install_method": "go",
-    })
+    result = tool.validate_input(
+        {
+            "tool_name": "github.com/projectdiscovery/subfinder/v2/cmd/subfinder",
+            "install_method": "go",
+        }
+    )
     assert result["install_method"] == "go"
 
 
 def test_validate_git_clone() -> None:
     tool = make_tool()
-    result = tool.validate_input({
-        "tool_name": "https://github.com/some/tool",
-        "install_method": "git",
-    })
+    result = tool.validate_input(
+        {
+            "tool_name": "https://github.com/some/tool",
+            "install_method": "git",
+        }
+    )
     assert result["install_method"] == "git"
 
 
 def test_validate_download() -> None:
     tool = make_tool()
-    result = tool.validate_input({
-        "tool_name": "https://releases.example.com/tool-linux-amd64",
-        "install_method": "download",
-    })
+    result = tool.validate_input(
+        {
+            "tool_name": "https://releases.example.com/tool-linux-amd64",
+            "install_method": "download",
+        }
+    )
     assert result["install_method"] == "download"
 
 
