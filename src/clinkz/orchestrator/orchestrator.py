@@ -205,8 +205,8 @@ class OrchestratorAgent:
                 cred_data = [c.model_dump() for c in valid_creds]
                 session_data = sessions
 
-                # PHASE 3: EXPLOIT (mandatory)
-                exploit_result = await self._run_phase("exploit", {
+                # Build exploit task with session handoff
+                exploit_task: dict[str, Any] = {
                     "task": f"Exploit all identified vulnerabilities on {targets_str}. "
                             f"Research CVEs and PoCs for identified technologies. "
                             f"Validate findings and chain exploits for maximum impact.",
@@ -214,7 +214,43 @@ class OrchestratorAgent:
                     "scan_findings": scan_result,
                     "credentials": cred_data,
                     "sessions": session_data,
-                })
+                }
+
+                # Inject valid session cookies so Exploit Agent skips login
+                if sessions:
+                    # Use the most recent session
+                    latest_session = sessions[-1]
+                    cookies = latest_session.get("cookies", {})
+                    jar_path = latest_session.get("cookie_jar_path", "")
+                    meta = latest_session.get("metadata", {})
+
+                    if cookies:
+                        # Find the username from the credential that created this session
+                        authenticated_as = "unknown"
+                        cred_id = meta.get("credential_id", "")
+                        for c in valid_creds:
+                            if c.id == cred_id:
+                                authenticated_as = c.username
+                                break
+
+                        exploit_task["session_cookies"] = cookies
+                        exploit_task["cookie_jar_path"] = jar_path or f"/tmp/clinkz_{engagement_id}_cookies.txt"
+                        exploit_task["authenticated_as"] = authenticated_as
+                        exploit_task["task"] = (
+                            f"You are already authenticated as '{authenticated_as}'. "
+                            f"Use the provided session cookies for ALL requests. "
+                            f"Do NOT attempt to login again. Go straight to exploitation.\n\n"
+                            f"Exploit all identified vulnerabilities on {targets_str}. "
+                            f"Research CVEs and PoCs for identified technologies. "
+                            f"Validate findings and chain exploits for maximum impact."
+                        )
+                        self._logger.info(
+                            "Session handoff to exploit agent: authenticated_as=%s, cookies=%s",
+                            authenticated_as, list(cookies.keys()),
+                        )
+
+                # PHASE 3: EXPLOIT (mandatory)
+                exploit_result = await self._run_phase("exploit", exploit_task)
                 summary["phases"]["exploit"] = exploit_result
                 self._logger.info("PHASE 3 (EXPLOIT) complete")
 
