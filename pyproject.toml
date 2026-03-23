@@ -5,9 +5,25 @@ build-backend = "hatchling.build"
 [project]
 name = "clinkz"
 version = "0.1.0"
-description = "Autonomous AI penetration testing agent"
+description = "Autonomous AI penetration testing system powered by multi-agent collaboration"
 readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Pratik Vaibhav", email = "ptkvaibhav@gmail.com"}]
 requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/ptkvaibhav/clinkz"
+Repository = "https://github.com/ptkvaibhav/clinkz"
+Issues = "https://github.com/ptkvaibhav/clinkz/issues"
 dependencies = [
     "openai>=1.30.0",
     "anthropic>=0.25.0",
