@@ -20,8 +20,6 @@ class KatanaTool(ToolBase):
     """Katana web crawler.
 
     Runs: katana -u <url> -jc -silent
-
-    TODO: Parse discovered URLs and filter interesting endpoints.
     """
 
     capabilities = ["web_crawling", "endpoint_discovery", "url_enumeration"]

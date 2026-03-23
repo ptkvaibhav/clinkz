@@ -126,13 +126,11 @@ class ReportAgent(BaseAgent):
         self._logger.info("Sent query to orchestrator: %s", question)
 
         try:
-            response = await asyncio.wait_for(
-                self._inbox.get(), timeout=_QUERY_TIMEOUT_SECONDS
-            )
+            response = await asyncio.wait_for(self._inbox.get(), timeout=_QUERY_TIMEOUT_SECONDS)
             if response.message_type == MessageType.RESPONSE:
                 return str(response.content.get("answer", response.content))
             return str(response.content)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._logger.warning("Orchestrator query timed out: %s", question)
             return f"[No response received for: {question}]"
 
@@ -170,11 +168,14 @@ class ReportAgent(BaseAgent):
             if sev in severity_counts:
                 severity_counts[sev] += 1
 
-        findings_list = "\n".join(
-            f"- [{f.get('severity', 'info').upper()}] {f.get('title', 'Untitled')} "
-            f"on {f.get('target', 'unknown')}"
-            for f in findings[:20]
-        ) or "No validated findings."
+        findings_list = (
+            "\n".join(
+                f"- [{f.get('severity', 'info').upper()}] {f.get('title', 'Untitled')} "
+                f"on {f.get('target', 'unknown')}"
+                for f in findings[:20]
+            )
+            or "No validated findings."
+        )
 
         prompt = (
             "You are writing the executive summary for a penetration test report.\n\n"
@@ -260,11 +261,14 @@ class ReportAgent(BaseAgent):
         phases = sorted(set(a.get("phase", "unknown") for a in actions))
         tools_used = sorted(set(a.get("tool", "") for a in actions if a.get("tool")))
 
-        findings_list = "\n".join(
-            f"- [{f.get('severity', 'info').upper()}] {f.get('title', 'Untitled')} "
-            f"({f.get('target', 'unknown')})"
-            for f in findings
-        ) or "No confirmed findings."
+        findings_list = (
+            "\n".join(
+                f"- [{f.get('severity', 'info').upper()}] {f.get('title', 'Untitled')} "
+                f"({f.get('target', 'unknown')})"
+                for f in findings
+            )
+            or "No confirmed findings."
+        )
 
         prompt = (
             "You are writing the attack narrative for a penetration test report.\n\n"
@@ -361,9 +365,7 @@ class ReportAgent(BaseAgent):
 
         # Pass 3: Attack narrative
         await self._process_inbox()
-        narrative = await self._generate_narrative(
-            enhanced_findings, targets_raw, actions
-        )
+        narrative = await self._generate_narrative(enhanced_findings, targets_raw, actions)
         self._logger.info("Pass 3 (attack narrative) complete")
 
         # Parse Finding models from enhanced dicts
@@ -372,9 +374,7 @@ class ReportAgent(BaseAgent):
             try:
                 finding_models.append(Finding.model_validate(fd))
             except Exception as exc:
-                self._logger.warning(
-                    "Could not parse finding '%s': %s", fd.get("id"), exc
-                )
+                self._logger.warning("Could not parse finding '%s': %s", fd.get("id"), exc)
 
         # Parse Host models from target dicts
         host_models: list[Host] = []
@@ -382,9 +382,7 @@ class ReportAgent(BaseAgent):
             try:
                 host_models.append(Host.model_validate(td))
             except Exception as exc:
-                self._logger.warning(
-                    "Could not parse host '%s': %s", td.get("id"), exc
-                )
+                self._logger.warning("Could not parse host '%s': %s", td.get("id"), exc)
 
         # Assemble ExecutiveSummary with severity counts derived from models
         exec_summary = ExecutiveSummary.from_findings(exec_overview, finding_models)

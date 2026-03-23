@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from clinkz.tools.base import ToolBase, ToolOutput
 
 # Regex to strip ANSI escape sequences (common in Docker exec output)
-_ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class FfufResult(BaseModel):
@@ -98,9 +98,7 @@ class FfufTool(ToolBase):
 
         base = urlparse(url).netloc
         self._check_scope(base)
-        wordlist = args.get(
-            "wordlist", "/usr/share/seclists/Discovery/Web-Content/common.txt"
-        )
+        wordlist = args.get("wordlist", "/usr/share/seclists/Discovery/Web-Content/common.txt")
         # If the LLM provides a bare filename (no path separator), resolve it
         # to the standard seclists directory inside the Docker container.
         if wordlist and "/" not in wordlist and "\\" not in wordlist:
@@ -142,12 +140,12 @@ class FfufTool(ToolBase):
             return FfufOutput(tool_name=self.name, success=False, raw_output=raw_output)
 
         # Strip ANSI escape codes (common in Docker exec output)
-        cleaned = _ANSI_RE.sub('', raw_output)
+        cleaned = _ANSI_RE.sub("", raw_output)
 
         # Extract JSON object from potentially mixed output — find the
         # outermost { ... } block (ffuf outputs a single JSON object)
         json_str = cleaned
-        start = cleaned.find('{')
+        start = cleaned.find("{")
         if start == -1:
             return FfufOutput(
                 tool_name=self.name,
@@ -156,7 +154,7 @@ class FfufTool(ToolBase):
                 error="No JSON object found in ffuf output",
             )
         # Find matching closing brace by scanning from the end
-        end = cleaned.rfind('}')
+        end = cleaned.rfind("}")
         if end == -1 or end <= start:
             return FfufOutput(
                 tool_name=self.name,
@@ -164,7 +162,7 @@ class FfufTool(ToolBase):
                 raw_output=raw_output,
                 error="Malformed JSON in ffuf output",
             )
-        json_str = cleaned[start:end + 1]
+        json_str = cleaned[start : end + 1]
 
         try:
             data = json.loads(json_str)

@@ -59,9 +59,7 @@ class CriticAgent(BaseAgent):
     # Validation logic
     # ------------------------------------------------------------------
 
-    async def _validate_finding(
-        self, finding: dict[str, Any]
-    ) -> tuple[bool, str]:
+    async def _validate_finding(self, finding: dict[str, Any]) -> tuple[bool, str]:
         """Validate a single finding with structural checks + LLM review.
 
         Structural checks run first (fast, deterministic).  If they all
@@ -159,9 +157,7 @@ class CriticAgent(BaseAgent):
             return {"valid": False, "reason": reason}
 
         # Unexpected format — default to valid to avoid false rejections
-        self._logger.warning(
-            "LLM validator returned unexpected format: %s", response[:100]
-        )
+        self._logger.warning("LLM validator returned unexpected format: %s", response[:100])
         return {"valid": True, "reason": "LLM response format unexpected; defaulting to valid."}
 
     # ------------------------------------------------------------------
@@ -228,9 +224,7 @@ class CriticAgent(BaseAgent):
                         "reason": reason,
                     }
                 )
-                self._logger.warning(
-                    "REJECTED: '%s' (%s) — %s", title, finding_id, reason
-                )
+                self._logger.warning("REJECTED: '%s' (%s) — %s", title, finding_id, reason)
 
         self._logger.info(
             "CriticAgent complete: %d validated, %d rejected",

@@ -40,7 +40,7 @@ from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.config import settings
 from clinkz.credentials.store import CredentialStore
 from clinkz.knowledge.query import KnowledgeBase
-from clinkz.llm.base import LLMClient, LLMMessage
+from clinkz.llm.base import LLMClient
 from clinkz.llm.factory import get_llm_client
 from clinkz.models.scope import EngagementScope
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
@@ -88,9 +88,7 @@ class OrchestratorAgent:
             self._llm = llm
         else:
             orch_provider = (
-                os.getenv("ORCHESTRATOR_LLM_PROVIDER")
-                or provider
-                or settings.llm_provider
+                os.getenv("ORCHESTRATOR_LLM_PROVIDER") or provider or settings.llm_provider
             )
             self._llm = get_llm_client(orch_provider)
 
@@ -133,14 +131,10 @@ class OrchestratorAgent:
         )
 
         async with StateStore(self._db_path) as state:
-            engagement_id = await state.create_engagement(
-                scope.name, scope.model_dump()
-            )
+            engagement_id = await state.create_engagement(scope.name, scope.model_dump())
             bus = MessageBus(state=state)
             knowledge_base = KnowledgeBase()
-            self._logger.info(
-                "KnowledgeBase loaded: %s", knowledge_base.stats()
-            )
+            self._logger.info("KnowledgeBase loaded: %s", knowledge_base.stats())
             lifecycle = AgentLifecycleManager(
                 bus=bus,
                 llm=self._llm,
@@ -166,15 +160,16 @@ class OrchestratorAgent:
 
             try:
                 # PHASE 1: RECON (mandatory)
-                targets_str = ", ".join(
-                    f"{t.value} ({t.type.value})" for t in scope.targets
+                targets_str = ", ".join(f"{t.value} ({t.type.value})" for t in scope.targets)
+                recon_result = await self._run_phase(
+                    "recon",
+                    {
+                        "task": f"Full reconnaissance on {targets_str}. "
+                        f"Discover subdomains, open ports, services, "
+                        f"technology stack, and any OSINT intel.",
+                        "scope": scope.model_dump(),
+                    },
                 )
-                recon_result = await self._run_phase("recon", {
-                    "task": f"Full reconnaissance on {targets_str}. "
-                            f"Discover subdomains, open ports, services, "
-                            f"technology stack, and any OSINT intel.",
-                    "scope": scope.model_dump(),
-                })
                 summary["phases"]["recon"] = recon_result
                 self._logger.info("PHASE 1 (RECON) complete")
 
@@ -188,14 +183,17 @@ class OrchestratorAgent:
                 session_data = sessions
 
                 # PHASE 2: SCAN (mandatory)
-                scan_result = await self._run_phase("scan", {
-                    "task": f"Map the complete attack surface of {targets_str}. "
-                            f"Crawl all endpoints, fuzz parameters, identify "
-                            f"suspicious behaviors and anomalies.",
-                    "recon_findings": recon_result,
-                    "credentials": cred_data,
-                    "sessions": session_data,
-                })
+                scan_result = await self._run_phase(
+                    "scan",
+                    {
+                        "task": f"Map the complete attack surface of {targets_str}. "
+                        f"Crawl all endpoints, fuzz parameters, identify "
+                        f"suspicious behaviors and anomalies.",
+                        "recon_findings": recon_result,
+                        "credentials": cred_data,
+                        "sessions": session_data,
+                    },
+                )
                 summary["phases"]["scan"] = scan_result
                 self._logger.info("PHASE 2 (SCAN) complete")
 
@@ -208,8 +206,8 @@ class OrchestratorAgent:
                 # Build exploit task with session handoff
                 exploit_task: dict[str, Any] = {
                     "task": f"Exploit all identified vulnerabilities on {targets_str}. "
-                            f"Research CVEs and PoCs for identified technologies. "
-                            f"Validate findings and chain exploits for maximum impact.",
+                    f"Research CVEs and PoCs for identified technologies. "
+                    f"Validate findings and chain exploits for maximum impact.",
                     "recon_findings": recon_result,
                     "scan_findings": scan_result,
                     "credentials": cred_data,
@@ -234,7 +232,9 @@ class OrchestratorAgent:
                                 break
 
                         exploit_task["session_cookies"] = cookies
-                        exploit_task["cookie_jar_path"] = jar_path or f"/tmp/clinkz_{engagement_id}_cookies.txt"
+                        exploit_task["cookie_jar_path"] = (
+                            jar_path or f"/tmp/clinkz_{engagement_id}_cookies.txt"
+                        )
                         exploit_task["authenticated_as"] = authenticated_as
                         exploit_task["task"] = (
                             f"You are already authenticated as '{authenticated_as}'. "
@@ -246,7 +246,8 @@ class OrchestratorAgent:
                         )
                         self._logger.info(
                             "Session handoff to exploit agent: authenticated_as=%s, cookies=%s",
-                            authenticated_as, list(cookies.keys()),
+                            authenticated_as,
+                            list(cookies.keys()),
                         )
 
                 # PHASE 3: EXPLOIT (mandatory)
@@ -256,22 +257,28 @@ class OrchestratorAgent:
 
                 # PHASE 4: CRITIC (mandatory)
                 findings = await state.get_findings(engagement_id)
-                critic_result = await self._run_phase("critic", {
-                    "task": "Validate all findings. Check CVSS accuracy, "
-                            "eliminate false positives, verify evidence and "
-                            "reproduction steps are complete.",
-                    "findings": findings,
-                })
+                critic_result = await self._run_phase(
+                    "critic",
+                    {
+                        "task": "Validate all findings. Check CVSS accuracy, "
+                        "eliminate false positives, verify evidence and "
+                        "reproduction steps are complete.",
+                        "findings": findings,
+                    },
+                )
                 summary["phases"]["critic"] = critic_result
                 self._logger.info("PHASE 4 (CRITIC) complete")
 
                 # PHASE 5: REPORT (mandatory)
-                report_result = await self._run_phase("report", {
-                    "task": "Generate a professional penetration test report. "
-                            "Include executive summary, methodology, all validated "
-                            "findings with evidence, and remediation recommendations.",
-                    "engagement_id": engagement_id,
-                })
+                report_result = await self._run_phase(
+                    "report",
+                    {
+                        "task": "Generate a professional penetration test report. "
+                        "Include executive summary, methodology, all validated "
+                        "findings with evidence, and remediation recommendations.",
+                        "engagement_id": engagement_id,
+                    },
+                )
                 summary["phases"]["report"] = report_result
                 self._logger.info("PHASE 5 (REPORT) complete")
 
@@ -355,9 +362,7 @@ class OrchestratorAgent:
                 # Check if agent is still running
                 running = self._lifecycle.get_running_agents()
                 if agent_type not in running:
-                    self._logger.warning(
-                        "Agent '%s' stopped without sending RESULT", agent_type
-                    )
+                    self._logger.warning("Agent '%s' stopped without sending RESULT", agent_type)
                     return result or {"status": "agent_stopped", "agent": agent_type}
                 await asyncio.sleep(_POLL_INTERVAL)
                 continue
@@ -368,13 +373,12 @@ class OrchestratorAgent:
                     # Route it to the requesting agent if applicable
                     self._logger.debug(
                         "Received message from %s during %s phase",
-                        msg.from_agent, agent_type,
+                        msg.from_agent,
+                        agent_type,
                     )
 
                 if msg.message_type in (MessageType.RESULT, "result"):
-                    self._logger.info(
-                        "Phase '%s' completed with result", agent_type
-                    )
+                    self._logger.info("Phase '%s' completed with result", agent_type)
                     result = msg.content
                     try:
                         await self._lifecycle.shut_down(agent_type)
@@ -385,7 +389,8 @@ class OrchestratorAgent:
                 elif msg.message_type in (MessageType.ERROR, "error"):
                     self._logger.error(
                         "Phase '%s' error: %s",
-                        agent_type, msg.content.get("error", "unknown"),
+                        agent_type,
+                        msg.content.get("error", "unknown"),
                     )
                     result = {
                         "status": "error",
@@ -405,9 +410,7 @@ class OrchestratorAgent:
                 elif msg.message_type in (MessageType.STATUS, "status"):
                     status = msg.content.get("status", "")
                     if status == "stopped":
-                        self._logger.info(
-                            "Agent '%s' reported stopped", msg.from_agent
-                        )
+                        self._logger.info("Agent '%s' reported stopped", msg.from_agent)
                         if msg.from_agent == agent_type:
                             return result or {
                                 "status": "agent_stopped",
@@ -438,9 +441,7 @@ class OrchestratorAgent:
         assert self._engagement_id is not None
 
         query_text = query_msg.content.get("query", json.dumps(query_msg.content))
-        self._logger.info(
-            "Handling query from '%s': %s", requesting_agent, query_text[:200]
-        )
+        self._logger.info("Handling query from '%s': %s", requesting_agent, query_text[:200])
 
         # Check if this requires a cross-phase re-spin
         needs_respin = query_msg.content.get("needs_agent")
@@ -448,12 +449,17 @@ class OrchestratorAgent:
             self._cross_phase_respins += 1
             self._logger.info(
                 "Cross-phase re-spin %d/%d: spinning '%s' for targeted sub-task",
-                self._cross_phase_respins, MAX_CROSS_PHASE_RESPINS, needs_respin,
+                self._cross_phase_respins,
+                MAX_CROSS_PHASE_RESPINS,
+                needs_respin,
             )
-            sub_result = await self._run_phase(needs_respin, {
-                "task": query_text,
-                "scope": self._scope.model_dump() if self._scope else {},
-            })
+            sub_result = await self._run_phase(
+                needs_respin,
+                {
+                    "task": query_text,
+                    "scope": self._scope.model_dump() if self._scope else {},
+                },
+            )
             # Route sub-task result back to the requesting agent
             response_msg = AgentMessage.response(
                 from_agent=ORCHESTRATOR,
@@ -515,15 +521,11 @@ class OrchestratorAgent:
             self._logger.info("No technologies identified — skipping default cred check")
             return
 
-        self._logger.info(
-            "Trying default credentials for: %s", ", ".join(technologies)
-        )
+        self._logger.info("Trying default credentials for: %s", ", ".join(technologies))
 
         for tech in technologies:
             # Seed defaults into the credential store
-            cred_ids = await self._cred_store.seed_defaults(
-                self._engagement_id, tech
-            )
+            cred_ids = await self._cred_store.seed_defaults(self._engagement_id, tech)
             if not cred_ids:
                 continue
 
@@ -544,7 +546,10 @@ class OrchestratorAgent:
                 if success:
                     self._logger.info(
                         "DEFAULT CRED VALID: %s:%s on %s (%s)",
-                        cred.username, "***", login_url, tech,
+                        cred.username,
+                        "***",
+                        login_url,
+                        tech,
                     )
                 else:
                     await self._cred_store.mark_invalid(cred.id)
@@ -645,9 +650,7 @@ class OrchestratorAgent:
 
         return sorted(techs)
 
-    def _find_login_url(
-        self, recon_result: dict[str, Any], technology: str
-    ) -> str | None:
+    def _find_login_url(self, recon_result: dict[str, Any], technology: str) -> str | None:
         """Find a login URL for a given technology from recon results.
 
         Args:
@@ -670,8 +673,7 @@ class OrchestratorAgent:
                     if isinstance(item, dict):
                         url = item.get("url", "")
                         if url and any(
-                            p in url.lower()
-                            for p in ("/login", "/admin", "/wp-login", "/manager")
+                            p in url.lower() for p in ("/login", "/admin", "/wp-login", "/manager")
                         ):
                             return url
 
@@ -713,13 +715,15 @@ class OrchestratorAgent:
                 engagement_id=self._engagement_id,
             )
 
-            args = http.validate_input({
-                "method": "POST",
-                "url": url,
-                "body": f"username={username}&password={password}",
-                "headers": {"Content-Type": "application/x-www-form-urlencoded"},
-                "follow_redirects": True,
-            })
+            args = http.validate_input(
+                {
+                    "method": "POST",
+                    "url": url,
+                    "body": f"username={username}&password={password}",
+                    "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                    "follow_redirects": True,
+                }
+            )
             raw = await http.execute(args)
             result = http.parse_output(raw)
 
@@ -750,7 +754,10 @@ class OrchestratorAgent:
         except Exception as exc:
             self._logger.debug(
                 "Login attempt failed for %s:%s @ %s: %s",
-                username, "***", url, exc,
+                username,
+                "***",
+                url,
+                exc,
             )
 
         return False

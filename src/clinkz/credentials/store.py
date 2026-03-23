@@ -21,7 +21,6 @@ Usage::
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -286,9 +285,7 @@ class CredentialStore:
                 key = (cred["username"], cred["password"])
                 if key not in seen:
                     seen.add(key)
-                    results.append(
-                        {"username": cred["username"], "password": cred["password"]}
-                    )
+                    results.append({"username": cred["username"], "password": cred["password"]})
 
         return results
 

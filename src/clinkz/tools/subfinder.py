@@ -20,8 +20,6 @@ class SubfinderTool(ToolBase):
     """Subfinder passive subdomain enumerator.
 
     Runs: subfinder -d <domain> -silent -o -
-
-    TODO: Parse subfinder output (one subdomain per line).
     """
 
     capabilities = ["subdomain_enumeration", "passive_recon", "dns_enumeration"]
@@ -81,9 +79,7 @@ class SubfinderTool(ToolBase):
         """
         if not raw_output or not raw_output.strip():
             return SubfinderOutput(tool_name=self.name, success=False, raw_output=raw_output)
-        subdomains = sorted(
-            {line.strip() for line in raw_output.splitlines() if line.strip()}
-        )
+        subdomains = sorted({line.strip() for line in raw_output.splitlines() if line.strip()})
         return SubfinderOutput(
             tool_name=self.name,
             success=True,

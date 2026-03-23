@@ -158,7 +158,7 @@ class ToolResolver:
 
         # MCP state (populated by initialize())
         self._mcp_tools_cache: list[dict[str, Any]] = []
-        self._mcp_clients: dict[str, "MCPClient"] = {}  # server_key → client
+        self._mcp_clients: dict[str, MCPClient] = {}  # server_key → client
 
         self._discover()
 
@@ -183,6 +183,7 @@ class ToolResolver:
             # Also check global settings
             try:
                 from clinkz.config import settings
+
                 servers = list(settings.mcp_servers)
             except Exception:
                 pass
@@ -201,6 +202,7 @@ class ToolResolver:
                 for tool_info in tools:
                     caps = _infer_capabilities(tool_info.name, tool_info.description)
                     from clinkz.tools.mcp_client import _is_url
+
                     endpoint = spec if isinstance(spec, str) and _is_url(spec) else None
                     self._mcp_tools_cache.append(
                         {
@@ -423,11 +425,10 @@ class ToolResolver:
             List of MCP tool descriptor dicts.
         """
         return [
-            {k: v for k, v in entry.items() if k != "tool_info"}
-            for entry in self._mcp_tools_cache
+            {k: v for k, v in entry.items() if k != "tool_info"} for entry in self._mcp_tools_cache
         ]
 
-    def get_mcp_client_for_tool(self, tool_name: str) -> "MCPClient | None":
+    def get_mcp_client_for_tool(self, tool_name: str) -> MCPClient | None:
         """Return the live MCPClient that hosts the named tool.
 
         Args:

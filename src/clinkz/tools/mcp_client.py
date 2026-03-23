@@ -157,9 +157,7 @@ class MCPClient:
         logger.debug("MCPClient: server advertises %d tool(s)", len(tools))
         return tools
 
-    async def call_tool(
-        self, name: str, params: dict[str, Any] | None = None
-    ) -> MCPCallResult:
+    async def call_tool(self, name: str, params: dict[str, Any] | None = None) -> MCPCallResult:
         """Invoke a named tool on the MCP server.
 
         Args:
@@ -206,9 +204,7 @@ class MCPClient:
 
     def _assert_connected(self) -> None:
         if self._session is None:
-            raise RuntimeError(
-                "MCPClient is not connected. Call connect() first."
-            )
+            raise RuntimeError("MCPClient is not connected. Call connect() first.")
 
     async def _cleanup(self) -> None:
         if self._exit_stack is not None:
@@ -216,9 +212,7 @@ class MCPClient:
             self._exit_stack = None
         self._session = None
 
-    async def _connect_stdio(
-        self, spec: str | list[str]
-    ) -> tuple[Any, Any]:
+    async def _connect_stdio(self, spec: str | list[str]) -> tuple[Any, Any]:
         params = _build_stdio_params(spec)
         return await self._exit_stack.enter_async_context(  # type: ignore[union-attr]
             stdio_client(params)
@@ -269,8 +263,4 @@ def _serialise_content(content: list[Any]) -> list[dict[str, Any]]:
 
 def _extract_text(content: list[dict[str, Any]]) -> str:
     """Join all ``text`` content items into a single string."""
-    return "\n".join(
-        str(item.get("text", ""))
-        for item in content
-        if item.get("type") == "text"
-    )
+    return "\n".join(str(item.get("text", "")) for item in content if item.get("type") == "text")

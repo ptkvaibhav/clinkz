@@ -104,9 +104,7 @@ class ToolInstallerTool(ToolBase):
         # Reject shell metacharacters to prevent command injection
         dangerous_chars = set(";|&$`\\'\"\n\r")
         if any(c in tool_name for c in dangerous_chars):
-            raise ValueError(
-                f"tool_name contains dangerous characters: {tool_name!r}"
-            )
+            raise ValueError(f"tool_name contains dangerous characters: {tool_name!r}")
 
         return {"tool_name": tool_name, "install_method": install_method}
 

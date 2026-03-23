@@ -215,9 +215,7 @@ class StateStore:
         """
         # --- Deduplication check ---
         if deduplicate and "ip" in host_data:
-            existing = await self._find_existing_target(
-                engagement_id, host_data["ip"]
-            )
+            existing = await self._find_existing_target(engagement_id, host_data["ip"])
             if existing is not None:
                 logger.debug(
                     "Dedup: target '%s' already exists as %s — skipping insert",
@@ -236,9 +234,7 @@ class StateStore:
         await self._conn.commit()
         return target_id
 
-    async def _find_existing_target(
-        self, engagement_id: str, ip: str
-    ) -> str | None:
+    async def _find_existing_target(self, engagement_id: str, ip: str) -> str | None:
         """Return the ID of an existing target matching *ip*, or None.
 
         Performs a JSON extraction on the stored ``host_json`` to compare the
@@ -438,7 +434,7 @@ class StateStore:
     # Agent messages (inter-agent communication audit trail)
     # ------------------------------------------------------------------
 
-    async def save_message(self, message: "AgentMessage") -> None:  # noqa: F821
+    async def save_message(self, message: AgentMessage) -> None:  # noqa: F821
         """Persist an AgentMessage to the audit trail.
 
         Accepts any object that has the AgentMessage fields; typed as a
@@ -532,16 +528,18 @@ class StateStore:
 
         results: list[dict[str, Any]] = []
         for row in rows:
-            results.append({
-                "id": row["id"],
-                "engagement_id": row["engagement_id"],
-                "agent": row["agent"],
-                "cookies": json.loads(row["cookies_json"]),
-                "cookie_jar_path": row["cookie_jar_path"],
-                "metadata": json.loads(row["metadata_json"]),
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            })
+            results.append(
+                {
+                    "id": row["id"],
+                    "engagement_id": row["engagement_id"],
+                    "agent": row["agent"],
+                    "cookies": json.loads(row["cookies_json"]),
+                    "cookie_jar_path": row["cookie_jar_path"],
+                    "metadata": json.loads(row["metadata_json"]),
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
         return results
 
     async def get_messages(
@@ -566,9 +564,7 @@ class StateStore:
             )
             params: tuple[Any, ...] = (engagement_id, agent_name, agent_name)
         else:
-            query = (
-                "SELECT * FROM agent_messages WHERE engagement_id=? ORDER BY timestamp"
-            )
+            query = "SELECT * FROM agent_messages WHERE engagement_id=? ORDER BY timestamp"
             params = (engagement_id,)
 
         async with self._conn.execute(query, params) as cursor:

@@ -215,11 +215,14 @@ class HTTPClientTool(ToolBase):
         # Build curl command
         cmd: list[str] = [
             "curl",
-            "-s",           # silent (no progress bar)
-            "-S",           # show errors
-            "-D", "-",      # dump response headers to stdout
-            "-X", method,
-            "-w", "\n__CURL_TIMING__%{time_total}\n",  # timing info at end
+            "-s",  # silent (no progress bar)
+            "-S",  # show errors
+            "-D",
+            "-",  # dump response headers to stdout
+            "-X",
+            method,
+            "-w",
+            "\n__CURL_TIMING__%{time_total}\n",  # timing info at end
         ]
 
         if follow_redirects:
@@ -251,27 +254,31 @@ class HTTPClientTool(ToolBase):
             elapsed_ms = (time.monotonic() - start) * 1000
 
             if returncode != 0 and not stdout.strip():
-                return json.dumps({
-                    "status_code": 0,
-                    "response_headers": {},
-                    "response_body": "",
-                    "redirect_chain": [],
-                    "response_time_ms": round(elapsed_ms, 2),
-                    "error": f"curl exited with code {returncode}: {stderr.strip()}",
-                })
+                return json.dumps(
+                    {
+                        "status_code": 0,
+                        "response_headers": {},
+                        "response_body": "",
+                        "redirect_chain": [],
+                        "response_time_ms": round(elapsed_ms, 2),
+                        "error": f"curl exited with code {returncode}: {stderr.strip()}",
+                    }
+                )
 
             return self._parse_curl_output(stdout, elapsed_ms)
 
         except Exception as exc:
             elapsed_ms = (time.monotonic() - start) * 1000
-            return json.dumps({
-                "status_code": 0,
-                "response_headers": {},
-                "response_body": "",
-                "redirect_chain": [],
-                "response_time_ms": round(elapsed_ms, 2),
-                "error": str(exc),
-            })
+            return json.dumps(
+                {
+                    "status_code": 0,
+                    "response_headers": {},
+                    "response_body": "",
+                    "redirect_chain": [],
+                    "response_time_ms": round(elapsed_ms, 2),
+                    "error": str(exc),
+                }
+            )
 
     def _parse_curl_output(self, raw: str, elapsed_ms: float) -> str:
         """Parse curl ``-D -`` output into structured JSON.
@@ -347,14 +354,16 @@ class HTTPClientTool(ToolBase):
             raw_display += f"{k}: {v}\n"
         raw_display += f"\n{resp_body}"
 
-        return json.dumps({
-            "status_code": status_code,
-            "response_headers": resp_headers,
-            "response_body": resp_body,
-            "redirect_chain": redirect_chain,
-            "response_time_ms": round(elapsed_ms, 2),
-            "raw": raw_display,
-        })
+        return json.dumps(
+            {
+                "status_code": status_code,
+                "response_headers": resp_headers,
+                "response_body": resp_body,
+                "redirect_chain": redirect_chain,
+                "response_time_ms": round(elapsed_ms, 2),
+                "raw": raw_display,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Local mode: aiohttp on the host
@@ -409,24 +418,28 @@ class HTTPClientTool(ToolBase):
                         raw += f"{k}: {v}\n"
                     raw += f"\n{resp_body}"
 
-                    return json.dumps({
-                        "status_code": resp.status,
-                        "response_headers": resp_headers,
-                        "response_body": resp_body,
-                        "redirect_chain": redirect_chain,
-                        "response_time_ms": round(elapsed_ms, 2),
-                        "raw": raw,
-                    })
+                    return json.dumps(
+                        {
+                            "status_code": resp.status,
+                            "response_headers": resp_headers,
+                            "response_body": resp_body,
+                            "redirect_chain": redirect_chain,
+                            "response_time_ms": round(elapsed_ms, 2),
+                            "raw": raw,
+                        }
+                    )
         except Exception as exc:
             elapsed_ms = (time.monotonic() - start) * 1000
-            return json.dumps({
-                "status_code": 0,
-                "response_headers": {},
-                "response_body": "",
-                "redirect_chain": [],
-                "response_time_ms": round(elapsed_ms, 2),
-                "error": str(exc),
-            })
+            return json.dumps(
+                {
+                    "status_code": 0,
+                    "response_headers": {},
+                    "response_body": "",
+                    "redirect_chain": [],
+                    "response_time_ms": round(elapsed_ms, 2),
+                    "error": str(exc),
+                }
+            )
 
     def parse_output(self, raw_output: str) -> HTTPClientOutput:
         """Parse the JSON response from execute() into structured output."""

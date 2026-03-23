@@ -34,8 +34,6 @@ class HttpxTool(ToolBase):
     """httpx HTTP service prober.
 
     Runs: httpx -u <url> -json -title -tech-detect -status-code
-
-    TODO: Parse JSONL output into HttpxResult models.
     """
 
     capabilities = ["http_probing", "technology_detection", "service_fingerprinting", "alive_check"]

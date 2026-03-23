@@ -20,9 +20,7 @@ CRITIC = "critic"
 
 #: All agents known to the system.  The MessageBus uses this set for
 #: broadcast delivery and to validate routing decisions.
-KNOWN_AGENTS: frozenset[str] = frozenset(
-    {ORCHESTRATOR, RECON, SCAN, EXPLOIT, REPORT, CRITIC}
-)
+KNOWN_AGENTS: frozenset[str] = frozenset({ORCHESTRATOR, RECON, SCAN, EXPLOIT, REPORT, CRITIC})
 
 # ---------------------------------------------------------------------------
 # Standard task/response content keys
