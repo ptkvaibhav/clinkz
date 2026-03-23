@@ -31,8 +31,6 @@ class SqlmapTool(ToolBase):
     - Never use --dump, --all, --os-shell, --os-cmd in automated mode
     - Level ≤ 3, Risk ≤ 2 to avoid destructive payloads
     - Always use --batch for non-interactive mode
-
-    TODO: Parse sqlmap output to detect vulnerable parameters and injection types.
     """
 
     capabilities = ["sql_injection_testing", "sqli_detection", "database_fingerprinting"]
@@ -106,27 +104,31 @@ class SqlmapTool(ToolBase):
         }
 
     async def execute(self, args: dict[str, Any]) -> str:
+        import shutil
         import tempfile
 
         tmp_dir = tempfile.mkdtemp(prefix="sqlmap_")
-        cmd = [
-            "sqlmap",
-            "-u",
-            args["url"],
-            "--batch",
-            f"--level={args['level']}",
-            f"--risk={args['risk']}",
-            f"--output-dir={tmp_dir}",
-            "--flush-session",
-        ]
-        if args.get("data"):
-            cmd.extend(["--data", args["data"]])
-        if args.get("cookie"):
-            cmd.extend(["--cookie", args["cookie"]])
-        if args.get("forms"):
-            cmd.append("--forms")
-        stdout, stderr, _ = await self._run_subprocess(cmd)
-        return stdout or stderr
+        try:
+            cmd = [
+                "sqlmap",
+                "-u",
+                args["url"],
+                "--batch",
+                f"--level={args['level']}",
+                f"--risk={args['risk']}",
+                f"--output-dir={tmp_dir}",
+                "--flush-session",
+            ]
+            if args.get("data"):
+                cmd.extend(["--data", args["data"]])
+            if args.get("cookie"):
+                cmd.extend(["--cookie", args["cookie"]])
+            if args.get("forms"):
+                cmd.append("--forms")
+            stdout, stderr, _ = await self._run_subprocess(cmd)
+            return stdout or stderr
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def parse_output(self, raw_output: str) -> SqlmapOutput:
         vulnerable = "is vulnerable" in raw_output.lower() or "parameter" in raw_output.lower()

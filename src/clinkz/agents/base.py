@@ -170,9 +170,7 @@ class BaseAgent(ABC):
 
             if msg.message_type == MessageType.QUERY:
                 query_text = msg.content.get("query", str(msg.content))
-                self._logger.info(
-                    "Mid-run query from '%s': %s", msg.from_agent, query_text
-                )
+                self._logger.info("Mid-run query from '%s': %s", msg.from_agent, query_text)
                 self.messages.append(
                     LLMMessage(
                         role="user",
@@ -255,7 +253,9 @@ class BaseAgent(ABC):
                 tool_result = await self._execute_tool(action.tool_call)
 
                 # Track consecutive failures for the same tool+error
-                is_failure = tool_result.startswith(("Error:", "Tool '")) and "failed" in tool_result
+                is_failure = (
+                    tool_result.startswith(("Error:", "Tool '")) and "failed" in tool_result
+                )
                 if is_failure:
                     failure_key = (action.tool_call.name, tool_result)
                     if failure_key == _last_failure_key:
@@ -298,9 +298,7 @@ class BaseAgent(ABC):
                 self._logger.warning("LLM returned bare thought — treating as final answer")
                 return action.thought
 
-        self._logger.warning(
-            "Max iterations (%d) reached for agent '%s'", limit, self.name
-        )
+        self._logger.warning("Max iterations (%d) reached for agent '%s'", limit, self.name)
         return "Max iterations reached without a final answer."
 
     # ------------------------------------------------------------------

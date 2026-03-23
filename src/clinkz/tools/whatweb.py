@@ -37,7 +37,12 @@ class WhatWebTool(ToolBase):
     Runs: whatweb --aggression=<n> --log-json=- <target>
     """
 
-    capabilities = ["technology_fingerprinting", "web_fingerprinting", "cms_detection", "web_technology_detection"]
+    capabilities = [
+        "technology_fingerprinting",
+        "web_fingerprinting",
+        "cms_detection",
+        "web_technology_detection",
+    ]
     category = "recon"
 
     @property
@@ -104,7 +109,7 @@ class WhatWebTool(ToolBase):
             return WhatWebOutput(tool_name=self.name, success=False, raw_output=raw_output)
 
         # Strip ANSI escape codes that WhatWeb emits when run inside Docker
-        cleaned = re.sub(r'\x1b\[[0-9;]*m', '', raw_output)
+        cleaned = re.sub(r"\x1b\[[0-9;]*m", "", raw_output)
 
         try:
             data = json.loads(cleaned)

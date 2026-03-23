@@ -48,17 +48,37 @@ def _load_json(filename: str) -> list[dict[str, Any]]:
 # ── Phase → applicable_to tag mapping ─────────────────────────────────
 _PHASE_TAGS: dict[str, set[str]] = {
     "recon": {
-        "reconnaissance", "recon", "information_gathering", "osint",
-        "network", "infrastructure", "dns",
+        "reconnaissance",
+        "recon",
+        "information_gathering",
+        "osint",
+        "network",
+        "infrastructure",
+        "dns",
     },
     "scan": {
-        "web", "api", "crawling", "fuzzing", "scanning",
-        "configuration", "network", "infrastructure",
+        "web",
+        "api",
+        "crawling",
+        "fuzzing",
+        "scanning",
+        "configuration",
+        "network",
+        "infrastructure",
     },
     "exploit": {
-        "web", "api", "network", "injection", "authentication",
-        "authorization", "session", "cryptography", "exploitation",
-        "infrastructure", "cloud", "active_directory",
+        "web",
+        "api",
+        "network",
+        "injection",
+        "authentication",
+        "authorization",
+        "session",
+        "cryptography",
+        "exploitation",
+        "infrastructure",
+        "cloud",
+        "active_directory",
     },
     "report": {"web", "api", "network"},
     "critic": {"web", "api", "network"},
@@ -244,7 +264,8 @@ class KnowledgeBase:
         """
         service_lower = service_type.lower().strip()
         return [
-            entry for entry in self._all_entries
+            entry
+            for entry in self._all_entries
             if service_lower in [t.lower() for t in entry.get("applicable_to", [])]
         ]
 
@@ -310,12 +331,14 @@ class KnowledgeBase:
         cat_lower = category.lower().strip()
         results: list[dict[str, Any]] = []
         for entry in self._all_entries:
-            searchable = " ".join([
-                entry.get("category_name", ""),
-                entry.get("tactic_name", ""),
-                entry.get("parent_name", ""),
-                entry.get("name", ""),
-            ]).lower()
+            searchable = " ".join(
+                [
+                    entry.get("category_name", ""),
+                    entry.get("tactic_name", ""),
+                    entry.get("parent_name", ""),
+                    entry.get("name", ""),
+                ]
+            ).lower()
             if cat_lower in searchable:
                 results.append(entry)
         return results
@@ -358,8 +381,7 @@ class KnowledgeBase:
                 continue
             # Match by service mention in description/actions
             searchable = (
-                f"{entry.get('description', '')} "
-                f"{' '.join(entry.get('pentest_actions', []))}"
+                f"{entry.get('description', '')} {' '.join(entry.get('pentest_actions', []))}"
             ).lower()
             if service_lower in searchable:
                 results.append(entry)
@@ -426,17 +448,19 @@ class KnowledgeBase:
 
         scored: list[tuple[int, dict[str, Any]]] = []
         for entry in self._all_entries:
-            searchable = " ".join([
-                entry.get("name", ""),
-                entry.get("description", ""),
-                " ".join(entry.get("pentest_actions", [])),
-                " ".join(entry.get("test_steps", [])),
-                " ".join(entry.get("tools", [])),
-                " ".join(entry.get("payloads", [])),
-                entry.get("tactic_name", ""),
-                entry.get("category_name", ""),
-                entry.get("parent_name", ""),
-            ]).lower()
+            searchable = " ".join(
+                [
+                    entry.get("name", ""),
+                    entry.get("description", ""),
+                    " ".join(entry.get("pentest_actions", [])),
+                    " ".join(entry.get("test_steps", [])),
+                    " ".join(entry.get("tools", [])),
+                    " ".join(entry.get("payloads", [])),
+                    entry.get("tactic_name", ""),
+                    entry.get("category_name", ""),
+                    entry.get("parent_name", ""),
+                ]
+            ).lower()
 
             hits = sum(1 for t in tokens if t in searchable)
             if hits == len(tokens):

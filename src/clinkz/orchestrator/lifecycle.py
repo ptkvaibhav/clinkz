@@ -63,8 +63,8 @@ logger = logging.getLogger(__name__)
 #: canonical protocol name is "scan").
 _AGENT_CLASSES: dict[str, type[BaseAgent]] = {
     "recon": ReconAgent,
-    "scan": ScanAgent,     # protocol name → full implementation
-    "crawl": CrawlAgent,   # legacy alias → stub
+    "scan": ScanAgent,  # protocol name → full implementation
+    "crawl": CrawlAgent,  # legacy alias → stub
     "exploit": ExploitAgent,
     "report": ReportAgent,
     "critic": CriticAgent,
@@ -162,8 +162,7 @@ class AgentLifecycleManager:
         """
         if agent_type not in _AGENT_CLASSES:
             raise ValueError(
-                f"Unknown agent type '{agent_type}'. "
-                f"Valid types: {sorted(_AGENT_CLASSES)}"
+                f"Unknown agent type '{agent_type}'. Valid types: {sorted(_AGENT_CLASSES)}"
             )
 
         agent_cls = _AGENT_CLASSES[agent_type]
@@ -222,7 +221,7 @@ class AgentLifecycleManager:
 
         try:
             await asyncio.wait_for(record.task, timeout=_SHUTDOWN_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._logger.warning(
                 "Agent '%s' did not stop within %ds — cancelling task",
                 agent_name,
@@ -278,9 +277,7 @@ class AgentLifecycleManager:
             Sorted list of agent name strings.
         """
         return sorted(
-            name
-            for name, record in self._records.items()
-            if record.status == AgentStatus.RUNNING
+            name for name, record in self._records.items() if record.status == AgentStatus.RUNNING
         )
 
     # ------------------------------------------------------------------
@@ -317,7 +314,7 @@ class AgentLifecycleManager:
                         self._bus.receive(agent.name),
                         timeout=1.0,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
 
                 if stop_event.is_set():
@@ -330,9 +327,7 @@ class AgentLifecycleManager:
         except asyncio.CancelledError:
             self._logger.debug("Agent '%s' run-loop cancelled", agent.name)
         except Exception as exc:
-            self._logger.error(
-                "Agent '%s' run-loop crashed: %s", agent.name, exc, exc_info=True
-            )
+            self._logger.error("Agent '%s' run-loop crashed: %s", agent.name, exc, exc_info=True)
             await self._safe_send(
                 AgentMessage(
                     from_agent=agent.name,
@@ -366,9 +361,7 @@ class AgentLifecycleManager:
             agent: The agent to run.
             msg: Task message with content to pass to agent.run().
         """
-        self._logger.info(
-            "Agent '%s' processing task %s", agent.name, msg.id
-        )
+        self._logger.info("Agent '%s' processing task %s", agent.name, msg.id)
         try:
             result: dict[str, Any] = await agent.run(msg.content)
             await self._safe_send(

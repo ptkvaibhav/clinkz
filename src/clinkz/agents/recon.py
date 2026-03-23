@@ -392,13 +392,9 @@ class ReconAgent(BaseAgent):
                 host_data: dict[str, Any] = (
                     host.model_dump() if hasattr(host, "model_dump") else dict(host)
                 )
-                target_id = await self.state.upsert_target(
-                    self.engagement_id, host_data
-                )
+                target_id = await self.state.upsert_target(self.engagement_id, host_data)
                 self._discovered_hosts.append({**host_data, "id": target_id})
-                self._logger.info(
-                    "Persisted host: %s", host_data.get("ip", "unknown")
-                )
+                self._logger.info("Persisted host: %s", host_data.get("ip", "unknown"))
 
         # Subfinder and similar tools return a list of subdomain strings
         if hasattr(parsed, "subdomains"):
@@ -409,9 +405,7 @@ class ReconAgent(BaseAgent):
                     "tags": ["subdomain"],
                     "is_alive": True,
                 }
-                target_id = await self.state.upsert_target(
-                    self.engagement_id, host_data
-                )
+                target_id = await self.state.upsert_target(self.engagement_id, host_data)
                 self._discovered_hosts.append({**host_data, "id": target_id})
                 self._logger.info("Persisted subdomain: %s", subdomain)
 

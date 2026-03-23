@@ -68,20 +68,18 @@ class MyTool(ToolBase):
         )
 ```
 
-## 2. Register with the agent
+## 2. Register with the Tool Resolver
 
-In the relevant phase agent (e.g., `agents/recon.py`), add the tool to the tools list:
+Add a `capabilities` class attribute and `category` to your tool class. The **Tool Resolver** (`src/clinkz/tools/resolver.py`) auto-discovers all `ToolBase` subclasses and indexes them by capability, so agents find tools dynamically — no manual registration needed:
 
 ```python
-from clinkz.tools.mytool import MyTool
-
-# in ReconAgent.__init__ or factory function:
-tools = [
-    NmapTool(scope=scope, timeout=settings.tool_timeout),
-    MyTool(scope=scope, timeout=settings.tool_timeout),
+class MyTool(ToolBase):
+    capabilities = ["my_capability", "related_capability"]
+    category = "recon"  # or "scan", "exploit"
     # ...
-]
 ```
+
+Agents request tools by capability (e.g., `resolver.find_tool("my_capability")`), not by name. You do **not** need to import or register your tool in agent code.
 
 ## 3. Add to Docker image
 
@@ -121,7 +119,7 @@ def test_parse_output():
 - [ ] Inherits from `ToolBase`
 - [ ] `validate_input()` calls `self._check_scope(target)`
 - [ ] Returns a `ToolOutput` subclass (never a raw string)
-- [ ] Registered with the appropriate phase agent
+- [ ] Has `capabilities` and `category` class attributes for auto-discovery
 - [ ] Added to `docker/Dockerfile.tools`
 - [ ] Fixture saved in `tests/fixtures/`
 - [ ] Unit tests passing with `pytest tests/test_tools/test_mytool.py -v`

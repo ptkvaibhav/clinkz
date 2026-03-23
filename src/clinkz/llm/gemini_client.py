@@ -122,8 +122,7 @@ class GeminiClient(LLMClient):
         api_key = settings.gemini_api_key or settings.google_api_key
         if not api_key:
             raise ValueError(
-                "Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set. "
-                "Add one to your .env file."
+                "Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set. Add one to your .env file."
             )
         self._client = genai.Client(
             api_key=api_key,
@@ -188,9 +187,7 @@ class GeminiClient(LLMClient):
                 continue
 
             if msg.role == "user":
-                contents.append(
-                    types.Content(role="user", parts=[types.Part(text=msg.content)])
-                )
+                contents.append(types.Content(role="user", parts=[types.Part(text=msg.content)]))
                 continue
 
             if msg.role == "assistant":
@@ -201,9 +198,7 @@ class GeminiClient(LLMClient):
                     for tc in msg.tool_calls:
                         parts.append(
                             types.Part(
-                                function_call=types.FunctionCall(
-                                    name=tc.name, args=tc.arguments
-                                )
+                                function_call=types.FunctionCall(name=tc.name, args=tc.arguments)
                             )
                         )
                 contents.append(types.Content(role="model", parts=parts))

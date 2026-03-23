@@ -23,8 +23,6 @@ class NmapTool(ToolBase):
     """Nmap port scanner and service fingerprinter.
 
     Runs: nmap -sV -sC -oX - <target> -p <ports>
-
-    TODO: Parse nmap XML output into Host / Service models.
     """
 
     capabilities = ["port_scanning", "service_detection", "os_fingerprinting", "host_discovery"]
@@ -73,13 +71,39 @@ class NmapTool(ToolBase):
 
         ports = args.get("ports", "1-1000")
         # Reject non-numeric port specs (e.g. "common", "top_1000")
-        if not re.fullmatch(r'[\d,\- ]+', ports):
+        if not re.fullmatch(r"[\d,\- ]+", ports):
             ports = "1-1000"
+
+        # Sanitize flags — block dangerous nmap options that could write files,
+        # execute scripts from untrusted paths, or perform destructive actions.
+        flags = args.get("flags", "")
+        _blocked = {
+            "--script-args-file",
+            "--datadir",
+            "-oN",
+            "-oX",
+            "-oS",
+            "-oG",
+            "-oA",
+            "--resume",
+            "--stylesheet",
+            "--webxml",
+            "--append-output",
+            "--interactive",
+            "-iL",
+            "-iR",
+            "--excludefile",
+        }
+        if flags:
+            for token in flags.split():
+                flag_name = token.split("=")[0]
+                if flag_name in _blocked:
+                    raise ValueError(f"Blocked nmap flag: {flag_name}")
 
         return {
             "target": target,
             "ports": ports,
-            "flags": args.get("flags", ""),
+            "flags": flags,
         }
 
     async def execute(self, args: dict[str, Any]) -> str:

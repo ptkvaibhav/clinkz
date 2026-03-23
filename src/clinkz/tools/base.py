@@ -218,9 +218,7 @@ class ToolBase(ABC):
         stderr = stderr_bytes.decode(errors="replace")
         return stdout, stderr, returncode
 
-    async def _run_subprocess_stdin(
-        self, cmd: list[str], stdin_data: str
-    ) -> tuple[str, str, int]:
+    async def _run_subprocess_stdin(self, cmd: list[str], stdin_data: str) -> tuple[str, str, int]:
         """Execute a command with data piped to stdin.
 
         Like :meth:`_run_subprocess` but feeds *stdin_data* to the process.

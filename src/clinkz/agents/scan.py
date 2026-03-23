@@ -403,9 +403,7 @@ class ScanAgent(BaseAgent):
                         "hostnames": [str(url)],
                         "tags": ["endpoint", "scan"],
                     }
-                    target_id = await self.state.upsert_target(
-                        self.engagement_id, endpoint_data
-                    )
+                    target_id = await self.state.upsert_target(self.engagement_id, endpoint_data)
                     self._discovered_endpoints.append({**endpoint_data, "id": target_id})
                     self._logger.info("Persisted endpoint: %s", url)
 
@@ -417,9 +415,7 @@ class ScanAgent(BaseAgent):
                     "hostnames": [str(path)],
                     "tags": ["path", "scan"],
                 }
-                target_id = await self.state.upsert_target(
-                    self.engagement_id, path_data
-                )
+                target_id = await self.state.upsert_target(self.engagement_id, path_data)
                 self._discovered_endpoints.append({**path_data, "id": target_id})
                 self._logger.info("Persisted path: %s", path)
 
@@ -431,9 +427,7 @@ class ScanAgent(BaseAgent):
                     "hostnames": [str(param)],
                     "tags": ["parameter", "scan"],
                 }
-                target_id = await self.state.upsert_target(
-                    self.engagement_id, param_data
-                )
+                target_id = await self.state.upsert_target(self.engagement_id, param_data)
                 self._discovered_endpoints.append({**param_data, "id": target_id})
                 self._logger.info("Persisted parameter: %s", param)
 
@@ -473,9 +467,7 @@ class ScanAgent(BaseAgent):
             latest = sessions[-1]
             cookies_dict: dict[str, str] = latest.get("cookies", {})
             if cookies_dict:
-                self._session_cookies = "; ".join(
-                    f"{k}={v}" for k, v in cookies_dict.items()
-                )
+                self._session_cookies = "; ".join(f"{k}={v}" for k, v in cookies_dict.items())
                 self._logger.info(
                     "Loaded session cookies for authenticated crawling (%d cookies)",
                     len(cookies_dict),
