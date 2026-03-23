@@ -98,11 +98,16 @@ class FfufTool(ToolBase):
 
         base = urlparse(url).netloc
         self._check_scope(base)
+        wordlist = args.get(
+            "wordlist", "/usr/share/seclists/Discovery/Web-Content/common.txt"
+        )
+        # If the LLM provides a bare filename (no path separator), resolve it
+        # to the standard seclists directory inside the Docker container.
+        if wordlist and "/" not in wordlist and "\\" not in wordlist:
+            wordlist = f"/usr/share/seclists/Discovery/Web-Content/{wordlist}"
         return {
             "url": url,
-            "wordlist": args.get(
-                "wordlist", "/usr/share/seclists/Discovery/Web-Content/common.txt"
-            ),
+            "wordlist": wordlist,
             "filter_status": args.get("filter_status", "404"),
             "threads": int(args.get("threads", 40)),
         }

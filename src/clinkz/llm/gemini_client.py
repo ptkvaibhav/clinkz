@@ -61,10 +61,18 @@ class _RateLimiter:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Return True if the exception indicates a 429 / quota exhaustion."""
+    """Return True if the exception indicates a retryable server error (429/503)."""
     msg = str(exc).lower()
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-    return code == 429 or "429" in msg or "resource exhausted" in msg or "quota" in msg
+    return (
+        code in (429, 503)
+        or "429" in msg
+        or "503" in msg
+        or "resource exhausted" in msg
+        or "quota" in msg
+        or "unavailable" in msg
+        or "high demand" in msg
+    )
 
 
 def _extract_retry_delay(exc: Exception) -> float | None:
