@@ -139,9 +139,7 @@ async def test_check_mcp_servers_empty_before_initialize(
 @pytest.mark.asyncio
 async def test_initialize_discovers_mcp_tools(fresh_resolver: ToolResolver) -> None:
     """initialize() connects to the test server and caches both tools."""
-    await fresh_resolver.initialize(
-        extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]]
-    )
+    await fresh_resolver.initialize(extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]])
     try:
         entries = fresh_resolver.check_mcp_servers()
         names = {e["name"] for e in entries}
@@ -156,9 +154,7 @@ async def test_find_tool_prefers_mcp_after_initialize(
     fresh_resolver: ToolResolver,
 ) -> None:
     """find_tool() returns an MCP match for 'ping' after initialize()."""
-    await fresh_resolver.initialize(
-        extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]]
-    )
+    await fresh_resolver.initialize(extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]])
     try:
         match = fresh_resolver.find_tool("ping")
         assert match is not None
@@ -175,9 +171,7 @@ async def test_find_tool_falls_back_to_local_for_unknown_mcp_cap(
     fresh_resolver: ToolResolver,
 ) -> None:
     """find_tool('port_scanning') falls back to local when no MCP tool covers it."""
-    await fresh_resolver.initialize(
-        extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]]
-    )
+    await fresh_resolver.initialize(extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]])
     try:
         with patch("clinkz.tools.resolver.shutil.which", return_value="/usr/bin/nmap"):
             match = fresh_resolver.find_tool("port_scanning")
@@ -191,9 +185,7 @@ async def test_find_tool_falls_back_to_local_for_unknown_mcp_cap(
 @pytest.mark.asyncio
 async def test_get_mcp_client_for_tool(fresh_resolver: ToolResolver) -> None:
     """get_mcp_client_for_tool() returns the live MCPClient for a tool."""
-    await fresh_resolver.initialize(
-        extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]]
-    )
+    await fresh_resolver.initialize(extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]])
     try:
         client = fresh_resolver.get_mcp_client_for_tool("ping")
         assert client is not None
@@ -216,9 +208,7 @@ async def test_initialize_graceful_fallback_on_bad_server(
 @pytest.mark.asyncio
 async def test_shutdown_disconnects_all_clients(fresh_resolver: ToolResolver) -> None:
     """shutdown() disconnects all cached MCPClient instances."""
-    await fresh_resolver.initialize(
-        extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]]
-    )
+    await fresh_resolver.initialize(extra_servers=[[sys.executable, str(_SERVER_SCRIPT)]])
     assert len(fresh_resolver._mcp_clients) == 1
     await fresh_resolver.shutdown()
     assert len(fresh_resolver._mcp_clients) == 0

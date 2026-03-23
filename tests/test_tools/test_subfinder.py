@@ -126,8 +126,14 @@ def test_fixture_subdomain_count(parsed) -> None:
 
 
 def test_fixture_contains_specific_subdomains(parsed) -> None:
-    expected = {"api.example.com", "www.example.com", "mail.example.com",
-                "dev.example.com", "staging.example.com", "admin.example.com"}
+    expected = {
+        "api.example.com",
+        "www.example.com",
+        "mail.example.com",
+        "dev.example.com",
+        "staging.example.com",
+        "admin.example.com",
+    }
     assert expected.issubset(set(parsed.subdomains))
 
 

@@ -86,12 +86,14 @@ def test_validate_invalid_method_rejects() -> None:
 
 def test_validate_post_with_body() -> None:
     tool = make_tool()
-    result = tool.validate_input({
-        "url": "http://example.com/login",
-        "method": "POST",
-        "body": "username=admin&password=password",
-        "headers": {"Content-Type": "application/x-www-form-urlencoded"},
-    })
+    result = tool.validate_input(
+        {
+            "url": "http://example.com/login",
+            "method": "POST",
+            "body": "username=admin&password=password",
+            "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+        }
+    )
     assert result["method"] == "POST"
     assert result["body"] == "username=admin&password=password"
     assert result["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
@@ -99,19 +101,23 @@ def test_validate_post_with_body() -> None:
 
 def test_validate_with_cookies() -> None:
     tool = make_tool()
-    result = tool.validate_input({
-        "url": "http://example.com/dashboard",
-        "cookies": {"session": "abc123"},
-    })
+    result = tool.validate_input(
+        {
+            "url": "http://example.com/dashboard",
+            "cookies": {"session": "abc123"},
+        }
+    )
     assert result["cookies"] == {"session": "abc123"}
 
 
 def test_validate_follow_redirects() -> None:
     tool = make_tool()
-    result = tool.validate_input({
-        "url": "http://example.com",
-        "follow_redirects": True,
-    })
+    result = tool.validate_input(
+        {
+            "url": "http://example.com",
+            "follow_redirects": True,
+        }
+    )
     assert result["follow_redirects"] is True
 
 
@@ -122,14 +128,16 @@ def test_validate_follow_redirects() -> None:
 
 def test_parse_output_success() -> None:
     tool = make_tool()
-    raw = json.dumps({
-        "status_code": 200,
-        "response_headers": {"Content-Type": "text/html"},
-        "response_body": "<html>OK</html>",
-        "redirect_chain": [],
-        "response_time_ms": 42.5,
-        "raw": "HTTP/1.1 200 OK\nContent-Type: text/html\n\n<html>OK</html>",
-    })
+    raw = json.dumps(
+        {
+            "status_code": 200,
+            "response_headers": {"Content-Type": "text/html"},
+            "response_body": "<html>OK</html>",
+            "redirect_chain": [],
+            "response_time_ms": 42.5,
+            "raw": "HTTP/1.1 200 OK\nContent-Type: text/html\n\n<html>OK</html>",
+        }
+    )
     output = tool.parse_output(raw)
     assert output.success is True
     assert output.status_code == 200
@@ -139,28 +147,32 @@ def test_parse_output_success() -> None:
 
 def test_parse_output_with_redirects() -> None:
     tool = make_tool()
-    raw = json.dumps({
-        "status_code": 200,
-        "response_headers": {},
-        "response_body": "final",
-        "redirect_chain": ["http://example.com/old", "http://example.com/new"],
-        "response_time_ms": 100.0,
-        "raw": "",
-    })
+    raw = json.dumps(
+        {
+            "status_code": 200,
+            "response_headers": {},
+            "response_body": "final",
+            "redirect_chain": ["http://example.com/old", "http://example.com/new"],
+            "response_time_ms": 100.0,
+            "raw": "",
+        }
+    )
     output = tool.parse_output(raw)
     assert len(output.redirect_chain) == 2
 
 
 def test_parse_output_error() -> None:
     tool = make_tool()
-    raw = json.dumps({
-        "status_code": 0,
-        "response_headers": {},
-        "response_body": "",
-        "redirect_chain": [],
-        "response_time_ms": 5.0,
-        "error": "Connection refused",
-    })
+    raw = json.dumps(
+        {
+            "status_code": 0,
+            "response_headers": {},
+            "response_body": "",
+            "redirect_chain": [],
+            "response_time_ms": 5.0,
+            "error": "Connection refused",
+        }
+    )
     output = tool.parse_output(raw)
     assert output.success is False
     assert "Connection refused" in output.error

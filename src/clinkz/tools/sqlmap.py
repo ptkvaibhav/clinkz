@@ -72,7 +72,7 @@ class SqlmapTool(ToolBase):
                     },
                     "cookie": {
                         "type": "string",
-                        "description": "Cookie string for authenticated testing (e.g., 'PHPSESSID=abc123; security=low').",
+                        "description": "Cookie string for authenticated testing.",
                         "default": "",
                     },
                     "forms": {

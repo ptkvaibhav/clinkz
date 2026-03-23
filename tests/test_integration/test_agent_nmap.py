@@ -23,9 +23,9 @@ from clinkz.tools.nmap import NmapTool
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
-FIXTURE_XML = (
-    Path(__file__).parent.parent / "fixtures" / "nmap_sample_output.xml"
-).read_text(encoding="utf-8")
+FIXTURE_XML = (Path(__file__).parent.parent / "fixtures" / "nmap_sample_output.xml").read_text(
+    encoding="utf-8"
+)
 
 SCOPE = EngagementScope(
     name="localhost-test",
@@ -202,9 +202,9 @@ async def test_service_names_and_versions(tmp_path: Path) -> None:
 
     services = {
         s["port"]: s
-        for s in json.loads(
-            next(a for a in actions if a["tool"] == "nmap")["output_json"]
-        )["hosts"][0]["services"]
+        for s in json.loads(next(a for a in actions if a["tool"] == "nmap")["output_json"])[
+            "hosts"
+        ][0]["services"]
     }
 
     assert services[22]["product"] == "OpenSSH"
@@ -222,9 +222,7 @@ async def test_os_detection_stored(tmp_path: Path) -> None:
     actions = await state.get_actions(engagement_id)
     await state.close()
 
-    host = json.loads(
-        next(a for a in actions if a["tool"] == "nmap")["output_json"]
-    )["hosts"][0]
+    host = json.loads(next(a for a in actions if a["tool"] == "nmap")["output_json"])["hosts"][0]
 
     assert host["os"] == "Linux"
     assert "Linux 5" in host["os_version"]
@@ -238,9 +236,9 @@ async def test_nse_scripts_stored(tmp_path: Path) -> None:
 
     services = {
         s["port"]: s
-        for s in json.loads(
-            next(a for a in actions if a["tool"] == "nmap")["output_json"]
-        )["hosts"][0]["services"]
+        for s in json.loads(next(a for a in actions if a["tool"] == "nmap")["output_json"])[
+            "hosts"
+        ][0]["services"]
     }
 
     assert "ssh-hostkey" in services[22]["scripts"]

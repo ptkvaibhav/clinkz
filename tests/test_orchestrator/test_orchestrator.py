@@ -261,8 +261,9 @@ async def test_cross_phase_query_triggers_respin() -> None:
         else:
             # All other agents complete immediately
             await bus_holder[0].send(
-                _result_msg(agent_type, task_msg.engagement_id,
-                           {"status": "complete", "agent": agent_type})
+                _result_msg(
+                    agent_type, task_msg.engagement_id, {"status": "complete", "agent": agent_type}
+                )
             )
             if agent_type in running_agents:
                 running_agents.remove(agent_type)
@@ -289,9 +290,11 @@ async def test_cross_phase_query_triggers_respin() -> None:
             # Check if there's a response on exploit's queue
             # After orchestrator routes the response, exploit "finishes"
             await bus_holder[0].send(
-                _result_msg("exploit", orchestrator._engagement_id or "test",
-                           {"status": "complete", "agent": "exploit",
-                            "exploits_found": 2})
+                _result_msg(
+                    "exploit",
+                    orchestrator._engagement_id or "test",
+                    {"status": "complete", "agent": "exploit", "exploits_found": 2},
+                )
             )
             if "exploit" in running_agents:
                 running_agents.remove("exploit")
@@ -396,8 +399,7 @@ async def test_phase_error_returns_error_result() -> None:
                 running_agents.remove(agent_type)
         else:
             await bus_holder[0].send(
-                _result_msg(agent_type, task_msg.engagement_id,
-                           {"status": "complete"})
+                _result_msg(agent_type, task_msg.engagement_id, {"status": "complete"})
             )
             if agent_type in running_agents:
                 running_agents.remove(agent_type)
@@ -441,10 +443,12 @@ def test_httpx_url_alias() -> None:
     assert targets == ["http://10.10.10.1"]
 
     # Both url and target provided — target takes precedence (or both included)
-    targets2 = tool._normalize_targets({
-        "target": "http://10.10.10.1:80",
-        "url": "http://10.10.10.1:443",
-    })
+    targets2 = tool._normalize_targets(
+        {
+            "target": "http://10.10.10.1:80",
+            "url": "http://10.10.10.1:443",
+        }
+    )
     assert "http://10.10.10.1:80" in targets2
 
 

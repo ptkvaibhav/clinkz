@@ -182,6 +182,7 @@ def test_find_tools_empty_for_unknown_capability(resolver: ToolResolver) -> None
 
 def test_find_tools_marks_unavailable_correctly(resolver: ToolResolver) -> None:
     """find_tools marks each match's available field via shutil.which."""
+
     def _mock_which(name: str) -> str | None:
         return "/usr/bin/ffuf" if name == "ffuf" else None
 

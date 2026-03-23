@@ -211,7 +211,7 @@ class BaseAgent(ABC):
         # Failure tracking: (tool_name, error_message) → consecutive count
         _last_failure_key: tuple[str, str] | None = None
         _consecutive_failures: int = 0
-        _MAX_CONSECUTIVE_FAILURES = 3
+        _max_consecutive_failures = 3
 
         for iteration in range(limit):
             self._logger.debug("ReAct iteration %d/%d", iteration + 1, limit)
@@ -264,7 +264,7 @@ class BaseAgent(ABC):
                         _last_failure_key = failure_key
                         _consecutive_failures = 1
 
-                    if _consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    if _consecutive_failures >= _max_consecutive_failures:
                         self._logger.warning(
                             "Tool '%s' failed %d times with same error — injecting skip directive",
                             action.tool_call.name,

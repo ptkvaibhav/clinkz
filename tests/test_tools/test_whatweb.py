@@ -51,6 +51,7 @@ def test_validate_input_accepts_in_scope() -> None:
 
 def test_validate_input_checks_scope() -> None:
     from pytest import raises
+
     with raises(ValueError, match="outside the engagement scope"):
         make_tool().validate_input({"target": "other.com"})
 

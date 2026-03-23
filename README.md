@@ -4,7 +4,7 @@
 
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-pytest-yellow)
+![CI](https://github.com/ptkvaibhav/clinkz/actions/workflows/ci.yml/badge.svg)
 
 ## Overview
 
@@ -113,9 +113,13 @@ All configuration is via environment variables in `.env`:
 | `OPENAI_API_KEY` | OpenAI API key | — |
 | `ANTHROPIC_API_KEY` | Anthropic API key | — |
 | `GEMINI_API_KEY` | Google Gemini API key | — |
+| `GOOGLE_API_KEY` | Google API key (legacy alias for `GEMINI_API_KEY`) | — |
+| `GEMINI_MODEL` | Gemini model name | `gemini-2.5-flash` |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
 | `DB_PATH` | SQLite database path | `clinkz.db` |
 | `TOOL_TIMEOUT` | Tool execution timeout (seconds) | `300` |
+| `TOOL_EXEC_MODE` | Tool execution mode: `local` or `docker` | `local` |
+| `DOCKER_CONTAINER` | Docker container name for sandboxed execution | `clinkz-tools` |
 | `MCP_SERVERS` | JSON list of MCP server commands/URLs | `[]` |
 
 ## Supported Tools

@@ -181,10 +181,7 @@ class _ScanSequenceLLM(LLMClient):
             )
         return AgentAction(
             thought="Scan complete.",
-            final_answer=(
-                f"Discovered 3 endpoints on {TARGET_IP}: "
-                "/login, /api/users, /admin."
-            ),
+            final_answer=(f"Discovered 3 endpoints on {TARGET_IP}: /login, /api/users, /admin."),
         )
 
     async def research(self, query: str) -> str:
@@ -317,12 +314,14 @@ class _ReportLLM(LLMClient):
     """Report LLM: cycles through the four expected generate_text() calls in order."""
 
     def __init__(self) -> None:
-        self._responses = iter([
-            _EXEC_SUMMARY,
-            _FINDING_DESCRIPTION_ENHANCED,
-            _FINDING_REMEDIATION_ENHANCED,
-            _ATTACK_NARRATIVE,
-        ])
+        self._responses = iter(
+            [
+                _EXEC_SUMMARY,
+                _FINDING_DESCRIPTION_ENHANCED,
+                _FINDING_REMEDIATION_ENHANCED,
+                _ATTACK_NARRATIVE,
+            ]
+        )
 
     async def reason(
         self,
@@ -686,9 +685,7 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
         if agent_type == "recon":
             mock_resolver = _make_mock_recon_resolver()
             with patch("clinkz.agents.recon.ToolResolver", return_value=mock_resolver):
-                agent = ReconAgent(
-                    llm=llm, tools=[], scope=scope, state=state, engagement_id=eid
-                )
+                agent = ReconAgent(llm=llm, tools=[], scope=scope, state=state, engagement_id=eid)
                 result = await agent.run(task_msg.content)
 
         elif agent_type == "scan":
@@ -697,31 +694,23 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
 
             mock_resolver = _make_mock_scan_resolver()
             with patch("clinkz.agents.scan.ToolResolver", return_value=mock_resolver):
-                agent = ScanAgent(
-                    llm=llm, tools=[], scope=scope, state=state, engagement_id=eid
-                )
+                agent = ScanAgent(llm=llm, tools=[], scope=scope, state=state, engagement_id=eid)
                 result = await agent.run(task_msg.content)
 
         elif agent_type == "exploit":
             mock_resolver = _make_mock_exploit_resolver()
             with patch("clinkz.agents.exploit.ToolResolver", return_value=mock_resolver):
-                agent = ExploitAgent(
-                    llm=llm, tools=[], scope=scope, state=state, engagement_id=eid
-                )
+                agent = ExploitAgent(llm=llm, tools=[], scope=scope, state=state, engagement_id=eid)
                 result = await agent.run(task_msg.content)
 
         elif agent_type == "critic":
             # Fetch findings (with DB IDs) so critic can call mark_finding_validated
             findings = await state.get_findings(eid)
-            agent = CriticAgent(
-                llm=llm, tools=[], scope=scope, state=state, engagement_id=eid
-            )
+            agent = CriticAgent(llm=llm, tools=[], scope=scope, state=state, engagement_id=eid)
             result = await agent.run({"findings": findings})
 
         elif agent_type == "report":
-            agent = ReportAgent(
-                llm=llm, tools=[], scope=scope, state=state, engagement_id=eid
-            )
+            agent = ReportAgent(llm=llm, tools=[], scope=scope, state=state, engagement_id=eid)
             result = await agent.run({"engagement_name": scope.name})
 
         await bus.send(
@@ -776,18 +765,13 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
             result = await orchestrator.run(scope)
 
     # ── Assertion 1: engagement completed cleanly ─────────────────────────
-    assert result["status"] == "completed", (
-        f"Expected status='completed'. Got: {result}"
-    )
-    assert "phases" in result, (
-        f"Expected 'phases' in result. Got keys: {list(result.keys())}"
-    )
+    assert result["status"] == "completed", f"Expected status='completed'. Got: {result}"
+    assert "phases" in result, f"Expected 'phases' in result. Got keys: {list(result.keys())}"
 
     # ── Assertion 2: all five phases were spun up in the correct order ────
     spun_up_types = [agent_type for agent_type, _ in spin_up_calls]
     assert spun_up_types == ["recon", "scan", "exploit", "critic", "report"], (
-        f"Expected spin_up order: recon→scan→exploit→critic→report. "
-        f"Actual: {spun_up_types}"
+        f"Expected spin_up order: recon→scan→exploit→critic→report. Actual: {spun_up_types}"
     )
 
     # ── Assertion 3: all phases were shut down by the deterministic loop ──
@@ -807,9 +791,7 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
         f"Found IPs: {ips_at_scan_start}"
     )
     # Verify recon host has correct OS and service count
-    nmap_host = next(
-        (t for t in targets_at_scan_start if t.get("ip") == TARGET_IP), None
-    )
+    nmap_host = next((t for t in targets_at_scan_start if t.get("ip") == TARGET_IP), None)
     assert nmap_host is not None
     assert nmap_host.get("os") == "Linux", (
         f"Expected os='Linux' for {TARGET_IP}. Got: {nmap_host.get('os')}"
@@ -831,12 +813,9 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
     assert len(all_findings) >= 1, (
         f"Expected at least 1 finding from exploit phase. Found: {len(all_findings)}"
     )
-    sqli_finding = next(
-        (f for f in all_findings if "SQL Injection" in f.get("title", "")), None
-    )
+    sqli_finding = next((f for f in all_findings if "SQL Injection" in f.get("title", "")), None)
     assert sqli_finding is not None, (
-        f"Expected 'SQL Injection' finding. Titles found: "
-        f"{[f.get('title') for f in all_findings]}"
+        f"Expected 'SQL Injection' finding. Titles found: {[f.get('title') for f in all_findings]}"
     )
     assert sqli_finding.get("severity") == "high"
     assert sqli_finding.get("cvss_score") == 8.5
@@ -848,15 +827,14 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
     )
     validated_titles = [f.get("title") for f in validated_findings]
     assert any("SQL Injection" in t for t in validated_titles), (
-        f"Expected the SQL Injection finding to be validated. "
-        f"Validated: {validated_titles}"
+        f"Expected the SQL Injection finding to be validated. Validated: {validated_titles}"
     )
 
     # ── Assertion 7: final report contains required sections ──────────────
     report_result_msgs = [
-        m for m in all_messages
-        if m.get("from_agent") == "report"
-        and m.get("message_type") == MessageType.RESULT
+        m
+        for m in all_messages
+        if m.get("from_agent") == "report" and m.get("message_type") == MessageType.RESULT
     ]
     assert len(report_result_msgs) >= 1, (
         "Expected at least 1 RESULT message from report agent in state store. "
@@ -871,9 +849,7 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
     # Executive summary
     exec_summary = report_dict.get("executive_summary")
     assert exec_summary is not None, "PentestReport is missing executive_summary."
-    assert exec_summary.get("overview"), (
-        "executive_summary.overview is empty."
-    )
+    assert exec_summary.get("overview"), "executive_summary.overview is empty."
     # Narrative (methodology)
     methodology = report_dict.get("methodology", "")
     assert methodology, "PentestReport.methodology (attack narrative) is empty."
@@ -882,9 +858,7 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
 
     # ── Assertion 8: complete message trail in state store ────────────────
     result_senders = {
-        m.get("from_agent")
-        for m in all_messages
-        if m.get("message_type") == MessageType.RESULT
+        m.get("from_agent") for m in all_messages if m.get("message_type") == MessageType.RESULT
     }
     for phase in ("recon", "scan", "exploit", "critic", "report"):
         assert phase in result_senders, (
@@ -895,8 +869,7 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
     # All persisted messages belong to this engagement
     for m in all_messages:
         assert m.get("engagement_id") == eid, (
-            f"Message {m.get('id')} has engagement_id={m.get('engagement_id')}, "
-            f"expected {eid}"
+            f"Message {m.get('id')} has engagement_id={m.get('engagement_id')}, expected {eid}"
         )
 
     # ── Assertion 9: engagement completed cleanly (no forced timeout) ─────

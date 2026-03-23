@@ -53,12 +53,18 @@ def test_auto_id_generated() -> None:
 
 def test_two_messages_have_different_ids() -> None:
     m1 = AgentMessage(
-        from_agent="orchestrator", to_agent="recon",
-        message_type=MessageType.TASK, content={}, engagement_id=EID,
+        from_agent="orchestrator",
+        to_agent="recon",
+        message_type=MessageType.TASK,
+        content={},
+        engagement_id=EID,
     )
     m2 = AgentMessage(
-        from_agent="orchestrator", to_agent="recon",
-        message_type=MessageType.TASK, content={}, engagement_id=EID,
+        from_agent="orchestrator",
+        to_agent="recon",
+        message_type=MessageType.TASK,
+        content={},
+        engagement_id=EID,
     )
     assert m1.id != m2.id
 
@@ -66,8 +72,11 @@ def test_two_messages_have_different_ids() -> None:
 def test_auto_timestamp_is_utc() -> None:
     before = datetime.now(UTC)
     m = AgentMessage(
-        from_agent="orchestrator", to_agent="recon",
-        message_type=MessageType.TASK, content={}, engagement_id=EID,
+        from_agent="orchestrator",
+        to_agent="recon",
+        message_type=MessageType.TASK,
+        content={},
+        engagement_id=EID,
     )
     after = datetime.now(UTC)
     assert before <= m.timestamp <= after
@@ -76,8 +85,11 @@ def test_auto_timestamp_is_utc() -> None:
 
 def test_parent_message_id_defaults_none() -> None:
     m = AgentMessage(
-        from_agent="orchestrator", to_agent="recon",
-        message_type=MessageType.TASK, content={}, engagement_id=EID,
+        from_agent="orchestrator",
+        to_agent="recon",
+        message_type=MessageType.TASK,
+        content={},
+        engagement_id=EID,
     )
     assert m.parent_message_id is None
 
@@ -125,11 +137,14 @@ def test_factory_task_carries_content() -> None:
 
 def test_factory_result_with_parent_correlation() -> None:
     task = AgentMessage.task(
-        from_agent="orchestrator", to_agent="recon",
-        engagement_id=EID, content={"task": "scan"},
+        from_agent="orchestrator",
+        to_agent="recon",
+        engagement_id=EID,
+        content={"task": "scan"},
     )
     result = AgentMessage.result(
-        from_agent="recon", to_agent="orchestrator",
+        from_agent="recon",
+        to_agent="orchestrator",
         engagement_id=EID,
         content={"hosts": ["192.168.1.1"]},
         parent_message_id=task.id,
@@ -140,7 +155,8 @@ def test_factory_result_with_parent_correlation() -> None:
 
 def test_factory_error_content() -> None:
     m = AgentMessage.error(
-        from_agent="recon", to_agent="orchestrator",
+        from_agent="recon",
+        to_agent="orchestrator",
         engagement_id=EID,
         content={"error": "nmap not found"},
     )
@@ -155,18 +171,29 @@ def test_factory_error_content() -> None:
 
 def test_model_dump_contains_all_fields() -> None:
     m = AgentMessage.task(
-        from_agent="orchestrator", to_agent="recon",
-        engagement_id=EID, content={"task": "go"},
+        from_agent="orchestrator",
+        to_agent="recon",
+        engagement_id=EID,
+        content={"task": "go"},
     )
     d = m.model_dump()
-    for field in ("id", "from_agent", "to_agent", "message_type",
-                  "content", "engagement_id", "parent_message_id", "timestamp"):
+    for field in (
+        "id",
+        "from_agent",
+        "to_agent",
+        "message_type",
+        "content",
+        "engagement_id",
+        "parent_message_id",
+        "timestamp",
+    ):
         assert field in d
 
 
 def test_model_dump_json_round_trip() -> None:
     m = AgentMessage.query(
-        from_agent="exploit", to_agent="orchestrator",
+        from_agent="exploit",
+        to_agent="orchestrator",
         engagement_id=EID,
         content={"query": "What is the OS on 192.168.1.5?"},
     )
