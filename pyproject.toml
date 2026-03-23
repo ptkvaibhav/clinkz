@@ -10,6 +10,18 @@ readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "Pratik Vaibhav", email = "ptkvaibhav@gmail.com"}]
 requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.30.0",
+    "google-genai>=0.5.0",
+    "pydantic>=2.7.0",
+    "typer>=0.12.0",
+    "aiohttp>=3.9.0",
+    "aiosqlite>=0.20.0",
+    "weasyprint>=62.0",
+    "jinja2>=3.1.0",
+    "python-dotenv>=1.0.0",
+    "mcp[cli]>=1.0.0",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Information Technology",
@@ -24,18 +36,6 @@ classifiers = [
 Homepage = "https://github.com/ptkvaibhav/clinkz"
 Repository = "https://github.com/ptkvaibhav/clinkz"
 Issues = "https://github.com/ptkvaibhav/clinkz/issues"
-dependencies = [
-    "openai>=1.30.0",
-    "google-genai>=0.5.0",
-    "pydantic>=2.7.0",
-    "typer>=0.12.0",
-    "aiohttp>=3.9.0",
-    "aiosqlite>=0.20.0",
-    "weasyprint>=62.0",
-    "jinja2>=3.1.0",
-    "python-dotenv>=1.0.0",
-    "mcp[cli]>=1.0.0",
-]
 
 [project.optional-dependencies]
 dev = [
