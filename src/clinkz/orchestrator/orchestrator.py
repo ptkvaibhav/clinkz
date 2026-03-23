@@ -1,13 +1,22 @@
-"""OrchestratorAgent — the LLM-driven central coordinator of a Clinkz engagement.
+"""OrchestratorAgent — deterministic phase state machine with LLM reasoning within phases.
 
-The Orchestrator owns the MessageBus, AgentLifecycleManager, ToolResolver, and
-StateStore.  It runs an async reasoning loop that:
+The Orchestrator drives a fixed phase sequence:
+  1. RECON   — reconnaissance and information gathering
+  2. CREDS   — try default credentials for identified technologies
+  3. SCAN    — crawl, fuzz, and map the attack surface
+  4. EXPLOIT — attempt exploitation of discovered vulnerabilities
+  5. CRITIC  — validate findings before reporting
+  6. REPORT  — generate the final pentest report
 
-  1. Collects all pending messages from agents
-  2. Builds a rich context (scope, state, capabilities, pending messages)
-  3. Calls the LLM (most capable model) to decide the next action
-  4. Executes that action (spin_up / shut_down / route / complete)
-  5. Repeats until ``complete_engagement`` is called
+Phase order is HARDCODED — no LLM decides when to move between phases.
+LLM is used ONLY for:
+  - Formulating detailed task descriptions for agents
+  - Answering agent QUERY messages with cross-phase context
+  - Synthesizing results across phases
+
+Cross-phase re-spins (e.g., Exploit asks for more recon) are handled as
+exceptions within _run_phase(), capped at MAX_CROSS_PHASE_RESPINS per
+engagement to prevent infinite loops.
 
 Usage::
 
@@ -30,7 +39,8 @@ from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.config import settings
 from clinkz.credentials.store import CredentialStore
-from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
+from clinkz.knowledge.query import KnowledgeBase
+from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.llm.factory import get_llm_client
 from clinkz.models.scope import EngagementScope
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
@@ -39,117 +49,14 @@ from clinkz.tools.resolver import ToolResolver
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Orchestrator action tool schemas (passed to LLM as function-calling tools)
-# ---------------------------------------------------------------------------
+# How long to wait for an agent to produce a RESULT before timing out (seconds).
+_PHASE_TIMEOUT = 600
 
-_ORCHESTRATOR_TOOLS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "spin_up_agent",
-            "description": (
-                "Start a specialist phase agent and assign it a task. "
-                "Use this to begin reconnaissance, scanning, exploitation, "
-                "critic review, or report generation."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "agent_type": {
-                        "type": "string",
-                        "enum": ["recon", "scan", "exploit", "critic", "report"],
-                        "description": "Type of specialist agent to create.",
-                    },
-                    "task": {
-                        "type": "string",
-                        "description": (
-                            "Detailed task instruction for the agent. "
-                            "Be specific: include targets, scope, and what output is expected."
-                        ),
-                    },
-                },
-                "required": ["agent_type", "task"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "shut_down_agent",
-            "description": "Stop a running agent when its work is complete.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "agent_name": {
-                        "type": "string",
-                        "enum": ["recon", "scan", "exploit", "critic", "report"],
-                        "description": "Canonical name of the agent to stop.",
-                    },
-                },
-                "required": ["agent_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "route_message",
-            "description": (
-                "Forward information or a task from one agent to another. "
-                "Use this when an agent needs data that another agent already produced, "
-                "or when you want an agent to continue with new context."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "to_agent": {
-                        "type": "string",
-                        "enum": ["recon", "scan", "exploit", "critic", "report"],
-                        "description": "Destination agent for the routed message.",
-                    },
-                    "content": {
-                        "type": "object",
-                        "description": "Message payload to deliver to the agent.",
-                    },
-                },
-                "required": ["to_agent", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "complete_engagement",
-            "description": (
-                "Declare the engagement finished. Call this ONLY after the Report Agent "
-                "has delivered its final report. This exits the orchestrator loop."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "Brief summary of the engagement outcome.",
-                    },
-                },
-                "required": ["summary"],
-            },
-        },
-    },
-]
+# Maximum cross-phase re-spins per engagement (e.g., Exploit asks for more recon).
+MAX_CROSS_PHASE_RESPINS = 3
 
-# Maximum conversation history to keep (system + this many turns) to avoid token overflow.
-_MAX_HISTORY_TURNS = 20
-
-# How long to wait between poll iterations when no messages are pending (seconds).
+# Poll interval when waiting for agent messages (seconds).
 _POLL_INTERVAL = 1.0
-
-# Max consecutive idle iterations before forcing completion (safety valve).
-_MAX_IDLE_ITERATIONS = 300
-
-# Block an agent after this many consecutive identical errors.
-_MAX_SAME_ERROR = 2
 
 
 # ---------------------------------------------------------------------------
@@ -158,11 +65,11 @@ _MAX_SAME_ERROR = 2
 
 
 class OrchestratorAgent:
-    """LLM-driven central coordinator for an autonomous pentest engagement.
+    """Deterministic phase orchestrator for an autonomous pentest engagement.
 
-    The Orchestrator owns all infrastructure components (bus, lifecycle manager,
-    tool resolver, state store) and drives the engagement through an async
-    reasoning loop.
+    The run() method follows a hardcoded sequence of phases. LLM reasoning
+    is used within each phase (task formulation, query answering) but never
+    for deciding phase order.
 
     Args:
         llm: LLM client to use. If None, one is created from ORCHESTRATOR_LLM_PROVIDER
@@ -198,13 +105,9 @@ class OrchestratorAgent:
         self._cred_store: CredentialStore | None = None
         self._scope: EngagementScope | None = None
         self._engagement_id: str | None = None
-        self._summary: dict[str, Any] = {}
 
-        # Failure escalation: tracks consecutive errors per agent.
-        # Key = agent_type, value = list of recent error strings.
-        # When the same error appears 2+ times in a row, the agent is
-        # blocked from retry and the Orchestrator moves on.
-        self._agent_failures: dict[str, list[str]] = {}
+        # Cross-phase re-spin counter (shared across all phases)
+        self._cross_phase_respins: int = 0
 
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
@@ -215,8 +118,8 @@ class OrchestratorAgent:
     async def run(self, scope: EngagementScope) -> dict[str, Any]:
         """Execute a full pentest engagement for the given scope.
 
-        Creates a new engagement in the state store, spins up the infrastructure,
-        and runs the LLM-driven coordination loop until completion.
+        Follows a deterministic phase sequence:
+        RECON → default creds → SCAN → EXPLOIT → CRITIC → REPORT.
 
         Args:
             scope: Engagement scope (targets, exclusions, rate limits).
@@ -234,12 +137,17 @@ class OrchestratorAgent:
                 scope.name, scope.model_dump()
             )
             bus = MessageBus(state=state)
+            knowledge_base = KnowledgeBase()
+            self._logger.info(
+                "KnowledgeBase loaded: %s", knowledge_base.stats()
+            )
             lifecycle = AgentLifecycleManager(
                 bus=bus,
                 llm=self._llm,
                 scope=scope,
                 state=state,
                 engagement_id=engagement_id,
+                knowledge_base=knowledge_base,
             )
             resolver = ToolResolver()
             cred_store = CredentialStore(state)
@@ -252,450 +160,614 @@ class OrchestratorAgent:
             self._cred_store = cred_store
             self._scope = scope
             self._engagement_id = engagement_id
+            self._cross_phase_respins = 0
+
+            summary: dict[str, Any] = {"status": "completed", "phases": {}}
 
             try:
-                await self._main_loop()
+                # PHASE 1: RECON (mandatory)
+                targets_str = ", ".join(
+                    f"{t.value} ({t.type.value})" for t in scope.targets
+                )
+                recon_result = await self._run_phase("recon", {
+                    "task": f"Full reconnaissance on {targets_str}. "
+                            f"Discover subdomains, open ports, services, "
+                            f"technology stack, and any OSINT intel.",
+                    "scope": scope.model_dump(),
+                })
+                summary["phases"]["recon"] = recon_result
+                self._logger.info("PHASE 1 (RECON) complete")
+
+                # Between RECON and SCAN: try default credentials
+                await self._try_default_credentials(recon_result)
+
+                # Gather credentials and sessions for handoff
+                valid_creds = await cred_store.get_all_valid(engagement_id)
+                sessions = await state.get_sessions(engagement_id)
+                cred_data = [c.model_dump() for c in valid_creds]
+                session_data = sessions
+
+                # PHASE 2: SCAN (mandatory)
+                scan_result = await self._run_phase("scan", {
+                    "task": f"Map the complete attack surface of {targets_str}. "
+                            f"Crawl all endpoints, fuzz parameters, identify "
+                            f"suspicious behaviors and anomalies.",
+                    "recon_findings": recon_result,
+                    "credentials": cred_data,
+                    "sessions": session_data,
+                })
+                summary["phases"]["scan"] = scan_result
+                self._logger.info("PHASE 2 (SCAN) complete")
+
+                # Refresh creds/sessions after scan (scan may have found new ones)
+                valid_creds = await cred_store.get_all_valid(engagement_id)
+                sessions = await state.get_sessions(engagement_id)
+                cred_data = [c.model_dump() for c in valid_creds]
+                session_data = sessions
+
+                # PHASE 3: EXPLOIT (mandatory)
+                exploit_result = await self._run_phase("exploit", {
+                    "task": f"Exploit all identified vulnerabilities on {targets_str}. "
+                            f"Research CVEs and PoCs for identified technologies. "
+                            f"Validate findings and chain exploits for maximum impact.",
+                    "recon_findings": recon_result,
+                    "scan_findings": scan_result,
+                    "credentials": cred_data,
+                    "sessions": session_data,
+                })
+                summary["phases"]["exploit"] = exploit_result
+                self._logger.info("PHASE 3 (EXPLOIT) complete")
+
+                # PHASE 4: CRITIC (mandatory)
+                findings = await state.get_findings(engagement_id)
+                critic_result = await self._run_phase("critic", {
+                    "task": "Validate all findings. Check CVSS accuracy, "
+                            "eliminate false positives, verify evidence and "
+                            "reproduction steps are complete.",
+                    "findings": findings,
+                })
+                summary["phases"]["critic"] = critic_result
+                self._logger.info("PHASE 4 (CRITIC) complete")
+
+                # PHASE 5: REPORT (mandatory)
+                report_result = await self._run_phase("report", {
+                    "task": "Generate a professional penetration test report. "
+                            "Include executive summary, methodology, all validated "
+                            "findings with evidence, and remediation recommendations.",
+                    "engagement_id": engagement_id,
+                })
+                summary["phases"]["report"] = report_result
+                self._logger.info("PHASE 5 (REPORT) complete")
+
             except Exception as exc:
-                self._logger.error("Orchestrator loop crashed: %s", exc, exc_info=True)
+                self._logger.error("Orchestrator failed: %s", exc, exc_info=True)
                 await state.update_engagement_status(engagement_id, "failed")
-                self._summary["status"] = "failed"
-                self._summary["error"] = str(exc)
-                return self._summary
+                summary["status"] = "failed"
+                summary["error"] = str(exc)
+                return summary
 
             await state.update_engagement_status(engagement_id, "completed")
 
-        self._logger.info(
-            "Engagement %s complete — %s",
-            engagement_id,
-            self._summary.get("summary", "no summary"),
-        )
-        return self._summary
+        self._logger.info("Engagement %s complete", engagement_id)
+        return summary
 
     # ------------------------------------------------------------------
-    # Main reasoning loop
+    # Phase runner
     # ------------------------------------------------------------------
 
-    async def _main_loop(self) -> None:
-        """LLM-driven coordination loop.
+    async def _run_phase(
+        self,
+        agent_type: str,
+        task_content: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run a single phase: spin up agent, wait for RESULT, handle QUERYs.
 
-        Collects pending messages, builds context, calls the LLM to decide
-        an action, executes it, and repeats until ``complete_engagement``.
+        Spins up the agent with the given task. Then waits for messages:
+        - RESULT: phase complete, shut down agent, return result
+        - QUERY: use LLM to formulate answer from state, route back to agent
+        - ERROR: log and return error result
+        - STATUS (stopped): agent stopped itself, return what we have
+
+        If an agent sends a QUERY requesting cross-phase data (e.g., Exploit
+        asks for more recon), the Orchestrator may re-spin a different agent
+        for a targeted sub-task, capped at MAX_CROSS_PHASE_RESPINS.
+
+        Args:
+            agent_type: Agent to spin up ("recon", "scan", "exploit", etc.).
+            task_content: Task payload dict for the agent.
+
+        Returns:
+            Result dict from the agent (or error info).
+
+        Raises:
+            TimeoutError: If the agent does not respond within _PHASE_TIMEOUT.
         """
         assert self._bus is not None
         assert self._lifecycle is not None
+        assert self._engagement_id is not None
 
-        # Conversation history for the orchestrator LLM
-        history: list[LLMMessage] = []
-        first_iteration = True
-        idle_count = 0
-        force_reason = False  # Set after LLM errors to retry reasoning
+        self._logger.info("Starting phase: %s", agent_type)
+
+        # Build and send the initial task
+        task_msg = AgentMessage.task(
+            from_agent=ORCHESTRATOR,
+            to_agent=agent_type,
+            engagement_id=self._engagement_id,
+            content=task_content,
+        )
+
+        await self._lifecycle.spin_up(agent_type, task_msg)
+
+        # Wait for phase completion
+        deadline = asyncio.get_event_loop().time() + _PHASE_TIMEOUT
+        result: dict[str, Any] = {}
 
         while True:
-            # Drain all pending messages addressed to the orchestrator
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                self._logger.error("Phase '%s' timed out", agent_type)
+                try:
+                    await self._lifecycle.shut_down(agent_type)
+                except Exception:
+                    pass
+                return {"status": "timeout", "agent": agent_type}
+
+            # Drain pending messages for orchestrator
             pending = await self._bus.get_pending(ORCHESTRATOR)
 
-            # Track agent failures/successes for escalation logic
-            self._track_agent_outcomes(pending)
-
-            running = self._lifecycle.get_running_agents()
-
-            # Decide whether to call the LLM this iteration
-            should_reason = first_iteration or bool(pending) or force_reason
-            force_reason = False
-
-            if not should_reason:
-                if not running:
-                    # No messages and no agents — nothing to wait for
+            if not pending:
+                # Check if agent is still running
+                running = self._lifecycle.get_running_agents()
+                if agent_type not in running:
                     self._logger.warning(
-                        "No pending messages and no running agents. "
-                        "Forcing engagement completion."
+                        "Agent '%s' stopped without sending RESULT", agent_type
                     )
-                    self._summary = {
-                        "status": "completed",
-                        "summary": "No agents running and no messages — engagement ended.",
-                    }
-                    break
-
-                idle_count += 1
-                if idle_count >= _MAX_IDLE_ITERATIONS:
-                    self._logger.error(
-                        "Orchestrator idle for %d iterations — forcing completion.",
-                        _MAX_IDLE_ITERATIONS,
-                    )
-                    self._summary = {
-                        "status": "timeout",
-                        "summary": "Orchestrator timed out waiting for agent messages.",
-                    }
-                    break
-
+                    return result or {"status": "agent_stopped", "agent": agent_type}
                 await asyncio.sleep(_POLL_INTERVAL)
                 continue
 
-            # We have work to do — call the LLM
-            first_iteration = False
-            idle_count = 0
+            for msg in pending:
+                if msg.from_agent != agent_type and msg.message_type != MessageType.STATUS:
+                    # Message from a different agent (e.g., a sub-task result)
+                    # Route it to the requesting agent if applicable
+                    self._logger.debug(
+                        "Received message from %s during %s phase",
+                        msg.from_agent, agent_type,
+                    )
 
-            context_msg = await self._build_context(pending)
-            history.append(LLMMessage(role="user", content=context_msg))
-
-            # Trim history to avoid token overflow
-            trimmed_history = _trim_history(history, _MAX_HISTORY_TURNS)
-            messages = [
-                LLMMessage(role="system", content=self._system_prompt),
-                *trimmed_history,
-            ]
-
-            # LLM reasoning step
-            try:
-                action: AgentAction = await self._llm.reason(
-                    messages, tools=_ORCHESTRATOR_TOOLS
-                )
-            except Exception as exc:
-                self._logger.error("LLM reasoning failed: %s", exc, exc_info=True)
-                # Remove the unanswered context message to avoid corrupting
-                # the conversation history (e.g., orphaned user messages that
-                # break function_call/response adjacency for Gemini).
-                if history and history[-1].role == "user":
-                    history.pop()
-                force_reason = True  # retry on next iteration
-                await asyncio.sleep(_POLL_INTERVAL)
-                continue
-
-            # Record the assistant's response in history
-            assistant_msg = LLMMessage(
-                role="assistant",
-                content=action.thought or "",
-                tool_calls=[action.tool_call] if action.tool_call else None,
-            )
-            history.append(assistant_msg)
-
-            if action.tool_call is None:
-                if action.final_answer:
+                if msg.message_type in (MessageType.RESULT, "result"):
                     self._logger.info(
-                        "LLM returned final_answer: %s", action.final_answer[:200]
+                        "Phase '%s' completed with result", agent_type
                     )
-                    self._summary = {
-                        "status": "completed",
-                        "summary": action.final_answer,
+                    result = msg.content
+                    try:
+                        await self._lifecycle.shut_down(agent_type)
+                    except Exception:
+                        pass
+                    return result
+
+                elif msg.message_type in (MessageType.ERROR, "error"):
+                    self._logger.error(
+                        "Phase '%s' error: %s",
+                        agent_type, msg.content.get("error", "unknown"),
+                    )
+                    result = {
+                        "status": "error",
+                        "agent": agent_type,
+                        "error": msg.content.get("error", str(msg.content)),
                     }
-                    break
-                # Bare thought — wait for more messages
-                await asyncio.sleep(_POLL_INTERVAL)
+                    try:
+                        await self._lifecycle.shut_down(agent_type)
+                    except Exception:
+                        pass
+                    return result
+
+                elif msg.message_type in (MessageType.QUERY, "query"):
+                    # Agent needs cross-phase data
+                    await self._handle_query(agent_type, msg)
+
+                elif msg.message_type in (MessageType.STATUS, "status"):
+                    status = msg.content.get("status", "")
+                    if status == "stopped":
+                        self._logger.info(
+                            "Agent '%s' reported stopped", msg.from_agent
+                        )
+                        if msg.from_agent == agent_type:
+                            return result or {
+                                "status": "agent_stopped",
+                                "agent": agent_type,
+                            }
+
+    # ------------------------------------------------------------------
+    # Query handler (cross-phase data requests)
+    # ------------------------------------------------------------------
+
+    async def _handle_query(
+        self,
+        requesting_agent: str,
+        query_msg: AgentMessage,
+    ) -> None:
+        """Handle a QUERY from an agent requesting cross-phase data.
+
+        Uses LLM to formulate a response from the state store. If the query
+        requires a targeted sub-task on another agent (e.g., "I need recon
+        on api.target.com"), spins up that agent for a one-shot task.
+
+        Args:
+            requesting_agent: The agent that sent the query.
+            query_msg: The QUERY message.
+        """
+        assert self._state is not None
+        assert self._bus is not None
+        assert self._engagement_id is not None
+
+        query_text = query_msg.content.get("query", json.dumps(query_msg.content))
+        self._logger.info(
+            "Handling query from '%s': %s", requesting_agent, query_text[:200]
+        )
+
+        # Check if this requires a cross-phase re-spin
+        needs_respin = query_msg.content.get("needs_agent")
+        if needs_respin and self._cross_phase_respins < MAX_CROSS_PHASE_RESPINS:
+            self._cross_phase_respins += 1
+            self._logger.info(
+                "Cross-phase re-spin %d/%d: spinning '%s' for targeted sub-task",
+                self._cross_phase_respins, MAX_CROSS_PHASE_RESPINS, needs_respin,
+            )
+            sub_result = await self._run_phase(needs_respin, {
+                "task": query_text,
+                "scope": self._scope.model_dump() if self._scope else {},
+            })
+            # Route sub-task result back to the requesting agent
+            response_msg = AgentMessage.response(
+                from_agent=ORCHESTRATOR,
+                to_agent=requesting_agent,
+                engagement_id=self._engagement_id,
+                content={"response": sub_result, "sub_task_agent": needs_respin},
+                parent_message_id=query_msg.id,
+            )
+            await self._bus.send(response_msg)
+            return
+
+        # Otherwise, answer from state using LLM
+        try:
+            context = await self._gather_state_context()
+            prompt = (
+                f"An agent ({requesting_agent}) is asking:\n\n"
+                f"{query_text}\n\n"
+                f"Here is the current engagement state:\n{context}\n\n"
+                f"Provide a concise, factual response based on the available data."
+            )
+            response_text = await self._llm.generate_text(prompt)
+        except Exception as exc:
+            self._logger.warning("LLM query response failed: %s", exc)
+            response_text = f"Could not generate response: {exc}"
+
+        response_msg = AgentMessage.response(
+            from_agent=ORCHESTRATOR,
+            to_agent=requesting_agent,
+            engagement_id=self._engagement_id,
+            content={"response": response_text},
+            parent_message_id=query_msg.id,
+        )
+        await self._bus.send(response_msg)
+
+    # ------------------------------------------------------------------
+    # Default credential testing
+    # ------------------------------------------------------------------
+
+    async def _try_default_credentials(
+        self,
+        recon_result: dict[str, Any],
+    ) -> None:
+        """Try default credentials for technologies identified during recon.
+
+        Seeds the credential store with defaults for each identified technology,
+        then uses the HTTP client tool to attempt login on discovered endpoints.
+        Valid credentials and sessions are stored for handoff to later phases.
+
+        Args:
+            recon_result: Result dict from the recon phase.
+        """
+        assert self._cred_store is not None
+        assert self._state is not None
+        assert self._engagement_id is not None
+
+        # Extract identified technologies from recon results
+        technologies = self._extract_technologies(recon_result)
+        if not technologies:
+            self._logger.info("No technologies identified — skipping default cred check")
+            return
+
+        self._logger.info(
+            "Trying default credentials for: %s", ", ".join(technologies)
+        )
+
+        for tech in technologies:
+            # Seed defaults into the credential store
+            cred_ids = await self._cred_store.seed_defaults(
+                self._engagement_id, tech
+            )
+            if not cred_ids:
                 continue
 
-            # Execute the tool call
-            result_text, is_complete = await self._execute_action(action.tool_call)
-            self._logger.debug("Action result: %s", result_text)
+            # Get the seeded credentials
+            creds = await self._cred_store.get(self._engagement_id, technology=tech)
+            untested = [c for c in creds if c.valid is None]
 
-            # Feed tool result back into history
-            history.append(
-                LLMMessage(
-                    role="tool",
-                    content=result_text,
-                    tool_call_id=action.tool_call.id,
+            for cred in untested:
+                # Find a login URL for this technology
+                login_url = self._find_login_url(recon_result, tech)
+                if not login_url:
+                    continue
+
+                # Try the credential via HTTP client
+                success = await self._attempt_login(
+                    login_url, cred.username, cred.password, cred.id
                 )
-            )
+                if success:
+                    self._logger.info(
+                        "DEFAULT CRED VALID: %s:%s on %s (%s)",
+                        cred.username, "***", login_url, tech,
+                    )
+                else:
+                    await self._cred_store.mark_invalid(cred.id)
 
-            if is_complete:
-                break
+    def _extract_technologies(self, recon_result: dict[str, Any]) -> list[str]:
+        """Extract technology names from recon results.
 
-    # ------------------------------------------------------------------
-    # Failure escalation
-    # ------------------------------------------------------------------
-
-    def _track_agent_outcomes(self, pending: list[AgentMessage]) -> None:
-        """Update the failure tracker based on incoming agent messages.
-
-        ERROR messages append to the agent's failure list.
-        RESULT messages with a successful outcome clear the failure list.
+        Searches multiple levels of the result dict:
+        1. Top-level ``tech`` / ``technologies`` / ``tech_stack`` keys.
+        2. Nested host/service dicts (``hosts[].services[].product``).
+        3. Free-text ``summary`` field — regex-matches common technology names.
 
         Args:
-            pending: Messages just drained from the orchestrator queue.
-        """
-        for msg in pending:
-            agent = msg.from_agent
-            if msg.message_type in (MessageType.ERROR, "error"):
-                error_str = msg.content.get("error", str(msg.content))
-                self._agent_failures.setdefault(agent, []).append(error_str)
-                self._logger.debug(
-                    "Failure tracker: %s error #%d: %s",
-                    agent,
-                    len(self._agent_failures[agent]),
-                    error_str[:120],
-                )
-            elif msg.message_type in (MessageType.RESULT, "result"):
-                status = msg.content.get("status", "")
-                if status != "not_implemented":
-                    # Successful result — reset failure counter
-                    self._agent_failures.pop(agent, None)
-
-    # ------------------------------------------------------------------
-    # Context builder
-    # ------------------------------------------------------------------
-
-    async def _build_context(self, pending: list[AgentMessage]) -> str:
-        """Build a comprehensive context string for the orchestrator LLM.
-
-        Summarizes the engagement state (running agents, finding counts,
-        available capabilities) and formats pending messages.
-
-        Args:
-            pending: Messages waiting in the orchestrator's queue.
+            recon_result: Recon phase result dict.
 
         Returns:
-            A formatted context string to pass as a user message to the LLM.
+            Deduplicated list of technology name strings.
         """
-        assert self._lifecycle is not None
-        assert self._scope is not None
+        import re
+
+        techs: set[str] = set()
+
+        # Direct tech lists
+        for key in ("tech", "technologies", "tech_stack"):
+            val = recon_result.get(key)
+            if isinstance(val, list):
+                techs.update(str(t).lower().strip() for t in val if str(t).strip())
+            elif isinstance(val, str) and val.strip():
+                techs.add(val.lower().strip())
+
+        # Nested in host/service results — look for product/version in services
+        for key in ("hosts", "services", "results"):
+            items = recon_result.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                # Direct tech keys on the item
+                for sub_key in ("tech", "technologies", "technology", "tech_stack"):
+                    sub_val = item.get(sub_key)
+                    if isinstance(sub_val, list):
+                        techs.update(str(t).lower().strip() for t in sub_val if str(t).strip())
+                    elif isinstance(sub_val, str) and sub_val.strip():
+                        techs.add(sub_val.lower().strip())
+                # Services with product/version (nmap-style output)
+                for svc in item.get("services") or []:
+                    if not isinstance(svc, dict):
+                        continue
+                    product = svc.get("product", "").strip()
+                    version = svc.get("version", "").strip()
+                    if product:
+                        tech = f"{product} {version}".strip().lower()
+                        techs.add(tech)
+                    name = svc.get("name", "").strip()
+                    if name and name not in ("tcp", "udp", "unknown"):
+                        techs.add(name.lower())
+
+        # Parse the summary text for common technology names
+        summary = recon_result.get("summary", "")
+        if isinstance(summary, str) and summary:
+            # Match well-known technologies (case-insensitive)
+            known_patterns = [
+                r"apache(?:\s+httpd)?(?:\s+[\d.]+)?",
+                r"nginx(?:\s+[\d.]+)?",
+                r"php(?:\s+[\d.]+)?",
+                r"mysql(?:\s+[\d.]+)?",
+                r"mariadb(?:\s+[\d.]+)?",
+                r"postgresql(?:\s+[\d.]+)?",
+                r"dvwa",
+                r"tomcat(?:\s+[\d.]+)?",
+                r"iis(?:\s+[\d.]+)?",
+                r"wordpress(?:\s+[\d.]+)?",
+                r"node\.?js(?:\s+[\d.]+)?",
+                r"express(?:\s+[\d.]+)?",
+                r"django(?:\s+[\d.]+)?",
+                r"flask(?:\s+[\d.]+)?",
+                r"openssh(?:\s+[\d.]+)?",
+                r"openssl(?:\s+[\d.]+)?",
+                r"jquery(?:\s+[\d.]+)?",
+                r"bootstrap(?:\s+[\d.]+)?",
+                r"react(?:\s+[\d.]+)?",
+                r"vue\.?js(?:\s+[\d.]+)?",
+                r"jenkins(?:\s+[\d.]+)?",
+                r"grafana(?:\s+[\d.]+)?",
+                r"redis(?:\s+[\d.]+)?",
+                r"mongodb(?:\s+[\d.]+)?",
+                r"elasticsearch(?:\s+[\d.]+)?",
+                r"vsftpd(?:\s+[\d.]+)?",
+                r"proftpd(?:\s+[\d.]+)?",
+            ]
+            for pattern in known_patterns:
+                for match in re.finditer(pattern, summary, re.IGNORECASE):
+                    techs.add(match.group(0).strip().lower())
+
+        # Remove empty strings
+        techs.discard("")
+
+        return sorted(techs)
+
+    def _find_login_url(
+        self, recon_result: dict[str, Any], technology: str
+    ) -> str | None:
+        """Find a login URL for a given technology from recon results.
+
+        Args:
+            recon_result: Recon phase result dict.
+            technology: Technology name to look for.
+
+        Returns:
+            Login URL string, or None if not found.
+        """
+        # Check for explicit login URLs in results
+        login_urls = recon_result.get("login_urls", {})
+        if isinstance(login_urls, dict) and technology in login_urls:
+            return login_urls[technology]
+
+        # Check hosts/results for URLs matching common login paths
+        for key in ("hosts", "results", "endpoints"):
+            items = recon_result.get(key)
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        url = item.get("url", "")
+                        if url and any(
+                            p in url.lower()
+                            for p in ("/login", "/admin", "/wp-login", "/manager")
+                        ):
+                            return url
+
+        # Fallback: construct from base URL if available
+        base_url = recon_result.get("base_url") or recon_result.get("url")
+        if base_url:
+            return f"{base_url.rstrip('/')}/login"
+
+        return None
+
+    async def _attempt_login(
+        self,
+        url: str,
+        username: str,
+        password: str,
+        credential_id: str,
+    ) -> bool:
+        """Attempt a login with the given credentials via HTTP client.
+
+        On success, marks the credential as valid and stores the session.
+
+        Args:
+            url: Login URL.
+            username: Username to try.
+            password: Password to try.
+            credential_id: ID of the credential being tested.
+
+        Returns:
+            True if login was successful.
+        """
+        assert self._cred_store is not None
+        assert self._engagement_id is not None
+
+        try:
+            from clinkz.tools.http_client import HTTPClientTool
+
+            http = HTTPClientTool(
+                scope=self._scope,
+                engagement_id=self._engagement_id,
+            )
+
+            args = http.validate_input({
+                "method": "POST",
+                "url": url,
+                "body": f"username={username}&password={password}",
+                "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                "follow_redirects": True,
+            })
+            raw = await http.execute(args)
+            result = http.parse_output(raw)
+
+            # Heuristic: login succeeded if we got a 200/302 without "invalid"
+            # or "incorrect" in the response body
+            body_lower = result.response_body.lower()
+            is_success = (
+                result.status_code in (200, 302, 303)
+                and "invalid" not in body_lower
+                and "incorrect" not in body_lower
+                and "wrong" not in body_lower
+                and "failed" not in body_lower
+            )
+
+            if is_success:
+                from clinkz.tools.http_client import get_session_cookies
+
+                cookies = get_session_cookies(self._engagement_id)
+                await self._cred_store.mark_valid(
+                    credential_id,
+                    session_cookies=cookies,
+                    cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",
+                    engagement_id=self._engagement_id,
+                    agent="orchestrator",
+                )
+                return True
+
+        except Exception as exc:
+            self._logger.debug(
+                "Login attempt failed for %s:%s @ %s: %s",
+                username, "***", url, exc,
+            )
+
+        return False
+
+    # ------------------------------------------------------------------
+    # State context gathering (for LLM query responses)
+    # ------------------------------------------------------------------
+
+    async def _gather_state_context(self) -> str:
+        """Build a summary of current engagement state for LLM context.
+
+        Returns:
+            Formatted string with targets, findings, credentials, and sessions.
+        """
         assert self._state is not None
-        assert self._resolver is not None
         assert self._engagement_id is not None
 
         lines: list[str] = []
 
-        # Engagement scope summary
-        targets_str = ", ".join(
-            f"{t.value} ({t.type.value})" for t in self._scope.targets
-        )
-        excluded_str = (
-            ", ".join(f"{e.value}" for e in self._scope.excluded)
-            if self._scope.excluded
-            else "none"
-        )
-        lines.append("=== ENGAGEMENT STATE ===")
-        lines.append(f"Engagement: {self._scope.name} (id={self._engagement_id})")
-        lines.append(f"Targets: {targets_str or 'none'}")
-        lines.append(f"Excluded: {excluded_str}")
+        try:
+            targets = await self._state.get_targets(self._engagement_id)
+            lines.append(f"Targets: {len(targets)} discovered")
+            for t in targets[:10]:
+                lines.append(f"  - {json.dumps(t)[:200]}")
+        except Exception:
+            pass
 
-        # Running agents
-        running = self._lifecycle.get_running_agents()
-        all_status = self._lifecycle.get_status()
-        lines.append("")
-        lines.append("=== AGENTS ===")
-        if running:
-            lines.append(f"Running: {', '.join(running)}")
-        else:
-            lines.append("Running: none")
-        stopped = [n for n, s in all_status.items() if s == "stopped"]
-        if stopped:
-            lines.append(f"Completed: {', '.join(stopped)}")
-
-        # Blocked agents (repeated failures)
-        blocked = []
-        for agent, errors in self._agent_failures.items():
-            if (
-                len(errors) >= _MAX_SAME_ERROR
-                and len(set(errors[-_MAX_SAME_ERROR:])) == 1
-            ):
-                blocked.append(f"{agent} (error: {errors[-1][:100]})")
-        if blocked:
-            lines.append(f"BLOCKED (repeated failures): {'; '.join(blocked)}")
-
-        # Findings with severity breakdown
         try:
             findings = await self._state.get_findings(self._engagement_id)
-            validated = [f for f in findings if f.get("validated")]
-            severity_counts: dict[str, int] = {}
-            for f in findings:
-                sev = f.get("severity", "unknown")
-                severity_counts[sev] = severity_counts.get(sev, 0) + 1
-            lines.append("")
-            lines.append("=== FINDINGS ===")
-            lines.append(
-                f"{len(findings)} total, {len(validated)} validated by Critic"
-            )
-            if severity_counts:
-                sev_parts = [f"{sev}: {cnt}" for sev, cnt in sorted(severity_counts.items())]
-                lines.append(f"By severity: {', '.join(sev_parts)}")
-            # Brief summary of confirmed findings
-            confirmed = [f for f in findings if f.get("confirmed")]
-            for cf in confirmed[:10]:
-                title = cf.get("title", "Untitled")
-                sev = cf.get("severity", "?")
-                target = cf.get("target", "?")
-                lines.append(f"  - [{sev.upper()}] {title} @ {target}")
-            if len(confirmed) > 10:
-                lines.append(f"  ... and {len(confirmed) - 10} more confirmed findings")
-        except Exception as exc:
-            self._logger.warning("Could not fetch findings: %s", exc)
+            lines.append(f"Findings: {len(findings)} total")
+            for f in findings[:10]:
+                title = f.get("title", "Untitled")
+                sev = f.get("severity", "?")
+                lines.append(f"  - [{sev}] {title}")
+        except Exception:
+            pass
 
-        # Credential store status
         try:
-            assert self._cred_store is not None
-            all_creds = await self._cred_store.get(self._engagement_id)
-            valid_creds = [c for c in all_creds if c.valid is True]
-            untested = [c for c in all_creds if c.valid is None]
-            invalid = [c for c in all_creds if c.valid is False]
-            lines.append("")
-            lines.append("=== CREDENTIAL STORE ===")
-            lines.append(
-                f"{len(all_creds)} total: {len(valid_creds)} valid, "
-                f"{len(untested)} untested, {len(invalid)} invalid"
-            )
-            for vc in valid_creds:
-                lines.append(
-                    f"  - VALID: {vc.username}:{vc.password} "
-                    f"({vc.technology or 'generic'}) @ {vc.url or 'no URL'}"
-                )
-        except Exception as exc:
-            self._logger.warning("Could not fetch credentials: %s", exc)
+            if self._cred_store:
+                creds = await self._cred_store.get_all_valid(self._engagement_id)
+                lines.append(f"Valid credentials: {len(creds)}")
+                for c in creds:
+                    lines.append(f"  - {c.username}:*** ({c.technology}) @ {c.url}")
+        except Exception:
+            pass
 
-        # Authenticated sessions (for cross-agent handoff)
         try:
             sessions = await self._state.get_sessions(self._engagement_id)
-            if sessions:
-                lines.append("")
-                lines.append("=== AUTHENTICATED SESSIONS ===")
-                for sess in sessions:
-                    cookie_names = list(sess.get("cookies", {}).keys())
-                    jar = sess.get("cookie_jar_path", "")
-                    lines.append(
-                        f"  - From '{sess['agent']}': cookies={cookie_names}, "
-                        f"jar={jar}"
-                    )
-                lines.append(
-                    "IMPORTANT: When spinning up Exploit or other agents, include "
-                    "valid credentials and session cookies from above so the agent "
-                    "does NOT waste iterations on login. Pass the cookie_jar_path "
-                    "so tools can reuse the authenticated session."
-                )
-        except Exception as exc:
-            self._logger.warning("Could not fetch sessions: %s", exc)
+            lines.append(f"Sessions: {len(sessions)}")
+        except Exception:
+            pass
 
-        # Available tool capabilities
-        try:
-            caps = self._resolver.get_all_capabilities()
-            lines.append("")
-            lines.append("=== AVAILABLE CAPABILITIES ===")
-            for cap in caps[:30]:  # cap at 30 to avoid token bloat
-                match = self._resolver.find_tool(cap)
-                if match:
-                    avail = "available" if match.available else "not installed"
-                    lines.append(f"- {cap}: {match.name} ({match.source}, {avail})")
-            if len(caps) > 30:
-                lines.append(f"  ... and {len(caps) - 30} more")
-        except Exception as exc:
-            self._logger.warning("Could not fetch capabilities: %s", exc)
-
-        # Pending messages
-        if pending:
-            lines.append("")
-            lines.append(f"=== PENDING MESSAGES ({len(pending)}) ===")
-            for i, msg in enumerate(pending, 1):
-                content_preview = json.dumps(msg.content)[:500]
-                lines.append(
-                    f"{i}. [{msg.message_type.upper()}] from={msg.from_agent} "
-                    f"id={msg.id[:8]}"
-                )
-                lines.append(f"   content: {content_preview}")
-        else:
-            lines.append("")
-            lines.append("=== PENDING MESSAGES ===")
-            lines.append("None")
-
-        return "\n".join(lines)
-
-    # ------------------------------------------------------------------
-    # Action executor
-    # ------------------------------------------------------------------
-
-    async def _execute_action(
-        self, tool_call: ToolCall
-    ) -> tuple[str, bool]:
-        """Execute one orchestrator action tool call.
-
-        Args:
-            tool_call: The tool call returned by the LLM.
-
-        Returns:
-            Tuple of (result description, is_complete).
-            is_complete is True only for ``complete_engagement``.
-        """
-        assert self._lifecycle is not None
-        assert self._bus is not None
-        assert self._engagement_id is not None
-
-        name = tool_call.name
-        args = tool_call.arguments
-
-        if name == "spin_up_agent":
-            agent_type: str = args["agent_type"]
-            task_text: str = args["task"]
-
-            # Escalation check: if this agent has failed with the same error
-            # _MAX_SAME_ERROR times in a row, refuse the retry.
-            recent = self._agent_failures.get(agent_type, [])
-            if (
-                len(recent) >= _MAX_SAME_ERROR
-                and len(set(recent[-_MAX_SAME_ERROR:])) == 1
-            ):
-                blocked_err = recent[-1]
-                self._logger.warning(
-                    "ESCALATION: agent '%s' failed %d times with the same error "
-                    "— blocking retry. Error: %s",
-                    agent_type,
-                    _MAX_SAME_ERROR,
-                    blocked_err,
-                )
-                result = (
-                    f"BLOCKED: {agent_type} agent has failed {_MAX_SAME_ERROR} "
-                    f"consecutive times with the same error: {blocked_err[:200]}. "
-                    f"Do NOT retry this agent with the same approach. "
-                    f"Either try a completely different strategy, use a different "
-                    f"agent, or skip this phase and move on."
-                )
-                return result, False
-
-            task_msg = AgentMessage.task(
-                from_agent=ORCHESTRATOR,
-                to_agent=agent_type,
-                engagement_id=self._engagement_id,
-                content={"task": task_text},
-            )
-            try:
-                await self._lifecycle.spin_up(agent_type, task_msg)
-                result = f"Started {agent_type} agent. Task: {task_text[:120]}"
-            except ValueError as exc:
-                result = f"ERROR starting {agent_type}: {exc}"
-            self._logger.info("Action spin_up_agent(%s): %s", agent_type, result)
-            return result, False
-
-        if name == "shut_down_agent":
-            agent_name: str = args["agent_name"]
-            try:
-                await self._lifecycle.shut_down(agent_name)
-                result = f"Stopped {agent_name} agent."
-            except ValueError as exc:
-                result = f"ERROR stopping {agent_name}: {exc}"
-            self._logger.info("Action shut_down_agent(%s): %s", agent_name, result)
-            return result, False
-
-        if name == "route_message":
-            to_agent: str = args["to_agent"]
-            content: dict[str, Any] = args["content"]
-            msg = AgentMessage.task(
-                from_agent=ORCHESTRATOR,
-                to_agent=to_agent,
-                engagement_id=self._engagement_id,
-                content=content,
-            )
-            try:
-                await self._bus.send(msg)
-                result = f"Routed message to {to_agent}. Content keys: {list(content.keys())}"
-            except Exception as exc:
-                result = f"ERROR routing to {to_agent}: {exc}"
-            self._logger.info("Action route_message(→%s): %s", to_agent, result)
-            return result, False
-
-        if name == "complete_engagement":
-            summary: str = args.get("summary", "Engagement complete.")
-            self._summary = {"status": "completed", "summary": summary}
-            self._logger.info("Action complete_engagement: %s", summary)
-            return f"Engagement marked complete: {summary}", True
-
-        # Unknown tool — log and continue
-        self._logger.warning("Unknown orchestrator action: %s", name)
-        return f"Unknown action '{name}' — ignored.", False
+        return "\n".join(lines) if lines else "No state data available."
 
 
 # ---------------------------------------------------------------------------
@@ -706,11 +778,8 @@ class OrchestratorAgent:
 def _load_system_prompt() -> str:
     """Load the orchestrator system prompt template from the prompts directory.
 
-    Capability and scope placeholders are filled in at runtime by _build_context().
-    We return the raw template here; substitution happens inside _build_context.
-
     Returns:
-        System prompt string (with {capabilities} and {scope_summary} placeholders).
+        System prompt string.
     """
     prompt_path = Path(__file__).parent / "prompts" / "orchestrator_system.md"
     try:
@@ -723,46 +792,3 @@ def _load_system_prompt() -> str:
             "to complete the engagement. Use the provided tools to spin up agents, "
             "route messages, and complete the engagement when done."
         )
-
-
-def _trim_history(
-    history: list[LLMMessage], max_turns: int
-) -> list[LLMMessage]:
-    """Return the most recent ``max_turns`` messages from history.
-
-    Keeps the conversation context bounded to avoid token overflow.
-    Ensures the trimmed list does not start with a ``tool`` message
-    (orphaned function_response) or an ``assistant`` message with
-    tool_calls that lost its following tool response — both would
-    cause a 400 error from LLM providers like Gemini that require
-    strict function_call / function_response adjacency.
-
-    Args:
-        history: Full conversation history.
-        max_turns: Maximum number of messages to retain.
-
-    Returns:
-        Trimmed history list (most recent messages).
-    """
-    if len(history) <= max_turns:
-        return history
-
-    trimmed = history[-max_turns:]
-
-    # Drop leading tool messages (orphaned function_responses)
-    while trimmed and trimmed[0].role == "tool":
-        trimmed = trimmed[1:]
-
-    # Drop leading assistant messages with tool_calls whose responses were cut
-    while (
-        trimmed
-        and trimmed[0].role == "assistant"
-        and trimmed[0].tool_calls
-        and (len(trimmed) < 2 or trimmed[1].role != "tool")
-    ):
-        trimmed = trimmed[1:]
-        # Also drop any following orphaned tool messages
-        while trimmed and trimmed[0].role == "tool":
-            trimmed = trimmed[1:]
-
-    return trimmed

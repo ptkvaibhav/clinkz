@@ -46,6 +46,7 @@ from clinkz.comms.protocol import ORCHESTRATOR
 
 if TYPE_CHECKING:
     from clinkz.comms.bus import MessageBus
+    from clinkz.knowledge.query import KnowledgeBase
     from clinkz.llm.base import LLMClient
     from clinkz.models.scope import EngagementScope
     from clinkz.state import StateStore
@@ -125,6 +126,7 @@ class AgentLifecycleManager:
         state: StateStore,
         engagement_id: str,
         tools_per_agent: dict[str, list[ToolBase]] | None = None,
+        knowledge_base: KnowledgeBase | None = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -132,6 +134,7 @@ class AgentLifecycleManager:
         self._state = state
         self._engagement_id = engagement_id
         self._tools_per_agent: dict[str, list[ToolBase]] = tools_per_agent or {}
+        self._knowledge_base = knowledge_base
         # Keyed by agent.name (e.g. "recon", "crawl", "exploit")
         self._records: dict[str, _AgentRecord] = {}
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -171,6 +174,7 @@ class AgentLifecycleManager:
             scope=self._scope,
             state=self._state,
             engagement_id=self._engagement_id,
+            knowledge_base=self._knowledge_base,
         )
 
         # Shut down any pre-existing agent with the same canonical name

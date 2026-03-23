@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from clinkz.agents.base import BaseAgent
+
+if TYPE_CHECKING:
+    from clinkz.knowledge.query import KnowledgeBase
 from clinkz.llm.base import LLMClient, ToolCall
 from clinkz.models.scope import EngagementScope
 from clinkz.state import StateStore
@@ -71,6 +74,69 @@ class ReconAgent(BaseAgent):
                   created automatically when not provided (production usage).
     """
 
+    #: Schema for the research meta-tool — calls LLM research() directly.
+    _RESEARCH_TECHNOLOGY_SCHEMA: dict[str, Any] = {
+        "name": "research_technology",
+        "description": (
+            "Perform live research on a specific technology, service, or version "
+            "to learn about its attack surface, common misconfigurations, and CVEs. "
+            "Returns LLM-generated intelligence — NOT a tool resolver lookup."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Research query. Examples: "
+                        "'common misconfigurations in nginx 1.24', "
+                        "'default credentials for Apache Tomcat'."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    }
+
+    #: Schema for the http_request meta-tool — dispatches to HTTPClientTool.
+    _HTTP_REQUEST_SCHEMA: dict[str, Any] = {
+        "name": "http_request",
+        "description": (
+            "Send an arbitrary HTTP request to a target URL. Useful for probing "
+            "endpoints, testing authentication, or verifying service behaviour."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "description": "HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS).",
+                    "default": "GET",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Full URL to send the request to.",
+                },
+                "headers": {
+                    "type": "object",
+                    "description": "Custom HTTP headers as key-value pairs.",
+                    "default": {},
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Request body (for POST/PUT/PATCH).",
+                    "default": "",
+                },
+                "follow_redirects": {
+                    "type": "boolean",
+                    "description": "Whether to follow HTTP redirects.",
+                    "default": False,
+                },
+            },
+            "required": ["url"],
+        },
+    }
+
     #: Schema for the capability meta-tool exposed to the LLM.
     _EXECUTE_CAPABILITY_SCHEMA: dict[str, Any] = {
         "name": "execute_capability",
@@ -113,6 +179,7 @@ class ReconAgent(BaseAgent):
         state: StateStore,
         engagement_id: str,
         resolver: ToolResolver | None = None,
+        knowledge_base: KnowledgeBase | None = None,
     ) -> None:
         super().__init__(
             llm=llm,
@@ -120,6 +187,7 @@ class ReconAgent(BaseAgent):
             scope=scope,
             state=state,
             engagement_id=engagement_id,
+            knowledge_base=knowledge_base,
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
         self._discovered_hosts: list[dict[str, Any]] = []
@@ -141,22 +209,27 @@ class ReconAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def _get_tool_schemas(self) -> list[dict[str, Any]]:
-        """Return only the execute_capability schema.
+        """Return the recon meta-tool schemas.
 
         The LLM never sees raw tool names; it only knows how to ask for
         capabilities.  The ToolResolver handles the name-to-tool mapping.
 
         Returns:
-            Single-element list containing the execute_capability schema.
+            List containing execute_capability, research_technology, and
+            http_request schemas.
         """
-        return [self._EXECUTE_CAPABILITY_SCHEMA]
+        return [
+            self._EXECUTE_CAPABILITY_SCHEMA,
+            self._RESEARCH_TECHNOLOGY_SCHEMA,
+            self._HTTP_REQUEST_SCHEMA,
+        ]
 
     # ------------------------------------------------------------------
     # Tool dispatch override — intercept execute_capability calls
     # ------------------------------------------------------------------
 
     async def _execute_tool(self, tool_call: ToolCall) -> str:
-        """Dispatch tool calls, intercepting execute_capability for resolution.
+        """Dispatch tool calls, intercepting meta-tools for resolution.
 
         Args:
             tool_call: ToolCall from the LLM.
@@ -166,8 +239,56 @@ class ReconAgent(BaseAgent):
         """
         if tool_call.name == "execute_capability":
             return await self._resolve_and_execute(tool_call.arguments)
+        if tool_call.name == "research_technology":
+            return await self._do_research(tool_call.arguments)
+        if tool_call.name == "http_request":
+            return await self._do_http_request(tool_call.arguments)
         # Fallback to base class dispatch for any other tool name
         return await super()._execute_tool(tool_call)
+
+    # ------------------------------------------------------------------
+    # Research handler — calls LLM directly, NOT tool resolver
+    # ------------------------------------------------------------------
+
+    async def _do_research(self, args: dict[str, Any]) -> str:
+        """Execute a research query via ``llm.research()``.
+
+        Args:
+            args: Must contain ``query`` (str).
+
+        Returns:
+            Research result string from the LLM.
+        """
+        query: str = args.get("query", "").strip()
+        if not query:
+            return "Error: 'query' is required for research_technology."
+        self._logger.info("Runtime research: %s", query)
+        return await self.llm.research(query)
+
+    # ------------------------------------------------------------------
+    # HTTP request handler — dispatches to HTTPClientTool directly
+    # ------------------------------------------------------------------
+
+    async def _do_http_request(self, args: dict[str, Any]) -> str:
+        """Send an HTTP request via HTTPClientTool.
+
+        Args:
+            args: HTTP request arguments (url, method, headers, body, etc.).
+
+        Returns:
+            JSON-serialised HTTPClientOutput.
+        """
+        from clinkz.tools.http_client import HTTPClientTool
+
+        http = HTTPClientTool(scope=self.scope, engagement_id=self.engagement_id)
+        try:
+            validated = http.validate_input(args)
+            raw = await http.execute(validated)
+            parsed = http.parse_output(raw)
+            return parsed.model_dump_json(indent=2)
+        except Exception as exc:
+            self._logger.error("http_request failed: %s", exc, exc_info=True)
+            return f"http_request failed: {exc}"
 
     # ------------------------------------------------------------------
     # Capability resolution and execution

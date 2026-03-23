@@ -67,7 +67,7 @@ class WhatWebTool(ToolBase):
         }
 
     def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
-        target = args.get("target", "").strip()
+        target = args.get("target", "").strip() or args.get("url", "").strip()
         if not target:
             raise ValueError("'target' is required for whatweb")
         self._check_scope(target)
