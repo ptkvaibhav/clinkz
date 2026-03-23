@@ -190,6 +190,7 @@ class ScanAgent(BaseAgent):
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
         self._discovered_endpoints: list[dict[str, Any]] = []
+        self._session_cookies: str = ""
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -312,6 +313,14 @@ class ScanAgent(BaseAgent):
 
         if not capability:
             return "Error: 'capability' is required in execute_capability arguments."
+
+        # Inject session cookies into crawling tools when available
+        if (
+            self._session_cookies
+            and capability in ("web_crawling", "endpoint_discovery", "url_enumeration")
+            and "cookies" not in tool_args
+        ):
+            tool_args = {**tool_args, "cookies": self._session_cookies}
 
         match = self._resolver.find_tool(capability)
         if match is None:
@@ -457,6 +466,20 @@ class ScanAgent(BaseAgent):
             - ``status``: always ``"complete"`` on success.
         """
         self._discovered_endpoints = []
+
+        # Load session cookies from state store for authenticated crawling
+        sessions = await self.state.get_sessions(self.engagement_id)
+        if sessions:
+            latest = sessions[-1]
+            cookies_dict: dict[str, str] = latest.get("cookies", {})
+            if cookies_dict:
+                self._session_cookies = "; ".join(
+                    f"{k}={v}" for k, v in cookies_dict.items()
+                )
+                self._logger.info(
+                    "Loaded session cookies for authenticated crawling (%d cookies)",
+                    len(cookies_dict),
+                )
 
         hosts: list[dict[str, Any]] = input_data.get("hosts") or []
         urls: list[str] = [str(u) for u in (input_data.get("urls") or [])]

@@ -193,16 +193,39 @@ class StateStore:
     # Targets
     # ------------------------------------------------------------------
 
-    async def upsert_target(self, engagement_id: str, host_data: dict[str, Any]) -> str:
+    async def upsert_target(
+        self,
+        engagement_id: str,
+        host_data: dict[str, Any],
+        deduplicate: bool = True,
+    ) -> str:
         """Insert or replace a host target. Returns the target ID.
+
+        When *deduplicate* is True (the default), an existing target with the
+        same ``ip`` value within the same engagement is returned instead of
+        creating a duplicate row.
 
         Args:
             engagement_id: Parent engagement UUID.
             host_data: Serialized Host model dict. Must include 'id' if updating.
+            deduplicate: Check for existing target with same ip before inserting.
 
         Returns:
-            Target UUID.
+            Target UUID (existing or newly created).
         """
+        # --- Deduplication check ---
+        if deduplicate and "ip" in host_data:
+            existing = await self._find_existing_target(
+                engagement_id, host_data["ip"]
+            )
+            if existing is not None:
+                logger.debug(
+                    "Dedup: target '%s' already exists as %s — skipping insert",
+                    host_data["ip"],
+                    existing,
+                )
+                return existing
+
         target_id = host_data.get("id") or self._new_id()
         host_data = {**host_data, "id": target_id}
         await self._conn.execute(
@@ -212,6 +235,29 @@ class StateStore:
         )
         await self._conn.commit()
         return target_id
+
+    async def _find_existing_target(
+        self, engagement_id: str, ip: str
+    ) -> str | None:
+        """Return the ID of an existing target matching *ip*, or None.
+
+        Performs a JSON extraction on the stored ``host_json`` to compare the
+        ``ip`` field, which doubles as the URL/path key for scan endpoints.
+
+        Args:
+            engagement_id: Engagement UUID.
+            ip: The ip/url/path value to match against.
+
+        Returns:
+            Target UUID if found, else None.
+        """
+        async with self._conn.execute(
+            "SELECT id FROM targets "
+            "WHERE engagement_id = ? AND json_extract(host_json, '$.ip') = ?",
+            (engagement_id, ip),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row["id"] if row else None
 
     async def get_targets(self, engagement_id: str) -> list[dict[str, Any]]:
         """Return all targets for an engagement.
