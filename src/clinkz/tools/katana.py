@@ -53,6 +53,14 @@ class KatanaTool(ToolBase):
                         "description": "Parse JavaScript files for additional endpoints.",
                         "default": True,
                     },
+                    "cookies": {
+                        "type": "string",
+                        "description": (
+                            "Session cookies for authenticated crawling. "
+                            "Format: 'PHPSESSID=abc123; security=low'."
+                        ),
+                        "default": "",
+                    },
                 },
                 "required": ["url"],
             },
@@ -67,12 +75,15 @@ class KatanaTool(ToolBase):
             "url": url,
             "depth": int(args.get("depth", 3)),
             "js_crawl": bool(args.get("js_crawl", True)),
+            "cookies": str(args.get("cookies", "")).strip(),
         }
 
     async def execute(self, args: dict[str, Any]) -> str:
         cmd = ["katana", "-u", args["url"], "-depth", str(args["depth"]), "-silent"]
         if args.get("js_crawl"):
             cmd.append("-jc")
+        if args.get("cookies"):
+            cmd.extend(["-H", f"Cookie: {args['cookies']}"])
         stdout, stderr, _ = await self._run_subprocess(cmd)
         return stdout or stderr
 

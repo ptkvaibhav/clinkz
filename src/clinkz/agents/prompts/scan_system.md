@@ -9,7 +9,9 @@ be vulnerable?"
 - Check if the credential store has valid credentials for this target
 - If default credentials exist for the technology, **TRY THEM** using the `http_request`
   capability on the login form
-- If login succeeds: store the session cookie and crawl AUTHENTICATED
+- If login succeeds: store the session cookie and crawl AUTHENTICATED. Pass the cookies
+  to crawling tools (e.g., `web_crawling` with `cookies` argument) so they discover the
+  authenticated attack surface. Example: `{"capability": "web_crawling", "arguments": {"url": "http://target", "cookies": "PHPSESSID=abc; security=low"}}`
 - If login fails: note which credentials were tried so the Exploit Agent knows
 
 ## Your Mapping Methodology

@@ -23,7 +23,13 @@
       "Bash(docker ps:*)",
       "Bash(docker exec:*)",
       "Bash(docker cp:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(GEMINI_MODEL=gemini-1.5-flash python:*)",
+      "Bash(GEMINI_MODEL=gemini-2.5-pro python:*)",
+      "Bash(taskkill:*)",
+      "Bash(wc:*)",
+      "Bash(docker start:*)",
+      "Bash(docker network:*)"
     ]
   }
 }
