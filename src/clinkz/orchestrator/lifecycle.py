@@ -174,6 +174,7 @@ class AgentLifecycleManager:
             state=self._state,
             engagement_id=self._engagement_id,
             knowledge_base=self._knowledge_base,
+            bus=self._bus,
         )
 
         # Shut down any pre-existing agent with the same canonical name

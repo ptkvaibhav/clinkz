@@ -180,6 +180,7 @@ class ReconAgent(BaseAgent):
         engagement_id: str,
         resolver: ToolResolver | None = None,
         knowledge_base: KnowledgeBase | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             llm=llm,
@@ -188,6 +189,7 @@ class ReconAgent(BaseAgent):
             state=state,
             engagement_id=engagement_id,
             knowledge_base=knowledge_base,
+            **kwargs,
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
         self._discovered_hosts: list[dict[str, Any]] = []
@@ -215,14 +217,14 @@ class ReconAgent(BaseAgent):
         capabilities.  The ToolResolver handles the name-to-tool mapping.
 
         Returns:
-            List containing execute_capability, research_technology, and
-            http_request schemas.
+            List containing execute_capability, research_technology,
+            http_request, and shared meta-tools (request_help, tool_installation).
         """
         return [
             self._EXECUTE_CAPABILITY_SCHEMA,
             self._RESEARCH_TECHNOLOGY_SCHEMA,
             self._HTTP_REQUEST_SCHEMA,
-        ]
+        ] + self._get_shared_meta_schemas()
 
     # ------------------------------------------------------------------
     # Tool dispatch override — intercept execute_capability calls
@@ -448,12 +450,16 @@ class ReconAgent(BaseAgent):
             parts.append(f"Primary targets: {', '.join(targets)}")
         parts.append(f"In-scope targets: {', '.join(scope_values)}")
         parts.append(
-            "\nUse execute_capability to run recon tools. "
-            "Start with passive recon (subdomain_enumeration), then probe live hosts "
-            "(http_probing or alive_check), then scan ports (port_scanning), then "
-            "fingerprint services (web_fingerprinting, waf_detection). "
-            "When you have thoroughly enumerated the targets, return your final_answer "
-            "with a structured summary of all discovered hosts, services, and findings."
+            "\nYou are a REASONING-FIRST recon specialist. For each target:"
+            "\n1. Start with discovery: subdomain_enumeration, then port_scanning on live hosts."
+            "\n2. For EVERY service you find, IDENTIFY the exact version."
+            "\n3. RESEARCH every technology: research_technology(query='CVE [tech] [version]')."
+            "\n4. Check for exposed files: use http_request on robots.txt, .git/config, .env, phpinfo.php."
+            "\n5. CONNECT findings: what do they mean together? What attack paths do they open?"
+            "\n6. Frame EVERY finding as an ATTACK RECOMMENDATION for the Exploit Agent."
+            "\n\nDo NOT just list services. REASON about what they mean and what they open up."
+            "\nWhen you have thoroughly investigated all targets, return your final_answer "
+            "with a structured summary including attack recommendations per finding."
         )
         initial_observation = "\n".join(parts)
 
