@@ -463,17 +463,69 @@ class ScanAgent(BaseAgent):
         """
         self._discovered_endpoints = []
 
-        # Load session cookies from state store for authenticated crawling
+        # Load session cookies from state store for authenticated crawling.
+        # If no session exists but credentials are available, authenticate
+        # using WebAuthenticator (deterministic CSRF-aware flow).
         sessions = await self.state.get_sessions(self.engagement_id)
         if sessions:
             latest = sessions[-1]
             cookies_dict: dict[str, str] = latest.get("cookies", {})
             if cookies_dict:
-                self._session_cookies = "; ".join(f"{k}={v}" for k, v in cookies_dict.items())
-                self._logger.info(
-                    "Loaded session cookies for authenticated crawling (%d cookies)",
-                    len(cookies_dict),
+                # Verify the session is still valid before using it
+                from clinkz.tools.auth import WebAuthenticator
+
+                authenticator = WebAuthenticator(
+                    scope=self.scope,
+                    engagement_id=self.engagement_id,
                 )
+                scope_values = [str(e.value) for e in self.scope.targets]
+                check_url = f"http://{scope_values[0]}/" if scope_values else ""
+
+                if check_url:
+                    session_valid = await authenticator.verify_session(check_url, cookies_dict)
+                    if session_valid:
+                        self._session_cookies = "; ".join(
+                            f"{k}={v}" for k, v in cookies_dict.items()
+                        )
+                        self._logger.info(
+                            "Verified session cookies for authenticated crawling (%d cookies)",
+                            len(cookies_dict),
+                        )
+                    else:
+                        self._logger.warning(
+                            "Session expired — attempting re-authentication via WebAuthenticator"
+                        )
+                        # Try to re-auth using stored credentials
+                        creds = input_data.get("credentials", [])
+                        login_url = ""
+                        if scope_values:
+                            login_url = f"http://{scope_values[0]}/login"
+                        for cred in creds:
+                            if not cred.get("valid", False):
+                                continue
+                            result = await authenticator.authenticate(
+                                login_url,
+                                cred.get("username", ""),
+                                cred.get("password", ""),
+                            )
+                            if result.success:
+                                self._session_cookies = "; ".join(
+                                    f"{k}={v}" for k, v in result.session_cookies.items()
+                                )
+                                self._logger.info(
+                                    "Re-authenticated for scan — cookies: %s",
+                                    list(result.session_cookies.keys()),
+                                )
+                                break
+                else:
+                    # No URL to verify — use cookies as-is
+                    self._session_cookies = "; ".join(
+                        f"{k}={v}" for k, v in cookies_dict.items()
+                    )
+                    self._logger.info(
+                        "Loaded session cookies (unverified) for crawling (%d cookies)",
+                        len(cookies_dict),
+                    )
 
         hosts: list[dict[str, Any]] = input_data.get("hosts") or []
         urls: list[str] = [str(u) for u in (input_data.get("urls") or [])]
