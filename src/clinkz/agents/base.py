@@ -345,6 +345,11 @@ class BaseAgent(ABC):
         The Orchestrator decides whether to answer from state, spin up the
         target agent for a sub-task, or route the question directly.
 
+        Reads directly from the bus queue for this agent's name, because the
+        lifecycle manager's bus→inbox bridge is blocked while agent.run() is
+        executing.  Non-response messages encountered while waiting are
+        forwarded to the agent's inbox for later processing.
+
         Args:
             args: Must contain ``question`` (str).  Optional: ``target_agent``.
 
@@ -381,13 +386,17 @@ class BaseAgent(ABC):
         )
         await self._bus.send(query_msg)
 
-        # Wait for RESPONSE with matching parent_message_id (timeout 120s)
+        # Wait for RESPONSE with matching parent_message_id.
+        # We read from BOTH the bus queue and the agent inbox to avoid the
+        # race where the response lands on the bus before anyone bridges it
+        # to the inbox.  The lifecycle manager's _run_agent loop is blocked
+        # inside agent.run() so it cannot move bus messages to the inbox.
         timeout = 120.0
-        poll_interval = 1.0
+        poll_interval = 0.25
         elapsed = 0.0
 
         while elapsed < timeout:
-            # Check if the response arrived via _process_inbox
+            # 1. Check if _process_inbox already stashed it
             if query_msg.id in self._pending_responses:
                 response_msg = self._pending_responses.pop(query_msg.id)
                 response_text = response_msg.content.get(
@@ -396,7 +405,7 @@ class BaseAgent(ABC):
                 self._logger.info("request_help response received (%d chars)", len(response_text))
                 return response_text
 
-            # Check inbox directly for new messages
+            # 2. Drain the agent inbox (messages injected via receive_message)
             try:
                 msg = self._inbox.get_nowait()
                 if (
@@ -408,12 +417,34 @@ class BaseAgent(ABC):
                         "request_help response received (%d chars)", len(response_text)
                     )
                     return response_text
-                # Not our response — re-queue it
+                # Not our response — keep it for later
                 self._inbox.put_nowait(msg)
             except asyncio.QueueEmpty:
                 pass
 
-            await asyncio.sleep(poll_interval)
+            # 3. Read directly from the bus queue — this is where the
+            #    Orchestrator's response actually lands.
+            try:
+                bus_msg = await asyncio.wait_for(
+                    self._bus.receive(self.name), timeout=poll_interval
+                )
+                if (
+                    bus_msg.message_type == MessageType.RESPONSE
+                    and bus_msg.parent_message_id == query_msg.id
+                ):
+                    response_text = bus_msg.content.get(
+                        "response", str(bus_msg.content)
+                    )
+                    self._logger.info(
+                        "request_help response received (%d chars)", len(response_text)
+                    )
+                    return response_text
+                # Not our response — forward to inbox so _process_inbox
+                # picks it up on the next ReAct iteration.
+                self._inbox.put_nowait(bus_msg)
+            except (TimeoutError, asyncio.TimeoutError):
+                pass
+
             elapsed += poll_interval
 
         self._logger.warning("request_help timed out after %.0fs", timeout)
