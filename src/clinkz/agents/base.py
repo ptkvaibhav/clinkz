@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "recon": 20,
     "scan": 20,
-    "exploit": 25,
+    "exploit": 40,
     "report": 10,
     "critic": 10,
 }
