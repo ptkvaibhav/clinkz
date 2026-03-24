@@ -37,6 +37,7 @@ _EXPECTED_TOOLS = {
     "nuclei",
     "sqlmap",
     "http_client",
+    "web_authenticator",
     "tool_installer",
 }
 

@@ -214,26 +214,24 @@ class OrchestratorAgent:
                     "sessions": session_data,
                 }
 
-                # Inject valid session cookies so Exploit Agent skips login
+                # Verify and inject session cookies so Exploit Agent skips login
                 if sessions:
-                    # Use the most recent session
-                    latest_session = sessions[-1]
-                    cookies = latest_session.get("cookies", {})
-                    jar_path = latest_session.get("cookie_jar_path", "")
-                    meta = latest_session.get("metadata", {})
+                    # Find login URL for re-auth if needed
+                    login_url = self._find_login_url(recon_result, "")
+                    if not login_url:
+                        # Construct from first target
+                        for t in scope.targets:
+                            login_url = f"http://{t.value}/login"
+                            break
+
+                    cookies, authenticated_as = await self._verify_and_refresh_session(
+                        login_url or "", sessions, valid_creds
+                    )
 
                     if cookies:
-                        # Find the username from the credential that created this session
-                        authenticated_as = "unknown"
-                        cred_id = meta.get("credential_id", "")
-                        for c in valid_creds:
-                            if c.id == cred_id:
-                                authenticated_as = c.username
-                                break
-
                         exploit_task["session_cookies"] = cookies
                         exploit_task["cookie_jar_path"] = (
-                            jar_path or f"/tmp/clinkz_{engagement_id}_cookies.txt"
+                            f"/tmp/clinkz_{engagement_id}_cookies.txt"
                         )
                         exploit_task["authenticated_as"] = authenticated_as
                         exploit_task["task"] = (
@@ -245,7 +243,7 @@ class OrchestratorAgent:
                             f"Validate findings and chain exploits for maximum impact."
                         )
                         self._logger.info(
-                            "Session handoff to exploit agent: authenticated_as=%s, cookies=%s",
+                            "VERIFIED session handoff to exploit agent: authenticated_as=%s, cookies=%s",
                             authenticated_as,
                             list(cookies.keys()),
                         )
@@ -731,9 +729,11 @@ class OrchestratorAgent:
         password: str,
         credential_id: str,
     ) -> bool:
-        """Attempt a login with the given credentials via HTTP client.
+        """Attempt a login with the given credentials via WebAuthenticator.
 
-        On success, marks the credential as valid and stores the session.
+        Uses deterministic CSRF-aware login flow (GET→extract→POST) instead
+        of manual HTTP requests.  On success, marks the credential as valid
+        and stores the session.
 
         Args:
             url: Login URL.
@@ -748,43 +748,19 @@ class OrchestratorAgent:
         assert self._engagement_id is not None
 
         try:
-            from clinkz.tools.http_client import HTTPClientTool
+            from clinkz.tools.auth import WebAuthenticator
 
-            http = HTTPClientTool(
+            authenticator = WebAuthenticator(
                 scope=self._scope,
                 engagement_id=self._engagement_id,
             )
 
-            args = http.validate_input(
-                {
-                    "method": "POST",
-                    "url": url,
-                    "body": f"username={username}&password={password}",
-                    "headers": {"Content-Type": "application/x-www-form-urlencoded"},
-                    "follow_redirects": True,
-                }
-            )
-            raw = await http.execute(args)
-            result = http.parse_output(raw)
+            result = await authenticator.authenticate(url, username, password)
 
-            # Heuristic: login succeeded if we got a 200/302 without "invalid"
-            # or "incorrect" in the response body
-            body_lower = result.response_body.lower()
-            is_success = (
-                result.status_code in (200, 302, 303)
-                and "invalid" not in body_lower
-                and "incorrect" not in body_lower
-                and "wrong" not in body_lower
-                and "failed" not in body_lower
-            )
-
-            if is_success:
-                from clinkz.tools.http_client import get_session_cookies
-
-                cookies = get_session_cookies(self._engagement_id)
+            if result.success:
                 await self._cred_store.mark_valid(
                     credential_id,
-                    session_cookies=cookies,
+                    session_cookies=result.session_cookies,
                     cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",
                     engagement_id=self._engagement_id,
                     agent="orchestrator",
@@ -801,6 +777,90 @@ class OrchestratorAgent:
             )
 
         return False
+
+    async def _verify_and_refresh_session(
+        self,
+        login_url: str,
+        sessions: list[dict[str, Any]],
+        valid_creds: list[Any],
+    ) -> tuple[dict[str, str], str]:
+        """Verify a session is still valid; re-authenticate if not.
+
+        Called before handing off to the Exploit Agent to ensure the
+        session cookies will actually work.
+
+        Args:
+            login_url: Login URL for re-authentication.
+            sessions: Session dicts from state store.
+            valid_creds: Valid Credential objects.
+
+        Returns:
+            Tuple of (cookies_dict, authenticated_as_username).
+        """
+        assert self._engagement_id is not None
+
+        if not sessions:
+            return {}, ""
+
+        latest = sessions[-1]
+        cookies = latest.get("cookies", {})
+        if not cookies:
+            return {}, ""
+
+        # Find who we authenticated as
+        cred_id = latest.get("metadata", {}).get("credential_id", "")
+        authenticated_as = "unknown"
+        matched_cred = None
+        for c in valid_creds:
+            if c.id == cred_id:
+                authenticated_as = c.username
+                matched_cred = c
+                break
+
+        # Verify the session
+        from clinkz.tools.auth import WebAuthenticator
+
+        authenticator = WebAuthenticator(
+            scope=self._scope,
+            engagement_id=self._engagement_id,
+        )
+
+        # Use the login URL base to check a protected page
+        from urllib.parse import urlparse
+
+        parsed = urlparse(login_url)
+        check_url = f"{parsed.scheme}://{parsed.netloc}/"
+
+        session_valid = await authenticator.verify_session(check_url, cookies)
+
+        if session_valid:
+            self._logger.info("Session still valid for '%s'", authenticated_as)
+            return cookies, authenticated_as
+
+        # Session expired — re-authenticate if we have credentials
+        self._logger.warning("Session expired — attempting re-authentication")
+
+        if matched_cred:
+            result = await authenticator.authenticate(
+                login_url, matched_cred.username, matched_cred.password
+            )
+            if result.success:
+                self._logger.info(
+                    "Re-authentication successful for '%s'", matched_cred.username
+                )
+                # Update the stored session
+                if self._cred_store:
+                    await self._cred_store.mark_valid(
+                        matched_cred.id,
+                        session_cookies=result.session_cookies,
+                        cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",
+                        engagement_id=self._engagement_id,
+                        agent="orchestrator",
+                    )
+                return result.session_cookies, matched_cred.username
+
+        self._logger.warning("Re-authentication failed — proceeding without session")
+        return {}, ""
 
     # ------------------------------------------------------------------
     # State context gathering (for LLM query responses)
