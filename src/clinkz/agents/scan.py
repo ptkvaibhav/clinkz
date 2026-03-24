@@ -28,6 +28,7 @@ from clinkz.agents.base import BaseAgent
 
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
+from clinkz.knowledge.payload_loader import PayloadLoader
 from clinkz.llm.base import LLMClient, ToolCall
 from clinkz.models.scope import EngagementScope
 from clinkz.state import StateStore
@@ -137,6 +138,61 @@ class ScanAgent(BaseAgent):
         },
     }
 
+    #: Schema for the probe_parameter meta-tool — quick vulnerability tagging.
+    _PROBE_PARAMETER_SCHEMA: dict[str, Any] = {
+        "name": "probe_parameter",
+        "description": (
+            "Send a quick one-payload probe per vulnerability class to a parameter "
+            "and tag it with candidate vulnerability types. Use this after discovering "
+            "parameters to identify which ones are worth attacking. Returns tags like "
+            "SQLI_CANDIDATE, XSS_CANDIDATE, LFI_CANDIDATE, CMDI_CANDIDATE."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Full URL of the endpoint to probe.",
+                },
+                "parameter": {
+                    "type": "string",
+                    "description": "Parameter name to inject probes into.",
+                },
+                "method": {
+                    "type": "string",
+                    "description": "HTTP method (GET or POST). Defaults to GET.",
+                    "default": "GET",
+                },
+            },
+            "required": ["url", "parameter"],
+        },
+    }
+
+    # Quick-probe payloads: one payload per vuln class for fast tagging.
+    _PROBE_PAYLOADS: dict[str, tuple[str, str, list[str]]] = {
+        # tag: (payload, tag_name, success_indicators)
+        "SQLI_CANDIDATE": (
+            "'",
+            "SQLI_CANDIDATE",
+            ["SQL syntax", "mysql_", "You have an error", "ORA-", "SQLSTATE", "syntax error"],
+        ),
+        "XSS_CANDIDATE": (
+            "<script>alert(1)</script>",
+            "XSS_CANDIDATE",
+            ["<script>alert(1)</script>"],
+        ),
+        "LFI_CANDIDATE": (
+            "../../../etc/passwd",
+            "LFI_CANDIDATE",
+            ["root:x:0:0", "root:x:0:", "[boot loader]"],
+        ),
+        "CMDI_CANDIDATE": (
+            "; id",
+            "CMDI_CANDIDATE",
+            ["uid=", "root:", "www-data"],
+        ),
+    }
+
     #: Schema for the capability meta-tool exposed to the LLM.
     _EXECUTE_CAPABILITY_SCHEMA: dict[str, Any] = {
         "name": "execute_capability",
@@ -189,6 +245,7 @@ class ScanAgent(BaseAgent):
             knowledge_base=knowledge_base,
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
+        self._payload_loader: PayloadLoader = PayloadLoader()
         self._discovered_endpoints: list[dict[str, Any]] = []
         self._session_cookies: str = ""
 
@@ -222,6 +279,7 @@ class ScanAgent(BaseAgent):
             self._EXECUTE_CAPABILITY_SCHEMA,
             self._RESEARCH_TECHNOLOGY_SCHEMA,
             self._HTTP_REQUEST_SCHEMA,
+            self._PROBE_PARAMETER_SCHEMA,
         ]
 
     # ------------------------------------------------------------------
@@ -243,6 +301,8 @@ class ScanAgent(BaseAgent):
             return await self._do_research(tool_call.arguments)
         if tool_call.name == "http_request":
             return await self._do_http_request(tool_call.arguments)
+        if tool_call.name == "probe_parameter":
+            return await self._do_probe_parameter(tool_call.arguments)
         return await super()._execute_tool(tool_call)
 
     # ------------------------------------------------------------------
@@ -288,6 +348,111 @@ class ScanAgent(BaseAgent):
         except Exception as exc:
             self._logger.error("http_request failed: %s", exc, exc_info=True)
             return f"http_request failed: {exc}"
+
+    # ------------------------------------------------------------------
+    # Parameter vulnerability probing — quick one-payload-per-class tagging
+    # ------------------------------------------------------------------
+
+    async def _do_probe_parameter(self, args: dict[str, Any]) -> str:
+        """Send one probe payload per vulnerability class and tag the parameter.
+
+        This is a fast, lightweight check: one HTTP request per class.  The
+        results tell the Exploit Agent which parameters to focus on.
+
+        Args:
+            args: Must contain ``url`` and ``parameter``.
+                  Optional: ``method`` (default GET).
+
+        Returns:
+            JSON summary with tags for each detected candidate class.
+        """
+        import json as _json
+        from urllib.parse import urlencode
+
+        url: str = args.get("url", "").strip()
+        parameter: str = args.get("parameter", "").strip()
+        method: str = args.get("method", "GET").upper()
+
+        if not url or not parameter:
+            return "Error: 'url' and 'parameter' are required."
+
+        self._logger.info(
+            "Probing parameter '%s' on %s for vulnerability candidates", parameter, url
+        )
+
+        tags: list[str] = []
+        details: list[dict[str, Any]] = []
+
+        for tag_name, (payload, tag, indicators) in self._PROBE_PAYLOADS.items():
+            try:
+                if method == "GET":
+                    probe_url = f"{url}?{urlencode({parameter: payload})}"
+                    http_args: dict[str, Any] = {"url": probe_url, "method": "GET"}
+                else:
+                    http_args = {
+                        "url": url,
+                        "method": "POST",
+                        "body": urlencode({parameter: payload}),
+                        "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                    }
+
+                result_json = await self._do_http_request(http_args)
+                response_lower = result_json.lower()
+
+                matched: list[str] = []
+                for indicator in indicators:
+                    if indicator.lower() in response_lower:
+                        matched.append(indicator)
+
+                # For XSS, also check exact payload reflection
+                if tag == "XSS_CANDIDATE" and payload in result_json:
+                    matched.append("payload_reflected")
+
+                if matched:
+                    tags.append(tag)
+                    details.append({
+                        "tag": tag,
+                        "payload": payload,
+                        "matched_indicators": matched,
+                    })
+
+            except Exception as exc:
+                self._logger.debug("Probe %s failed for %s: %s", tag_name, parameter, exc)
+
+        result = {
+            "url": url,
+            "parameter": parameter,
+            "method": method,
+            "tags": tags,
+            "details": details,
+            "summary": (
+                f"Parameter '{parameter}' tagged: {', '.join(tags)}"
+                if tags
+                else f"Parameter '{parameter}': no vulnerability indicators detected"
+            ),
+        }
+
+        # Persist tags to state store as target metadata
+        if tags:
+            tag_data: dict[str, Any] = {
+                "ip": url,
+                "hostnames": [url],
+                "tags": ["parameter", "scan", "probed"] + tags,
+                "metadata": {
+                    "parameter": parameter,
+                    "vuln_tags": tags,
+                    "probe_details": details,
+                },
+            }
+            await self.state.upsert_target(self.engagement_id, tag_data)
+            self._logger.info(
+                "Parameter '%s' on %s tagged: %s",
+                parameter,
+                url,
+                ", ".join(tags),
+            )
+
+        return _json.dumps(result, indent=2)
 
     # ------------------------------------------------------------------
     # Capability resolution and execution
