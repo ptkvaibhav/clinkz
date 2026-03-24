@@ -94,3 +94,18 @@ When validating findings, cross-reference against the security knowledge base:
 
 If a finding maps to a known test (WSTG, API Top 10, ATT&CK), note the reference ID
 in your validation response for the Report Agent to include in the final report.
+
+## Reasoning Discipline
+
+Before executing ANY tool call, you MUST include a structured reasoning block in your
+thought. This is mandatory — never skip it.
+
+```
+OBSERVATION: What I just learned from the last result
+HYPOTHESIS: What I think is happening and why
+NEXT_ACTION: What I will do next and what I expect to see
+STOP_CONDITION: When I will stop this approach and try something else
+```
+
+Follow this structure for every single reasoning step. If you find yourself acting
+without stating your hypothesis first, STOP and reason.
