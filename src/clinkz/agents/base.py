@@ -26,12 +26,14 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from clinkz.comms.message import AgentMessage, MessageType
+from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
 from clinkz.models.scope import EngagementScope
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 
 if TYPE_CHECKING:
+    from clinkz.comms.bus import MessageBus
     from clinkz.knowledge.query import KnowledgeBase
 
 logger = logging.getLogger(__name__)
@@ -39,8 +41,8 @@ logger = logging.getLogger(__name__)
 # Default iteration limits per agent type.  Agents override via the
 # ``max_iterations`` property so each phase gets the budget it needs.
 DEFAULT_MAX_ITERATIONS: dict[str, int] = {
-    "recon": 10,
-    "scan": 15,
+    "recon": 20,
+    "scan": 20,
     "exploit": 25,
     "report": 10,
     "critic": 10,
@@ -62,7 +64,74 @@ class BaseAgent(ABC):
         scope: Engagement scope for validation.
         state: SQLite state store.
         engagement_id: UUID of the active engagement.
+        bus: Optional MessageBus for cross-agent communication (request_help).
     """
+
+    # ------------------------------------------------------------------
+    # Shared meta-tool schemas available to ALL agents
+    # ------------------------------------------------------------------
+
+    _REQUEST_HELP_SCHEMA: dict[str, Any] = {
+        "name": "request_help",
+        "description": (
+            "Ask another agent or the Orchestrator for information. The message "
+            "is routed through the Orchestrator, which decides the best way to "
+            "answer — either from its own context or by spinning up the target "
+            "agent for a focused sub-task."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The question or request. Be specific about what you need. "
+                        "Example: 'What technologies were identified on api.target.com?'"
+                    ),
+                },
+                "target_agent": {
+                    "type": "string",
+                    "description": (
+                        "Which agent should answer: 'recon', 'scan', 'exploit', "
+                        "'orchestrator'. The Orchestrator decides whether to spin up "
+                        "the target agent or answer from state."
+                    ),
+                    "default": "orchestrator",
+                },
+            },
+            "required": ["question"],
+        },
+    }
+
+    _TOOL_INSTALLATION_SCHEMA: dict[str, Any] = {
+        "name": "tool_installation",
+        "description": (
+            "Install a security tool inside the Docker container at runtime. "
+            "Use this when research reveals a tool you need but it isn't "
+            "installed. After installation, the tool becomes available through "
+            "execute_capability."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool_name": {
+                    "type": "string",
+                    "description": (
+                        "Name or URL of the tool to install. "
+                        "For apt: package name. For pip: package name. "
+                        "For go: full module path (e.g., github.com/org/tool/cmd/tool). "
+                        "For git: repo URL. For download: direct URL to binary."
+                    ),
+                },
+                "install_method": {
+                    "type": "string",
+                    "enum": ["apt", "pip", "go", "git", "download"],
+                    "description": "Installation method to use.",
+                },
+            },
+            "required": ["tool_name", "install_method"],
+        },
+    }
 
     def __init__(
         self,
@@ -72,6 +141,7 @@ class BaseAgent(ABC):
         state: StateStore,
         engagement_id: str,
         knowledge_base: KnowledgeBase | None = None,
+        bus: MessageBus | None = None,
     ) -> None:
         self.llm = llm
         self.tools: dict[str, ToolBase] = {t.name: t for t in tools}
@@ -79,8 +149,10 @@ class BaseAgent(ABC):
         self.state = state
         self.engagement_id = engagement_id
         self.knowledge_base = knowledge_base
+        self._bus: MessageBus | None = bus
         self.messages: list[LLMMessage] = []
         self._inbox: asyncio.Queue[AgentMessage] = asyncio.Queue()
+        self._pending_responses: dict[str, AgentMessage] = {}
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     # ------------------------------------------------------------------
@@ -150,16 +222,36 @@ class BaseAgent(ABC):
         Subclasses can override this to expose a custom schema set — for
         example, a capability-based meta-tool instead of raw tool schemas.
 
+        The base implementation includes raw tool schemas plus the shared
+        meta-tools (request_help, tool_installation).  Subclasses that
+        override this should include the shared schemas via
+        ``_get_shared_meta_schemas()``.
+
         Returns:
             List of OpenAI-compatible tool schema dicts.
         """
-        return [t.get_schema() for t in self.tools.values()]
+        return [t.get_schema() for t in self.tools.values()] + self._get_shared_meta_schemas()
+
+    def _get_shared_meta_schemas(self) -> list[dict[str, Any]]:
+        """Return the meta-tool schemas shared across ALL agents.
+
+        Includes request_help (only if a MessageBus is available) and
+        tool_installation.
+
+        Returns:
+            List of meta-tool schema dicts.
+        """
+        schemas: list[dict[str, Any]] = [self._TOOL_INSTALLATION_SCHEMA]
+        if self._bus is not None:
+            schemas.append(self._REQUEST_HELP_SCHEMA)
+        return schemas
 
     async def _process_inbox(self) -> None:
         """Drain the inbox and inject pending messages into the conversation.
 
         QUERY messages are appended as ``user`` messages so the LLM sees
-        them on the next reasoning step.  Other message types are logged
+        them on the next reasoning step.  RESPONSE messages are stored for
+        ``_do_request_help()`` to pick up.  Other message types are logged
         and discarded — they are not expected mid-loop for phase agents.
         """
         while True:
@@ -177,12 +269,126 @@ class BaseAgent(ABC):
                         content=f"[Mid-run query from {msg.from_agent}]: {query_text}",
                     )
                 )
+            elif msg.message_type == MessageType.RESPONSE:
+                # Store for _do_request_help() to pick up
+                self._pending_responses[msg.parent_message_id or ""] = msg
             else:
                 self._logger.debug(
                     "Inbox: ignoring %s message from '%s'",
                     msg.message_type,
                     msg.from_agent,
                 )
+
+    # ------------------------------------------------------------------
+    # Cross-agent collaboration: request_help
+    # ------------------------------------------------------------------
+
+    async def _do_request_help(self, args: dict[str, Any]) -> str:
+        """Send a QUERY to the Orchestrator and wait for the RESPONSE.
+
+        The Orchestrator decides whether to answer from state, spin up the
+        target agent for a sub-task, or route the question directly.
+
+        Args:
+            args: Must contain ``question`` (str).  Optional: ``target_agent``.
+
+        Returns:
+            Response text from the Orchestrator (or target agent via Orchestrator).
+        """
+        if self._bus is None:
+            return (
+                "request_help is not available — no MessageBus configured. "
+                "Use research_technology for external information."
+            )
+
+        question: str = args.get("question", "").strip()
+        if not question:
+            return "Error: 'question' is required for request_help."
+
+        target_agent: str = args.get("target_agent", "orchestrator").strip()
+
+        # Build and send the QUERY message to the Orchestrator
+        query_msg = AgentMessage.query(
+            from_agent=self.name,
+            to_agent=ORCHESTRATOR,
+            engagement_id=self.engagement_id,
+            content={
+                "query": question,
+                "needs_agent": target_agent if target_agent != "orchestrator" else None,
+            },
+        )
+
+        self._logger.info(
+            "request_help: asking '%s' via Orchestrator: %s",
+            target_agent,
+            question[:200],
+        )
+        await self._bus.send(query_msg)
+
+        # Wait for RESPONSE with matching parent_message_id (timeout 120s)
+        timeout = 120.0
+        poll_interval = 1.0
+        elapsed = 0.0
+
+        while elapsed < timeout:
+            # Check if the response arrived via _process_inbox
+            if query_msg.id in self._pending_responses:
+                response_msg = self._pending_responses.pop(query_msg.id)
+                response_text = response_msg.content.get(
+                    "response", str(response_msg.content)
+                )
+                self._logger.info("request_help response received (%d chars)", len(response_text))
+                return response_text
+
+            # Check inbox directly for new messages
+            try:
+                msg = self._inbox.get_nowait()
+                if (
+                    msg.message_type == MessageType.RESPONSE
+                    and msg.parent_message_id == query_msg.id
+                ):
+                    response_text = msg.content.get("response", str(msg.content))
+                    self._logger.info(
+                        "request_help response received (%d chars)", len(response_text)
+                    )
+                    return response_text
+                # Not our response — re-queue it
+                self._inbox.put_nowait(msg)
+            except asyncio.QueueEmpty:
+                pass
+
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+        self._logger.warning("request_help timed out after %.0fs", timeout)
+        return f"request_help timed out after {timeout}s — no response from Orchestrator."
+
+    # ------------------------------------------------------------------
+    # Dynamic tool acquisition: tool_installation
+    # ------------------------------------------------------------------
+
+    async def _do_tool_installation(self, args: dict[str, Any]) -> str:
+        """Install a tool inside the Docker container at runtime.
+
+        Delegates to ``ToolInstallerTool`` from ``tools/installer.py``.
+
+        Args:
+            args: Must contain ``tool_name`` and ``install_method``.
+
+        Returns:
+            Installation result string.
+        """
+        from clinkz.tools.installer import ToolInstallerTool
+
+        installer = ToolInstallerTool(scope=self.scope)
+        try:
+            validated = installer.validate_input(args)
+            raw_output = await installer.execute(validated)
+            parsed = installer.parse_output(raw_output)
+            return parsed.model_dump_json(indent=2)
+        except Exception as exc:
+            self._logger.error("tool_installation failed: %s", exc, exc_info=True)
+            return f"tool_installation failed: {exc}"
 
     # ------------------------------------------------------------------
     # ReAct loop
@@ -308,8 +514,10 @@ class BaseAgent(ABC):
     async def _execute_tool(self, tool_call: ToolCall) -> str:
         """Dispatch a tool call and return the result as a JSON string.
 
-        Logs the action to the state store and handles errors gracefully
-        so a single tool failure doesn't crash the whole loop.
+        Handles shared meta-tools (request_help, tool_installation) first,
+        then falls through to registered tools.  Logs the action to the
+        state store and handles errors gracefully so a single tool failure
+        doesn't crash the whole loop.
 
         Args:
             tool_call: ToolCall from the LLM.
@@ -317,6 +525,12 @@ class BaseAgent(ABC):
         Returns:
             Tool output serialised to JSON, or an error message string.
         """
+        # Shared meta-tools available to all agents
+        if tool_call.name == "request_help":
+            return await self._do_request_help(tool_call.arguments)
+        if tool_call.name == "tool_installation":
+            return await self._do_tool_installation(tool_call.arguments)
+
         if tool_call.name not in self.tools:
             return (
                 f"Error: Tool '{tool_call.name}' not available. "

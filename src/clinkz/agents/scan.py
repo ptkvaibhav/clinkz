@@ -179,6 +179,7 @@ class ScanAgent(BaseAgent):
         engagement_id: str,
         resolver: ToolResolver | None = None,
         knowledge_base: KnowledgeBase | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             llm=llm,
@@ -187,6 +188,7 @@ class ScanAgent(BaseAgent):
             state=state,
             engagement_id=engagement_id,
             knowledge_base=knowledge_base,
+            **kwargs,
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
         self._discovered_endpoints: list[dict[str, Any]] = []
@@ -215,14 +217,14 @@ class ScanAgent(BaseAgent):
         capabilities.  The ToolResolver handles the name-to-tool mapping.
 
         Returns:
-            List containing execute_capability, research_technology, and
-            http_request schemas.
+            List containing execute_capability, research_technology,
+            http_request, and shared meta-tools (request_help, tool_installation).
         """
         return [
             self._EXECUTE_CAPABILITY_SCHEMA,
             self._RESEARCH_TECHNOLOGY_SCHEMA,
             self._HTTP_REQUEST_SCHEMA,
-        ]
+        ] + self._get_shared_meta_schemas()
 
     # ------------------------------------------------------------------
     # Tool dispatch override — intercept execute_capability calls
@@ -501,14 +503,26 @@ class ScanAgent(BaseAgent):
         elif hosts:
             parts.append(f"Target hosts: {', '.join(h.get('ip', '') for h in hosts)}")
         parts.append(f"In-scope targets: {', '.join(scope_values)}")
+        # Inject session/credential context for the LLM
+        if self._session_cookies:
+            parts.append(
+                f"AUTHENTICATED SESSION: You have session cookies ({self._session_cookies[:80]}...). "
+                f"Crawl authenticated. Pass cookies to crawling tools."
+            )
         parts.append(
-            "\nUse execute_capability to run scan tools. "
-            "Start by crawling (web_crawling) each URL to map the application structure, "
-            "then fuzz directories (directory_fuzzing) to find unlisted paths, "
-            "then discover parameters (parameter_discovery) on interesting endpoints, "
-            "and fingerprint notable endpoints (web_fingerprinting). "
-            "When you have thoroughly mapped the attack surface, return your final_answer "
-            "with a structured summary of all discovered endpoints, paths, and parameters."
+            "\nYou are a REASONING-FIRST attack surface mapper. Your approach:"
+            "\n1. AUTHENTICATE FIRST: If credentials or session cookies are available, log in."
+            "\n2. EXPLORE the application: Visit each page, understand what it DOES."
+            "\n3. CRAWL: web_crawling with cookies for authenticated surface."
+            "\n4. FUZZ: directory_fuzzing to find hidden paths."
+            "\n5. For EVERY form/parameter: REASON about what the server does with the input."
+            "\n   Tag each parameter with WHY it's a vulnerability candidate."
+            "\n6. If crawling returns few results, THINK about why and adapt."
+            "\n7. Check for info disclosure: headers, comments, JS secrets, error messages."
+            "\n\nDo NOT just collect URLs. UNDERSTAND the application and TAG parameters "
+            "with reasoning for the Exploit Agent."
+            "\nWhen you have thoroughly mapped the attack surface, return your final_answer "
+            "with parameter analysis including vulnerability reasoning."
         )
         initial_observation = "\n".join(parts)
 

@@ -428,9 +428,16 @@ class OrchestratorAgent:
     ) -> None:
         """Handle a QUERY from an agent requesting cross-phase data.
 
-        Uses LLM to formulate a response from the state store. If the query
-        requires a targeted sub-task on another agent (e.g., "I need recon
-        on api.target.com"), spins up that agent for a one-shot task.
+        Uses LLM reasoning to decide the best response strategy:
+        1. If the query explicitly requests another agent (``needs_agent`` key)
+           AND re-spins are available, spin up that agent for a targeted sub-task.
+        2. Otherwise, use the LLM to reason about who should answer and respond
+           from the engagement state.
+
+        The LLM reasons about routing like a human coordinator:
+        "The Exploit Agent is asking about the technology behind /upload.php.
+        This is a recon question. Let me check if I have this data in state,
+        otherwise I'll re-spin the Recon Agent with a targeted task."
 
         Args:
             requesting_agent: The agent that sent the query.
@@ -443,8 +450,40 @@ class OrchestratorAgent:
         query_text = query_msg.content.get("query", json.dumps(query_msg.content))
         self._logger.info("Handling query from '%s': %s", requesting_agent, query_text[:200])
 
-        # Check if this requires a cross-phase re-spin
+        # Check if the agent explicitly requests a cross-phase re-spin
         needs_respin = query_msg.content.get("needs_agent")
+
+        # If no explicit target, use LLM to reason about whether a re-spin is needed
+        if not needs_respin and self._cross_phase_respins < MAX_CROSS_PHASE_RESPINS:
+            try:
+                context = await self._gather_state_context()
+                routing_prompt = (
+                    f"An agent ({requesting_agent}) is asking:\n\n"
+                    f'"{query_text}"\n\n'
+                    f"Current engagement state:\n{context}\n\n"
+                    f"Can you answer this question from the available state data? "
+                    f"If yes, respond with: ANSWER_FROM_STATE\n"
+                    f"If no and this requires a recon task, respond with: RESPIN_RECON\n"
+                    f"If no and this requires a scan task, respond with: RESPIN_SCAN\n"
+                    f"If no and this requires an exploit task, respond with: RESPIN_EXPLOIT\n"
+                    f"Respond with ONLY the action keyword."
+                )
+                routing_decision = (await self._llm.generate_text(routing_prompt)).strip()
+                self._logger.info(
+                    "Orchestrator routing decision for query from '%s': %s",
+                    requesting_agent,
+                    routing_decision,
+                )
+                if "RESPIN_RECON" in routing_decision:
+                    needs_respin = "recon"
+                elif "RESPIN_SCAN" in routing_decision:
+                    needs_respin = "scan"
+                elif "RESPIN_EXPLOIT" in routing_decision:
+                    needs_respin = "exploit"
+            except Exception as exc:
+                self._logger.warning("LLM routing decision failed: %s — answering from state", exc)
+
+        # Execute cross-phase re-spin if decided
         if needs_respin and self._cross_phase_respins < MAX_CROSS_PHASE_RESPINS:
             self._cross_phase_respins += 1
             self._logger.info(
@@ -471,14 +510,15 @@ class OrchestratorAgent:
             await self._bus.send(response_msg)
             return
 
-        # Otherwise, answer from state using LLM
+        # Answer from state using LLM
         try:
             context = await self._gather_state_context()
             prompt = (
                 f"An agent ({requesting_agent}) is asking:\n\n"
                 f"{query_text}\n\n"
                 f"Here is the current engagement state:\n{context}\n\n"
-                f"Provide a concise, factual response based on the available data."
+                f"Provide a concise, factual response based on the available data. "
+                f"If you don't have the information, say so clearly."
             )
             response_text = await self._llm.generate_text(prompt)
         except Exception as exc:
