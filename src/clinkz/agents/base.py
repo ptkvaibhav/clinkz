@@ -21,12 +21,14 @@ agent can incorporate them without stopping its current task.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
+from clinkz.knowledge.skills_loader import SkillsLoader
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
 from clinkz.models.scope import EngagementScope
 from clinkz.state import StateStore
@@ -103,6 +105,31 @@ class BaseAgent(ABC):
         },
     }
 
+    _GET_SKILL_REFERENCE_SCHEMA: dict[str, Any] = {
+        "name": "get_skill_reference",
+        "description": (
+            "Retrieve a documented procedure (skill) for performing a specific "
+            "pentesting task. Skills contain step-by-step instructions, common "
+            "pitfalls, and examples. Always read the relevant skill BEFORE "
+            "attempting a task you haven't done in this engagement."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": (
+                        "Name of the skill to retrieve. Use list_skills() first "
+                        "if you don't know what's available. Examples: "
+                        "'csrf_token_extraction', 'sqli_column_count', "
+                        "'xss_context_analysis', 'lfi_exploitation'"
+                    ),
+                },
+            },
+            "required": ["skill_name"],
+        },
+    }
+
     _TOOL_INSTALLATION_SCHEMA: dict[str, Any] = {
         "name": "tool_installation",
         "description": (
@@ -150,6 +177,7 @@ class BaseAgent(ABC):
         self.engagement_id = engagement_id
         self.knowledge_base = knowledge_base
         self._bus: MessageBus | None = bus
+        self._skills_loader = SkillsLoader()
         self.messages: list[LLMMessage] = []
         self._inbox: asyncio.Queue[AgentMessage] = asyncio.Queue()
         self._pending_responses: dict[str, AgentMessage] = {}
@@ -235,13 +263,16 @@ class BaseAgent(ABC):
     def _get_shared_meta_schemas(self) -> list[dict[str, Any]]:
         """Return the meta-tool schemas shared across ALL agents.
 
-        Includes request_help (only if a MessageBus is available) and
-        tool_installation.
+        Includes get_skill_reference, tool_installation, and
+        request_help (only if a MessageBus is available).
 
         Returns:
             List of meta-tool schema dicts.
         """
-        schemas: list[dict[str, Any]] = [self._TOOL_INSTALLATION_SCHEMA]
+        schemas: list[dict[str, Any]] = [
+            self._GET_SKILL_REFERENCE_SCHEMA,
+            self._TOOL_INSTALLATION_SCHEMA,
+        ]
         if self._bus is not None:
             schemas.append(self._REQUEST_HELP_SCHEMA)
         return schemas
@@ -278,6 +309,31 @@ class BaseAgent(ABC):
                     msg.message_type,
                     msg.from_agent,
                 )
+
+    # ------------------------------------------------------------------
+    # Skill reference: get_skill_reference
+    # ------------------------------------------------------------------
+
+    async def _do_get_skill_reference(self, args: dict[str, Any]) -> str:
+        """Load a skill document so the LLM can follow the procedure.
+
+        Args:
+            args: Must contain ``skill_name`` (str).
+
+        Returns:
+            The skill markdown content, or an error message.
+        """
+        skill_name: str = args.get("skill_name", "").strip()
+        if not skill_name:
+            available = self._skills_loader.list_skills()
+            return f"Error: 'skill_name' is required. Available skills: {available}"
+
+        try:
+            content = self._skills_loader.load_skill(skill_name)
+            self._logger.info("Loaded skill '%s' (%d chars)", skill_name, len(content))
+            return content
+        except FileNotFoundError as exc:
+            return str(exc)
 
     # ------------------------------------------------------------------
     # Cross-agent collaboration: request_help
@@ -394,12 +450,40 @@ class BaseAgent(ABC):
     # ReAct loop
     # ------------------------------------------------------------------
 
+    def _build_system_prompt_with_skills(self) -> str:
+        """Append available skill names and reasoning discipline to the system prompt.
+
+        Returns:
+            The agent's system prompt with skills summary and reasoning
+            discipline instructions appended.
+        """
+        skills_summary = self._skills_loader.get_skill_names_summary()
+        reasoning_block = (
+            "\n\n## Reasoning Discipline\n\n"
+            "Before executing ANY tool call, you MUST include a structured reasoning "
+            "block in your thought. This is mandatory — never skip it.\n\n"
+            "```\n"
+            "OBSERVATION: What I just learned from the last result\n"
+            "HYPOTHESIS: What I think is happening and why\n"
+            "NEXT_ACTION: What I will do next and what I expect to see\n"
+            "STOP_CONDITION: When I will stop this approach and try something else\n"
+            "```\n\n"
+            "Follow this structure for every single reasoning step. If you find "
+            "yourself acting without stating your hypothesis first, STOP and reason."
+        )
+        return f"{self.system_prompt}\n\n## Skills\n\n{skills_summary}{reasoning_block}"
+
     async def _react_loop(self, initial_observation: str) -> str:
         """Run the Observe → Reason → Act → Reflect loop.
 
-        Includes failure tracking: if the same tool fails 3 consecutive times
-        with the same error, a skip message is injected so the LLM moves on
-        to the next checklist item instead of retrying endlessly.
+        Includes:
+        - Reasoning discipline: skills summary and structured reasoning
+          instructions are injected into the system prompt.
+        - Failure tracking: if the same tool fails 3 consecutive times
+          with the same error, a skip message is injected.
+        - Repetition detection: if the same tool is called with the same
+          arguments 3 times (regardless of success/failure), a nudge is
+          injected to try a different approach.
 
         Args:
             initial_observation: The task description / starting context.
@@ -408,7 +492,7 @@ class BaseAgent(ABC):
             Final answer text from the LLM.
         """
         self.messages = [
-            LLMMessage(role="system", content=self.system_prompt),
+            LLMMessage(role="system", content=self._build_system_prompt_with_skills()),
             LLMMessage(role="user", content=initial_observation),
         ]
         tool_schemas = self._get_tool_schemas()
@@ -418,6 +502,11 @@ class BaseAgent(ABC):
         _last_failure_key: tuple[str, str] | None = None
         _consecutive_failures: int = 0
         _max_consecutive_failures = 3
+
+        # Repetition tracking: (tool_name, args_json) → consecutive count
+        _last_call_key: tuple[str, str] | None = None
+        _consecutive_same_calls: int = 0
+        _max_same_calls = 3
 
         for iteration in range(limit):
             self._logger.debug("ReAct iteration %d/%d", iteration + 1, limit)
@@ -456,6 +545,44 @@ class BaseAgent(ABC):
                         tool_calls=[action.tool_call],
                     )
                 )
+
+                # --- Repetition detection (same tool + same args) ---
+                call_key = (
+                    action.tool_call.name,
+                    json.dumps(action.tool_call.arguments, sort_keys=True),
+                )
+                if call_key == _last_call_key:
+                    _consecutive_same_calls += 1
+                else:
+                    _last_call_key = call_key
+                    _consecutive_same_calls = 1
+
+                if _consecutive_same_calls >= _max_same_calls:
+                    self._logger.warning(
+                        "Agent '%s' repeated '%s' with same args %d times — injecting redirect",
+                        self.name,
+                        action.tool_call.name,
+                        _consecutive_same_calls,
+                    )
+                    self.messages.append(
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "You are repeating yourself. You have called "
+                                f"'{action.tool_call.name}' with the same arguments "
+                                f"{_consecutive_same_calls} times. State what you learned "
+                                "from previous attempts and try a DIFFERENT approach. "
+                                "Use your reasoning discipline:\n"
+                                "OBSERVATION: What did the repeated calls tell you?\n"
+                                "HYPOTHESIS: Why isn't this working?\n"
+                                "NEXT_ACTION: What DIFFERENT action will you try?\n"
+                                "STOP_CONDITION: When will you move on entirely?"
+                            ),
+                        )
+                    )
+                    _last_call_key = None
+                    _consecutive_same_calls = 0
+
                 tool_result = await self._execute_tool(action.tool_call)
 
                 # Track consecutive failures for the same tool+error
@@ -526,6 +653,8 @@ class BaseAgent(ABC):
             Tool output serialised to JSON, or an error message string.
         """
         # Shared meta-tools available to all agents
+        if tool_call.name == "get_skill_reference":
+            return await self._do_get_skill_reference(tool_call.arguments)
         if tool_call.name == "request_help":
             return await self._do_request_help(tool_call.arguments)
         if tool_call.name == "tool_installation":
