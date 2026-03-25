@@ -139,9 +139,13 @@ async def _run_orchestrator(
     llm = _MockLLM()
     orchestrator = OrchestratorAgent(llm=llm, db_path=":memory:")
 
-    with patch(
-        "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
-        side_effect=_lifecycle_constructor,
+    with (
+        patch(
+            "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
+            side_effect=_lifecycle_constructor,
+        ),
+        patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
+        patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
     ):
         result = await orchestrator.run(scope)
 
@@ -416,9 +420,13 @@ async def test_phase_error_returns_error_result() -> None:
     llm = _MockLLM()
     orchestrator = OrchestratorAgent(llm=llm, db_path=":memory:")
 
-    with patch(
-        "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
-        side_effect=_lifecycle_constructor,
+    with (
+        patch(
+            "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
+            side_effect=_lifecycle_constructor,
+        ),
+        patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
+        patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
     ):
         result = await orchestrator.run(SCOPE)
 
