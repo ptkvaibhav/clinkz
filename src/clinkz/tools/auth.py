@@ -329,7 +329,7 @@ class WebAuthenticator(ToolBase):
     # ------------------------------------------------------------------
 
     async def _execute_aiohttp(self, args: dict[str, Any]) -> str:
-        """Full login flow via aiohttp."""
+        """Full login flow via aiohttp with retry on failure."""
         import aiohttp
 
         login_url = args["login_url"]
@@ -340,110 +340,161 @@ class WebAuthenticator(ToolBase):
 
         timeout = aiohttp.ClientTimeout(total=self.timeout)
 
-        try:
-            async with aiohttp.ClientSession(
-                timeout=timeout,
-                cookie_jar=aiohttp.CookieJar(unsafe=True),
-            ) as session:
-                # Step 1: GET the login page
-                async with session.get(login_url, ssl=False) as get_resp:
-                    login_html = await get_resp.text(errors="replace")
-                    get_status = get_resp.status
+        # Try up to 2 attempts — second attempt uses a fresh GET for new CSRF token
+        max_attempts = 2
+        last_result: str = ""
 
-                self._logger.info(
-                    "GET %s → %d (%d bytes)",
-                    login_url,
-                    get_status,
-                    len(login_html),
-                )
+        for attempt in range(1, max_attempts + 1):
+            self._logger.info(
+                "Auth attempt %d/%d for %s (user=%s)",
+                attempt, max_attempts, login_url, username,
+            )
 
-                # Step 2: Parse form fields from HTML
-                form = _parse_form_fields(login_html)
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=timeout,
+                    cookie_jar=aiohttp.CookieJar(unsafe=True),
+                ) as session:
+                    # Step 1: GET the login page
+                    async with session.get(login_url, ssl=False) as get_resp:
+                        login_html = await get_resp.text(errors="replace")
+                        get_status = get_resp.status
+                        get_cookies = {c.key: c.value for c in session.cookie_jar}
 
-                # Determine field names (override > auto-detect > fallback)
-                ufield = username_field_override or form.username_field or "username"
-                pfield = password_field_override or form.password_field or "password"
+                    self._logger.info(
+                        "GET %s → %d (%d bytes), cookies received: %s",
+                        login_url,
+                        get_status,
+                        len(login_html),
+                        list(get_cookies.keys()),
+                    )
 
-                self._logger.info(
-                    "Form fields — username: %s, password: %s, hidden: %s, action: %s",
-                    ufield,
-                    pfield,
-                    list(form.hidden_fields.keys()),
-                    form.form_action or "(same URL)",
-                )
+                    # Step 2: Parse form fields from HTML
+                    form = _parse_form_fields(login_html)
 
-                # Step 3: Build POST body with hidden fields + credentials
-                post_data: dict[str, str] = {}
-                post_data.update(form.hidden_fields)
-                post_data[ufield] = username
-                post_data[pfield] = password
+                    # Determine field names (override > auto-detect > fallback)
+                    ufield = username_field_override or form.username_field or "username"
+                    pfield = password_field_override or form.password_field or "password"
 
-                # Resolve form action URL
-                post_url = login_url
-                if form.form_action:
-                    if form.form_action.startswith("http"):
-                        post_url = form.form_action
-                    else:
-                        parsed = urlparse(login_url)
-                        base = f"{parsed.scheme}://{parsed.netloc}"
-                        if form.form_action.startswith("/"):
-                            post_url = f"{base}{form.form_action}"
+                    self._logger.info(
+                        "Form extraction — username_field: %r, password_field: %r, "
+                        "hidden_fields: %s, form_action: %r",
+                        ufield,
+                        pfield,
+                        {k: v[:20] + "..." if len(v) > 20 else v
+                         for k, v in form.hidden_fields.items()},
+                        form.form_action or "(same URL)",
+                    )
+
+                    # Step 3: Build POST body with hidden fields + credentials
+                    post_data: dict[str, str] = {}
+                    post_data.update(form.hidden_fields)
+                    post_data[ufield] = username
+                    post_data[pfield] = password
+
+                    # Resolve form action URL
+                    post_url = login_url
+                    if form.form_action:
+                        if form.form_action.startswith("http"):
+                            post_url = form.form_action
                         else:
-                            path = parsed.path.rsplit("/", 1)[0]
-                            post_url = f"{base}{path}/{form.form_action}"
+                            parsed = urlparse(login_url)
+                            base = f"{parsed.scheme}://{parsed.netloc}"
+                            if form.form_action.startswith("/"):
+                                post_url = f"{base}{form.form_action}"
+                            else:
+                                path = parsed.path.rsplit("/", 1)[0]
+                                post_url = f"{base}{path}/{form.form_action}"
 
-                # Step 4: POST with cookies from step 1 (aiohttp session handles this)
-                async with session.post(
-                    post_url,
-                    data=post_data,
-                    ssl=False,
-                    allow_redirects=True,
-                ) as post_resp:
-                    post_body = await post_resp.text(errors="replace")
-                    post_status = post_resp.status
-                    final_url = str(post_resp.url)
+                    self._logger.info(
+                        "POST %s with %d fields (hidden: %d, creds: 2)",
+                        post_url,
+                        len(post_data),
+                        len(form.hidden_fields),
+                    )
 
-                    # Collect redirect chain
-                    redirect_chain = [str(r.url) for r in post_resp.history] if post_resp.history else []
+                    # Step 4: POST with cookies from step 1 (aiohttp session handles this)
+                    async with session.post(
+                        post_url,
+                        data=post_data,
+                        ssl=False,
+                        allow_redirects=True,
+                    ) as post_resp:
+                        post_body = await post_resp.text(errors="replace")
+                        post_status = post_resp.status
+                        final_url = str(post_resp.url)
 
-                # Step 5: Extract all session cookies
-                session_cookies: dict[str, str] = {}
-                for cookie in session.cookie_jar:
-                    session_cookies[cookie.key] = cookie.value
+                        # Collect redirect chain
+                        redirect_chain = [str(r.url) for r in post_resp.history] if post_resp.history else []
 
-                self._logger.info(
-                    "POST %s → %d, final URL: %s, cookies: %s",
-                    post_url,
-                    post_status,
-                    final_url,
-                    list(session_cookies.keys()),
+                    # Step 5: Extract all session cookies
+                    session_cookies: dict[str, str] = {}
+                    for cookie in session.cookie_jar:
+                        session_cookies[cookie.key] = cookie.value
+
+                    self._logger.info(
+                        "POST response — status: %d, final_url: %s, "
+                        "redirect_chain: %s, session_cookies: %s, "
+                        "response_length: %d",
+                        post_status,
+                        final_url,
+                        redirect_chain,
+                        list(session_cookies.keys()),
+                        len(post_body),
+                    )
+
+                    # Step 6: Check success heuristics
+                    success = self._check_login_success(
+                        post_body, post_status, final_url, login_url, redirect_chain
+                    )
+
+                    self._logger.info(
+                        "Auth attempt %d result: success=%s", attempt, success,
+                    )
+
+                    last_result = json.dumps({
+                        "success": success,
+                        "session_cookies": session_cookies,
+                        "redirect_url": final_url,
+                        "login_url": login_url,
+                        "username": username,
+                        "status_code": post_status,
+                    })
+
+                    if success:
+                        return last_result
+
+                    # If first attempt failed, retry with fresh session/CSRF
+                    if attempt < max_attempts:
+                        self._logger.warning(
+                            "Auth attempt %d failed — retrying with fresh GET "
+                            "for new CSRF token",
+                            attempt,
+                        )
+                        continue
+
+            except Exception as exc:
+                self._logger.error(
+                    "aiohttp login flow failed (attempt %d): %s",
+                    attempt, exc, exc_info=True,
                 )
-
-                # Step 6: Check success heuristics
-                success = self._check_login_success(
-                    post_body, post_status, final_url, login_url, redirect_chain
-                )
-
-                return json.dumps({
-                    "success": success,
-                    "session_cookies": session_cookies,
-                    "redirect_url": final_url,
+                last_result = json.dumps({
+                    "success": False,
+                    "session_cookies": {},
+                    "redirect_url": "",
                     "login_url": login_url,
                     "username": username,
-                    "status_code": post_status,
+                    "status_code": 0,
+                    "error": str(exc),
                 })
+                if attempt < max_attempts:
+                    self._logger.warning(
+                        "Retrying after exception (attempt %d/%d)",
+                        attempt, max_attempts,
+                    )
+                    continue
 
-        except Exception as exc:
-            self._logger.error("aiohttp login flow failed: %s", exc, exc_info=True)
-            return json.dumps({
-                "success": False,
-                "session_cookies": {},
-                "redirect_url": "",
-                "login_url": login_url,
-                "username": username,
-                "status_code": 0,
-                "error": str(exc),
-            })
+        return last_result
 
     async def _verify_session_aiohttp(self, url: str, cookies: dict[str, str]) -> bool:
         """Check session validity via aiohttp GET."""

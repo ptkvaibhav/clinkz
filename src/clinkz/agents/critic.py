@@ -2,7 +2,7 @@
 
 Reviews each finding for:
 - Evidence completeness (at least one evidence string required for non-info)
-- CVSS score presence (required for Critical, High, and Medium findings)
+- CVSS score presence (assigns a score if missing but evidence is valid)
 - Non-empty description and remediation
 - LLM-assisted quality review (VALID / INVALID verdict)
 
@@ -26,8 +26,18 @@ logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "critic_system.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
-# Severities that require a CVSS score
+# Severities that require a CVSS score — if missing, we assign one
 _CVSS_REQUIRED = {Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM}
+
+# Default CVSS scores by severity (used when a finding has valid evidence
+# but is missing a CVSS score — we assign rather than reject)
+_DEFAULT_CVSS: dict[Severity, float] = {
+    Severity.CRITICAL: 9.8,
+    Severity.HIGH: 8.0,
+    Severity.MEDIUM: 5.5,
+    Severity.LOW: 3.0,
+    Severity.INFO: 0.0,
+}
 
 
 class CriticAgent(BaseAgent):
@@ -91,12 +101,17 @@ class CriticAgent(BaseAgent):
                 "message, or screenshot path) is required for non-informational findings."
             )
 
-        # Structural check 2: critical/high/medium require a CVSS score
+        # Structural check 2: critical/high/medium need a CVSS score.
+        # If missing but evidence is valid, ASSIGN a default score rather
+        # than rejecting — never discard a real finding for missing metadata.
         if severity in _CVSS_REQUIRED and cvss_score is None:
-            return False, (
-                f"Finding '{title}' (severity={severity_raw}) is missing a CVSS "
-                "score. Critical, High, and Medium findings must include a CVSS "
-                "base score (0.0–10.0)."
+            assigned = _DEFAULT_CVSS.get(severity, 5.0)
+            finding["cvss_score"] = assigned
+            logger.info(
+                "Finding '%s' missing CVSS — assigned %.1f based on %s severity",
+                title,
+                assigned,
+                severity_raw,
             )
 
         # Structural check 3: description must be non-empty

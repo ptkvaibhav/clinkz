@@ -186,8 +186,8 @@ async def test_missing_evidence_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_cvss_on_critical_rejected(tmp_path: Path) -> None:
-    """Critical finding without a CVSS score is rejected (structural check)."""
+async def test_missing_cvss_on_critical_assigned(tmp_path: Path) -> None:
+    """Critical finding without CVSS gets a score assigned (not rejected)."""
     async with StateStore(tmp_path / "test.db") as state:
         eid = await state.create_engagement("Test", SCOPE.model_dump())
         finding = _make_finding(severity="critical", cvss_score=None)
@@ -196,14 +196,15 @@ async def test_missing_cvss_on_critical_rejected(tmp_path: Path) -> None:
         agent = CriticAgent(llm=llm, tools=[], scope=SCOPE, state=state, engagement_id=eid)
         result = await agent.run({"findings": [finding]})
 
-    assert len(result["rejected"]) == 1
-    assert "cvss" in result["rejected"][0]["reason"].lower()
-    assert len(llm.generate_text_calls) == 0
+    # Should be validated with an assigned CVSS, not rejected
+    assert len(result["validated"]) == 1
+    assert len(result["rejected"]) == 0
+    assert result["validated"][0]["cvss_score"] == 9.8
 
 
 @pytest.mark.asyncio
-async def test_missing_cvss_on_high_rejected(tmp_path: Path) -> None:
-    """High finding without a CVSS score is also rejected."""
+async def test_missing_cvss_on_high_assigned(tmp_path: Path) -> None:
+    """High finding without CVSS gets a score assigned (not rejected)."""
     async with StateStore(tmp_path / "test.db") as state:
         eid = await state.create_engagement("Test", SCOPE.model_dump())
         finding = _make_finding(severity="high", cvss_score=None)
@@ -212,8 +213,9 @@ async def test_missing_cvss_on_high_rejected(tmp_path: Path) -> None:
         agent = CriticAgent(llm=llm, tools=[], scope=SCOPE, state=state, engagement_id=eid)
         result = await agent.run({"findings": [finding]})
 
-    assert len(result["rejected"]) == 1
-    assert len(llm.generate_text_calls) == 0
+    assert len(result["validated"]) == 1
+    assert len(result["rejected"]) == 0
+    assert result["validated"][0]["cvss_score"] == 8.0
 
 
 @pytest.mark.asyncio
