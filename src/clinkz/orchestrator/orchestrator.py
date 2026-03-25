@@ -217,7 +217,7 @@ class OrchestratorAgent:
                 # Verify and inject session cookies so Exploit Agent skips login
                 if sessions:
                     # Find login URL for re-auth if needed
-                    login_url = self._find_login_url(recon_result, "")
+                    login_url = await self._find_login_url(recon_result, "", scan_result=scan_result)
                     if not login_url:
                         # Construct from first target
                         for t in scope.targets:
@@ -573,7 +573,7 @@ class OrchestratorAgent:
 
             for cred in untested:
                 # Find a login URL for this technology
-                login_url = self._find_login_url(recon_result, tech)
+                login_url = await self._find_login_url(recon_result, tech)
                 if not login_url:
                     continue
 
@@ -688,37 +688,111 @@ class OrchestratorAgent:
 
         return sorted(techs)
 
-    def _find_login_url(self, recon_result: dict[str, Any], technology: str) -> str | None:
-        """Find a login URL for a given technology from recon results.
+    async def _find_login_url(
+        self,
+        recon_result: dict[str, Any],
+        technology: str,
+        scan_result: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Find a login URL using a multi-strategy fallback chain.
+
+        Strategies (tried in order, first hit wins):
+        1. Explicit ``login_urls`` dict keyed by technology.
+        2. Structured URL fields in recon/scan results containing login paths.
+        3. Free-text search of recon ``summary`` for URLs with login keywords.
+        4. Discovered targets/endpoints in the state store with login in path.
+        5. Probe common login paths on each scope target with HEAD requests.
+        6. Fall back to the root URL as the login page.
 
         Args:
             recon_result: Recon phase result dict.
-            technology: Technology name to look for.
+            technology: Technology name to look for (may be empty).
+            scan_result: Optional scan phase result dict for additional URL sources.
 
         Returns:
             Login URL string, or None if not found.
         """
-        # Check for explicit login URLs in results
-        login_urls = recon_result.get("login_urls", {})
-        if isinstance(login_urls, dict) and technology in login_urls:
-            return login_urls[technology]
+        import re as _re
+        from urllib.parse import urlparse as _urlparse
 
-        # Check hosts/results for URLs matching common login paths
-        for key in ("hosts", "results", "endpoints"):
-            items = recon_result.get(key)
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict):
-                        url = item.get("url", "")
-                        if url and any(
-                            p in url.lower() for p in ("/login", "/admin", "/wp-login", "/manager")
-                        ):
+        login_path_hints = ("/login", "/admin", "/wp-login", "/manager", "/signin", "/auth")
+
+        # --- Strategy 1: explicit login_urls dict ---
+        login_urls = recon_result.get("login_urls", {})
+        if isinstance(login_urls, dict):
+            if technology and technology in login_urls:
+                return login_urls[technology]
+            # Return any URL from the dict
+            for _tech, url in login_urls.items():
+                if url:
+                    return url
+
+        # --- Strategy 2: structured URL fields in recon + scan results ---
+        sources = [recon_result]
+        if scan_result:
+            sources.append(scan_result)
+        for source in sources:
+            for key in ("hosts", "results", "endpoints", "urls"):
+                items = source.get(key)
+                if isinstance(items, list):
+                    for item in items:
+                        url = ""
+                        if isinstance(item, dict):
+                            url = item.get("url", "")
+                        elif isinstance(item, str):
+                            url = item
+                        if url and any(p in url.lower() for p in login_path_hints):
                             return url
 
-        # Fallback: construct from base URL if available
+        # --- Strategy 3: regex search of free-text summary for URLs ---
+        for source in sources:
+            summary = source.get("summary", "")
+            if isinstance(summary, str) and summary:
+                # Find URLs in free text
+                url_matches = _re.findall(r'https?://[^\s<>"\']+', summary)
+                for candidate in url_matches:
+                    if any(p in candidate.lower() for p in login_path_hints):
+                        return candidate
+
+        # --- Strategy 4: search state store targets/endpoints ---
+        if self._state and self._engagement_id:
+            try:
+                targets = await self._state.get_targets(self._engagement_id)
+                for t in targets:
+                    ip = t.get("ip", "")
+                    for hostname in t.get("hostnames", []):
+                        if any(p in str(hostname).lower() for p in login_path_hints):
+                            return str(hostname)
+                    if any(p in str(ip).lower() for p in login_path_hints):
+                        return str(ip)
+            except Exception:
+                pass
+
+        # --- Strategy 5: construct and probe common login paths ---
         base_url = recon_result.get("base_url") or recon_result.get("url")
+        probe_bases: list[str] = []
         if base_url:
-            return f"{base_url.rstrip('/')}/login"
+            probe_bases.append(base_url.rstrip("/"))
+        if self._scope:
+            for t in self._scope.targets:
+                candidate = f"http://{t.value}"
+                if candidate.rstrip("/") not in [b.rstrip("/") for b in probe_bases]:
+                    probe_bases.append(candidate)
+
+        probe_paths = ["/login.php", "/login", "/signin", "/admin", "/auth", "/wp-login.php"]
+        for base in probe_bases:
+            for path in probe_paths:
+                probe_url = f"{base.rstrip('/')}{path}"
+                status = await self._probe_url(probe_url)
+                if status and status < 400:
+                    self._logger.info("Probed login URL found: %s (status %d)", probe_url, status)
+                    return probe_url
+
+        # --- Strategy 6: fall back to root URL ---
+        if probe_bases:
+            root_url = probe_bases[0]
+            self._logger.info("Falling back to root URL as login page: %s", root_url)
+            return root_url
 
         return None
 
@@ -861,6 +935,33 @@ class OrchestratorAgent:
 
         self._logger.warning("Re-authentication failed — proceeding without session")
         return {}, ""
+
+    # ------------------------------------------------------------------
+    # URL probing helper
+    # ------------------------------------------------------------------
+
+    async def _probe_url(self, url: str) -> int | None:
+        """Send a HEAD request to *url* and return the HTTP status code.
+
+        Returns ``None`` on any failure (timeout, connection refused, etc.).
+        Uses a short 5-second timeout to avoid blocking the pipeline.
+
+        This method is separated so that tests can trivially mock it.
+        """
+        try:
+            from clinkz.tools.http_client import HTTPClientTool
+
+            http = HTTPClientTool(
+                scope=self._scope,
+                timeout=5,
+                engagement_id=self._engagement_id or "",
+            )
+            validated = http.validate_input({"url": url, "method": "HEAD"})
+            raw = await asyncio.wait_for(http.execute(validated), timeout=5)
+            parsed = http.parse_output(raw)
+            return parsed.status_code if parsed.status_code else None
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # State context gathering (for LLM query responses)
