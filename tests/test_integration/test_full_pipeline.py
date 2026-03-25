@@ -197,10 +197,16 @@ class _ScanSequenceLLM(LLMClient):
 
 
 class _ExploitSequenceLLM(LLMClient):
-    """Exploit agent LLM: report a confirmed HIGH SQL injection finding, then done."""
+    """Exploit agent LLM: report a confirmed HIGH SQL injection finding, then done.
+
+    Works with per-endpoint mini-loops: each endpoint gets its own conversation.
+    On the first call per endpoint (no assistant messages), report a finding.
+    On subsequent calls, return final_answer.
+    """
 
     def __init__(self) -> None:
         self._calls = 0
+        self._reported = False
 
     async def reason(
         self,
@@ -208,11 +214,15 @@ class _ExploitSequenceLLM(LLMClient):
         tools: list[dict[str, Any]] | None = None,
     ) -> AgentAction:
         self._calls += 1
-        if self._calls == 1:
+        # Per-endpoint loop: first call has no assistant messages yet
+        assistant_count = sum(1 for m in messages if m.role == "assistant")
+
+        if assistant_count == 0 and not self._reported:
+            self._reported = True
             return AgentAction(
                 thought="Reporting confirmed SQL injection.",
                 tool_call=ToolCall(
-                    id="exploit-001",
+                    id=f"exploit-{self._calls:03d}",
                     name="report_finding",
                     arguments={
                         "title": "SQL Injection in /api/users",
