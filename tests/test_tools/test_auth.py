@@ -197,11 +197,13 @@ class TestWebAuthenticatorTool:
         assert set(params["required"]) == {"login_url", "username", "password"}
 
     def test_validate_input_valid(self, auth: WebAuthenticator) -> None:
-        result = auth.validate_input({
-            "login_url": "http://target.local/login",
-            "username": "admin",
-            "password": "password",
-        })
+        result = auth.validate_input(
+            {
+                "login_url": "http://target.local/login",
+                "username": "admin",
+                "password": "password",
+            }
+        )
         assert result["login_url"] == "http://target.local/login"
         assert result["username"] == "admin"
         assert result["password"] == "password"
@@ -212,40 +214,48 @@ class TestWebAuthenticatorTool:
 
     def test_validate_input_invalid_url(self, auth: WebAuthenticator) -> None:
         with pytest.raises(ValueError, match="Invalid"):
-            auth.validate_input({
-                "login_url": "not-a-url",
-                "username": "admin",
-                "password": "pass",
-            })
+            auth.validate_input(
+                {
+                    "login_url": "not-a-url",
+                    "username": "admin",
+                    "password": "pass",
+                }
+            )
 
     def test_validate_input_out_of_scope(self, auth: WebAuthenticator) -> None:
         with pytest.raises(ValueError, match="outside"):
-            auth.validate_input({
-                "login_url": "http://evil.com/login",
-                "username": "admin",
-                "password": "pass",
-            })
+            auth.validate_input(
+                {
+                    "login_url": "http://evil.com/login",
+                    "username": "admin",
+                    "password": "pass",
+                }
+            )
 
     def test_parse_output_success(self, auth: WebAuthenticator) -> None:
-        raw = json.dumps({
-            "success": True,
-            "session_cookies": {"PHPSESSID": "abc123"},
-            "redirect_url": "http://target.local/index.php",
-            "login_url": "http://target.local/login.php",
-            "username": "admin",
-            "status_code": 200,
-        })
+        raw = json.dumps(
+            {
+                "success": True,
+                "session_cookies": {"PHPSESSID": "abc123"},
+                "redirect_url": "http://target.local/index.php",
+                "login_url": "http://target.local/login.php",
+                "username": "admin",
+                "status_code": 200,
+            }
+        )
         parsed = auth.parse_output(raw)
         assert isinstance(parsed, AuthOutput)
         assert parsed.success is True
         assert parsed.auth_result.session_cookies == {"PHPSESSID": "abc123"}
 
     def test_parse_output_failure(self, auth: WebAuthenticator) -> None:
-        raw = json.dumps({
-            "success": False,
-            "session_cookies": {},
-            "error": "Invalid credentials",
-        })
+        raw = json.dumps(
+            {
+                "success": False,
+                "session_cookies": {},
+                "error": "Invalid credentials",
+            }
+        )
         parsed = auth.parse_output(raw)
         assert parsed.auth_result.success is False
 
