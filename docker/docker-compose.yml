@@ -47,7 +47,10 @@ services:
   # Test target: DVWA (Damn Vulnerable Web Application)
   # ---------------------------------------------------------------------------
   dvwa:
-    image: vulnerables/web-dvwa:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.dvwa
+    image: clinkz-dvwa:latest
     container_name: clinkz-dvwa
     ports:
       - "8080:80"

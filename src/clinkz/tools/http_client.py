@@ -389,15 +389,12 @@ class HTTPClientTool(ToolBase):
                 timeout=timeout,
                 cookie_jar=aiohttp.CookieJar(unsafe=True),
             ) as session:
-                # Set cookies
-                for cname, cvalue in cookies.items():
-                    session.cookie_jar.update_cookies({cname: cvalue})
-
                 async with session.request(
                     method,
                     url,
                     headers=headers,
                     data=body if body else None,
+                    cookies=cookies if cookies else None,
                     allow_redirects=follow_redirects,
                     ssl=False,
                 ) as resp:

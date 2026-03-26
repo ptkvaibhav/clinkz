@@ -72,6 +72,7 @@ class _FormFieldParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.hidden_fields: dict[str, str] = {}
+        self.submit_fields: dict[str, str] = {}
         self.username_field: str = ""
         self.password_field: str = ""
         self.form_action: str = ""
@@ -95,6 +96,9 @@ class _FormFieldParser(HTMLParser):
 
         if input_type == "hidden" and input_name:
             self.hidden_fields[input_name] = input_value
+
+        elif input_type == "submit" and input_name:
+            self.submit_fields[input_name] = input_value
 
         elif input_type == "password" and input_name:
             self.password_field = input_name
@@ -396,9 +400,10 @@ class WebAuthenticator(ToolBase):
                         form.form_action or "(same URL)",
                     )
 
-                    # Step 3: Build POST body with hidden fields + credentials
+                    # Step 3: Build POST body with hidden fields + submit buttons + credentials
                     post_data: dict[str, str] = {}
                     post_data.update(form.hidden_fields)
+                    post_data.update(form.submit_fields)
                     post_data[ufield] = username
                     post_data[pfield] = password
 
@@ -525,10 +530,7 @@ class WebAuthenticator(ToolBase):
             timeout=timeout,
             cookie_jar=aiohttp.CookieJar(unsafe=True),
         ) as session:
-            for k, v in cookies.items():
-                session.cookie_jar.update_cookies({k: v})
-
-            async with session.get(url, ssl=False, allow_redirects=False) as resp:
+            async with session.get(url, ssl=False, allow_redirects=False, cookies=cookies) as resp:
                 # If we get redirected to login page, session is dead
                 if resp.status in (301, 302, 303, 307):
                     location = resp.headers.get("Location", "").lower()
@@ -602,6 +604,8 @@ class WebAuthenticator(ToolBase):
             # Step 3: Build POST data
             post_parts: list[str] = []
             for k, v in form.hidden_fields.items():
+                post_parts.append(f"{k}={v}")
+            for k, v in form.submit_fields.items():
                 post_parts.append(f"{k}={v}")
             post_parts.append(f"{ufield}={username}")
             post_parts.append(f"{pfield}={password}")
@@ -806,9 +810,15 @@ class WebAuthenticator(ToolBase):
             if login_path and final_path and final_path != login_path:
                 return True
 
-        # 302/303 redirect happened → likely success
-        if redirect_chain:
-            return True
+        # 302/303 redirect happened away from login → likely success
+        if redirect_chain and login_url:
+            login_path = urlparse(login_url).path.rstrip("/")
+            # Only count as success if at least one redirect goes somewhere other than login
+            if any(
+                urlparse(r).path.rstrip("/") != login_path
+                for r in redirect_chain
+            ):
+                return True
 
         # Status 200 without failure keywords — tentative success
         if status_code == 200:
