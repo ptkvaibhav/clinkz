@@ -1,0 +1,9 @@
+FROM vulnerables/web-dvwa:latest
+
+# Fix known DVWA bug: comment out the closing PHP tag in MySQL.php
+# that can cause "Cannot modify header information" errors after DB setup,
+# and bypass the CSRF check in setup.php so automated DB init works.
+COPY dvwa-init.sh /dvwa-init.sh
+RUN chmod +x /dvwa-init.sh
+
+ENTRYPOINT ["/dvwa-init.sh"]
