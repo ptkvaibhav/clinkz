@@ -29,8 +29,17 @@ class TestDataLoading:
     def test_all_expected_classes_present(self, loader: PayloadLoader) -> None:
         """All documented vulnerability classes should be present."""
         expected = {
-            "sqli", "xss", "command_injection", "lfi", "file_upload",
-            "csrf", "brute_force", "idor", "ssrf", "session", "xxe",
+            "sqli",
+            "xss",
+            "command_injection",
+            "lfi",
+            "file_upload",
+            "csrf",
+            "brute_force",
+            "idor",
+            "ssrf",
+            "session",
+            "xxe",
         }
         actual = set(loader.vulnerability_classes)
         assert expected <= actual, f"Missing classes: {expected - actual}"
