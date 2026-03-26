@@ -399,9 +399,7 @@ class BaseAgent(ABC):
             # 1. Check if _process_inbox already stashed it
             if query_msg.id in self._pending_responses:
                 response_msg = self._pending_responses.pop(query_msg.id)
-                response_text = response_msg.content.get(
-                    "response", str(response_msg.content)
-                )
+                response_text = response_msg.content.get("response", str(response_msg.content))
                 self._logger.info("request_help response received (%d chars)", len(response_text))
                 return response_text
 
@@ -432,9 +430,7 @@ class BaseAgent(ABC):
                     bus_msg.message_type == MessageType.RESPONSE
                     and bus_msg.parent_message_id == query_msg.id
                 ):
-                    response_text = bus_msg.content.get(
-                        "response", str(bus_msg.content)
-                    )
+                    response_text = bus_msg.content.get("response", str(bus_msg.content))
                     self._logger.info(
                         "request_help response received (%d chars)", len(response_text)
                     )
@@ -442,7 +438,7 @@ class BaseAgent(ABC):
                 # Not our response — forward to inbox so _process_inbox
                 # picks it up on the next ReAct iteration.
                 self._inbox.put_nowait(bus_msg)
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 pass
 
             elapsed += poll_interval

@@ -217,7 +217,9 @@ class OrchestratorAgent:
                 # Verify and inject session cookies so Exploit Agent skips login
                 if sessions:
                     # Find login URL for re-auth if needed
-                    login_url = await self._find_login_url(recon_result, "", scan_result=scan_result)
+                    login_url = await self._find_login_url(
+                        recon_result, "", scan_result=scan_result
+                    )
                     if not login_url:
                         # Construct from first target
                         for t in scope.targets:
@@ -230,9 +232,7 @@ class OrchestratorAgent:
 
                     if cookies:
                         exploit_task["session_cookies"] = cookies
-                        exploit_task["cookie_jar_path"] = (
-                            f"/tmp/clinkz_{engagement_id}_cookies.txt"
-                        )
+                        exploit_task["cookie_jar_path"] = f"/tmp/clinkz_{engagement_id}_cookies.txt"
                         exploit_task["authenticated_as"] = authenticated_as
                         exploit_task["task"] = (
                             f"You are already authenticated as '{authenticated_as}'. "
@@ -243,7 +243,8 @@ class OrchestratorAgent:
                             f"Validate findings and chain exploits for maximum impact."
                         )
                         self._logger.info(
-                            "VERIFIED session handoff to exploit agent: authenticated_as=%s, cookies=%s",
+                            "VERIFIED session handoff to exploit "
+                            "agent: authenticated_as=%s, cookies=%s",
                             authenticated_as,
                             list(cookies.keys()),
                         )
@@ -713,7 +714,6 @@ class OrchestratorAgent:
             Login URL string, or None if not found.
         """
         import re as _re
-        from urllib.parse import urlparse as _urlparse
 
         login_path_hints = ("/login", "/admin", "/wp-login", "/manager", "/signin", "/auth")
 
@@ -919,9 +919,7 @@ class OrchestratorAgent:
                 login_url, matched_cred.username, matched_cred.password
             )
             if result.success:
-                self._logger.info(
-                    "Re-authentication successful for '%s'", matched_cred.username
-                )
+                self._logger.info("Re-authentication successful for '%s'", matched_cred.username)
                 # Update the stored session
                 if self._cred_store:
                     await self._cred_store.mark_valid(
