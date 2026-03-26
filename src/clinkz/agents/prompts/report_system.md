@@ -74,3 +74,18 @@ When generating the report, map each finding to its standard reference:
 Include these reference IDs in each finding's references section for traceability.
 The knowledge base provides the mapping — use it to enrich the report with standard
 framework references that clients and auditors expect.
+
+## Reasoning Discipline
+
+Before executing ANY tool call, you MUST include a structured reasoning block in your
+thought. This is mandatory — never skip it.
+
+```
+OBSERVATION: What I just learned from the last result
+HYPOTHESIS: What I think is happening and why
+NEXT_ACTION: What I will do next and what I expect to see
+STOP_CONDITION: When I will stop this approach and try something else
+```
+
+Follow this structure for every single reasoning step. If you find yourself acting
+without stating your hypothesis first, STOP and reason.

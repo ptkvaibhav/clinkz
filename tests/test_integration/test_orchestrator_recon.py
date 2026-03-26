@@ -456,12 +456,16 @@ async def test_full_recon_engagement_via_orchestrator(tmp_path: Path) -> None:
 
     orchestrator = OrchestratorAgent(llm=_SimpleOrchLLM(), db_path=str(tmp_path / "test1.db"))
 
-    with patch(
-        "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
-        side_effect=lifecycle_constructor,
+    with (
+        patch(
+            "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
+            side_effect=lifecycle_constructor,
+        ),
+        patch("clinkz.orchestrator.orchestrator._POLL_INTERVAL", 0.01),
+        patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
+        patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
     ):
-        with patch("clinkz.orchestrator.orchestrator._POLL_INTERVAL", 0.01):
-            result = await orchestrator.run(scope)
+        result = await orchestrator.run(scope)
 
     # ── Assertion: engagement completed ──────────────────────────────────────
     assert result["status"] == "completed", f"Expected 'completed', got: {result}"
@@ -634,12 +638,16 @@ async def test_orchestrator_respins_recon_on_demand(tmp_path: Path) -> None:
 
     orchestrator = OrchestratorAgent(llm=_SimpleOrchLLM(), db_path=str(tmp_path / "test2.db"))
 
-    with patch(
-        "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
-        side_effect=lifecycle_constructor,
+    with (
+        patch(
+            "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
+            side_effect=lifecycle_constructor,
+        ),
+        patch("clinkz.orchestrator.orchestrator._POLL_INTERVAL", 0.01),
+        patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
+        patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
     ):
-        with patch("clinkz.orchestrator.orchestrator._POLL_INTERVAL", 0.01):
-            result = await orchestrator.run(scope)
+        result = await orchestrator.run(scope)
 
     # ── Assertion: engagement completed ──────────────────────────────────────
     assert result["status"] == "completed", f"Expected 'completed', got: {result}"

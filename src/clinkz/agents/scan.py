@@ -179,6 +179,7 @@ class ScanAgent(BaseAgent):
         engagement_id: str,
         resolver: ToolResolver | None = None,
         knowledge_base: KnowledgeBase | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             llm=llm,
@@ -187,6 +188,7 @@ class ScanAgent(BaseAgent):
             state=state,
             engagement_id=engagement_id,
             knowledge_base=knowledge_base,
+            **kwargs,
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
         self._discovered_endpoints: list[dict[str, Any]] = []
@@ -215,14 +217,14 @@ class ScanAgent(BaseAgent):
         capabilities.  The ToolResolver handles the name-to-tool mapping.
 
         Returns:
-            List containing execute_capability, research_technology, and
-            http_request schemas.
+            List containing execute_capability, research_technology,
+            http_request, and shared meta-tools (request_help, tool_installation).
         """
         return [
             self._EXECUTE_CAPABILITY_SCHEMA,
             self._RESEARCH_TECHNOLOGY_SCHEMA,
             self._HTTP_REQUEST_SCHEMA,
-        ]
+        ] + self._get_shared_meta_schemas()
 
     # ------------------------------------------------------------------
     # Tool dispatch override — intercept execute_capability calls
@@ -432,6 +434,75 @@ class ScanAgent(BaseAgent):
                 self._logger.info("Persisted parameter: %s", param)
 
     # ------------------------------------------------------------------
+    # Authentication helper
+    # ------------------------------------------------------------------
+
+    async def _authenticate_with_creds(
+        self,
+        authenticator: Any,
+        creds: list[dict[str, Any]],
+        scope_values: list[str],
+    ) -> str:
+        """Try each valid credential via WebAuthenticator, return cookie string.
+
+        Uses the WebAuthenticator's deterministic CSRF-aware login flow
+        instead of manually crafting POST requests.
+
+        Args:
+            authenticator: WebAuthenticator instance.
+            creds: List of credential dicts (must have ``username``, ``password``).
+            scope_values: Scope target values for constructing the login URL.
+
+        Returns:
+            Cookie header string (``"k=v; k2=v2"``), or ``""`` on failure.
+        """
+        # Discover the login URL by probing common paths
+        import asyncio as _asyncio
+
+        login_url = ""
+        if scope_values:
+            from clinkz.tools.http_client import HTTPClientTool
+
+            probe_paths = ["/login.php", "/login", "/signin", "/admin", "/auth"]
+            base = f"http://{scope_values[0]}"
+            for path in probe_paths:
+                probe = f"{base}{path}"
+                try:
+                    http = HTTPClientTool(
+                        scope=self.scope, timeout=10, engagement_id=self.engagement_id
+                    )
+                    validated = http.validate_input({"url": probe, "method": "HEAD"})
+                    raw = await _asyncio.wait_for(http.execute(validated), timeout=10)
+                    parsed = http.parse_output(raw)
+                    if parsed.status_code and parsed.status_code < 400:
+                        login_url = probe
+                        self._logger.info("Discovered login URL for scan auth: %s", login_url)
+                        break
+                except Exception:
+                    continue
+            if not login_url:
+                login_url = f"{base}/login"
+
+        for cred in creds:
+            if not cred.get("valid", False):
+                continue
+            result = await authenticator.authenticate(
+                login_url,
+                cred.get("username", ""),
+                cred.get("password", ""),
+            )
+            if result.success:
+                cookie_str = "; ".join(f"{k}={v}" for k, v in result.session_cookies.items())
+                self._logger.info(
+                    "Authenticated for scan via WebAuthenticator — cookies: %s",
+                    list(result.session_cookies.keys()),
+                )
+                return cookie_str
+
+        self._logger.warning("All credential attempts failed for scan authentication")
+        return ""
+
+    # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
 
@@ -461,17 +532,60 @@ class ScanAgent(BaseAgent):
         """
         self._discovered_endpoints = []
 
-        # Load session cookies from state store for authenticated crawling
+        # Load session cookies from state store for authenticated crawling.
+        # If no session exists but credentials are available, authenticate
+        # using WebAuthenticator (deterministic CSRF-aware flow).
+        from clinkz.tools.auth import WebAuthenticator
+
+        authenticator = WebAuthenticator(
+            scope=self.scope,
+            engagement_id=self.engagement_id,
+        )
+        scope_values = [str(e.value) for e in self.scope.targets]
+        creds = input_data.get("credentials", [])
         sessions = await self.state.get_sessions(self.engagement_id)
+
         if sessions:
             latest = sessions[-1]
             cookies_dict: dict[str, str] = latest.get("cookies", {})
             if cookies_dict:
-                self._session_cookies = "; ".join(f"{k}={v}" for k, v in cookies_dict.items())
-                self._logger.info(
-                    "Loaded session cookies for authenticated crawling (%d cookies)",
-                    len(cookies_dict),
-                )
+                check_url = f"http://{scope_values[0]}/" if scope_values else ""
+
+                if check_url:
+                    session_valid = await authenticator.verify_session(check_url, cookies_dict)
+                    if session_valid:
+                        self._session_cookies = "; ".join(
+                            f"{k}={v}" for k, v in cookies_dict.items()
+                        )
+                        self._logger.info(
+                            "Verified session cookies for authenticated crawling (%d cookies)",
+                            len(cookies_dict),
+                        )
+                    else:
+                        self._logger.warning(
+                            "Session expired — re-authenticating via WebAuthenticator"
+                        )
+                        self._session_cookies = await self._authenticate_with_creds(
+                            authenticator, creds, scope_values
+                        )
+                else:
+                    # No URL to verify — use cookies as-is
+                    self._session_cookies = "; ".join(
+                        f"{k}={v}" for k, v in cookies_dict.items()
+                    )
+                    self._logger.info(
+                        "Loaded session cookies (unverified) for crawling (%d cookies)",
+                        len(cookies_dict),
+                    )
+        elif creds:
+            # No session at all — authenticate from scratch using WebAuthenticator
+            self._logger.info(
+                "No existing session — authenticating via WebAuthenticator with %d credentials",
+                len(creds),
+            )
+            self._session_cookies = await self._authenticate_with_creds(
+                authenticator, creds, scope_values
+            )
 
         hosts: list[dict[str, Any]] = input_data.get("hosts") or []
         urls: list[str] = [str(u) for u in (input_data.get("urls") or [])]
@@ -501,14 +615,26 @@ class ScanAgent(BaseAgent):
         elif hosts:
             parts.append(f"Target hosts: {', '.join(h.get('ip', '') for h in hosts)}")
         parts.append(f"In-scope targets: {', '.join(scope_values)}")
+        # Inject session/credential context for the LLM
+        if self._session_cookies:
+            parts.append(
+                f"AUTHENTICATED SESSION: You have session cookies ({self._session_cookies[:80]}...). "
+                f"Crawl authenticated. Pass cookies to crawling tools."
+            )
         parts.append(
-            "\nUse execute_capability to run scan tools. "
-            "Start by crawling (web_crawling) each URL to map the application structure, "
-            "then fuzz directories (directory_fuzzing) to find unlisted paths, "
-            "then discover parameters (parameter_discovery) on interesting endpoints, "
-            "and fingerprint notable endpoints (web_fingerprinting). "
-            "When you have thoroughly mapped the attack surface, return your final_answer "
-            "with a structured summary of all discovered endpoints, paths, and parameters."
+            "\nYou are a REASONING-FIRST attack surface mapper. Your approach:"
+            "\n1. AUTHENTICATE FIRST: If credentials or session cookies are available, log in."
+            "\n2. EXPLORE the application: Visit each page, understand what it DOES."
+            "\n3. CRAWL: web_crawling with cookies for authenticated surface."
+            "\n4. FUZZ: directory_fuzzing to find hidden paths."
+            "\n5. For EVERY form/parameter: REASON about what the server does with the input."
+            "\n   Tag each parameter with WHY it's a vulnerability candidate."
+            "\n6. If crawling returns few results, THINK about why and adapt."
+            "\n7. Check for info disclosure: headers, comments, JS secrets, error messages."
+            "\n\nDo NOT just collect URLs. UNDERSTAND the application and TAG parameters "
+            "with reasoning for the Exploit Agent."
+            "\nWhen you have thoroughly mapped the attack surface, return your final_answer "
+            "with parameter analysis including vulnerability reasoning."
         )
         initial_observation = "\n".join(parts)
 
