@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlparse
@@ -179,12 +178,16 @@ class WebAuthenticator(ToolBase):
                     },
                     "username_field": {
                         "type": "string",
-                        "description": "Override for the username form field name. Auto-detected if omitted.",
+                        "description": (
+                            "Override for the username form field name. Auto-detected if omitted."
+                        ),
                         "default": "",
                     },
                     "password_field": {
                         "type": "string",
-                        "description": "Override for the password form field name. Auto-detected if omitted.",
+                        "description": (
+                            "Override for the password form field name. Auto-detected if omitted."
+                        ),
                         "default": "",
                     },
                 },
@@ -283,11 +286,13 @@ class WebAuthenticator(ToolBase):
             AuthResult with success status and session cookies.
         """
         try:
-            validated = self.validate_input({
-                "login_url": login_url,
-                "username": username,
-                "password": password,
-            })
+            validated = self.validate_input(
+                {
+                    "login_url": login_url,
+                    "username": username,
+                    "password": password,
+                }
+            )
             raw = await self.execute(validated)
             parsed = self.parse_output(raw)
             return parsed.auth_result
@@ -347,7 +352,10 @@ class WebAuthenticator(ToolBase):
         for attempt in range(1, max_attempts + 1):
             self._logger.info(
                 "Auth attempt %d/%d for %s (user=%s)",
-                attempt, max_attempts, login_url, username,
+                attempt,
+                max_attempts,
+                login_url,
+                username,
             )
 
             try:
@@ -381,8 +389,10 @@ class WebAuthenticator(ToolBase):
                         "hidden_fields: %s, form_action: %r",
                         ufield,
                         pfield,
-                        {k: v[:20] + "..." if len(v) > 20 else v
-                         for k, v in form.hidden_fields.items()},
+                        {
+                            k: v[:20] + "..." if len(v) > 20 else v
+                            for k, v in form.hidden_fields.items()
+                        },
                         form.form_action or "(same URL)",
                     )
 
@@ -425,7 +435,9 @@ class WebAuthenticator(ToolBase):
                         final_url = str(post_resp.url)
 
                         # Collect redirect chain
-                        redirect_chain = [str(r.url) for r in post_resp.history] if post_resp.history else []
+                        redirect_chain = (
+                            [str(r.url) for r in post_resp.history] if post_resp.history else []
+                        )
 
                     # Step 5: Extract all session cookies
                     session_cookies: dict[str, str] = {}
@@ -449,17 +461,21 @@ class WebAuthenticator(ToolBase):
                     )
 
                     self._logger.info(
-                        "Auth attempt %d result: success=%s", attempt, success,
+                        "Auth attempt %d result: success=%s",
+                        attempt,
+                        success,
                     )
 
-                    last_result = json.dumps({
-                        "success": success,
-                        "session_cookies": session_cookies,
-                        "redirect_url": final_url,
-                        "login_url": login_url,
-                        "username": username,
-                        "status_code": post_status,
-                    })
+                    last_result = json.dumps(
+                        {
+                            "success": success,
+                            "session_cookies": session_cookies,
+                            "redirect_url": final_url,
+                            "login_url": login_url,
+                            "username": username,
+                            "status_code": post_status,
+                        }
+                    )
 
                     if success:
                         return last_result
@@ -467,8 +483,7 @@ class WebAuthenticator(ToolBase):
                     # If first attempt failed, retry with fresh session/CSRF
                     if attempt < max_attempts:
                         self._logger.warning(
-                            "Auth attempt %d failed — retrying with fresh GET "
-                            "for new CSRF token",
+                            "Auth attempt %d failed — retrying with fresh GET for new CSRF token",
                             attempt,
                         )
                         continue
@@ -476,21 +491,26 @@ class WebAuthenticator(ToolBase):
             except Exception as exc:
                 self._logger.error(
                     "aiohttp login flow failed (attempt %d): %s",
-                    attempt, exc, exc_info=True,
+                    attempt,
+                    exc,
+                    exc_info=True,
                 )
-                last_result = json.dumps({
-                    "success": False,
-                    "session_cookies": {},
-                    "redirect_url": "",
-                    "login_url": login_url,
-                    "username": username,
-                    "status_code": 0,
-                    "error": str(exc),
-                })
+                last_result = json.dumps(
+                    {
+                        "success": False,
+                        "session_cookies": {},
+                        "redirect_url": "",
+                        "login_url": login_url,
+                        "username": username,
+                        "status_code": 0,
+                        "error": str(exc),
+                    }
+                )
                 if attempt < max_attempts:
                     self._logger.warning(
                         "Retrying after exception (attempt %d/%d)",
-                        attempt, max_attempts,
+                        attempt,
+                        max_attempts,
                     )
                     continue
 
@@ -546,23 +566,29 @@ class WebAuthenticator(ToolBase):
         try:
             # Step 1: GET the login page, save cookies
             get_cmd = [
-                "curl", "-s", "-S",
-                "-D", "-",
-                "-c", cookie_jar,
+                "curl",
+                "-s",
+                "-S",
+                "-D",
+                "-",
+                "-c",
+                cookie_jar,
                 login_url,
             ]
             get_stdout, get_stderr, get_rc = await self._run_subprocess(get_cmd)
 
             if get_rc != 0 and not get_stdout.strip():
-                return json.dumps({
-                    "success": False,
-                    "session_cookies": {},
-                    "redirect_url": "",
-                    "login_url": login_url,
-                    "username": username,
-                    "status_code": 0,
-                    "error": f"GET failed: curl exit {get_rc}: {get_stderr.strip()}",
-                })
+                return json.dumps(
+                    {
+                        "success": False,
+                        "session_cookies": {},
+                        "redirect_url": "",
+                        "login_url": login_url,
+                        "username": username,
+                        "status_code": 0,
+                        "error": f"GET failed: curl exit {get_rc}: {get_stderr.strip()}",
+                    }
+                )
 
             # Extract body from GET response (skip headers)
             header_body_split = re.split(r"\r?\n\r?\n", get_stdout, maxsplit=1)
@@ -597,14 +623,22 @@ class WebAuthenticator(ToolBase):
 
             # Step 4: POST with cookies from GET
             post_cmd = [
-                "curl", "-s", "-S",
-                "-D", "-",
-                "-X", "POST",
+                "curl",
+                "-s",
+                "-S",
+                "-D",
+                "-",
+                "-X",
+                "POST",
                 "-L",  # follow redirects
-                "-H", "Content-Type: application/x-www-form-urlencoded",
-                "-d", post_body,
-                "-b", cookie_jar,
-                "-c", cookie_jar,
+                "-H",
+                "Content-Type: application/x-www-form-urlencoded",
+                "-d",
+                post_body,
+                "-b",
+                cookie_jar,
+                "-c",
+                cookie_jar,
                 post_url,
             ]
             post_stdout, post_stderr, post_rc = await self._run_subprocess(post_cmd)
@@ -650,36 +684,46 @@ class WebAuthenticator(ToolBase):
                 post_response_body, post_status, final_url, login_url, redirect_chain
             )
 
-            return json.dumps({
-                "success": success,
-                "session_cookies": session_cookies,
-                "redirect_url": final_url,
-                "login_url": login_url,
-                "username": username,
-                "status_code": post_status,
-            })
+            return json.dumps(
+                {
+                    "success": success,
+                    "session_cookies": session_cookies,
+                    "redirect_url": final_url,
+                    "login_url": login_url,
+                    "username": username,
+                    "status_code": post_status,
+                }
+            )
 
         except Exception as exc:
             self._logger.error("curl login flow failed: %s", exc, exc_info=True)
-            return json.dumps({
-                "success": False,
-                "session_cookies": {},
-                "redirect_url": "",
-                "login_url": login_url,
-                "username": username,
-                "status_code": 0,
-                "error": str(exc),
-            })
+            return json.dumps(
+                {
+                    "success": False,
+                    "session_cookies": {},
+                    "redirect_url": "",
+                    "login_url": login_url,
+                    "username": username,
+                    "status_code": 0,
+                    "error": str(exc),
+                }
+            )
 
     async def _verify_session_curl(self, url: str, cookies: dict[str, str]) -> bool:
         """Check session validity via curl GET (no follow redirects)."""
         cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
         cmd = [
-            "curl", "-s", "-S",
-            "-D", "-",
-            "-o", "/dev/null",
-            "-w", "%{http_code} %{redirect_url}",
-            "-b", cookie_str,
+            "curl",
+            "-s",
+            "-S",
+            "-D",
+            "-",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code} %{redirect_url}",
+            "-b",
+            cookie_str,
             url,
         ]
         stdout, _, rc = await self._run_subprocess(cmd)
@@ -729,14 +773,29 @@ class WebAuthenticator(ToolBase):
         body_lower = response_body.lower()
 
         # Clear failure indicators
-        failure_keywords = ["invalid", "incorrect", "wrong password", "login failed",
-                           "authentication failed", "bad credentials", "access denied"]
+        failure_keywords = [
+            "invalid",
+            "incorrect",
+            "wrong password",
+            "login failed",
+            "authentication failed",
+            "bad credentials",
+            "access denied",
+        ]
         if any(kw in body_lower for kw in failure_keywords):
             return False
 
         # Clear success indicators
-        success_keywords = ["logout", "sign out", "signout", "log out", "dashboard",
-                          "welcome", "my account", "profile"]
+        success_keywords = [
+            "logout",
+            "sign out",
+            "signout",
+            "log out",
+            "dashboard",
+            "welcome",
+            "my account",
+            "profile",
+        ]
         if any(kw in body_lower for kw in success_keywords):
             return True
 

@@ -570,9 +570,7 @@ class ScanAgent(BaseAgent):
                         )
                 else:
                     # No URL to verify — use cookies as-is
-                    self._session_cookies = "; ".join(
-                        f"{k}={v}" for k, v in cookies_dict.items()
-                    )
+                    self._session_cookies = "; ".join(f"{k}={v}" for k, v in cookies_dict.items())
                     self._logger.info(
                         "Loaded session cookies (unverified) for crawling (%d cookies)",
                         len(cookies_dict),
@@ -618,8 +616,10 @@ class ScanAgent(BaseAgent):
         # Inject session/credential context for the LLM
         if self._session_cookies:
             parts.append(
-                f"AUTHENTICATED SESSION: You have session cookies ({self._session_cookies[:80]}...). "
-                f"Crawl authenticated. Pass cookies to crawling tools."
+                "AUTHENTICATED SESSION: You have session "
+                f"cookies ({self._session_cookies[:80]}...). "
+                "Crawl authenticated. Pass cookies to "
+                "crawling tools."
             )
         parts.append(
             "\nYou are a REASONING-FIRST attack surface mapper. Your approach:"
