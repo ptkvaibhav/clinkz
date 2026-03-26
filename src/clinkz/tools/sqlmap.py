@@ -94,12 +94,21 @@ class SqlmapTool(ToolBase):
         self._check_scope(urlparse(url).netloc)
         level = min(int(args.get("level", 2)), 3)  # cap at 3 for safety
         risk = min(int(args.get("risk", 1)), 2)  # cap at 2 for safety
+
+        # Cookie can arrive as a dict from LLM (e.g., {"PHPSESSID": "abc"})
+        # — convert to "key=value; key=value" string for the CLI flag.
+        cookie_raw = args.get("cookie", "")
+        if isinstance(cookie_raw, dict):
+            cookie = "; ".join(f"{k}={v}" for k, v in cookie_raw.items())
+        else:
+            cookie = str(cookie_raw)
+
         return {
             "url": url,
-            "data": args.get("data", ""),
+            "data": str(args.get("data", "")),
             "level": level,
             "risk": risk,
-            "cookie": args.get("cookie", ""),
+            "cookie": cookie,
             "forms": bool(args.get("forms", False)),
         }
 

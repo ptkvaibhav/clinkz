@@ -21,17 +21,21 @@ agent can incorporate them without stopping its current task.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from clinkz.comms.message import AgentMessage, MessageType
+from clinkz.comms.protocol import ORCHESTRATOR
+from clinkz.knowledge.skills_loader import SkillsLoader
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
 from clinkz.models.scope import EngagementScope
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 
 if TYPE_CHECKING:
+    from clinkz.comms.bus import MessageBus
     from clinkz.knowledge.query import KnowledgeBase
 
 logger = logging.getLogger(__name__)
@@ -39,9 +43,9 @@ logger = logging.getLogger(__name__)
 # Default iteration limits per agent type.  Agents override via the
 # ``max_iterations`` property so each phase gets the budget it needs.
 DEFAULT_MAX_ITERATIONS: dict[str, int] = {
-    "recon": 10,
-    "scan": 15,
-    "exploit": 25,
+    "recon": 20,
+    "scan": 20,
+    "exploit": 40,
     "report": 10,
     "critic": 10,
 }
@@ -62,7 +66,99 @@ class BaseAgent(ABC):
         scope: Engagement scope for validation.
         state: SQLite state store.
         engagement_id: UUID of the active engagement.
+        bus: Optional MessageBus for cross-agent communication (request_help).
     """
+
+    # ------------------------------------------------------------------
+    # Shared meta-tool schemas available to ALL agents
+    # ------------------------------------------------------------------
+
+    _REQUEST_HELP_SCHEMA: dict[str, Any] = {
+        "name": "request_help",
+        "description": (
+            "Ask another agent or the Orchestrator for information. The message "
+            "is routed through the Orchestrator, which decides the best way to "
+            "answer — either from its own context or by spinning up the target "
+            "agent for a focused sub-task."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The question or request. Be specific about what you need. "
+                        "Example: 'What technologies were identified on api.target.com?'"
+                    ),
+                },
+                "target_agent": {
+                    "type": "string",
+                    "description": (
+                        "Which agent should answer: 'recon', 'scan', 'exploit', "
+                        "'orchestrator'. The Orchestrator decides whether to spin up "
+                        "the target agent or answer from state."
+                    ),
+                    "default": "orchestrator",
+                },
+            },
+            "required": ["question"],
+        },
+    }
+
+    _GET_SKILL_REFERENCE_SCHEMA: dict[str, Any] = {
+        "name": "get_skill_reference",
+        "description": (
+            "Retrieve a documented procedure (skill) for performing a specific "
+            "pentesting task. Skills contain step-by-step instructions, common "
+            "pitfalls, and examples. Always read the relevant skill BEFORE "
+            "attempting a task you haven't done in this engagement."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": (
+                        "Name of the skill to retrieve. Use list_skills() first "
+                        "if you don't know what's available. Examples: "
+                        "'csrf_token_extraction', 'sqli_column_count', "
+                        "'xss_context_analysis', 'lfi_exploitation'"
+                    ),
+                },
+            },
+            "required": ["skill_name"],
+        },
+    }
+
+    _TOOL_INSTALLATION_SCHEMA: dict[str, Any] = {
+        "name": "tool_installation",
+        "description": (
+            "Install a security tool inside the Docker container at runtime. "
+            "Use this when research reveals a tool you need but it isn't "
+            "installed. After installation, the tool becomes available through "
+            "execute_capability."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool_name": {
+                    "type": "string",
+                    "description": (
+                        "Name or URL of the tool to install. "
+                        "For apt: package name. For pip: package name. "
+                        "For go: full module path (e.g., github.com/org/tool/cmd/tool). "
+                        "For git: repo URL. For download: direct URL to binary."
+                    ),
+                },
+                "install_method": {
+                    "type": "string",
+                    "enum": ["apt", "pip", "go", "git", "download"],
+                    "description": "Installation method to use.",
+                },
+            },
+            "required": ["tool_name", "install_method"],
+        },
+    }
 
     def __init__(
         self,
@@ -72,6 +168,7 @@ class BaseAgent(ABC):
         state: StateStore,
         engagement_id: str,
         knowledge_base: KnowledgeBase | None = None,
+        bus: MessageBus | None = None,
     ) -> None:
         self.llm = llm
         self.tools: dict[str, ToolBase] = {t.name: t for t in tools}
@@ -79,8 +176,11 @@ class BaseAgent(ABC):
         self.state = state
         self.engagement_id = engagement_id
         self.knowledge_base = knowledge_base
+        self._bus: MessageBus | None = bus
+        self._skills_loader = SkillsLoader()
         self.messages: list[LLMMessage] = []
         self._inbox: asyncio.Queue[AgentMessage] = asyncio.Queue()
+        self._pending_responses: dict[str, AgentMessage] = {}
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     # ------------------------------------------------------------------
@@ -150,16 +250,39 @@ class BaseAgent(ABC):
         Subclasses can override this to expose a custom schema set — for
         example, a capability-based meta-tool instead of raw tool schemas.
 
+        The base implementation includes raw tool schemas plus the shared
+        meta-tools (request_help, tool_installation).  Subclasses that
+        override this should include the shared schemas via
+        ``_get_shared_meta_schemas()``.
+
         Returns:
             List of OpenAI-compatible tool schema dicts.
         """
-        return [t.get_schema() for t in self.tools.values()]
+        return [t.get_schema() for t in self.tools.values()] + self._get_shared_meta_schemas()
+
+    def _get_shared_meta_schemas(self) -> list[dict[str, Any]]:
+        """Return the meta-tool schemas shared across ALL agents.
+
+        Includes get_skill_reference, tool_installation, and
+        request_help (only if a MessageBus is available).
+
+        Returns:
+            List of meta-tool schema dicts.
+        """
+        schemas: list[dict[str, Any]] = [
+            self._GET_SKILL_REFERENCE_SCHEMA,
+            self._TOOL_INSTALLATION_SCHEMA,
+        ]
+        if self._bus is not None:
+            schemas.append(self._REQUEST_HELP_SCHEMA)
+        return schemas
 
     async def _process_inbox(self) -> None:
         """Drain the inbox and inject pending messages into the conversation.
 
         QUERY messages are appended as ``user`` messages so the LLM sees
-        them on the next reasoning step.  Other message types are logged
+        them on the next reasoning step.  RESPONSE messages are stored for
+        ``_do_request_help()`` to pick up.  Other message types are logged
         and discarded — they are not expected mid-loop for phase agents.
         """
         while True:
@@ -177,6 +300,9 @@ class BaseAgent(ABC):
                         content=f"[Mid-run query from {msg.from_agent}]: {query_text}",
                     )
                 )
+            elif msg.message_type == MessageType.RESPONSE:
+                # Store for _do_request_help() to pick up
+                self._pending_responses[msg.parent_message_id or ""] = msg
             else:
                 self._logger.debug(
                     "Inbox: ignoring %s message from '%s'",
@@ -185,15 +311,210 @@ class BaseAgent(ABC):
                 )
 
     # ------------------------------------------------------------------
+    # Skill reference: get_skill_reference
+    # ------------------------------------------------------------------
+
+    async def _do_get_skill_reference(self, args: dict[str, Any]) -> str:
+        """Load a skill document so the LLM can follow the procedure.
+
+        Args:
+            args: Must contain ``skill_name`` (str).
+
+        Returns:
+            The skill markdown content, or an error message.
+        """
+        skill_name: str = args.get("skill_name", "").strip()
+        if not skill_name:
+            available = self._skills_loader.list_skills()
+            return f"Error: 'skill_name' is required. Available skills: {available}"
+
+        try:
+            content = self._skills_loader.load_skill(skill_name)
+            self._logger.info("Loaded skill '%s' (%d chars)", skill_name, len(content))
+            return content
+        except FileNotFoundError as exc:
+            return str(exc)
+
+    # ------------------------------------------------------------------
+    # Cross-agent collaboration: request_help
+    # ------------------------------------------------------------------
+
+    async def _do_request_help(self, args: dict[str, Any]) -> str:
+        """Send a QUERY to the Orchestrator and wait for the RESPONSE.
+
+        The Orchestrator decides whether to answer from state, spin up the
+        target agent for a sub-task, or route the question directly.
+
+        Reads directly from the bus queue for this agent's name, because the
+        lifecycle manager's bus→inbox bridge is blocked while agent.run() is
+        executing.  Non-response messages encountered while waiting are
+        forwarded to the agent's inbox for later processing.
+
+        Args:
+            args: Must contain ``question`` (str).  Optional: ``target_agent``.
+
+        Returns:
+            Response text from the Orchestrator (or target agent via Orchestrator).
+        """
+        if self._bus is None:
+            return (
+                "request_help is not available — no MessageBus configured. "
+                "Use research_technology for external information."
+            )
+
+        question: str = args.get("question", "").strip()
+        if not question:
+            return "Error: 'question' is required for request_help."
+
+        target_agent: str = args.get("target_agent", "orchestrator").strip()
+
+        # Build and send the QUERY message to the Orchestrator
+        query_msg = AgentMessage.query(
+            from_agent=self.name,
+            to_agent=ORCHESTRATOR,
+            engagement_id=self.engagement_id,
+            content={
+                "query": question,
+                "needs_agent": target_agent if target_agent != "orchestrator" else None,
+            },
+        )
+
+        self._logger.info(
+            "request_help: asking '%s' via Orchestrator: %s",
+            target_agent,
+            question[:200],
+        )
+        await self._bus.send(query_msg)
+
+        # Wait for RESPONSE with matching parent_message_id.
+        # We read from BOTH the bus queue and the agent inbox to avoid the
+        # race where the response lands on the bus before anyone bridges it
+        # to the inbox.  The lifecycle manager's _run_agent loop is blocked
+        # inside agent.run() so it cannot move bus messages to the inbox.
+        timeout = 120.0
+        poll_interval = 0.25
+        elapsed = 0.0
+
+        while elapsed < timeout:
+            # 1. Check if _process_inbox already stashed it
+            if query_msg.id in self._pending_responses:
+                response_msg = self._pending_responses.pop(query_msg.id)
+                response_text = response_msg.content.get(
+                    "response", str(response_msg.content)
+                )
+                self._logger.info("request_help response received (%d chars)", len(response_text))
+                return response_text
+
+            # 2. Drain the agent inbox (messages injected via receive_message)
+            try:
+                msg = self._inbox.get_nowait()
+                if (
+                    msg.message_type == MessageType.RESPONSE
+                    and msg.parent_message_id == query_msg.id
+                ):
+                    response_text = msg.content.get("response", str(msg.content))
+                    self._logger.info(
+                        "request_help response received (%d chars)", len(response_text)
+                    )
+                    return response_text
+                # Not our response — keep it for later
+                self._inbox.put_nowait(msg)
+            except asyncio.QueueEmpty:
+                pass
+
+            # 3. Read directly from the bus queue — this is where the
+            #    Orchestrator's response actually lands.
+            try:
+                bus_msg = await asyncio.wait_for(
+                    self._bus.receive(self.name), timeout=poll_interval
+                )
+                if (
+                    bus_msg.message_type == MessageType.RESPONSE
+                    and bus_msg.parent_message_id == query_msg.id
+                ):
+                    response_text = bus_msg.content.get(
+                        "response", str(bus_msg.content)
+                    )
+                    self._logger.info(
+                        "request_help response received (%d chars)", len(response_text)
+                    )
+                    return response_text
+                # Not our response — forward to inbox so _process_inbox
+                # picks it up on the next ReAct iteration.
+                self._inbox.put_nowait(bus_msg)
+            except (TimeoutError, asyncio.TimeoutError):
+                pass
+
+            elapsed += poll_interval
+
+        self._logger.warning("request_help timed out after %.0fs", timeout)
+        return f"request_help timed out after {timeout}s — no response from Orchestrator."
+
+    # ------------------------------------------------------------------
+    # Dynamic tool acquisition: tool_installation
+    # ------------------------------------------------------------------
+
+    async def _do_tool_installation(self, args: dict[str, Any]) -> str:
+        """Install a tool inside the Docker container at runtime.
+
+        Delegates to ``ToolInstallerTool`` from ``tools/installer.py``.
+
+        Args:
+            args: Must contain ``tool_name`` and ``install_method``.
+
+        Returns:
+            Installation result string.
+        """
+        from clinkz.tools.installer import ToolInstallerTool
+
+        installer = ToolInstallerTool(scope=self.scope)
+        try:
+            validated = installer.validate_input(args)
+            raw_output = await installer.execute(validated)
+            parsed = installer.parse_output(raw_output)
+            return parsed.model_dump_json(indent=2)
+        except Exception as exc:
+            self._logger.error("tool_installation failed: %s", exc, exc_info=True)
+            return f"tool_installation failed: {exc}"
+
+    # ------------------------------------------------------------------
     # ReAct loop
     # ------------------------------------------------------------------
+
+    def _build_system_prompt_with_skills(self) -> str:
+        """Append available skill names and reasoning discipline to the system prompt.
+
+        Returns:
+            The agent's system prompt with skills summary and reasoning
+            discipline instructions appended.
+        """
+        skills_summary = self._skills_loader.get_skill_names_summary()
+        reasoning_block = (
+            "\n\n## Reasoning Discipline\n\n"
+            "Before executing ANY tool call, you MUST include a structured reasoning "
+            "block in your thought. This is mandatory — never skip it.\n\n"
+            "```\n"
+            "OBSERVATION: What I just learned from the last result\n"
+            "HYPOTHESIS: What I think is happening and why\n"
+            "NEXT_ACTION: What I will do next and what I expect to see\n"
+            "STOP_CONDITION: When I will stop this approach and try something else\n"
+            "```\n\n"
+            "Follow this structure for every single reasoning step. If you find "
+            "yourself acting without stating your hypothesis first, STOP and reason."
+        )
+        return f"{self.system_prompt}\n\n## Skills\n\n{skills_summary}{reasoning_block}"
 
     async def _react_loop(self, initial_observation: str) -> str:
         """Run the Observe → Reason → Act → Reflect loop.
 
-        Includes failure tracking: if the same tool fails 3 consecutive times
-        with the same error, a skip message is injected so the LLM moves on
-        to the next checklist item instead of retrying endlessly.
+        Includes:
+        - Reasoning discipline: skills summary and structured reasoning
+          instructions are injected into the system prompt.
+        - Failure tracking: if the same tool fails 3 consecutive times
+          with the same error, a skip message is injected.
+        - Repetition detection: if the same tool is called with the same
+          arguments 3 times (regardless of success/failure), a nudge is
+          injected to try a different approach.
 
         Args:
             initial_observation: The task description / starting context.
@@ -202,7 +523,7 @@ class BaseAgent(ABC):
             Final answer text from the LLM.
         """
         self.messages = [
-            LLMMessage(role="system", content=self.system_prompt),
+            LLMMessage(role="system", content=self._build_system_prompt_with_skills()),
             LLMMessage(role="user", content=initial_observation),
         ]
         tool_schemas = self._get_tool_schemas()
@@ -212,6 +533,11 @@ class BaseAgent(ABC):
         _last_failure_key: tuple[str, str] | None = None
         _consecutive_failures: int = 0
         _max_consecutive_failures = 3
+
+        # Repetition tracking: (tool_name, args_json) → consecutive count
+        _last_call_key: tuple[str, str] | None = None
+        _consecutive_same_calls: int = 0
+        _max_same_calls = 3
 
         for iteration in range(limit):
             self._logger.debug("ReAct iteration %d/%d", iteration + 1, limit)
@@ -250,6 +576,44 @@ class BaseAgent(ABC):
                         tool_calls=[action.tool_call],
                     )
                 )
+
+                # --- Repetition detection (same tool + same args) ---
+                call_key = (
+                    action.tool_call.name,
+                    json.dumps(action.tool_call.arguments, sort_keys=True),
+                )
+                if call_key == _last_call_key:
+                    _consecutive_same_calls += 1
+                else:
+                    _last_call_key = call_key
+                    _consecutive_same_calls = 1
+
+                if _consecutive_same_calls >= _max_same_calls:
+                    self._logger.warning(
+                        "Agent '%s' repeated '%s' with same args %d times — injecting redirect",
+                        self.name,
+                        action.tool_call.name,
+                        _consecutive_same_calls,
+                    )
+                    self.messages.append(
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "You are repeating yourself. You have called "
+                                f"'{action.tool_call.name}' with the same arguments "
+                                f"{_consecutive_same_calls} times. State what you learned "
+                                "from previous attempts and try a DIFFERENT approach. "
+                                "Use your reasoning discipline:\n"
+                                "OBSERVATION: What did the repeated calls tell you?\n"
+                                "HYPOTHESIS: Why isn't this working?\n"
+                                "NEXT_ACTION: What DIFFERENT action will you try?\n"
+                                "STOP_CONDITION: When will you move on entirely?"
+                            ),
+                        )
+                    )
+                    _last_call_key = None
+                    _consecutive_same_calls = 0
+
                 tool_result = await self._execute_tool(action.tool_call)
 
                 # Track consecutive failures for the same tool+error
@@ -308,8 +672,10 @@ class BaseAgent(ABC):
     async def _execute_tool(self, tool_call: ToolCall) -> str:
         """Dispatch a tool call and return the result as a JSON string.
 
-        Logs the action to the state store and handles errors gracefully
-        so a single tool failure doesn't crash the whole loop.
+        Handles shared meta-tools (request_help, tool_installation) first,
+        then falls through to registered tools.  Logs the action to the
+        state store and handles errors gracefully so a single tool failure
+        doesn't crash the whole loop.
 
         Args:
             tool_call: ToolCall from the LLM.
@@ -317,6 +683,14 @@ class BaseAgent(ABC):
         Returns:
             Tool output serialised to JSON, or an error message string.
         """
+        # Shared meta-tools available to all agents
+        if tool_call.name == "get_skill_reference":
+            return await self._do_get_skill_reference(tool_call.arguments)
+        if tool_call.name == "request_help":
+            return await self._do_request_help(tool_call.arguments)
+        if tool_call.name == "tool_installation":
+            return await self._do_tool_installation(tool_call.arguments)
+
         if tool_call.name not in self.tools:
             return (
                 f"Error: Tool '{tool_call.name}' not available. "

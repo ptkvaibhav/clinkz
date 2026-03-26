@@ -69,6 +69,7 @@ class ReportAgent(BaseAgent):
         engagement_id: str,
         outbox: asyncio.Queue[AgentMessage] | None = None,
         knowledge_base: KnowledgeBase | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             llm=llm,
@@ -77,6 +78,7 @@ class ReportAgent(BaseAgent):
             state=state,
             engagement_id=engagement_id,
             knowledge_base=knowledge_base,
+            **kwargs,
         )
         self._outbox: asyncio.Queue[AgentMessage] = (
             outbox if outbox is not None else asyncio.Queue()

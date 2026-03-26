@@ -62,6 +62,7 @@ _TOOL_MODULES = [
     "clinkz.tools.nuclei",
     "clinkz.tools.sqlmap",
     "clinkz.tools.http_client",
+    "clinkz.tools.auth",
     "clinkz.tools.installer",
 ]
 
@@ -331,7 +332,7 @@ class ToolResolver:
     # Tools that don't need a binary check — they're Python-native or
     # use other binaries internally (e.g., http_client uses aiohttp,
     # tool_installer uses apt-get/pip inside Docker).
-    _ALWAYS_AVAILABLE: set[str] = {"http_client", "tool_installer"}
+    _ALWAYS_AVAILABLE: set[str] = {"http_client", "web_authenticator", "tool_installer"}
 
     def is_available(self, tool_name: str) -> bool:
         """Check whether a tool binary is available.

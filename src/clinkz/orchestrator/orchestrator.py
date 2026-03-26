@@ -214,26 +214,24 @@ class OrchestratorAgent:
                     "sessions": session_data,
                 }
 
-                # Inject valid session cookies so Exploit Agent skips login
+                # Verify and inject session cookies so Exploit Agent skips login
                 if sessions:
-                    # Use the most recent session
-                    latest_session = sessions[-1]
-                    cookies = latest_session.get("cookies", {})
-                    jar_path = latest_session.get("cookie_jar_path", "")
-                    meta = latest_session.get("metadata", {})
+                    # Find login URL for re-auth if needed
+                    login_url = await self._find_login_url(recon_result, "", scan_result=scan_result)
+                    if not login_url:
+                        # Construct from first target
+                        for t in scope.targets:
+                            login_url = f"http://{t.value}/login"
+                            break
+
+                    cookies, authenticated_as = await self._verify_and_refresh_session(
+                        login_url or "", sessions, valid_creds
+                    )
 
                     if cookies:
-                        # Find the username from the credential that created this session
-                        authenticated_as = "unknown"
-                        cred_id = meta.get("credential_id", "")
-                        for c in valid_creds:
-                            if c.id == cred_id:
-                                authenticated_as = c.username
-                                break
-
                         exploit_task["session_cookies"] = cookies
                         exploit_task["cookie_jar_path"] = (
-                            jar_path or f"/tmp/clinkz_{engagement_id}_cookies.txt"
+                            f"/tmp/clinkz_{engagement_id}_cookies.txt"
                         )
                         exploit_task["authenticated_as"] = authenticated_as
                         exploit_task["task"] = (
@@ -245,7 +243,7 @@ class OrchestratorAgent:
                             f"Validate findings and chain exploits for maximum impact."
                         )
                         self._logger.info(
-                            "Session handoff to exploit agent: authenticated_as=%s, cookies=%s",
+                            "VERIFIED session handoff to exploit agent: authenticated_as=%s, cookies=%s",
                             authenticated_as,
                             list(cookies.keys()),
                         )
@@ -428,9 +426,16 @@ class OrchestratorAgent:
     ) -> None:
         """Handle a QUERY from an agent requesting cross-phase data.
 
-        Uses LLM to formulate a response from the state store. If the query
-        requires a targeted sub-task on another agent (e.g., "I need recon
-        on api.target.com"), spins up that agent for a one-shot task.
+        Uses LLM reasoning to decide the best response strategy:
+        1. If the query explicitly requests another agent (``needs_agent`` key)
+           AND re-spins are available, spin up that agent for a targeted sub-task.
+        2. Otherwise, use the LLM to reason about who should answer and respond
+           from the engagement state.
+
+        The LLM reasons about routing like a human coordinator:
+        "The Exploit Agent is asking about the technology behind /upload.php.
+        This is a recon question. Let me check if I have this data in state,
+        otherwise I'll re-spin the Recon Agent with a targeted task."
 
         Args:
             requesting_agent: The agent that sent the query.
@@ -443,8 +448,40 @@ class OrchestratorAgent:
         query_text = query_msg.content.get("query", json.dumps(query_msg.content))
         self._logger.info("Handling query from '%s': %s", requesting_agent, query_text[:200])
 
-        # Check if this requires a cross-phase re-spin
+        # Check if the agent explicitly requests a cross-phase re-spin
         needs_respin = query_msg.content.get("needs_agent")
+
+        # If no explicit target, use LLM to reason about whether a re-spin is needed
+        if not needs_respin and self._cross_phase_respins < MAX_CROSS_PHASE_RESPINS:
+            try:
+                context = await self._gather_state_context()
+                routing_prompt = (
+                    f"An agent ({requesting_agent}) is asking:\n\n"
+                    f'"{query_text}"\n\n'
+                    f"Current engagement state:\n{context}\n\n"
+                    f"Can you answer this question from the available state data? "
+                    f"If yes, respond with: ANSWER_FROM_STATE\n"
+                    f"If no and this requires a recon task, respond with: RESPIN_RECON\n"
+                    f"If no and this requires a scan task, respond with: RESPIN_SCAN\n"
+                    f"If no and this requires an exploit task, respond with: RESPIN_EXPLOIT\n"
+                    f"Respond with ONLY the action keyword."
+                )
+                routing_decision = (await self._llm.generate_text(routing_prompt)).strip()
+                self._logger.info(
+                    "Orchestrator routing decision for query from '%s': %s",
+                    requesting_agent,
+                    routing_decision,
+                )
+                if "RESPIN_RECON" in routing_decision:
+                    needs_respin = "recon"
+                elif "RESPIN_SCAN" in routing_decision:
+                    needs_respin = "scan"
+                elif "RESPIN_EXPLOIT" in routing_decision:
+                    needs_respin = "exploit"
+            except Exception as exc:
+                self._logger.warning("LLM routing decision failed: %s — answering from state", exc)
+
+        # Execute cross-phase re-spin if decided
         if needs_respin and self._cross_phase_respins < MAX_CROSS_PHASE_RESPINS:
             self._cross_phase_respins += 1
             self._logger.info(
@@ -471,14 +508,15 @@ class OrchestratorAgent:
             await self._bus.send(response_msg)
             return
 
-        # Otherwise, answer from state using LLM
+        # Answer from state using LLM
         try:
             context = await self._gather_state_context()
             prompt = (
                 f"An agent ({requesting_agent}) is asking:\n\n"
                 f"{query_text}\n\n"
                 f"Here is the current engagement state:\n{context}\n\n"
-                f"Provide a concise, factual response based on the available data."
+                f"Provide a concise, factual response based on the available data. "
+                f"If you don't have the information, say so clearly."
             )
             response_text = await self._llm.generate_text(prompt)
         except Exception as exc:
@@ -535,7 +573,7 @@ class OrchestratorAgent:
 
             for cred in untested:
                 # Find a login URL for this technology
-                login_url = self._find_login_url(recon_result, tech)
+                login_url = await self._find_login_url(recon_result, tech)
                 if not login_url:
                     continue
 
@@ -650,37 +688,111 @@ class OrchestratorAgent:
 
         return sorted(techs)
 
-    def _find_login_url(self, recon_result: dict[str, Any], technology: str) -> str | None:
-        """Find a login URL for a given technology from recon results.
+    async def _find_login_url(
+        self,
+        recon_result: dict[str, Any],
+        technology: str,
+        scan_result: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Find a login URL using a multi-strategy fallback chain.
+
+        Strategies (tried in order, first hit wins):
+        1. Explicit ``login_urls`` dict keyed by technology.
+        2. Structured URL fields in recon/scan results containing login paths.
+        3. Free-text search of recon ``summary`` for URLs with login keywords.
+        4. Discovered targets/endpoints in the state store with login in path.
+        5. Probe common login paths on each scope target with HEAD requests.
+        6. Fall back to the root URL as the login page.
 
         Args:
             recon_result: Recon phase result dict.
-            technology: Technology name to look for.
+            technology: Technology name to look for (may be empty).
+            scan_result: Optional scan phase result dict for additional URL sources.
 
         Returns:
             Login URL string, or None if not found.
         """
-        # Check for explicit login URLs in results
-        login_urls = recon_result.get("login_urls", {})
-        if isinstance(login_urls, dict) and technology in login_urls:
-            return login_urls[technology]
+        import re as _re
+        from urllib.parse import urlparse as _urlparse
 
-        # Check hosts/results for URLs matching common login paths
-        for key in ("hosts", "results", "endpoints"):
-            items = recon_result.get(key)
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict):
-                        url = item.get("url", "")
-                        if url and any(
-                            p in url.lower() for p in ("/login", "/admin", "/wp-login", "/manager")
-                        ):
+        login_path_hints = ("/login", "/admin", "/wp-login", "/manager", "/signin", "/auth")
+
+        # --- Strategy 1: explicit login_urls dict ---
+        login_urls = recon_result.get("login_urls", {})
+        if isinstance(login_urls, dict):
+            if technology and technology in login_urls:
+                return login_urls[technology]
+            # Return any URL from the dict
+            for _tech, url in login_urls.items():
+                if url:
+                    return url
+
+        # --- Strategy 2: structured URL fields in recon + scan results ---
+        sources = [recon_result]
+        if scan_result:
+            sources.append(scan_result)
+        for source in sources:
+            for key in ("hosts", "results", "endpoints", "urls"):
+                items = source.get(key)
+                if isinstance(items, list):
+                    for item in items:
+                        url = ""
+                        if isinstance(item, dict):
+                            url = item.get("url", "")
+                        elif isinstance(item, str):
+                            url = item
+                        if url and any(p in url.lower() for p in login_path_hints):
                             return url
 
-        # Fallback: construct from base URL if available
+        # --- Strategy 3: regex search of free-text summary for URLs ---
+        for source in sources:
+            summary = source.get("summary", "")
+            if isinstance(summary, str) and summary:
+                # Find URLs in free text
+                url_matches = _re.findall(r'https?://[^\s<>"\']+', summary)
+                for candidate in url_matches:
+                    if any(p in candidate.lower() for p in login_path_hints):
+                        return candidate
+
+        # --- Strategy 4: search state store targets/endpoints ---
+        if self._state and self._engagement_id:
+            try:
+                targets = await self._state.get_targets(self._engagement_id)
+                for t in targets:
+                    ip = t.get("ip", "")
+                    for hostname in t.get("hostnames", []):
+                        if any(p in str(hostname).lower() for p in login_path_hints):
+                            return str(hostname)
+                    if any(p in str(ip).lower() for p in login_path_hints):
+                        return str(ip)
+            except Exception:
+                pass
+
+        # --- Strategy 5: construct and probe common login paths ---
         base_url = recon_result.get("base_url") or recon_result.get("url")
+        probe_bases: list[str] = []
         if base_url:
-            return f"{base_url.rstrip('/')}/login"
+            probe_bases.append(base_url.rstrip("/"))
+        if self._scope:
+            for t in self._scope.targets:
+                candidate = f"http://{t.value}"
+                if candidate.rstrip("/") not in [b.rstrip("/") for b in probe_bases]:
+                    probe_bases.append(candidate)
+
+        probe_paths = ["/login.php", "/login", "/signin", "/admin", "/auth", "/wp-login.php"]
+        for base in probe_bases:
+            for path in probe_paths:
+                probe_url = f"{base.rstrip('/')}{path}"
+                status = await self._probe_url(probe_url)
+                if status and status < 400:
+                    self._logger.info("Probed login URL found: %s (status %d)", probe_url, status)
+                    return probe_url
+
+        # --- Strategy 6: fall back to root URL ---
+        if probe_bases:
+            root_url = probe_bases[0]
+            self._logger.info("Falling back to root URL as login page: %s", root_url)
+            return root_url
 
         return None
 
@@ -691,9 +803,11 @@ class OrchestratorAgent:
         password: str,
         credential_id: str,
     ) -> bool:
-        """Attempt a login with the given credentials via HTTP client.
+        """Attempt a login with the given credentials via WebAuthenticator.
 
-        On success, marks the credential as valid and stores the session.
+        Uses deterministic CSRF-aware login flow (GET→extract→POST) instead
+        of manual HTTP requests.  On success, marks the credential as valid
+        and stores the session.
 
         Args:
             url: Login URL.
@@ -708,43 +822,19 @@ class OrchestratorAgent:
         assert self._engagement_id is not None
 
         try:
-            from clinkz.tools.http_client import HTTPClientTool
+            from clinkz.tools.auth import WebAuthenticator
 
-            http = HTTPClientTool(
+            authenticator = WebAuthenticator(
                 scope=self._scope,
                 engagement_id=self._engagement_id,
             )
 
-            args = http.validate_input(
-                {
-                    "method": "POST",
-                    "url": url,
-                    "body": f"username={username}&password={password}",
-                    "headers": {"Content-Type": "application/x-www-form-urlencoded"},
-                    "follow_redirects": True,
-                }
-            )
-            raw = await http.execute(args)
-            result = http.parse_output(raw)
+            result = await authenticator.authenticate(url, username, password)
 
-            # Heuristic: login succeeded if we got a 200/302 without "invalid"
-            # or "incorrect" in the response body
-            body_lower = result.response_body.lower()
-            is_success = (
-                result.status_code in (200, 302, 303)
-                and "invalid" not in body_lower
-                and "incorrect" not in body_lower
-                and "wrong" not in body_lower
-                and "failed" not in body_lower
-            )
-
-            if is_success:
-                from clinkz.tools.http_client import get_session_cookies
-
-                cookies = get_session_cookies(self._engagement_id)
+            if result.success:
                 await self._cred_store.mark_valid(
                     credential_id,
-                    session_cookies=cookies,
+                    session_cookies=result.session_cookies,
                     cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",
                     engagement_id=self._engagement_id,
                     agent="orchestrator",
@@ -761,6 +851,117 @@ class OrchestratorAgent:
             )
 
         return False
+
+    async def _verify_and_refresh_session(
+        self,
+        login_url: str,
+        sessions: list[dict[str, Any]],
+        valid_creds: list[Any],
+    ) -> tuple[dict[str, str], str]:
+        """Verify a session is still valid; re-authenticate if not.
+
+        Called before handing off to the Exploit Agent to ensure the
+        session cookies will actually work.
+
+        Args:
+            login_url: Login URL for re-authentication.
+            sessions: Session dicts from state store.
+            valid_creds: Valid Credential objects.
+
+        Returns:
+            Tuple of (cookies_dict, authenticated_as_username).
+        """
+        assert self._engagement_id is not None
+
+        if not sessions:
+            return {}, ""
+
+        latest = sessions[-1]
+        cookies = latest.get("cookies", {})
+        if not cookies:
+            return {}, ""
+
+        # Find who we authenticated as
+        cred_id = latest.get("metadata", {}).get("credential_id", "")
+        authenticated_as = "unknown"
+        matched_cred = None
+        for c in valid_creds:
+            if c.id == cred_id:
+                authenticated_as = c.username
+                matched_cred = c
+                break
+
+        # Verify the session
+        from clinkz.tools.auth import WebAuthenticator
+
+        authenticator = WebAuthenticator(
+            scope=self._scope,
+            engagement_id=self._engagement_id,
+        )
+
+        # Use the login URL base to check a protected page
+        from urllib.parse import urlparse
+
+        parsed = urlparse(login_url)
+        check_url = f"{parsed.scheme}://{parsed.netloc}/"
+
+        session_valid = await authenticator.verify_session(check_url, cookies)
+
+        if session_valid:
+            self._logger.info("Session still valid for '%s'", authenticated_as)
+            return cookies, authenticated_as
+
+        # Session expired — re-authenticate if we have credentials
+        self._logger.warning("Session expired — attempting re-authentication")
+
+        if matched_cred:
+            result = await authenticator.authenticate(
+                login_url, matched_cred.username, matched_cred.password
+            )
+            if result.success:
+                self._logger.info(
+                    "Re-authentication successful for '%s'", matched_cred.username
+                )
+                # Update the stored session
+                if self._cred_store:
+                    await self._cred_store.mark_valid(
+                        matched_cred.id,
+                        session_cookies=result.session_cookies,
+                        cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",
+                        engagement_id=self._engagement_id,
+                        agent="orchestrator",
+                    )
+                return result.session_cookies, matched_cred.username
+
+        self._logger.warning("Re-authentication failed — proceeding without session")
+        return {}, ""
+
+    # ------------------------------------------------------------------
+    # URL probing helper
+    # ------------------------------------------------------------------
+
+    async def _probe_url(self, url: str) -> int | None:
+        """Send a HEAD request to *url* and return the HTTP status code.
+
+        Returns ``None`` on any failure (timeout, connection refused, etc.).
+        Uses a short 5-second timeout to avoid blocking the pipeline.
+
+        This method is separated so that tests can trivially mock it.
+        """
+        try:
+            from clinkz.tools.http_client import HTTPClientTool
+
+            http = HTTPClientTool(
+                scope=self._scope,
+                timeout=5,
+                engagement_id=self._engagement_id or "",
+            )
+            validated = http.validate_input({"url": url, "method": "HEAD"})
+            raw = await asyncio.wait_for(http.execute(validated), timeout=5)
+            parsed = http.parse_output(raw)
+            return parsed.status_code if parsed.status_code else None
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # State context gathering (for LLM query responses)
