@@ -37,6 +37,7 @@ class Settings(BaseModel):
     # Model selection
     orchestrator_model: str = Field(default="gpt-4o")
     agent_model: str = Field(default="gpt-4o-mini")
+    anthropic_model: str = Field(default="claude-sonnet-4-20250514")
     gemini_model: str = Field(default="gemini-2.5-flash")
 
     # Per-agent LLM provider overrides (default to global llm_provider if unset)
@@ -74,6 +75,7 @@ class Settings(BaseModel):
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             orchestrator_model=os.getenv("ORCHESTRATOR_MODEL", "gpt-4o"),
             agent_model=os.getenv("AGENT_MODEL", "gpt-4o-mini"),
+            anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
             recon_llm_provider=os.getenv("RECON_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
             scan_llm_provider=os.getenv("SCAN_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
