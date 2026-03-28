@@ -37,7 +37,15 @@ class Settings(BaseModel):
     # Model selection
     orchestrator_model: str = Field(default="gpt-4o")
     agent_model: str = Field(default="gpt-4o-mini")
+    anthropic_model: str = Field(default="claude-sonnet-4-20250514")
     gemini_model: str = Field(default="gemini-2.5-flash")
+
+    # Per-agent LLM provider overrides (default to global llm_provider if unset)
+    recon_llm_provider: LLMProvider = Field(default="gemini")
+    scan_llm_provider: LLMProvider = Field(default="gemini")
+    exploit_llm_provider: LLMProvider = Field(default="anthropic")
+    research_llm_provider: LLMProvider = Field(default="anthropic")
+    report_llm_provider: LLMProvider = Field(default="gemini")
 
     # State store
     db_path: Path = Field(default=Path("clinkz.db"))
@@ -67,7 +75,13 @@ class Settings(BaseModel):
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             orchestrator_model=os.getenv("ORCHESTRATOR_MODEL", "gpt-4o"),
             agent_model=os.getenv("AGENT_MODEL", "gpt-4o-mini"),
+            anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            recon_llm_provider=os.getenv("RECON_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
+            scan_llm_provider=os.getenv("SCAN_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
+            exploit_llm_provider=os.getenv("EXPLOIT_LLM_PROVIDER", "anthropic"),  # type: ignore[arg-type]
+            research_llm_provider=os.getenv("RESEARCH_LLM_PROVIDER", "anthropic"),  # type: ignore[arg-type]
+            report_llm_provider=os.getenv("REPORT_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
             tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "local"),
