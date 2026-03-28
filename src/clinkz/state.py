@@ -92,7 +92,50 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS endpoints (
+    id              TEXT PRIMARY KEY,
+    engagement_id   TEXT NOT NULL REFERENCES engagements(id),
+    url             TEXT NOT NULL,
+    method          TEXT NOT NULL DEFAULT 'GET',
+    parameters      TEXT NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'discovered',
+    discovered_by   TEXT NOT NULL DEFAULT '',
+    tested_by       TEXT,
+    service_type    TEXT NOT NULL DEFAULT 'http',
+    port            INTEGER,
+    notes           TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_endpoints_url_method
+    ON endpoints(engagement_id, url, method);
+
+CREATE TABLE IF NOT EXISTS runbook (
+    id                    TEXT PRIMARY KEY,
+    engagement_id         TEXT NOT NULL REFERENCES engagements(id),
+    technology            TEXT NOT NULL,
+    technique_name        TEXT NOT NULL,
+    technique_description TEXT NOT NULL DEFAULT '',
+    source_url            TEXT NOT NULL DEFAULT '',
+    source_type           TEXT NOT NULL DEFAULT 'other',
+    steps                 TEXT NOT NULL DEFAULT '[]',
+    applicable_to         TEXT NOT NULL DEFAULT '[]',
+    cve_id                TEXT,
+    severity              TEXT NOT NULL DEFAULT 'info',
+    created_at            TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_runbook_tech_technique
+    ON runbook(engagement_id, technology, technique_name);
 """
+
+# Migrations for existing tables — ALTER TABLE is idempotent via try/except
+_MIGRATIONS = [
+    "ALTER TABLE targets ADD COLUMN service_type TEXT NOT NULL DEFAULT 'other'",
+    "ALTER TABLE findings ADD COLUMN source_technique TEXT",
+]
 
 
 class StateStore:
@@ -117,6 +160,13 @@ class StateStore:
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_SCHEMA_SQL)
+        await self._db.commit()
+        # Run ALTER TABLE migrations (idempotent — duplicates are ignored)
+        for migration in _MIGRATIONS:
+            try:
+                await self._db.execute(migration)
+            except Exception:  # noqa: BLE001 — column already exists
+                pass
         await self._db.commit()
         logger.info("State store connected: %s", self.db_path)
 
@@ -570,3 +620,241 @@ class StateStore:
         async with self._conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Endpoints (attack surface tracking for concurrent agents)
+    # ------------------------------------------------------------------
+
+    async def add_endpoint(
+        self,
+        engagement_id: str,
+        url: str,
+        method: str = "GET",
+        parameters: dict[str, Any] | None = None,
+        service_type: str = "http",
+        discovered_by: str = "",
+        port: int | None = None,
+        notes: str = "",
+    ) -> str:
+        """Add a discovered endpoint, deduplicating on url+method.
+
+        If an endpoint with the same url and method already exists within the
+        engagement, the existing record is updated with any new parameters and
+        notes instead of creating a duplicate.
+
+        Args:
+            engagement_id: Parent engagement UUID.
+            url: Full URL or service address.
+            method: HTTP method or protocol action (default GET).
+            parameters: Discovered parameters as key-value pairs.
+            service_type: One of http/ftp/ssh/smb/database/other.
+            discovered_by: Agent name that found this endpoint.
+            port: Port number (optional).
+            notes: Free-text notes.
+
+        Returns:
+            Endpoint UUID (existing or newly created).
+        """
+        eid = self._new_id()
+        now = self._now()
+        params_json = json.dumps(parameters or {})
+        try:
+            await self._conn.execute(
+                "INSERT INTO endpoints "
+                "(id, engagement_id, url, method, parameters, status, "
+                "discovered_by, service_type, port, notes, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 'discovered', ?, ?, ?, ?, ?, ?)",
+                (
+                    eid, engagement_id, url, method, params_json,
+                    discovered_by, service_type, port, notes, now, now,
+                ),
+            )
+            await self._conn.commit()
+            return eid
+        except Exception:  # noqa: BLE001 — UNIQUE constraint = dedup
+            # Update existing record with merged info
+            await self._conn.execute(
+                "UPDATE endpoints SET parameters=?, notes=?, updated_at=? "
+                "WHERE engagement_id=? AND url=? AND method=?",
+                (params_json, notes, now, engagement_id, url, method),
+            )
+            await self._conn.commit()
+            # Return existing ID
+            async with self._conn.execute(
+                "SELECT id FROM endpoints WHERE engagement_id=? AND url=? AND method=?",
+                (engagement_id, url, method),
+            ) as cursor:
+                row = await cursor.fetchone()
+            return row["id"]  # type: ignore[index]
+
+    async def get_endpoints(
+        self,
+        engagement_id: str,
+        status: str | None = None,
+        service_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return endpoints for an engagement with optional filters.
+
+        Args:
+            engagement_id: Engagement UUID.
+            status: Filter by status (discovered/testing/tested/skipped).
+            service_type: Filter by service type (http/ftp/ssh/etc.).
+
+        Returns:
+            List of endpoint dicts with deserialized parameters.
+        """
+        query = "SELECT * FROM endpoints WHERE engagement_id=?"
+        params: list[Any] = [engagement_id]
+        if status is not None:
+            query += " AND status=?"
+            params.append(status)
+        if service_type is not None:
+            query += " AND service_type=?"
+            params.append(service_type)
+        query += " ORDER BY created_at"
+        async with self._conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            d["parameters"] = json.loads(d["parameters"])
+            results.append(d)
+        return results
+
+    async def get_new_endpoints(self, engagement_id: str) -> list[dict[str, Any]]:
+        """Return only endpoints with status='discovered' (not yet tested).
+
+        Args:
+            engagement_id: Engagement UUID.
+
+        Returns:
+            List of endpoint dicts.
+        """
+        return await self.get_endpoints(engagement_id, status="discovered")
+
+    async def update_endpoint_status(
+        self,
+        endpoint_id: str,
+        status: str,
+        tested_by: str | None = None,
+    ) -> None:
+        """Update the status of an endpoint.
+
+        Args:
+            endpoint_id: Endpoint UUID.
+            status: New status (discovered/testing/tested/skipped).
+            tested_by: Agent name that tested this endpoint.
+        """
+        await self._conn.execute(
+            "UPDATE endpoints SET status=?, tested_by=?, updated_at=? WHERE id=?",
+            (status, tested_by, self._now(), endpoint_id),
+        )
+        await self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Runbook (exploit technique knowledge base per engagement)
+    # ------------------------------------------------------------------
+
+    async def add_runbook_entry(
+        self,
+        engagement_id: str,
+        technology: str,
+        technique_name: str,
+        technique_description: str = "",
+        source_url: str = "",
+        source_type: str = "other",
+        steps: list[str] | None = None,
+        applicable_to: list[str] | None = None,
+        cve_id: str | None = None,
+        severity: str = "info",
+    ) -> str | None:
+        """Add a technique to the engagement runbook. Deduplicates on technology+technique_name.
+
+        Args:
+            engagement_id: Parent engagement UUID.
+            technology: Target technology (e.g., "nginx 1.24", "WordPress 6.x").
+            technique_name: Short name for the technique.
+            technique_description: Detailed description.
+            source_url: URL where the technique was found.
+            source_type: One of cve/hackerone/bugcrowd/medium/reddit/exploit_db/other.
+            steps: Ordered list of exploitation steps.
+            applicable_to: List of vulnerability classes this applies to.
+            cve_id: CVE identifier if applicable.
+            severity: Severity level (info/low/medium/high/critical).
+
+        Returns:
+            Runbook entry UUID, or None if a duplicate was skipped.
+        """
+        rid = self._new_id()
+        now = self._now()
+        try:
+            await self._conn.execute(
+                "INSERT INTO runbook "
+                "(id, engagement_id, technology, technique_name, "
+                "technique_description, source_url, source_type, steps, "
+                "applicable_to, cve_id, severity, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    rid, engagement_id, technology, technique_name,
+                    technique_description, source_url, source_type,
+                    json.dumps(steps or []), json.dumps(applicable_to or []),
+                    cve_id, severity, now,
+                ),
+            )
+            await self._conn.commit()
+            return rid
+        except Exception:  # noqa: BLE001 — UNIQUE constraint = dedup skip
+            logger.debug(
+                "Runbook dedup: %s / %s already exists — skipping",
+                technology, technique_name,
+            )
+            return None
+
+    async def get_runbook_for_technology(
+        self,
+        engagement_id: str,
+        technology: str,
+    ) -> list[dict[str, Any]]:
+        """Return all runbook entries for a specific technology.
+
+        Args:
+            engagement_id: Engagement UUID.
+            technology: Technology string to match.
+
+        Returns:
+            List of runbook entry dicts with deserialized JSON fields.
+        """
+        async with self._conn.execute(
+            "SELECT * FROM runbook WHERE engagement_id=? AND technology=? "
+            "ORDER BY created_at",
+            (engagement_id, technology),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._deserialize_runbook_row(row) for row in rows]
+
+    async def get_all_runbook_entries(
+        self,
+        engagement_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return all runbook entries for an engagement.
+
+        Args:
+            engagement_id: Engagement UUID.
+
+        Returns:
+            List of runbook entry dicts.
+        """
+        async with self._conn.execute(
+            "SELECT * FROM runbook WHERE engagement_id=? ORDER BY created_at",
+            (engagement_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._deserialize_runbook_row(row) for row in rows]
+
+    @staticmethod
+    def _deserialize_runbook_row(row: Any) -> dict[str, Any]:
+        """Convert a runbook DB row to a dict with deserialized JSON fields."""
+        d = dict(row)
+        d["steps"] = json.loads(d["steps"])
+        d["applicable_to"] = json.loads(d["applicable_to"])
+        return d

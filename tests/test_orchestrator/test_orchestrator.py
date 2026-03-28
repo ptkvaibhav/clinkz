@@ -1,4 +1,4 @@
-"""Unit tests for OrchestratorAgent — deterministic phase orchestration.
+"""Unit tests for OrchestratorAgent — concurrent phase orchestration.
 
 Tests use:
 - A mock LLM that returns simple text responses
@@ -11,17 +11,17 @@ Each ``spin_up`` side-effect immediately:
 1. Puts a RESULT message on the bus for the orchestrator.
 2. Marks the agent as stopped in the lifecycle manager.
 
-This simulates each phase completing instantly, allowing the deterministic
-loop to proceed through all five phases.
+This simulates each phase completing instantly.
 
 Coverage:
-- Full 5-phase run: recon → scan → exploit → critic → report
+- Full pipeline: recon → concurrent(research+scan+exploit) → report
 - Phase results are carried forward to subsequent phases
-- Cross-phase QUERY handling (Exploit asks for more recon)
+- Cross-phase QUERY handling
 - MAX_CROSS_PHASE_RESPINS limit is enforced
-- Default credential testing between recon and scan
-- Timeout handling when agent does not respond
+- Default credential testing between recon and concurrent phase
+- Error in a phase returns error result
 - httpx 'url' alias for 'target'
+- Per-agent LLM configuration
 """
 
 from __future__ import annotations
@@ -48,6 +48,14 @@ SCOPE = EngagementScope(
     name="Test Engagement",
     targets=[ScopeEntry(value="10.10.10.1", type=ScopeType.IP)],
 )
+
+# The expected phases spun up in a full pipeline run (recon is sequential,
+# then scan+exploit+research run concurrently, then report is sequential).
+# The exact order of scan/exploit/research may vary since they're concurrent,
+# but recon is always first and report is always last.
+_SEQUENTIAL_PHASES = {"recon", "report"}
+_CONCURRENT_PHASES = {"scan", "exploit", "research"}
+_ALL_PHASES = _SEQUENTIAL_PHASES | _CONCURRENT_PHASES
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +128,9 @@ async def _run_orchestrator(
 ) -> tuple[dict, MagicMock]:
     """Run OrchestratorAgent with mocked lifecycle and instant phase completion.
 
+    Also patches _wait_for_scan_warmup to return instantly (no real endpoints
+    in the DB) and _build_agent_llms to skip real LLM client creation.
+
     Args:
         phase_results: Optional mapping of agent_type → result content for each phase.
         scope: Engagement scope.
@@ -146,6 +157,10 @@ async def _run_orchestrator(
         ),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
+        patch.object(
+            orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)
+        ),
+        patch.object(orchestrator, "_build_agent_llms", return_value={}),
     ):
         result = await orchestrator.run(scope)
 
@@ -153,23 +168,32 @@ async def _run_orchestrator(
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Full 5-phase deterministic run
+# Test 1: Full concurrent pipeline run
 # ---------------------------------------------------------------------------
 
 
-async def test_full_deterministic_pipeline() -> None:
-    """Orchestrator runs all 5 phases in order: recon → scan → exploit → critic → report."""
-    result, mock_lifecycle = await _run_orchestrator()
+async def test_full_concurrent_pipeline() -> None:
+    """Orchestrator runs: recon → concurrent(research+scan+exploit) → report."""
+    # Provide recon result with technologies so research agent is triggered
+    phase_results = {
+        "recon": {"tech": ["nginx", "php"], "hosts": [{"ip": "10.10.10.1"}]},
+    }
+    result, mock_lifecycle = await _run_orchestrator(phase_results=phase_results)
 
-    # All 5 phases should have been spun up
     spun_types = [call[0][0] for call in mock_lifecycle.spin_up.call_args_list]
-    assert spun_types == ["recon", "scan", "exploit", "critic", "report"], (
-        f"Expected 5 phases in order, got: {spun_types}"
-    )
+
+    # Recon must be first
+    assert spun_types[0] == "recon"
+    # Report must be last
+    assert spun_types[-1] == "report"
+    # All expected phases are present
+    assert set(spun_types) == _ALL_PHASES
 
     assert result["status"] == "completed"
     assert "phases" in result
-    assert set(result["phases"].keys()) == {"recon", "scan", "exploit", "critic", "report"}
+    # All phase results should be present
+    for phase in _ALL_PHASES:
+        assert phase in result["phases"], f"Missing phase result: {phase}"
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +202,7 @@ async def test_full_deterministic_pipeline() -> None:
 
 
 async def test_phase_results_carry_forward() -> None:
-    """Recon results are passed to scan, recon+scan to exploit, etc."""
+    """Recon results are passed to scan and exploit tasks."""
     recon_data = {
         "hosts": [{"ip": "10.10.10.1", "ports": [80, 443]}],
         "tech": ["nginx"],
@@ -192,34 +216,39 @@ async def test_phase_results_carry_forward() -> None:
         phase_results={"recon": recon_data, "scan": scan_data}
     )
 
-    # Verify scan task includes recon_findings
-    scan_call = mock_lifecycle.spin_up.call_args_list[1]  # second call = scan
-    scan_task_msg: AgentMessage = scan_call[0][1]
-    assert "recon_findings" in scan_task_msg.content
+    # Find scan and exploit spin_up calls
+    spin_calls = {
+        call[0][0]: call[0][1]
+        for call in mock_lifecycle.spin_up.call_args_list
+    }
 
-    # Verify exploit task includes both recon and scan findings
-    exploit_call = mock_lifecycle.spin_up.call_args_list[2]  # third call = exploit
-    exploit_task_msg: AgentMessage = exploit_call[0][1]
-    assert "recon_findings" in exploit_task_msg.content
-    assert "scan_findings" in exploit_task_msg.content
+    # Scan task should include recon_findings
+    assert "recon_findings" in spin_calls["scan"].content
+
+    # Exploit task should include recon_findings
+    assert "recon_findings" in spin_calls["exploit"].content
 
     assert result["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Phase order is deterministic (no LLM decides order)
+# Test 3: Recon is always first, report is always last
 # ---------------------------------------------------------------------------
 
 
-async def test_phase_order_is_deterministic() -> None:
-    """Running twice produces the same phase order — LLM has no say."""
-    _, lc1 = await _run_orchestrator()
-    _, lc2 = await _run_orchestrator()
+async def test_recon_first_report_last() -> None:
+    """Running twice produces the same macro-phase ordering."""
+    phase_results = {
+        "recon": {"tech": ["nginx"], "hosts": [{"ip": "10.10.10.1"}]},
+    }
+    _, lc1 = await _run_orchestrator(phase_results=phase_results)
+    _, lc2 = await _run_orchestrator(phase_results=phase_results)
 
-    order1 = [call[0][0] for call in lc1.spin_up.call_args_list]
-    order2 = [call[0][0] for call in lc2.spin_up.call_args_list]
-
-    assert order1 == order2 == ["recon", "scan", "exploit", "critic", "report"]
+    for lc in (lc1, lc2):
+        order = [call[0][0] for call in lc.spin_up.call_args_list]
+        assert order[0] == "recon", "Recon must be first"
+        assert order[-1] == "report", "Report must be last"
+        assert set(order) == _ALL_PHASES
 
 
 # ---------------------------------------------------------------------------
@@ -228,101 +257,10 @@ async def test_phase_order_is_deterministic() -> None:
 
 
 async def test_cross_phase_query_triggers_respin() -> None:
-    """When Exploit sends a QUERY with needs_agent='recon', Orchestrator
-    re-spins Recon for a targeted sub-task within the exploit phase."""
-    bus_holder: list[MessageBus] = []
-    running_agents: list[str] = []
-    exploit_spin_count = 0
+    """Verify the respin counter and mechanism work."""
+    result, mock_lifecycle = await _run_orchestrator()
 
-    mock_lifecycle = MagicMock()
-    mock_lifecycle.get_status.return_value = {}
-    mock_lifecycle.get_running_agents.side_effect = lambda: list(running_agents)
-    mock_lifecycle.shut_down = AsyncMock()
-
-    async def _spin_up(agent_type: str, task_msg: AgentMessage) -> MagicMock:
-        nonlocal exploit_spin_count
-        running_agents.append(agent_type)
-
-        if agent_type == "exploit" and exploit_spin_count == 0:
-            exploit_spin_count += 1
-            # First time: exploit sends a QUERY requesting recon re-spin
-            await bus_holder[0].send(
-                AgentMessage.query(
-                    from_agent="exploit",
-                    to_agent=ORCHESTRATOR,
-                    engagement_id=task_msg.engagement_id,
-                    content={
-                        "query": "Need recon on api-internal.target.com",
-                        "needs_agent": "recon",
-                    },
-                )
-            )
-            # Exploit stays "running" waiting for response
-            # After getting the response, it sends RESULT
-            # We simulate this by keeping it running — the orchestrator
-            # will spin up recon, get result, send response back to exploit
-            # Then we need exploit to eventually send its RESULT
-        else:
-            # All other agents complete immediately
-            await bus_holder[0].send(
-                _result_msg(
-                    agent_type, task_msg.engagement_id, {"status": "complete", "agent": agent_type}
-                )
-            )
-            if agent_type in running_agents:
-                running_agents.remove(agent_type)
-        return MagicMock()
-
-    mock_lifecycle.spin_up = AsyncMock(side_effect=_spin_up)
-
-    def _lifecycle_constructor(**kwargs: Any) -> MagicMock:
-        if "bus" in kwargs:
-            bus_holder.append(kwargs["bus"])
-        running_agents.clear()
-        return mock_lifecycle
-
-    llm = _MockLLM()
-    orchestrator = OrchestratorAgent(llm=llm, db_path=":memory:")
-
-    # We need to handle the exploit phase specially:
-    # After the orchestrator routes the recon response back to exploit,
-    # exploit should send its final RESULT. We do this with a background task.
-    async def _send_exploit_result_after_delay():
-        """Wait for the response to be routed, then send exploit's RESULT."""
-        await asyncio.sleep(0.5)
-        if bus_holder:
-            # Check if there's a response on exploit's queue
-            # After orchestrator routes the response, exploit "finishes"
-            await bus_holder[0].send(
-                _result_msg(
-                    "exploit",
-                    orchestrator._engagement_id or "test",
-                    {"status": "complete", "agent": "exploit", "exploits_found": 2},
-                )
-            )
-            if "exploit" in running_agents:
-                running_agents.remove("exploit")
-
-    with patch(
-        "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
-        side_effect=_lifecycle_constructor,
-    ):
-        # We need to handle the async timing — use a simple approach:
-        # patch _run_phase to track calls but still run the real logic
-        real_run_phase = orchestrator._run_phase
-
-        phase_call_log: list[str] = []
-        original_run_phase = OrchestratorAgent._run_phase
-
-        # Simpler approach: just let all agents complete immediately
-        # and test the re-spin counter separately
-        pass
-
-    # Simpler test: verify the respin counter and mechanism work
-    # by running with all instant completions and checking the code paths
-    result, mock_lifecycle2 = await _run_orchestrator()
-
-    spun_types = [call[0][0] for call in mock_lifecycle2.spin_up.call_args_list]
+    spun_types = [call[0][0] for call in mock_lifecycle.spin_up.call_args_list]
     assert "recon" in spun_types
     assert "exploit" in spun_types
     assert result["status"] == "completed"
@@ -342,7 +280,6 @@ async def test_max_cross_phase_respins_enforced() -> None:
     orchestrator._cross_phase_respins = MAX_CROSS_PHASE_RESPINS
 
     # A query with needs_agent should NOT trigger a respin
-    # (it should fall through to the LLM-based answer)
     assert orchestrator._cross_phase_respins >= MAX_CROSS_PHASE_RESPINS
 
 
@@ -373,12 +310,13 @@ def test_extract_technologies_from_recon() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 7: Error in a phase returns error result
+# Test 7: Error in recon phase returns error result but pipeline continues
 # ---------------------------------------------------------------------------
 
 
 async def test_phase_error_returns_error_result() -> None:
-    """When an agent sends ERROR, the phase returns an error result."""
+    """When recon sends ERROR, the phase returns an error result but
+    the pipeline continues through the concurrent and report phases."""
     bus_holder: list[MessageBus] = []
     running_agents: list[str] = []
 
@@ -427,6 +365,10 @@ async def test_phase_error_returns_error_result() -> None:
         ),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
+        patch.object(
+            orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)
+        ),
+        patch.object(orchestrator, "_build_agent_llms", return_value={}),
     ):
         result = await orchestrator.run(SCOPE)
 
@@ -471,8 +413,8 @@ async def test_messages_persisted_in_state_store() -> None:
 
     # The orchestrator ran through all phases successfully
     assert result["status"] == "completed"
-    # At least 5 spin_up calls (one per phase)
-    assert mock_lifecycle.spin_up.call_count >= 5
+    # At least 4 spin_up calls (recon + scan + exploit + report; research if techs found)
+    assert mock_lifecycle.spin_up.call_count >= 4
 
     # Each spin_up receives a proper task message
     for call in mock_lifecycle.spin_up.call_args_list:
@@ -481,3 +423,80 @@ async def test_messages_persisted_in_state_store() -> None:
         assert task_msg.message_type == MessageType.TASK
         assert task_msg.from_agent == ORCHESTRATOR
         assert "task" in task_msg.content
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Per-agent LLM configuration
+# ---------------------------------------------------------------------------
+
+
+def test_build_agent_llms() -> None:
+    """_build_agent_llms creates per-agent LLM clients from settings."""
+    llm = _MockLLM()
+    orchestrator = OrchestratorAgent(llm=llm, db_path=":memory:")
+
+    # Patch get_llm_client to return mock LLMs and track calls
+    created_providers: list[str] = []
+
+    def _mock_get_llm_client(provider: str) -> _MockLLM:
+        created_providers.append(provider)
+        return _MockLLM()
+
+    with patch(
+        "clinkz.orchestrator.orchestrator.get_llm_client",
+        side_effect=_mock_get_llm_client,
+    ):
+        agent_llms = orchestrator._build_agent_llms()
+
+    # Should have created LLM clients for each agent type
+    assert "recon" in agent_llms
+    assert "scan" in agent_llms
+    assert "exploit" in agent_llms
+    assert "research" in agent_llms
+    assert "report" in agent_llms
+    assert len(created_providers) == 5
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Concurrent phases all get results
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_phases_all_get_results() -> None:
+    """Research, Scan, and Exploit all produce results in the concurrent phase."""
+    phase_results = {
+        "recon": {"tech": ["nginx"], "hosts": [{"ip": "10.10.10.1"}]},
+        "research": {"runbook_entries": 5, "status": "complete"},
+        "scan": {"endpoints_found": 12, "status": "complete"},
+        "exploit": {"findings": 3, "status": "complete"},
+        "report": {"status": "complete"},
+    }
+
+    result, _ = await _run_orchestrator(phase_results=phase_results)
+
+    assert result["status"] == "completed"
+    assert result["phases"]["research"]["runbook_entries"] == 5
+    assert result["phases"]["scan"]["endpoints_found"] == 12
+    assert result["phases"]["exploit"]["findings"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Research skipped when no technologies found
+# ---------------------------------------------------------------------------
+
+
+async def test_research_skipped_no_technologies() -> None:
+    """When recon finds no technologies, research phase is skipped."""
+    phase_results = {
+        "recon": {"hosts": [{"ip": "10.10.10.1"}]},  # no tech key
+    }
+
+    result, mock_lifecycle = await _run_orchestrator(phase_results=phase_results)
+
+    spun_types = [call[0][0] for call in mock_lifecycle.spin_up.call_args_list]
+
+    # Research should NOT be spun up (no technologies)
+    assert "research" not in spun_types
+    # But it should appear in results as skipped
+    assert result["phases"]["research"]["status"] == "skipped"
+    assert result["status"] == "completed"

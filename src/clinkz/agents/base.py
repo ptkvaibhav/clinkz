@@ -46,6 +46,7 @@ DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "recon": 20,
     "scan": 20,
     "exploit": 40,
+    "research": 30,
     "report": 10,
     "critic": 10,
 }
