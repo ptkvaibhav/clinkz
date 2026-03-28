@@ -40,6 +40,7 @@ from clinkz.agents.critic import CriticAgent
 from clinkz.agents.exploit import ExploitAgent
 from clinkz.agents.recon import ReconAgent
 from clinkz.agents.report import ReportAgent
+from clinkz.agents.research import ResearchAgent
 from clinkz.agents.scan import ScanAgent
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
@@ -66,6 +67,7 @@ _AGENT_CLASSES: dict[str, type[BaseAgent]] = {
     "scan": ScanAgent,  # protocol name → full implementation
     "crawl": CrawlAgent,  # legacy alias → stub
     "exploit": ExploitAgent,
+    "research": ResearchAgent,
     "report": ReportAgent,
     "critic": CriticAgent,
 }
@@ -105,17 +107,19 @@ class _AgentRecord:
 class AgentLifecycleManager:
     """Creates, starts, and stops phase agents on demand.
 
-    All agents share the same LLM client, scope, state store, and engagement
-    ID.  Each agent gets its own stop event and asyncio.Task.
+    Each agent gets its own LLM client (if configured), stop event, and
+    asyncio.Task.  Per-agent LLM overrides are passed via ``llm_per_agent``.
 
     Args:
         bus: The shared MessageBus.
-        llm: LLM client used by all agents.
+        llm: Default LLM client (used when no per-agent override is set).
         scope: Engagement scope for target validation.
         state: SQLite state store.
         engagement_id: UUID of the active engagement.
         tools_per_agent: Optional mapping of agent type → tool list.
                          Agents not listed receive an empty tool list.
+        llm_per_agent: Optional mapping of agent type → LLMClient.
+                       Agents not listed use the default ``llm``.
     """
 
     def __init__(
@@ -127,6 +131,7 @@ class AgentLifecycleManager:
         engagement_id: str,
         tools_per_agent: dict[str, list[ToolBase]] | None = None,
         knowledge_base: KnowledgeBase | None = None,
+        llm_per_agent: dict[str, LLMClient] | None = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -135,6 +140,7 @@ class AgentLifecycleManager:
         self._engagement_id = engagement_id
         self._tools_per_agent: dict[str, list[ToolBase]] = tools_per_agent or {}
         self._knowledge_base = knowledge_base
+        self._llm_per_agent: dict[str, LLMClient] = llm_per_agent or {}
         # Keyed by agent.name (e.g. "recon", "crawl", "exploit")
         self._records: dict[str, _AgentRecord] = {}
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -167,8 +173,9 @@ class AgentLifecycleManager:
 
         agent_cls = _AGENT_CLASSES[agent_type]
         tools = self._tools_for(agent_type)
+        agent_llm = self._llm_for(agent_type)
         agent = agent_cls(
-            llm=self._llm,
+            llm=agent_llm,
             tools=tools,
             scope=self._scope,
             state=self._state,
@@ -411,6 +418,27 @@ class AgentLifecycleManager:
             await self._bus.send(msg)
         except Exception as exc:
             self._logger.error("Failed to send message on bus: %s", exc)
+
+    def _llm_for(self, agent_type: str) -> LLMClient:
+        """Return the LLM client for an agent type.
+
+        Checks ``llm_per_agent`` first, then falls back to the default LLM.
+
+        Args:
+            agent_type: Agent type string.
+
+        Returns:
+            LLMClient instance.
+        """
+        if agent_type in self._llm_per_agent:
+            return self._llm_per_agent[agent_type]
+        # Try canonical name
+        cls = _AGENT_CLASSES.get(agent_type)
+        if cls is not None:
+            canonical = _peek_agent_name(cls)
+            if canonical in self._llm_per_agent:
+                return self._llm_per_agent[canonical]
+        return self._llm
 
     def _tools_for(self, agent_type: str) -> list[ToolBase]:
         """Return the tool list for an agent type.

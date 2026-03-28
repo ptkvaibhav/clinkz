@@ -1,22 +1,20 @@
-"""OrchestratorAgent — deterministic phase state machine with LLM reasoning within phases.
+"""OrchestratorAgent — concurrent phase execution with shared state.
 
-The Orchestrator drives a fixed phase sequence:
-  1. RECON   — reconnaissance and information gathering
-  2. CREDS   — try default credentials for identified technologies
-  3. SCAN    — crawl, fuzz, and map the attack surface
-  4. EXPLOIT — attempt exploitation of discovered vulnerabilities
-  5. CRITIC  — validate findings before reporting
-  6. REPORT  — generate the final pentest report
+The Orchestrator drives three macro-phases:
 
-Phase order is HARDCODED — no LLM decides when to move between phases.
-LLM is used ONLY for:
-  - Formulating detailed task descriptions for agents
-  - Answering agent QUERY messages with cross-phase context
-  - Synthesizing results across phases
+  1. RECON (sequential)  — reconnaissance, default credential testing
+  2. CONCURRENT          — Research + Scan + Exploit run in parallel via
+                           asyncio.Tasks, coordinating through shared SQLite
+                           state (endpoints, runbook, findings tables)
+  3. REPORT (sequential) — generate the final pentest report
 
-Cross-phase re-spins (e.g., Exploit asks for more recon) are handled as
-exceptions within _run_phase(), capped at MAX_CROSS_PHASE_RESPINS per
-engagement to prevent infinite loops.
+Within Phase 2 the agents share state:
+  - Scan writes endpoints → Exploit reads new endpoints
+  - Research writes runbook → Exploit reads runbook entries
+  - Exploit writes findings → visible to all
+
+A monitor loop polls every 10 seconds to decide when all concurrent work
+is done (Scan finished + Exploit tested all endpoints + Research finished).
 
 Usage::
 
@@ -58,6 +56,15 @@ MAX_CROSS_PHASE_RESPINS = 3
 # Poll interval when waiting for agent messages (seconds).
 _POLL_INTERVAL = 1.0
 
+# Concurrent phase: how often the monitor loop checks progress (seconds).
+_MONITOR_INTERVAL = 10.0
+
+# How long to wait for Scan to discover endpoints before starting Exploit (seconds).
+_SCAN_WARMUP_TIMEOUT = 60.0
+
+# Minimum endpoints Scan should discover before Exploit starts early.
+_SCAN_WARMUP_MIN_ENDPOINTS = 5
+
 
 # ---------------------------------------------------------------------------
 # OrchestratorAgent
@@ -65,15 +72,19 @@ _POLL_INTERVAL = 1.0
 
 
 class OrchestratorAgent:
-    """Deterministic phase orchestrator for an autonomous pentest engagement.
+    """Concurrent phase orchestrator for an autonomous pentest engagement.
 
-    The run() method follows a hardcoded sequence of phases. LLM reasoning
-    is used within each phase (task formulation, query answering) but never
-    for deciding phase order.
+    The run() method follows three macro-phases:
+      1. RECON (sequential) — recon + default cred testing
+      2. CONCURRENT — Research + Scan + Exploit in parallel
+      3. REPORT (sequential) — findings summary
+
+    Each agent gets its own LLM client via per-agent provider env vars
+    (RECON_LLM_PROVIDER, SCAN_LLM_PROVIDER, etc.).
 
     Args:
-        llm: LLM client to use. If None, one is created from ORCHESTRATOR_LLM_PROVIDER
-             env var (falls back to LLM_PROVIDER / settings.llm_provider).
+        llm: LLM client for the orchestrator itself. If None, one is created
+             from ORCHESTRATOR_LLM_PROVIDER env var.
         db_path: Path to the SQLite database. Defaults to settings.db_path.
         provider: Explicit LLM provider override (ignored when ``llm`` is provided).
     """
@@ -116,8 +127,10 @@ class OrchestratorAgent:
     async def run(self, scope: EngagementScope) -> dict[str, Any]:
         """Execute a full pentest engagement for the given scope.
 
-        Follows a deterministic phase sequence:
-        RECON → default creds → SCAN → EXPLOIT → CRITIC → REPORT.
+        Three macro-phases:
+          1. RECON (sequential) — recon + default credential testing
+          2. CONCURRENT — Research + Scan + Exploit in parallel
+          3. REPORT (sequential) — generate findings report
 
         Args:
             scope: Engagement scope (targets, exclusions, rate limits).
@@ -135,6 +148,10 @@ class OrchestratorAgent:
             bus = MessageBus(state=state)
             knowledge_base = KnowledgeBase()
             self._logger.info("KnowledgeBase loaded: %s", knowledge_base.stats())
+
+            # Build per-agent LLM clients from env-var config
+            agent_llms = self._build_agent_llms()
+
             lifecycle = AgentLifecycleManager(
                 bus=bus,
                 llm=self._llm,
@@ -142,6 +159,7 @@ class OrchestratorAgent:
                 state=state,
                 engagement_id=engagement_id,
                 knowledge_base=knowledge_base,
+                llm_per_agent=agent_llms,
             )
             resolver = ToolResolver()
             cred_store = CredentialStore(state)
@@ -156,11 +174,13 @@ class OrchestratorAgent:
             self._engagement_id = engagement_id
             self._cross_phase_respins = 0
 
+            targets_str = ", ".join(f"{t.value} ({t.type.value})" for t in scope.targets)
             summary: dict[str, Any] = {"status": "completed", "phases": {}}
 
             try:
-                # PHASE 1: RECON (mandatory)
-                targets_str = ", ".join(f"{t.value} ({t.type.value})" for t in scope.targets)
+                # =============================================================
+                # PHASE 1: RECON (sequential — must complete first)
+                # =============================================================
                 recon_result = await self._run_phase(
                     "recon",
                     {
@@ -173,7 +193,7 @@ class OrchestratorAgent:
                 summary["phases"]["recon"] = recon_result
                 self._logger.info("PHASE 1 (RECON) complete")
 
-                # Between RECON and SCAN: try default credentials
+                # Try default credentials for discovered technologies
                 await self._try_default_credentials(recon_result)
 
                 # Gather credentials and sessions for handoff
@@ -182,104 +202,58 @@ class OrchestratorAgent:
                 cred_data = [c.model_dump() for c in valid_creds]
                 session_data = sessions
 
-                # PHASE 2: SCAN (mandatory)
-                scan_result = await self._run_phase(
-                    "scan",
-                    {
-                        "task": f"Map the complete attack surface of {targets_str}. "
-                        f"Crawl all endpoints, fuzz parameters, identify "
-                        f"suspicious behaviors and anomalies.",
-                        "recon_findings": recon_result,
-                        "credentials": cred_data,
-                        "sessions": session_data,
-                    },
-                )
-                summary["phases"]["scan"] = scan_result
-                self._logger.info("PHASE 2 (SCAN) complete")
+                # Extract technologies for the Research Agent
+                technologies = self._extract_technologies(recon_result)
 
-                # Refresh creds/sessions after scan (scan may have found new ones)
-                valid_creds = await cred_store.get_all_valid(engagement_id)
-                sessions = await state.get_sessions(engagement_id)
-                cred_data = [c.model_dump() for c in valid_creds]
-                session_data = sessions
-
-                # Build exploit task with session handoff
-                exploit_task: dict[str, Any] = {
-                    "task": f"Exploit all identified vulnerabilities on {targets_str}. "
-                    f"Research CVEs and PoCs for identified technologies. "
-                    f"Validate findings and chain exploits for maximum impact.",
-                    "recon_findings": recon_result,
-                    "scan_findings": scan_result,
-                    "credentials": cred_data,
-                    "sessions": session_data,
-                }
-
-                # Verify and inject session cookies so Exploit Agent skips login
+                # Prepare session cookies for authenticated agents
+                cookies: dict[str, str] = {}
+                authenticated_as = ""
                 if sessions:
-                    # Find login URL for re-auth if needed
                     login_url = await self._find_login_url(
-                        recon_result, "", scan_result=scan_result
+                        recon_result, "", scan_result=None
                     )
                     if not login_url:
-                        # Construct from first target
                         for t in scope.targets:
                             login_url = f"http://{t.value}/login"
                             break
-
                     cookies, authenticated_as = await self._verify_and_refresh_session(
                         login_url or "", sessions, valid_creds
                     )
 
-                    if cookies:
-                        exploit_task["session_cookies"] = cookies
-                        exploit_task["cookie_jar_path"] = f"/tmp/clinkz_{engagement_id}_cookies.txt"
-                        exploit_task["authenticated_as"] = authenticated_as
-                        exploit_task["task"] = (
-                            f"You are already authenticated as '{authenticated_as}'. "
-                            f"Use the provided session cookies for ALL requests. "
-                            f"Do NOT attempt to login again. Go straight to exploitation.\n\n"
-                            f"Exploit all identified vulnerabilities on {targets_str}. "
-                            f"Research CVEs and PoCs for identified technologies. "
-                            f"Validate findings and chain exploits for maximum impact."
-                        )
-                        self._logger.info(
-                            "VERIFIED session handoff to exploit "
-                            "agent: authenticated_as=%s, cookies=%s",
-                            authenticated_as,
-                            list(cookies.keys()),
-                        )
-
-                # PHASE 3: EXPLOIT (mandatory)
-                exploit_result = await self._run_phase("exploit", exploit_task)
-                summary["phases"]["exploit"] = exploit_result
-                self._logger.info("PHASE 3 (EXPLOIT) complete")
-
-                # PHASE 4: CRITIC (mandatory)
-                findings = await state.get_findings(engagement_id)
-                critic_result = await self._run_phase(
-                    "critic",
-                    {
-                        "task": "Validate all findings. Check CVSS accuracy, "
-                        "eliminate false positives, verify evidence and "
-                        "reproduction steps are complete.",
-                        "findings": findings,
-                    },
+                # =============================================================
+                # PHASE 2: CONCURRENT (Research + Scan + Exploit)
+                # =============================================================
+                self._logger.info(
+                    "Starting concurrent phase: research=%d techs, scan+exploit",
+                    len(technologies),
                 )
-                summary["phases"]["critic"] = critic_result
-                self._logger.info("PHASE 4 (CRITIC) complete")
 
-                # PHASE 5: REPORT (mandatory)
+                concurrent_results = await self._run_concurrent_phase(
+                    targets_str=targets_str,
+                    recon_result=recon_result,
+                    technologies=technologies,
+                    cred_data=cred_data,
+                    session_data=session_data,
+                    cookies=cookies,
+                    authenticated_as=authenticated_as,
+                )
+                summary["phases"].update(concurrent_results)
+                self._logger.info("PHASE 2 (CONCURRENT) complete")
+
+                # =============================================================
+                # PHASE 3: REPORT (sequential)
+                # =============================================================
                 report_result = await self._run_phase(
                     "report",
                     {
-                        "task": "Generate a professional penetration test report. "
-                        "Include executive summary, methodology, all validated "
-                        "findings with evidence, and remediation recommendations.",
+                        "task": "Generate a penetration test report. "
+                        "Include all findings with CVSS scores, evidence, "
+                        "and remediation recommendations.",
                         "engagement_id": engagement_id,
                     },
                 )
                 summary["phases"]["report"] = report_result
-                self._logger.info("PHASE 5 (REPORT) complete")
+                self._logger.info("PHASE 3 (REPORT) complete")
 
             except Exception as exc:
                 self._logger.error("Orchestrator failed: %s", exc, exc_info=True)
@@ -292,6 +266,225 @@ class OrchestratorAgent:
 
         self._logger.info("Engagement %s complete", engagement_id)
         return summary
+
+    # ------------------------------------------------------------------
+    # Per-agent LLM factory
+    # ------------------------------------------------------------------
+
+    def _build_agent_llms(self) -> dict[str, LLMClient]:
+        """Create per-agent LLM clients from settings.
+
+        Reads RECON_LLM_PROVIDER, SCAN_LLM_PROVIDER, etc. from config
+        and returns a mapping of agent_type → LLMClient.
+
+        Returns:
+            Dict mapping agent type strings to LLMClient instances.
+        """
+        agent_provider_map: dict[str, str] = {
+            "recon": settings.recon_llm_provider,
+            "scan": settings.scan_llm_provider,
+            "exploit": settings.exploit_llm_provider,
+            "research": settings.research_llm_provider,
+            "report": settings.report_llm_provider,
+        }
+
+        llms: dict[str, LLMClient] = {}
+        for agent_type, provider in agent_provider_map.items():
+            try:
+                llms[agent_type] = get_llm_client(provider)
+                self._logger.debug(
+                    "Agent '%s' LLM: provider=%s", agent_type, provider
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    "Failed to create LLM for agent '%s' (provider=%s): %s — "
+                    "will use default",
+                    agent_type,
+                    provider,
+                    exc,
+                )
+        return llms
+
+    # ------------------------------------------------------------------
+    # Concurrent phase runner
+    # ------------------------------------------------------------------
+
+    async def _run_concurrent_phase(
+        self,
+        *,
+        targets_str: str,
+        recon_result: dict[str, Any],
+        technologies: list[str],
+        cred_data: list[dict[str, Any]],
+        session_data: list[dict[str, Any]],
+        cookies: dict[str, str],
+        authenticated_as: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Run Research + Scan + Exploit concurrently via asyncio.Tasks.
+
+        Flow:
+        1. Start Research Agent (technologies → runbook)
+        2. Start Scan Agent (recon results → endpoints)
+        3. Wait for Scan to discover ≥5 endpoints OR 60s
+        4. Start Exploit Agent (endpoints + runbook → findings)
+        5. Monitor loop every 10s until all done
+
+        Args:
+            targets_str: Human-readable target list.
+            recon_result: Recon phase result dict.
+            technologies: Technologies extracted from recon.
+            cred_data: Serialized valid credentials.
+            session_data: Session dicts from state store.
+            cookies: Verified session cookies.
+            authenticated_as: Username for authenticated session.
+
+        Returns:
+            Dict with keys "research", "scan", "exploit" → result dicts.
+        """
+        assert self._engagement_id is not None
+
+        results: dict[str, dict[str, Any]] = {}
+
+        # --- Start Research Agent as asyncio.Task ---
+        research_task: asyncio.Task[dict[str, Any]] | None = None
+        if technologies:
+            research_task = asyncio.create_task(
+                self._run_phase(
+                    "research",
+                    {
+                        "task": f"Research CVEs, exploit PoCs, bug bounty writeups, "
+                        f"and penetration testing techniques for: "
+                        f"{', '.join(technologies)}. Write all findings to the "
+                        f"engagement runbook.",
+                        "technologies": technologies,
+                    },
+                ),
+                name="clinkz-concurrent-research",
+            )
+        else:
+            results["research"] = {"status": "skipped", "reason": "no technologies"}
+
+        # --- Start Scan Agent as asyncio.Task ---
+        scan_content: dict[str, Any] = {
+            "task": f"Map the complete attack surface of {targets_str}. "
+            f"Crawl all endpoints, fuzz parameters, identify "
+            f"suspicious behaviors and anomalies.",
+            "recon_findings": recon_result,
+            "credentials": cred_data,
+            "sessions": session_data,
+        }
+        if cookies:
+            scan_content["session_cookies"] = cookies
+        scan_task = asyncio.create_task(
+            self._run_phase("scan", scan_content),
+            name="clinkz-concurrent-scan",
+        )
+
+        # --- Wait for Scan warmup before starting Exploit ---
+        await self._wait_for_scan_warmup()
+
+        # --- Start Exploit Agent as asyncio.Task ---
+        exploit_content: dict[str, Any] = {
+            "task": f"Exploit all identified vulnerabilities on {targets_str}. "
+            f"Check the runbook for techniques. Test all discovered endpoints. "
+            f"Validate findings and chain exploits for maximum impact.",
+            "recon_findings": recon_result,
+            "credentials": cred_data,
+            "sessions": session_data,
+        }
+        if cookies:
+            exploit_content["session_cookies"] = cookies
+            exploit_content["cookie_jar_path"] = (
+                f"/tmp/clinkz_{self._engagement_id}_cookies.txt"
+            )
+            exploit_content["authenticated_as"] = authenticated_as
+            exploit_content["task"] = (
+                f"You are already authenticated as '{authenticated_as}'. "
+                f"Use the provided session cookies for ALL requests. "
+                f"Do NOT attempt to login again.\n\n"
+                + exploit_content["task"]
+            )
+        exploit_task = asyncio.create_task(
+            self._run_phase("exploit", exploit_content),
+            name="clinkz-concurrent-exploit",
+        )
+
+        # --- Monitor loop ---
+        self._logger.info("Concurrent agents started — entering monitor loop")
+        all_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {
+            "scan": scan_task,
+            "exploit": exploit_task,
+        }
+        if research_task is not None:
+            all_tasks["research"] = research_task
+
+        while all_tasks:
+            done, _pending = await asyncio.wait(
+                all_tasks.values(),
+                timeout=_MONITOR_INTERVAL,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in done:
+                # Find which agent this task belongs to
+                for name, t in list(all_tasks.items()):
+                    if t is task:
+                        try:
+                            results[name] = task.result()
+                        except Exception as exc:
+                            self._logger.error(
+                                "Concurrent agent '%s' failed: %s", name, exc
+                            )
+                            results[name] = {"status": "error", "error": str(exc)}
+                        del all_tasks[name]
+                        self._logger.info(
+                            "Concurrent agent '%s' finished — %d remaining",
+                            name,
+                            len(all_tasks),
+                        )
+                        break
+
+            if all_tasks:
+                running_names = list(all_tasks.keys())
+                self._logger.debug(
+                    "Monitor: still running: %s", ", ".join(running_names)
+                )
+
+        # Fill in any missing results
+        for name in ("research", "scan", "exploit"):
+            if name not in results:
+                results[name] = {"status": "not_started"}
+
+        return results
+
+    async def _wait_for_scan_warmup(self) -> None:
+        """Wait until Scan discovers enough endpoints or timeout expires.
+
+        Polls the state store for discovered endpoints. Returns when either
+        ≥ _SCAN_WARMUP_MIN_ENDPOINTS exist or _SCAN_WARMUP_TIMEOUT seconds
+        have elapsed.
+        """
+        assert self._state is not None
+        assert self._engagement_id is not None
+
+        deadline = asyncio.get_event_loop().time() + _SCAN_WARMUP_TIMEOUT
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                endpoints = await self._state.get_endpoints(self._engagement_id)
+                if len(endpoints) >= _SCAN_WARMUP_MIN_ENDPOINTS:
+                    self._logger.info(
+                        "Scan warmup: %d endpoints discovered — starting Exploit",
+                        len(endpoints),
+                    )
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(2.0)
+
+        self._logger.info(
+            "Scan warmup timeout (%ds) — starting Exploit with available endpoints",
+            int(_SCAN_WARMUP_TIMEOUT),
+        )
 
     # ------------------------------------------------------------------
     # Phase runner
