@@ -12,10 +12,17 @@ Results are parsed and written to the engagement runbook via
 
 The agent runs as a long-lived concurrent task — it keeps researching until
 all technologies are covered or the Orchestrator shuts it down.
+
+Guardrails:
+- Max 10 ReAct iterations (not the default 30).
+- Max 3 research queries per technology, then move to the next.
+- Total timeout of 5 minutes — after that, return whatever was collected.
+- Research NEVER blocks the pipeline.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -38,6 +45,19 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "research_system.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
+
+# ---------------------------------------------------------------------------
+# Budget constants
+# ---------------------------------------------------------------------------
+
+#: Hard cap on ReAct iterations (overrides the DEFAULT_MAX_ITERATIONS map).
+_MAX_ITERATIONS = 10
+
+#: Maximum research queries per technology before moving on.
+_MAX_QUERIES_PER_TECH = 3
+
+#: Total wall-clock timeout for the entire research phase (seconds).
+_TOTAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
 # ---------------------------------------------------------------------------
 # Research query templates — one per angle of research
@@ -177,6 +197,10 @@ class ResearchAgent(BaseAgent):
             **kwargs,
         )
         self._runbook_entries_written: int = 0
+        #: Per-technology research query counter (tech_name → queries_used).
+        self._queries_per_tech: dict[str, int] = {}
+        #: All technologies to research (set during run()).
+        self._technologies: list[str] = []
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -189,6 +213,11 @@ class ResearchAgent(BaseAgent):
     @property
     def system_prompt(self) -> str:
         return _SYSTEM_PROMPT
+
+    @property
+    def max_iterations(self) -> int:
+        """Hard cap at 10 iterations — research must never block the pipeline."""
+        return _MAX_ITERATIONS
 
     # ------------------------------------------------------------------
     # Tool schema override — expose only research + runbook meta-tools
@@ -232,17 +261,56 @@ class ResearchAgent(BaseAgent):
     async def _do_research(self, args: dict[str, Any]) -> str:
         """Execute a research query via ``llm.research()``.
 
+        Enforces a budget of ``_MAX_QUERIES_PER_TECH`` queries per technology.
+        If the budget for the matched technology is exhausted, returns a skip
+        message instead of making the LLM call.
+
         Args:
             args: Must contain ``query`` (str).
 
         Returns:
-            Research result string.
+            Research result string, or a budget-exceeded notice.
         """
         query: str = args.get("query", "").strip()
         if not query:
             return "Error: 'query' is required for research_technology."
+
+        # Match the query to a technology to enforce per-tech budget
+        matched_tech = self._match_query_to_tech(query)
+        if matched_tech:
+            used = self._queries_per_tech.get(matched_tech, 0)
+            if used >= _MAX_QUERIES_PER_TECH:
+                self._logger.info(
+                    "Research budget exhausted for '%s' (%d/%d) — skipping query: %s",
+                    matched_tech,
+                    used,
+                    _MAX_QUERIES_PER_TECH,
+                    query,
+                )
+                return (
+                    f"Budget exhausted for '{matched_tech}' "
+                    f"({used}/{_MAX_QUERIES_PER_TECH} queries used). "
+                    f"Move on to the next technology or call final_answer."
+                )
+            self._queries_per_tech[matched_tech] = used + 1
+
         self._logger.info("Research query: %s", query)
         return await self.llm.research(query)
+
+    def _match_query_to_tech(self, query: str) -> str:
+        """Find which technology a research query relates to.
+
+        Args:
+            query: The research query string.
+
+        Returns:
+            Matched technology name, or empty string if no match.
+        """
+        query_lower = query.lower()
+        for tech in self._technologies:
+            if tech.lower() in query_lower:
+                return tech
+        return ""
 
     async def _do_write_runbook_entry(self, args: dict[str, Any]) -> str:
         """Write a technique to the engagement runbook via the state store.
@@ -310,6 +378,11 @@ class ResearchAgent(BaseAgent):
         loop. The LLM calls research_technology for each query angle and
         writes findings to the runbook via write_runbook_entry.
 
+        Guardrails applied:
+        - Max 10 ReAct iterations (hard cap via ``max_iterations``).
+        - Max 3 research queries per technology (enforced in ``_do_research``).
+        - 5-minute total wall-clock timeout — returns partial results on expiry.
+
         Args:
             input_data: Accepts:
 
@@ -323,11 +396,13 @@ class ResearchAgent(BaseAgent):
             - ``summary``: LLM final_answer string.
             - ``runbook_entries_written``: count of entries added.
             - ``technologies_researched``: input technology list.
-            - ``status``: always ``"complete"`` on success.
+            - ``status``: ``"complete"`` or ``"timeout"``.
         """
         self._runbook_entries_written = 0
+        self._queries_per_tech = {}
 
         technologies: list[str] = [str(t) for t in (input_data.get("technologies") or [])]
+        self._technologies = technologies
         task_text: str = input_data.get("task", "")
 
         if not technologies:
@@ -348,32 +423,55 @@ class ResearchAgent(BaseAgent):
         for i, tech in enumerate(technologies, 1):
             parts.append(f"  {i}. {tech}")
 
-        parts.append("\nFor EACH technology, perform these research queries:")
-        for template in _RESEARCH_QUERIES:
-            parts.append(f"  - {template}")
+        parts.append(
+            f"\nBUDGET: You have a maximum of {_MAX_QUERIES_PER_TECH} research queries "
+            f"per technology and {_MAX_ITERATIONS} total iterations. Work efficiently."
+            f"\nFor each technology: research it (up to {_MAX_QUERIES_PER_TECH} queries), "
+            f"write runbook entries, then move to the next technology."
+            f"\nAfter ALL technologies are researched, IMMEDIATELY call final_answer."
+        )
 
         parts.append(
             "\nFor each query result, extract actionable techniques and write them "
             "to the runbook using write_runbook_entry. Include specific CVE IDs, "
             "exploitation steps, and severity ratings."
-            "\n\nWork through ALL technologies systematically. After researching "
-            "all technologies from all angles, return your final_answer with a "
-            "summary of what you found."
         )
 
         initial_observation = "\n".join(parts)
 
         self._logger.info(
-            "ResearchAgent starting — %d technologies: %s",
+            "ResearchAgent starting — %d technologies (budget: %d queries/tech, "
+            "%d max iterations, %ds timeout): %s",
             len(technologies),
+            _MAX_QUERIES_PER_TECH,
+            _MAX_ITERATIONS,
+            _TOTAL_TIMEOUT_SECONDS,
             technologies,
         )
 
-        final_answer = await self._react_loop(initial_observation)
+        # Wrap the ReAct loop in a wall-clock timeout so research never blocks
+        status = "complete"
+        try:
+            final_answer = await asyncio.wait_for(
+                self._react_loop(initial_observation),
+                timeout=_TOTAL_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            self._logger.warning(
+                "ResearchAgent hit %ds timeout — returning %d runbook entries collected so far",
+                _TOTAL_TIMEOUT_SECONDS,
+                self._runbook_entries_written,
+            )
+            final_answer = (
+                f"Research timed out after {_TOTAL_TIMEOUT_SECONDS}s. "
+                f"Collected {self._runbook_entries_written} runbook entries "
+                f"for technologies: {', '.join(technologies)}."
+            )
+            status = "timeout"
 
         return {
             "summary": final_answer,
             "runbook_entries_written": self._runbook_entries_written,
             "technologies_researched": technologies,
-            "status": "complete",
+            "status": status,
         }
