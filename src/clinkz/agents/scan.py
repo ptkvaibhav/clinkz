@@ -389,9 +389,10 @@ class ScanAgent(BaseAgent):
     async def _persist_tool_output(self, parsed: ToolOutput) -> None:
         """Persist discovered endpoints and paths from tool output.
 
-        Inspects the parsed output for known scan fields (``endpoints``,
-        ``paths``, ``urls``, ``parameters``) and upserts each discovery into
-        the state store as a lightweight target entry tagged for the scan phase.
+        Writes each discovery to BOTH:
+        - ``targets`` table (via ``upsert_target``) for backward compat
+        - ``endpoints`` table (via ``add_endpoint``) so the Exploit Agent
+          can pick them up via ``get_new_endpoints()``
 
         Args:
             parsed: The ToolOutput returned by a tool's parse_output().
@@ -400,38 +401,62 @@ class ScanAgent(BaseAgent):
         for field_name in ("endpoints", "urls"):
             if hasattr(parsed, field_name):
                 for url in getattr(parsed, field_name):  # type: ignore[attr-defined]
+                    url_str = str(url)
                     endpoint_data: dict[str, Any] = {
-                        "ip": str(url),
-                        "hostnames": [str(url)],
+                        "ip": url_str,
+                        "hostnames": [url_str],
                         "tags": ["endpoint", "scan"],
                     }
                     target_id = await self.state.upsert_target(self.engagement_id, endpoint_data)
+                    # Write to endpoints table for Exploit Agent polling
+                    ep_id = await self.state.add_endpoint(
+                        engagement_id=self.engagement_id,
+                        url=url_str,
+                        discovered_by=self.name,
+                    )
                     self._discovered_endpoints.append({**endpoint_data, "id": target_id})
-                    self._logger.info("Persisted endpoint: %s", url)
+                    self._logger.info(
+                        "Persisted endpoint: %s (target_id=%s, endpoint_id=%s)",
+                        url_str,
+                        target_id,
+                        ep_id,
+                    )
 
         # ffuf and directory fuzzers return a list of path strings
         if hasattr(parsed, "paths"):
             for path in parsed.paths:  # type: ignore[attr-defined]
+                path_str = str(path)
                 path_data: dict[str, Any] = {
-                    "ip": str(path),
-                    "hostnames": [str(path)],
+                    "ip": path_str,
+                    "hostnames": [path_str],
                     "tags": ["path", "scan"],
                 }
                 target_id = await self.state.upsert_target(self.engagement_id, path_data)
+                ep_id = await self.state.add_endpoint(
+                    engagement_id=self.engagement_id,
+                    url=path_str,
+                    discovered_by=self.name,
+                )
                 self._discovered_endpoints.append({**path_data, "id": target_id})
-                self._logger.info("Persisted path: %s", path)
+                self._logger.info(
+                    "Persisted path: %s (target_id=%s, endpoint_id=%s)",
+                    path_str,
+                    target_id,
+                    ep_id,
+                )
 
         # Parameter discovery tools return a list of parameter name strings
         if hasattr(parsed, "parameters"):
             for param in parsed.parameters:  # type: ignore[attr-defined]
+                param_str = str(param)
                 param_data: dict[str, Any] = {
-                    "ip": str(param),
-                    "hostnames": [str(param)],
+                    "ip": param_str,
+                    "hostnames": [param_str],
                     "tags": ["parameter", "scan"],
                 }
                 target_id = await self.state.upsert_target(self.engagement_id, param_data)
                 self._discovered_endpoints.append({**param_data, "id": target_id})
-                self._logger.info("Persisted parameter: %s", param)
+                self._logger.info("Persisted parameter: %s", param_str)
 
     # ------------------------------------------------------------------
     # Authentication helper
@@ -532,9 +557,11 @@ class ScanAgent(BaseAgent):
         """
         self._discovered_endpoints = []
 
-        # Load session cookies from state store for authenticated crawling.
-        # If no session exists but credentials are available, authenticate
-        # using WebAuthenticator (deterministic CSRF-aware flow).
+        # Load session cookies for authenticated crawling.
+        # Priority order:
+        # 1. session_cookies passed directly from orchestrator (already verified)
+        # 2. Sessions in state store (verify, re-auth if expired)
+        # 3. Credentials in input_data (authenticate from scratch)
         from clinkz.tools.auth import WebAuthenticator
 
         authenticator = WebAuthenticator(
@@ -543,47 +570,84 @@ class ScanAgent(BaseAgent):
         )
         scope_values = [str(e.value) for e in self.scope.targets]
         creds = input_data.get("credentials", [])
-        sessions = await self.state.get_sessions(self.engagement_id)
 
-        if sessions:
-            latest = sessions[-1]
-            cookies_dict: dict[str, str] = latest.get("cookies", {})
-            if cookies_dict:
-                check_url = f"http://{scope_values[0]}/" if scope_values else ""
+        # 1. Check for cookies passed directly from the orchestrator
+        direct_cookies: dict[str, str] = input_data.get("session_cookies") or {}
+        if direct_cookies and isinstance(direct_cookies, dict):
+            check_url = f"http://{scope_values[0]}/" if scope_values else ""
+            if check_url:
+                session_valid = await authenticator.verify_session(check_url, direct_cookies)
+                if session_valid:
+                    self._session_cookies = "; ".join(
+                        f"{k}={v}" for k, v in direct_cookies.items()
+                    )
+                    self._logger.info(
+                        "Using orchestrator-provided session cookies (%d cookies, verified)",
+                        len(direct_cookies),
+                    )
+                else:
+                    self._logger.warning(
+                        "Orchestrator session cookies expired — re-authenticating"
+                    )
+                    self._session_cookies = await self._authenticate_with_creds(
+                        authenticator, creds, scope_values
+                    )
+            else:
+                self._session_cookies = "; ".join(
+                    f"{k}={v}" for k, v in direct_cookies.items()
+                )
+                self._logger.info(
+                    "Using orchestrator-provided session cookies (%d, unverified)",
+                    len(direct_cookies),
+                )
 
-                if check_url:
-                    session_valid = await authenticator.verify_session(check_url, cookies_dict)
-                    if session_valid:
+        # 2. Fall back to sessions in state store
+        if not self._session_cookies:
+            sessions = await self.state.get_sessions(self.engagement_id)
+
+            if sessions:
+                latest = sessions[-1]
+                cookies_dict: dict[str, str] = latest.get("cookies", {})
+                if cookies_dict:
+                    check_url = f"http://{scope_values[0]}/" if scope_values else ""
+
+                    if check_url:
+                        session_valid = await authenticator.verify_session(
+                            check_url, cookies_dict
+                        )
+                        if session_valid:
+                            self._session_cookies = "; ".join(
+                                f"{k}={v}" for k, v in cookies_dict.items()
+                            )
+                            self._logger.info(
+                                "Verified state-store session cookies (%d cookies)",
+                                len(cookies_dict),
+                            )
+                        else:
+                            self._logger.warning(
+                                "State-store session expired — re-authenticating"
+                            )
+                            self._session_cookies = await self._authenticate_with_creds(
+                                authenticator, creds, scope_values
+                            )
+                    else:
                         self._session_cookies = "; ".join(
                             f"{k}={v}" for k, v in cookies_dict.items()
                         )
                         self._logger.info(
-                            "Verified session cookies for authenticated crawling (%d cookies)",
+                            "Loaded session cookies (unverified) for crawling (%d cookies)",
                             len(cookies_dict),
                         )
-                    else:
-                        self._logger.warning(
-                            "Session expired — re-authenticating via WebAuthenticator"
-                        )
-                        self._session_cookies = await self._authenticate_with_creds(
-                            authenticator, creds, scope_values
-                        )
-                else:
-                    # No URL to verify — use cookies as-is
-                    self._session_cookies = "; ".join(f"{k}={v}" for k, v in cookies_dict.items())
-                    self._logger.info(
-                        "Loaded session cookies (unverified) for crawling (%d cookies)",
-                        len(cookies_dict),
-                    )
-        elif creds:
-            # No session at all — authenticate from scratch using WebAuthenticator
-            self._logger.info(
-                "No existing session — authenticating via WebAuthenticator with %d credentials",
-                len(creds),
-            )
-            self._session_cookies = await self._authenticate_with_creds(
-                authenticator, creds, scope_values
-            )
+            elif creds:
+                # No session at all — authenticate from scratch
+                self._logger.info(
+                    "No existing session — authenticating via WebAuthenticator "
+                    "with %d credentials",
+                    len(creds),
+                )
+                self._session_cookies = await self._authenticate_with_creds(
+                    authenticator, creds, scope_values
+                )
 
         hosts: list[dict[str, Any]] = input_data.get("hosts") or []
         urls: list[str] = [str(u) for u in (input_data.get("urls") or [])]

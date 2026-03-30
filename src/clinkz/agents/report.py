@@ -1,19 +1,15 @@
-"""Report agent — generates professional pentest reports from engagement data.
+"""Report agent — generates simple pentest reports from engagement data.
 
-Multi-pass LLM generation:
-  Pass 1: executive summary via llm.generate_text()
-  Pass 2: enhanced finding descriptions + remediation per finding
-  Pass 3: attack narrative
+Zero LLM calls.  Pulls all findings from the state store and outputs:
+  - JSON file with structured finding data
+  - Markdown file with human-readable summary
 
-The agent processes its inbox between passes so that mid-run QUERY messages
-from the Orchestrator are incorporated.  It can also send QUERY messages to
-the Orchestrator via its outbox when it needs clarification on a finding
-before finalising the report.
+Each finding includes: title, severity, CVSS, endpoint, PoC
+(request + response), and a one-line remediation.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -24,9 +20,8 @@ from clinkz.agents.base import BaseAgent
 
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
-from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.llm.base import LLMClient
-from clinkz.models.finding import Finding
+from clinkz.models.finding import Finding, Severity
 from clinkz.models.report import ExecutiveSummary, PentestReport
 from clinkz.models.scope import EngagementScope
 from clinkz.models.target import Host
@@ -38,26 +33,20 @@ logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "report_system.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
-_QUERY_TIMEOUT_SECONDS = 30.0
-
 
 class ReportAgent(BaseAgent):
-    """Report generation agent with multi-pass LLM synthesis.
+    """Simple report agent — zero LLM calls.
 
-    Does NOT run a ReAct tool loop. Executes three sequential
-    ``generate_text()`` passes against engagement state data to assemble
-    a :class:`~clinkz.models.report.PentestReport`, optionally sending
-    QUERY messages to the Orchestrator for finding clarification.
+    Pulls findings from the state store, formats them into a JSON file
+    and a Markdown file.  No executive summary, no attack narrative,
+    no multi-pass LLM.  Completes in < 30 seconds.
 
     Args:
-        llm: LLM client (``generate_text()`` must be implemented).
-        tools: Unused — report generation is LLM-only.
+        llm: LLM client (accepted for interface compat but NOT used).
+        tools: Unused.
         scope: Engagement scope for display in the report.
-        state: SQLite state store to read findings/targets/actions from.
+        state: SQLite state store to read findings/targets from.
         engagement_id: UUID of the active engagement.
-        outbox: Optional queue for outgoing QUERY messages.  When not
-                provided a private queue is created; the caller is
-                responsible for draining it if queries need routing.
     """
 
     def __init__(
@@ -67,10 +56,11 @@ class ReportAgent(BaseAgent):
         scope: EngagementScope,
         state: StateStore,
         engagement_id: str,
-        outbox: asyncio.Queue[AgentMessage] | None = None,
         knowledge_base: KnowledgeBase | None = None,
         **kwargs: Any,
     ) -> None:
+        # Accept and discard outbox/extra kwargs for backward compat
+        kwargs.pop("outbox", None)
         super().__init__(
             llm=llm,
             tools=tools,
@@ -79,9 +69,6 @@ class ReportAgent(BaseAgent):
             engagement_id=engagement_id,
             knowledge_base=knowledge_base,
             **kwargs,
-        )
-        self._outbox: asyncio.Queue[AgentMessage] = (
-            outbox if outbox is not None else asyncio.Queue()
         )
 
     # ------------------------------------------------------------------
@@ -97,227 +84,24 @@ class ReportAgent(BaseAgent):
         return _SYSTEM_PROMPT
 
     # ------------------------------------------------------------------
-    # Orchestrator query mechanism
-    # ------------------------------------------------------------------
-
-    async def _query_orchestrator(
-        self,
-        question: str,
-        finding_id: str | None = None,
-    ) -> str:
-        """Send a QUERY to the Orchestrator and wait for a RESPONSE.
-
-        Enqueues a query in the outbox (for the lifecycle manager to
-        route onto the MessageBus) then blocks on the inbox until a
-        RESPONSE arrives or the timeout elapses.
-
-        Args:
-            question: The clarification question text.
-            finding_id: Optional UUID of the finding the question relates to.
-
-        Returns:
-            The Orchestrator's answer string, or a timeout notice.
-        """
-        query_msg = AgentMessage.query(
-            from_agent=self.name,
-            to_agent="orchestrator",
-            engagement_id=self.engagement_id,
-            content={"query": question, "finding_id": finding_id or ""},
-        )
-        await self._outbox.put(query_msg)
-        self._logger.info("Sent query to orchestrator: %s", question)
-
-        try:
-            response = await asyncio.wait_for(self._inbox.get(), timeout=_QUERY_TIMEOUT_SECONDS)
-            if response.message_type == MessageType.RESPONSE:
-                return str(response.content.get("answer", response.content))
-            return str(response.content)
-        except TimeoutError:
-            self._logger.warning("Orchestrator query timed out: %s", question)
-            return f"[No response received for: {question}]"
-
-    # ------------------------------------------------------------------
-    # Pass 1 — executive summary
-    # ------------------------------------------------------------------
-
-    async def _generate_executive_summary(
-        self,
-        findings: list[dict[str, Any]],
-        targets: list[dict[str, Any]],
-        scope_values: list[str],
-        engagement_name: str,
-    ) -> str:
-        """Generate an executive summary paragraph via llm.generate_text().
-
-        Args:
-            findings: Validated finding dicts from state store.
-            targets: Host dicts from state store.
-            scope_values: Scope target strings (e.g., ``["example.com"]``).
-            engagement_name: Human-readable engagement name.
-
-        Returns:
-            Executive summary paragraph (3–5 sentences).
-        """
-        severity_counts: dict[str, int] = {
-            "critical": 0,
-            "high": 0,
-            "medium": 0,
-            "low": 0,
-            "info": 0,
-        }
-        for f in findings:
-            sev = f.get("severity", "info").lower()
-            if sev in severity_counts:
-                severity_counts[sev] += 1
-
-        findings_list = (
-            "\n".join(
-                f"- [{f.get('severity', 'info').upper()}] {f.get('title', 'Untitled')} "
-                f"on {f.get('target', 'unknown')}"
-                for f in findings[:20]
-            )
-            or "No validated findings."
-        )
-
-        prompt = (
-            "You are writing the executive summary for a penetration test report.\n\n"
-            f"Engagement: {engagement_name}\n"
-            f"Scope: {', '.join(scope_values)}\n"
-            f"Hosts discovered: {len(targets)}\n"
-            f"Finding severity breakdown: {json.dumps(severity_counts)}\n\n"
-            f"Validated findings:\n{findings_list}\n\n"
-            "Write a concise executive summary (3–5 sentences) suitable for a "
-            "non-technical audience. Describe the overall risk posture and the most "
-            "critical issues found. Do not include specific remediation steps here."
-        )
-        return await self.llm.generate_text(prompt)
-
-    # ------------------------------------------------------------------
-    # Pass 2 — finding enhancement
-    # ------------------------------------------------------------------
-
-    async def _enhance_finding(self, finding: dict[str, Any]) -> dict[str, Any]:
-        """Enhance a single finding's description and remediation text.
-
-        Makes two ``generate_text()`` calls: one for the technical
-        description and one for the remediation recommendation.
-
-        Args:
-            finding: Finding dict from state store.
-
-        Returns:
-            Copy of the finding dict with updated ``description`` and
-            ``remediation`` values.
-        """
-        title = finding.get("title", "Untitled")
-        severity = finding.get("severity", "info").upper()
-        target = finding.get("target", "unknown")
-        evidence_json = json.dumps((finding.get("evidence") or [])[:5])
-
-        desc_prompt = (
-            "You are writing the technical description for a pentest finding.\n\n"
-            f"Finding: {title}\n"
-            f"Severity: {severity}\n"
-            f"Target: {target}\n"
-            f"Evidence: {evidence_json}\n"
-            f"Current description: {finding.get('description', '')}\n\n"
-            "Expand this into a clear, technical description (under 200 words) that "
-            "explains: (1) what the vulnerability is, (2) how it was discovered, and "
-            "(3) the technical impact if exploited. Reference the evidence provided."
-        )
-        enhanced_desc = await self.llm.generate_text(desc_prompt)
-
-        rem_prompt = (
-            "You are writing the remediation recommendation for a pentest finding.\n\n"
-            f"Finding: {title}\n"
-            f"Severity: {severity}\n"
-            f"Current recommendation: {finding.get('remediation', '')}\n\n"
-            "Write a concise, actionable remediation recommendation (2–4 sentences). "
-            "Be specific: name the exact patch, configuration change, or code fix "
-            "required. Reference industry standards (OWASP, CIS, NIST) where applicable."
-        )
-        enhanced_rem = await self.llm.generate_text(rem_prompt)
-
-        return {**finding, "description": enhanced_desc, "remediation": enhanced_rem}
-
-    # ------------------------------------------------------------------
-    # Pass 3 — attack narrative
-    # ------------------------------------------------------------------
-
-    async def _generate_narrative(
-        self,
-        findings: list[dict[str, Any]],
-        targets: list[dict[str, Any]],
-        actions: list[dict[str, Any]],
-    ) -> str:
-        """Generate the attack narrative section via llm.generate_text().
-
-        Args:
-            findings: Enhanced finding dicts.
-            targets: Host dicts from state store.
-            actions: Action log dicts from state store.
-
-        Returns:
-            Attack narrative text (4–8 sentences, past tense).
-        """
-        phases = sorted(set(a.get("phase", "unknown") for a in actions))
-        tools_used = sorted(set(a.get("tool", "") for a in actions if a.get("tool")))
-
-        findings_list = (
-            "\n".join(
-                f"- [{f.get('severity', 'info').upper()}] {f.get('title', 'Untitled')} "
-                f"({f.get('target', 'unknown')})"
-                for f in findings
-            )
-            or "No confirmed findings."
-        )
-
-        prompt = (
-            "You are writing the attack narrative for a penetration test report.\n\n"
-            f"Testing phases: {', '.join(phases) or 'unknown'}\n"
-            f"Tools used: {', '.join(tools_used) or 'none recorded'}\n"
-            f"Hosts discovered: {len(targets)}\n"
-            f"Confirmed findings:\n{findings_list}\n\n"
-            "Write a 4–8 sentence narrative (in past tense) describing how the testing "
-            "progressed: from initial reconnaissance through scanning, exploitation "
-            "attempts, and confirmed findings. Highlight any significant attack chains "
-            "or notable discoveries. Keep under 300 words."
-        )
-        return await self.llm.generate_text(prompt)
-
-    # ------------------------------------------------------------------
-    # Entry point
+    # Entry point — zero LLM calls
     # ------------------------------------------------------------------
 
     async def run(self, input_data: dict[str, Any]) -> dict[str, Any]:
-        """Generate a PentestReport from engagement state data.
+        """Generate a simple report from engagement state data.
 
-        Pulls all validated findings, targets, and actions from the state
-        store, runs three sequential LLM generation passes, then assembles
-        a :class:`~clinkz.models.report.PentestReport`.
+        Pulls all findings from the state store and writes:
+        - ``report_<engagement_id>.json`` — structured finding data
+        - ``report_<engagement_id>.md`` — human-readable markdown
 
-        The inbox is drained between each pass so that mid-run QUERY
-        messages from the Orchestrator are logged.  Use
-        :meth:`_query_orchestrator` to proactively request clarification
-        on specific findings before finalising the report.
+        No LLM calls.  No executive summary.  No attack narrative.
 
         Args:
-            input_data: Accepts the following optional keys:
-
-                - ``engagement_id``: Override engagement UUID (defaults to
-                  ``self.engagement_id``).
-                - ``engagement_name``: Human-readable name for the report
-                  header (default: ``"Penetration Test"``).
-                - ``test_start``: ISO 8601 datetime string for testing
-                  start timestamp.
-                - ``test_end``: ISO 8601 datetime string for testing end
-                  timestamp.
+            input_data: Accepts optional ``engagement_id``, ``engagement_name``.
 
         Returns:
-            Dict with keys:
-
-            - ``report``: Fully serialised :class:`PentestReport` dict.
-            - ``status``: Always ``"complete"`` on success.
+            Dict with ``report`` (PentestReport dict), ``json_path``,
+            ``markdown_path``, and ``status``.
         """
         engagement_id = input_data.get("engagement_id", self.engagement_id)
         engagement_name = input_data.get("engagement_name", "Penetration Test")
@@ -330,7 +114,7 @@ class ReportAgent(BaseAgent):
         test_end = datetime.fromisoformat(test_end_raw) if test_end_raw else now
 
         self._logger.info(
-            "ReportAgent starting for engagement '%s' (%s)",
+            "ReportAgent starting (simple mode) for '%s' (%s)",
             engagement_name,
             engagement_id,
         )
@@ -338,47 +122,22 @@ class ReportAgent(BaseAgent):
         # Pull engagement data from state store
         findings_raw = await self.state.get_findings(engagement_id, validated_only=True)
         targets_raw = await self.state.get_targets(engagement_id)
-        actions = await self.state.get_actions(engagement_id)
 
         self._logger.info(
-            "Loaded %d validated findings, %d targets, %d actions",
+            "Loaded %d validated findings, %d targets",
             len(findings_raw),
             len(targets_raw),
-            len(actions),
         )
 
-        # Pass 1: Executive summary
-        await self._process_inbox()
-        exec_overview = await self._generate_executive_summary(
-            findings_raw, targets_raw, scope_values, engagement_name
-        )
-        self._logger.info("Pass 1 (executive summary) complete")
-
-        # Pass 2: Enhance each finding's description + remediation
-        await self._process_inbox()
-        enhanced_findings: list[dict[str, Any]] = []
-        for finding in findings_raw:
-            enhanced = await self._enhance_finding(finding)
-            enhanced_findings.append(enhanced)
-        self._logger.info(
-            "Pass 2 (finding enhancement) complete — %d findings",
-            len(enhanced_findings),
-        )
-
-        # Pass 3: Attack narrative
-        await self._process_inbox()
-        narrative = await self._generate_narrative(enhanced_findings, targets_raw, actions)
-        self._logger.info("Pass 3 (attack narrative) complete")
-
-        # Parse Finding models from enhanced dicts
+        # Parse Finding models
         finding_models: list[Finding] = []
-        for fd in enhanced_findings:
+        for fd in findings_raw:
             try:
                 finding_models.append(Finding.model_validate(fd))
             except Exception as exc:
                 self._logger.warning("Could not parse finding '%s': %s", fd.get("id"), exc)
 
-        # Parse Host models from target dicts
+        # Parse Host models
         host_models: list[Host] = []
         for td in targets_raw:
             try:
@@ -386,10 +145,31 @@ class ReportAgent(BaseAgent):
             except Exception as exc:
                 self._logger.warning("Could not parse host '%s': %s", td.get("id"), exc)
 
-        # Assemble ExecutiveSummary with severity counts derived from models
-        exec_summary = ExecutiveSummary.from_findings(exec_overview, finding_models)
+        # Build severity counts for executive summary (no LLM)
+        severity_counts = {s: 0 for s in Severity}
+        for f in finding_models:
+            severity_counts[f.severity] += 1
 
-        # Assemble final PentestReport
+        severity_order = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW]
+        risk_rating = "Informational"
+        for s in severity_order:
+            if severity_counts[s] > 0:
+                risk_rating = s.value.capitalize()
+                break
+
+        exec_summary = ExecutiveSummary(
+            overview=(
+                f"Penetration test of {', '.join(scope_values)}. "
+                f"{len(finding_models)} findings identified."
+            ),
+            risk_rating=risk_rating,
+            critical_count=severity_counts[Severity.CRITICAL],
+            high_count=severity_counts[Severity.HIGH],
+            medium_count=severity_counts[Severity.MEDIUM],
+            low_count=severity_counts[Severity.LOW],
+            info_count=severity_counts[Severity.INFO],
+        )
+
         report = PentestReport(
             engagement_name=engagement_name,
             target_scope=scope_values,
@@ -398,16 +178,89 @@ class ReportAgent(BaseAgent):
             executive_summary=exec_summary,
             hosts=host_models,
             findings=finding_models,
-            methodology=narrative,
         )
 
+        report_dict = report.model_dump(mode="json")
+
+        # Write JSON output
+        json_path = Path(f"report_{engagement_id}.json")
+        json_path.write_text(json.dumps(report_dict, indent=2), encoding="utf-8")
+        self._logger.info("JSON report written to %s", json_path)
+
+        # Write Markdown output
+        md_path = Path(f"report_{engagement_id}.md")
+        md_path.write_text(
+            self._render_markdown(report, finding_models),
+            encoding="utf-8",
+        )
+        self._logger.info("Markdown report written to %s", md_path)
+
         self._logger.info(
-            "Report assembled: %d findings, risk_rating=%s",
+            "Report complete: %d findings, risk_rating=%s",
             len(report.findings),
-            report.executive_summary.risk_rating if report.executive_summary else "N/A",
+            risk_rating,
         )
 
         return {
-            "report": report.model_dump(mode="json"),
+            "report": report_dict,
+            "json_path": str(json_path),
+            "markdown_path": str(md_path),
             "status": "complete",
         }
+
+    # ------------------------------------------------------------------
+    # Markdown renderer — no LLM
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _render_markdown(report: PentestReport, findings: list[Finding]) -> str:
+        """Render a simple Markdown report.
+
+        Args:
+            report: The assembled PentestReport.
+            findings: Parsed Finding models.
+
+        Returns:
+            Markdown string.
+        """
+        lines: list[str] = [
+            f"# {report.engagement_name}",
+            "",
+            f"**Scope:** {', '.join(report.target_scope)}",
+            f"**Date:** {report.test_start:%Y-%m-%d} - {report.test_end:%Y-%m-%d}",
+            f"**Risk Rating:** {report.executive_summary.risk_rating if report.executive_summary else 'N/A'}",
+            f"**Total Findings:** {len(findings)}",
+            "",
+            "---",
+            "",
+        ]
+
+        if not findings:
+            lines.append("No validated findings.")
+            return "\n".join(lines)
+
+        for i, f in enumerate(findings, 1):
+            cvss_str = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "N/A"
+            lines.extend([
+                f"## {i}. {f.title}",
+                "",
+                f"- **Severity:** {f.severity.value.upper()}",
+                f"- **CVSS:** {cvss_str}",
+                f"- **Endpoint:** {f.target}",
+                "",
+            ])
+
+            # PoC evidence (request + response)
+            if f.evidence:
+                lines.append("**PoC:**")
+                lines.append("```")
+                for ev in f.evidence:
+                    lines.append(ev)
+                lines.append("```")
+                lines.append("")
+
+            # One-line remediation
+            lines.append(f"**Remediation:** {f.remediation or 'N/A'}")
+            lines.extend(["", "---", ""])
+
+        return "\n".join(lines)
