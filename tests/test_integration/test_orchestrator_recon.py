@@ -462,6 +462,8 @@ async def test_full_recon_engagement_via_orchestrator(tmp_path: Path) -> None:
             side_effect=lifecycle_constructor,
         ),
         patch("clinkz.orchestrator.orchestrator._POLL_INTERVAL", 0.01),
+        patch("clinkz.orchestrator.orchestrator._SCAN_WARMUP_TIMEOUT", 0.0),
+        patch("clinkz.orchestrator.orchestrator._MONITOR_INTERVAL", 0.01),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
     ):
@@ -470,9 +472,13 @@ async def test_full_recon_engagement_via_orchestrator(tmp_path: Path) -> None:
     # ── Assertion: engagement completed ──────────────────────────────────────
     assert result["status"] == "completed", f"Expected 'completed', got: {result}"
 
-    # ── Assertion: all 5 phases spun up in order ─────────────────────────────
-    assert spin_ups == ["recon", "scan", "exploit", "critic", "report"], (
-        f"Expected all 5 phases in order. Got: {spin_ups}"
+    # ── Assertion: v2 architecture — recon first, report last, concurrent middle
+    assert spin_ups[0] == "recon", f"Expected recon first. Got: {spin_ups}"
+    assert spin_ups[-1] == "report", f"Expected report last. Got: {spin_ups}"
+    concurrent = set(spin_ups[1:-1])
+    # Research may or may not be spun up depending on extracted technologies
+    assert {"scan", "exploit"}.issubset(concurrent), (
+        f"Expected scan and exploit in concurrent phase. Got: {concurrent}"
     )
     first_call = mock_lifecycle.spin_up.call_args_list[0]
     assert first_call[0][0] == "recon"
