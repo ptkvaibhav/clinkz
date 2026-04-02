@@ -118,6 +118,9 @@ class OrchestratorAgent:
         # Cross-phase re-spin counter (shared across all phases)
         self._cross_phase_respins: int = 0
 
+        # Cache for _probe_url results to avoid repeated slow HTTP HEAD requests
+        self._probe_cache: dict[str, int | None] = {}
+
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     # ------------------------------------------------------------------
@@ -559,15 +562,28 @@ class OrchestratorAgent:
                 await asyncio.sleep(_POLL_INTERVAL)
                 continue
 
+            handled_own = False
             for msg in pending:
-                if msg.from_agent != agent_type and msg.message_type != MessageType.STATUS:
-                    # Message from a different agent (e.g., a sub-task result)
-                    # Route it to the requesting agent if applicable
-                    self._logger.debug(
-                        "Received message from %s during %s phase",
-                        msg.from_agent,
-                        agent_type,
-                    )
+                # Messages from other agents must be re-queued so the
+                # correct _run_phase coroutine can process them.
+                # Only re-queue if the sender is still a running agent,
+                # otherwise the message will loop forever unclaimed.
+                if msg.from_agent != agent_type:
+                    running = self._lifecycle.get_running_agents()
+                    if msg.from_agent in running:
+                        self._logger.debug(
+                            "Re-queuing message from %s (intended for %s phase runner)",
+                            msg.from_agent,
+                            msg.from_agent,
+                        )
+                        await self._bus.requeue(ORCHESTRATOR, msg)
+                    else:
+                        self._logger.debug(
+                            "Dropping stale message from %s (agent no longer running)",
+                            msg.from_agent,
+                        )
+                    continue
+                handled_own = True
 
                 if msg.message_type in (MessageType.RESULT, "result"):
                     self._logger.info("Phase '%s' completed with result", agent_type)
@@ -608,6 +624,12 @@ class OrchestratorAgent:
                                 "status": "agent_stopped",
                                 "agent": agent_type,
                             }
+
+            # If we only re-queued other agents' messages (nothing for us),
+            # sleep to avoid a busy-loop when multiple _run_phase tasks share
+            # the same orchestrator queue.
+            if not handled_own:
+                await asyncio.sleep(_POLL_INTERVAL)
 
     # ------------------------------------------------------------------
     # Query handler (cross-phase data requests)
@@ -755,6 +777,11 @@ class OrchestratorAgent:
 
         self._logger.info("Trying default credentials for: %s", ", ".join(technologies))
 
+        # Cache login URL lookups per target to avoid repeated 5s-timeout probes
+        login_url_cache: dict[str, str | None] = {}
+        # Track tested (url, user, pass) combos to skip duplicates across technologies
+        tested_combos: set[tuple[str, str, str]] = set()
+
         for tech in technologies:
             # Seed defaults into the credential store
             cred_ids = await self._cred_store.seed_defaults(self._engagement_id, tech)
@@ -765,11 +792,23 @@ class OrchestratorAgent:
             creds = await self._cred_store.get(self._engagement_id, technology=tech)
             untested = [c for c in creds if c.valid is None]
 
+            # Find login URL once per technology (cached per target base)
+            cache_key = tech
+            if cache_key not in login_url_cache:
+                login_url_cache[cache_key] = await self._find_login_url(recon_result, tech)
+            login_url = login_url_cache[cache_key]
+            if not login_url:
+                continue
+
             for cred in untested:
-                # Find a login URL for this technology
-                login_url = await self._find_login_url(recon_result, tech)
-                if not login_url:
+                combo = (login_url, cred.username, cred.password)
+                if combo in tested_combos:
+                    self._logger.debug(
+                        "Skipping duplicate cred test: %s:%s @ %s",
+                        cred.username, "***", login_url,
+                    )
                     continue
+                tested_combos.add(combo)
 
                 # Try the credential via HTTP client
                 success = await self._attempt_login(
@@ -1135,24 +1174,31 @@ class OrchestratorAgent:
         """Send a HEAD request to *url* and return the HTTP status code.
 
         Returns ``None`` on any failure (timeout, connection refused, etc.).
-        Uses a short 5-second timeout to avoid blocking the pipeline.
+        Uses a 10-second timeout (some targets like DVWA take ~5s for HEAD).
+        Results are cached to avoid repeated slow probes of the same URL.
 
         This method is separated so that tests can trivially mock it.
         """
+        if url in self._probe_cache:
+            return self._probe_cache[url]
+
         try:
             from clinkz.tools.http_client import HTTPClientTool
 
             http = HTTPClientTool(
                 scope=self._scope,
-                timeout=5,
+                timeout=10,
                 engagement_id=self._engagement_id or "",
             )
             validated = http.validate_input({"url": url, "method": "HEAD"})
-            raw = await asyncio.wait_for(http.execute(validated), timeout=5)
+            raw = await asyncio.wait_for(http.execute(validated), timeout=10)
             parsed = http.parse_output(raw)
-            return parsed.status_code if parsed.status_code else None
+            result = parsed.status_code if parsed.status_code else None
         except Exception:
-            return None
+            result = None
+
+        self._probe_cache[url] = result
+        return result
 
     # ------------------------------------------------------------------
     # State context gathering (for LLM query responses)
