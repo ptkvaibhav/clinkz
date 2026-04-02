@@ -163,6 +163,18 @@ class MessageBus:
     # Diagnostics
     # ------------------------------------------------------------------
 
+    async def requeue(self, agent_name: str, message: AgentMessage) -> None:
+        """Put a message back into an agent's queue without persistence.
+
+        Used when a concurrent phase runner drains a message that belongs
+        to a different phase runner sharing the same queue.
+
+        Args:
+            agent_name: The agent whose queue to put the message back into.
+            message: The message to re-queue.
+        """
+        await self._queues[agent_name].put(message)
+
     def queue_size(self, agent_name: str) -> int:
         """Return the current number of messages waiting for an agent."""
         return self._queues[agent_name].qsize()
