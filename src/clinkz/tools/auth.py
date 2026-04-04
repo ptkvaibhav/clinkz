@@ -820,10 +820,9 @@ class WebAuthenticator(ToolBase):
             ):
                 return True
 
-        # Status 200 without failure keywords — tentative success
-        if status_code == 200:
-            return True
-
+        # Status 200 without any positive or negative signals is ambiguous —
+        # do NOT treat it as success (prevents false positives on root-URL
+        # fallbacks where POSTing to a non-login page always returns 200).
         return False
 
     @staticmethod
