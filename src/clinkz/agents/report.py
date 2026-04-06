@@ -120,11 +120,11 @@ class ReportAgent(BaseAgent):
         )
 
         # Pull engagement data from state store
-        findings_raw = await self.state.get_findings(engagement_id, validated_only=True)
+        findings_raw = await self.state.get_findings(engagement_id, validated_only=False)
         targets_raw = await self.state.get_targets(engagement_id)
 
         self._logger.info(
-            "Loaded %d validated findings, %d targets",
+            "Loaded %d findings, %d targets",
             len(findings_raw),
             len(targets_raw),
         )
