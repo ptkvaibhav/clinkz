@@ -241,8 +241,8 @@ class TestPerAgentLLMConfig:
         s = Settings()
         assert s.recon_llm_provider == "gemini"
         assert s.scan_llm_provider == "gemini"
-        assert s.exploit_llm_provider == "anthropic"
-        assert s.research_llm_provider == "anthropic"
+        assert s.exploit_llm_provider == "gemini"
+        assert s.research_llm_provider == "gemini"
         assert s.report_llm_provider == "gemini"
 
     def test_override_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:

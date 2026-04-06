@@ -193,6 +193,7 @@ class ScanAgent(BaseAgent):
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
         self._discovered_endpoints: list[dict[str, Any]] = []
         self._session_cookies: str = ""
+        self._auth_skip_urls: set[str] = set()  # Login URLs to never revisit after auth
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -279,6 +280,14 @@ class ScanAgent(BaseAgent):
         Returns:
             JSON-serialised HTTPClientOutput.
         """
+        # Block re-visiting login URLs after successful authentication
+        url = args.get("url", "")
+        if url and self._is_auth_skip_url(url):
+            return (
+                "SKIPPED: Already authenticated via this login URL. "
+                "Do not revisit login pages — use your session cookies instead."
+            )
+
         from clinkz.tools.http_client import HTTPClientTool
 
         http = HTTPClientTool(scope=self.scope, engagement_id=self.engagement_id)
@@ -290,6 +299,24 @@ class ScanAgent(BaseAgent):
         except Exception as exc:
             self._logger.error("http_request failed: %s", exc, exc_info=True)
             return f"http_request failed: {exc}"
+
+    def _is_auth_skip_url(self, url: str) -> bool:
+        """Check if a URL matches any login URL that should be skipped.
+
+        Normalises URLs for comparison by stripping trailing slashes and
+        query strings.
+
+        Args:
+            url: The URL to check.
+
+        Returns:
+            True if the URL should be skipped (already authenticated).
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        normalised = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+        return normalised in self._auth_skip_urls
 
     # ------------------------------------------------------------------
     # Capability resolution and execution
@@ -518,6 +545,17 @@ class ScanAgent(BaseAgent):
             )
             if result.success:
                 cookie_str = "; ".join(f"{k}={v}" for k, v in result.session_cookies.items())
+                # Add login URL (and common variants) to skip list so we
+                # never revisit login pages after successful authentication
+                if login_url:
+                    from urllib.parse import urlparse
+
+                    parsed = urlparse(login_url)
+                    normalised = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+                    self._auth_skip_urls.add(normalised)
+                    self._logger.info(
+                        "Added login URL to skip list: %s", normalised
+                    )
                 self._logger.info(
                     "Authenticated for scan via WebAuthenticator — cookies: %s",
                     list(result.session_cookies.keys()),
