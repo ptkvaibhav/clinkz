@@ -195,8 +195,8 @@ async def test_finding_descriptions_preserved(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_only_validated_findings_included(tmp_path: Path) -> None:
-    """Report only includes findings that were marked validated in state store."""
+async def test_unvalidated_findings_still_included(tmp_path: Path) -> None:
+    """Report includes all findings regardless of validation status (no Critic in v2)."""
     async with StateStore(tmp_path / "test.db") as state:
         eid = await state.create_engagement("Test", SCOPE.model_dump())
         await _seed_state(state, eid, validate=False)
@@ -205,7 +205,7 @@ async def test_only_validated_findings_included(tmp_path: Path) -> None:
         agent = ReportAgent(llm=llm, tools=[], scope=SCOPE, state=state, engagement_id=eid)
         result = await agent.run({})
 
-    assert len(result["report"]["findings"]) == 0
+    assert len(result["report"]["findings"]) == 2
     assert result["status"] == "complete"
 
 
