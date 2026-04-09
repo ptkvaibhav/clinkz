@@ -1,175 +1,64 @@
-"""Reconnaissance agent — phase 1.
+"""Deterministic Recon Agent (v2) — structured steps with LLM reasoning checkpoints.
 
-Discovers hosts, open ports, services, subdomains, and web technologies via
-dynamic capability-based tool resolution.  The agent never references tool
-names directly; instead it calls ``execute_capability`` and the ToolResolver
-finds the best available tool for the requested capability.
+Unlike the v1 ReconAgent (which ran a free-form ReAct loop), this agent
+follows a fixed sequence of tool steps with LLM analysis at key checkpoints:
 
-Flow
-----
-1. ``run()`` builds the initial observation from the task input and calls
-   ``_react_loop()``.
-2. The LLM calls ``execute_capability`` with a capability string
-   (e.g., ``"subdomain_enumeration"``).
-3. ``_execute_tool()`` intercepts the call, queries the ToolResolver, and
-   dispatches to the resolved tool.
-4. Parsed tool output is returned to the LLM and persisted to the state store.
-5. After the LLM returns a final answer, ``run()`` retrieves all persisted
-   targets and returns them alongside the summary.
+    1. Full TCP port scan          (TOOL — deterministic)
+    2. LLM analyzes port results   (REASONING checkpoint)
+    3. Service/version detection    (TOOL — deterministic)
+    4. LLM extracts tech stack     (REASONING checkpoint)
+    5. Web-specific recon           (TOOL — deterministic, conditional)
+    6. LLM synthesizes summary     (REASONING checkpoint)
+    7. Build structured result     (CODE — deterministic)
+
+Every tool call goes through the ToolResolver (never direct imports).
+Every LLM call goes through self.llm (from BaseAgent).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clinkz.agents.base import BaseAgent
+from clinkz.llm.base import LLMClient
+from clinkz.models.recon import (
+    PortScanResult,
+    ReconResult,
+    ReconService,
+    ServiceScanResult,
+    Technology,
+    TechStack,
+    WebReconResult,
+)
+from clinkz.models.scope import EngagementScope
+from clinkz.state import StateStore
+from clinkz.tools.base import ToolBase
+from clinkz.tools.resolver import ToolResolver
 
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
-from clinkz.llm.base import LLMClient, ToolCall
-from clinkz.models.scope import EngagementScope
-from clinkz.state import StateStore
-from clinkz.tools.base import ToolBase, ToolOutput
-from clinkz.tools.resolver import ToolResolver
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# System prompt — loaded once at module import from the .md file
-# ---------------------------------------------------------------------------
 
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "recon_system.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# ReconAgent
-# ---------------------------------------------------------------------------
-
-
 class ReconAgent(BaseAgent):
-    """Reconnaissance phase agent with dynamic tool discovery.
-
-    Instead of holding a fixed set of tools, the ReconAgent exposes a single
-    ``execute_capability`` meta-tool to the LLM.  When the LLM calls it, the
-    agent queries the ToolResolver for the best available tool that satisfies
-    the requested capability, executes it, and returns structured output.
-
-    This ensures:
-    - The LLM (and agent code) never hard-codes tool names.
-    - The resolver can swap in MCP tools when they become available without
-      any agent-side changes.
-    - Tests can inject a mock resolver to control tool dispatch precisely.
+    """Deterministic recon with LLM reasoning at checkpoints.
 
     Args:
-        llm: LLM client (Sonnet-tier recommended for this agent).
-        tools: Passed to BaseAgent but not directly exposed to the LLM;
-               the ToolResolver handles discovery independently.
+        llm: LLM client for reasoning checkpoints.
+        tools: Passed to BaseAgent (not used directly — resolver handles dispatch).
         scope: Engagement scope for target validation.
         state: SQLite state store.
         engagement_id: UUID of the active engagement.
-        resolver: Optional pre-built ToolResolver.  A fresh resolver is
-                  created automatically when not provided (production usage).
+        resolver: Optional pre-built ToolResolver.
+        knowledge_base: Optional knowledge base for security testing reference.
     """
-
-    #: Schema for the research meta-tool — calls LLM research() directly.
-    _RESEARCH_TECHNOLOGY_SCHEMA: dict[str, Any] = {
-        "name": "research_technology",
-        "description": (
-            "Perform live research on a specific technology, service, or version "
-            "to learn about its attack surface, common misconfigurations, and CVEs. "
-            "Returns LLM-generated intelligence — NOT a tool resolver lookup."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": (
-                        "Research query. Examples: "
-                        "'common misconfigurations in nginx 1.24', "
-                        "'default credentials for Apache Tomcat'."
-                    ),
-                },
-            },
-            "required": ["query"],
-        },
-    }
-
-    #: Schema for the http_request meta-tool — dispatches to HTTPClientTool.
-    _HTTP_REQUEST_SCHEMA: dict[str, Any] = {
-        "name": "http_request",
-        "description": (
-            "Send an arbitrary HTTP request to a target URL. Useful for probing "
-            "endpoints, testing authentication, or verifying service behaviour."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "method": {
-                    "type": "string",
-                    "description": "HTTP method (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS).",
-                    "default": "GET",
-                },
-                "url": {
-                    "type": "string",
-                    "description": "Full URL to send the request to.",
-                },
-                "headers": {
-                    "type": "object",
-                    "description": "Custom HTTP headers as key-value pairs.",
-                    "default": {},
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Request body (for POST/PUT/PATCH).",
-                    "default": "",
-                },
-                "follow_redirects": {
-                    "type": "boolean",
-                    "description": "Whether to follow HTTP redirects.",
-                    "default": False,
-                },
-            },
-            "required": ["url"],
-        },
-    }
-
-    #: Schema for the capability meta-tool exposed to the LLM.
-    _EXECUTE_CAPABILITY_SCHEMA: dict[str, Any] = {
-        "name": "execute_capability",
-        "description": (
-            "Discover and execute the best recon tool for a given capability. "
-            "Always specify the CAPABILITY you need (e.g., 'subdomain_enumeration', "
-            "'port_scanning', 'web_fingerprinting', 'waf_detection', 'http_probing'), "
-            "never a specific tool name. The system resolves the right tool automatically."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "capability": {
-                    "type": "string",
-                    "description": (
-                        "The reconnaissance capability to exercise. Examples: "
-                        "'subdomain_enumeration', 'port_scanning', 'service_detection', "
-                        "'os_fingerprinting', 'http_probing', 'web_fingerprinting', "
-                        "'waf_detection', 'dns_enumeration', 'alive_check'."
-                    ),
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": (
-                        "Arguments forwarded to the resolved tool. Common keys: "
-                        "'domain' for subdomain/DNS tools, 'target' for network tools, "
-                        "'url' for HTTP tools. Check the capability description for details."
-                    ),
-                },
-            },
-            "required": ["capability", "arguments"],
-        },
-    }
 
     def __init__(
         self,
@@ -192,7 +81,6 @@ class ReconAgent(BaseAgent):
             **kwargs,
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
-        self._discovered_hosts: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -207,273 +95,506 @@ class ReconAgent(BaseAgent):
         return _SYSTEM_PROMPT
 
     # ------------------------------------------------------------------
-    # Tool schema override — expose only the capability meta-tool
-    # ------------------------------------------------------------------
-
-    def _get_tool_schemas(self) -> list[dict[str, Any]]:
-        """Return the recon meta-tool schemas.
-
-        The LLM never sees raw tool names; it only knows how to ask for
-        capabilities.  The ToolResolver handles the name-to-tool mapping.
-
-        Returns:
-            List containing execute_capability, research_technology,
-            http_request, and shared meta-tools (request_help, tool_installation).
-        """
-        return [
-            self._EXECUTE_CAPABILITY_SCHEMA,
-            self._RESEARCH_TECHNOLOGY_SCHEMA,
-            self._HTTP_REQUEST_SCHEMA,
-        ] + self._get_shared_meta_schemas()
-
-    # ------------------------------------------------------------------
-    # Tool dispatch override — intercept execute_capability calls
-    # ------------------------------------------------------------------
-
-    async def _execute_tool(self, tool_call: ToolCall) -> str:
-        """Dispatch tool calls, intercepting meta-tools for resolution.
-
-        Args:
-            tool_call: ToolCall from the LLM.
-
-        Returns:
-            JSON-serialised tool output or an error string.
-        """
-        if tool_call.name == "execute_capability":
-            return await self._resolve_and_execute(tool_call.arguments)
-        if tool_call.name == "research_technology":
-            return await self._do_research(tool_call.arguments)
-        if tool_call.name == "http_request":
-            return await self._do_http_request(tool_call.arguments)
-        # Fallback to base class dispatch for any other tool name
-        return await super()._execute_tool(tool_call)
-
-    # ------------------------------------------------------------------
-    # Research handler — calls LLM directly, NOT tool resolver
-    # ------------------------------------------------------------------
-
-    async def _do_research(self, args: dict[str, Any]) -> str:
-        """Execute a research query via ``llm.research()``.
-
-        Args:
-            args: Must contain ``query`` (str).
-
-        Returns:
-            Research result string from the LLM.
-        """
-        query: str = args.get("query", "").strip()
-        if not query:
-            return "Error: 'query' is required for research_technology."
-        self._logger.info("Runtime research: %s", query)
-        return await self.llm.research(query)
-
-    # ------------------------------------------------------------------
-    # HTTP request handler — dispatches to HTTPClientTool directly
-    # ------------------------------------------------------------------
-
-    async def _do_http_request(self, args: dict[str, Any]) -> str:
-        """Send an HTTP request via HTTPClientTool.
-
-        Args:
-            args: HTTP request arguments (url, method, headers, body, etc.).
-
-        Returns:
-            JSON-serialised HTTPClientOutput.
-        """
-        from clinkz.tools.http_client import HTTPClientTool
-
-        http = HTTPClientTool(scope=self.scope, engagement_id=self.engagement_id)
-        try:
-            validated = http.validate_input(args)
-            raw = await http.execute(validated)
-            parsed = http.parse_output(raw)
-            return parsed.model_dump_json(indent=2)
-        except Exception as exc:
-            self._logger.error("http_request failed: %s", exc, exc_info=True)
-            return f"http_request failed: {exc}"
-
-    # ------------------------------------------------------------------
-    # Capability resolution and execution
-    # ------------------------------------------------------------------
-
-    async def _resolve_and_execute(self, args: dict[str, Any]) -> str:
-        """Resolve a capability to a tool, execute it, and persist results.
-
-        Queries the ToolResolver for the best available tool, then:
-        1. Instantiates the tool with the current scope.
-        2. Validates and runs the tool.
-        3. Logs the action to the state store.
-        4. Persists any discovered hosts/subdomains.
-
-        Args:
-            args: Must contain ``capability`` (str) and ``arguments`` (dict).
-
-        Returns:
-            JSON-serialised ToolOutput, or an error description string.
-        """
-        capability: str = args.get("capability", "").strip()
-        tool_args: dict[str, Any] = args.get("arguments") or {}
-
-        if not capability:
-            return "Error: 'capability' is required in execute_capability arguments."
-
-        match = self._resolver.find_tool(capability)
-        if match is None:
-            return (
-                f"No tool is registered for capability '{capability}'. "
-                "Try a different capability string or check the available capabilities."
-            )
-        if not match.available:
-            return (
-                f"Tool '{match.name}' is registered for capability '{capability}' "
-                "but is not installed on this system. Consider an alternative capability."
-            )
-        if match.tool_class is None:
-            return (
-                f"Tool '{match.name}' for '{capability}' has no local class "
-                "(MCP-only tools are not yet supported in this version)."
-            )
-
-        tool = match.tool_class(scope=self.scope)
-
-        action_id = await self.state.log_action(
-            engagement_id=self.engagement_id,
-            phase=self.name,
-            agent=self.__class__.__name__,
-            tool=match.name,
-            input_data=tool_args,
-        )
-
-        try:
-            self._logger.info(
-                "Resolved '%s' → '%s'; args: %s",
-                capability,
-                match.name,
-                tool_args,
-            )
-            validated = tool.validate_input(tool_args)
-            raw_output = await tool.execute(validated)
-            parsed = tool.parse_output(raw_output)
-
-            await self.state.complete_action(action_id, output_data=parsed.model_dump())
-            await self._persist_tool_output(parsed)
-
-            return parsed.model_dump_json(indent=2)
-
-        except Exception as exc:
-            self._logger.error(
-                "Tool '%s' (capability '%s') failed: %s",
-                match.name,
-                capability,
-                exc,
-                exc_info=True,
-            )
-            await self.state.complete_action(
-                action_id,
-                output_data={"error": str(exc)},
-                status="failed",
-            )
-            return f"Tool '{match.name}' failed with error: {exc}"
-
-    # ------------------------------------------------------------------
-    # State persistence helpers
-    # ------------------------------------------------------------------
-
-    async def _persist_tool_output(self, parsed: ToolOutput) -> None:
-        """Persist discovered hosts and subdomains from tool output.
-
-        Inspects the parsed output for known fields (``hosts``, ``subdomains``)
-        and upserts each discovery into the state store.
-
-        Args:
-            parsed: The ToolOutput returned by a tool's parse_output().
-        """
-        # Nmap and similar tools return a list of Host Pydantic models
-        if hasattr(parsed, "hosts"):
-            for host in parsed.hosts:  # type: ignore[attr-defined]
-                host_data: dict[str, Any] = (
-                    host.model_dump() if hasattr(host, "model_dump") else dict(host)
-                )
-                target_id = await self.state.upsert_target(self.engagement_id, host_data)
-                self._discovered_hosts.append({**host_data, "id": target_id})
-                self._logger.info("Persisted host: %s", host_data.get("ip", "unknown"))
-
-        # Subfinder and similar tools return a list of subdomain strings
-        if hasattr(parsed, "subdomains"):
-            for subdomain in parsed.subdomains:  # type: ignore[attr-defined]
-                host_data = {
-                    "ip": subdomain,
-                    "hostnames": [subdomain],
-                    "tags": ["subdomain"],
-                    "is_alive": True,
-                }
-                target_id = await self.state.upsert_target(self.engagement_id, host_data)
-                self._discovered_hosts.append({**host_data, "id": target_id})
-                self._logger.info("Persisted subdomain: %s", subdomain)
-
-    # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
 
     async def run(self, input_data: dict[str, Any]) -> dict[str, Any]:
-        """Run reconnaissance against all in-scope targets.
-
-        Builds an initial observation from ``input_data``, runs the ReAct
-        loop until the LLM signals completion, then retrieves all persisted
-        targets from the state store.
+        """Execute the 7-step deterministic recon pipeline.
 
         Args:
-            input_data: Accepts the following optional keys:
-
-                - ``targets``: list of target strings (domains, IPs, CIDRs).
-                - ``task``: free-text description of the recon task (e.g.,
-                  from the Orchestrator for a focused sub-task).
+            input_data: Must contain ``target`` (str) or ``targets`` (list[str]).
 
         Returns:
-            Dict with keys:
-
-            - ``summary``: LLM final_answer string.
-            - ``hosts``: list of all persisted host dicts (from state store).
-            - ``status``: always ``"complete"`` on success.
+            Dict with ``result`` (ReconResult dict), ``summary``, and ``status``.
         """
-        self._discovered_hosts = []
+        target = input_data.get("target") or ""
+        if not target:
+            targets = input_data.get("targets") or []
+            target = targets[0] if targets else ""
+        if not target:
+            raise ValueError("ReconAgent requires a 'target' in input_data")
 
-        targets: list[str] = [str(t) for t in (input_data.get("targets") or [])]
-        task_text: str = input_data.get("task", "")
-        scope_values: list[str] = [str(e.value) for e in self.scope.targets]
+        self._logger.info("ReconAgent v2 starting — target: %s", target)
 
-        # Build the initial observation for the LLM
-        parts: list[str] = []
-        if task_text:
-            parts.append(f"Task: {task_text}")
-        if targets:
-            parts.append(f"Primary targets: {', '.join(targets)}")
-        parts.append(f"In-scope targets: {', '.join(scope_values)}")
-        parts.append(
-            "\nYou are a REASONING-FIRST recon specialist. For each target:"
-            "\n1. Start with discovery: subdomain_enumeration, then port_scanning on live hosts."
-            "\n2. For EVERY service you find, IDENTIFY the exact version."
-            "\n3. RESEARCH every technology: research_technology(query='CVE [tech] [version]')."
-            "\n4. Check for exposed files: use http_request on "
-            "robots.txt, .git/config, .env, phpinfo.php."
-            "\n5. CONNECT findings: what do they mean together? What attack paths do they open?"
-            "\n6. Frame EVERY finding as an ATTACK RECOMMENDATION for the Exploit Agent."
-            "\n\nDo NOT just list services. REASON about what they mean and what they open up."
-            "\nWhen you have thoroughly investigated all targets, return your final_answer "
-            "with a structured summary including attack recommendations per finding."
-        )
-        initial_observation = "\n".join(parts)
+        # Step 1: Full TCP port scan (TOOL — deterministic)
+        self._logger.info("Step 1: Port scan — %s", target)
+        ports = await self._step_port_scan(target)
+        self._logger.info("Step 1 complete: %d open ports found", len(ports.open_ports))
 
+        # Step 2: LLM reviews port scan output (REASONING checkpoint)
+        self._logger.info("Step 2: LLM port analysis")
+        await self._llm_analyze_ports(ports)  # reasoning checkpoint — logged
+        self._logger.info("Step 2 complete: port analysis ready")
+
+        # Step 3: Service + version detection on open ports (TOOL — deterministic)
+        self._logger.info("Step 3: Service scan on %d ports", len(ports.open_ports))
+        services = await self._step_service_scan(target, ports.open_ports)
+        self._logger.info("Step 3 complete: %d services identified", len(services.services))
+
+        # Step 4: LLM extracts technology fingerprint (REASONING checkpoint)
+        self._logger.info("Step 4: LLM technology extraction")
+        tech_stack = await self._llm_extract_technologies(services)
         self._logger.info(
-            "ReconAgent starting — primary targets: %s",
-            targets or scope_values,
+            "Step 4 complete: %d technologies identified",
+            len(tech_stack.technologies),
         )
 
-        final_answer = await self._react_loop(initial_observation)
-        hosts_data = await self.state.get_targets(self.engagement_id)
+        # Step 5: HTTP-specific recon if web services found (TOOL — deterministic)
+        web_info: WebReconResult | None = None
+        has_http = any(s.is_http for s in services.services)
+        if has_http:
+            self._logger.info("Step 5: Web recon (HTTP services detected)")
+            web_info = await self._step_web_recon(target, services)
+            self._logger.info("Step 5 complete: web recon done")
+        else:
+            self._logger.info("Step 5: Skipped (no HTTP services)")
+
+        # Step 6: LLM synthesizes final recon summary (REASONING checkpoint)
+        self._logger.info("Step 6: LLM synthesis")
+        summary = await self._llm_synthesize(ports, services, web_info, tech_stack)
+        self._logger.info("Step 6 complete: synthesis ready")
+
+        # Step 7: Structure output (CODE — deterministic)
+        self._logger.info("Step 7: Building result")
+        result = self._build_result(target, ports, services, web_info, tech_stack, summary)
+        self._logger.info("ReconAgent v2 complete for %s", target)
 
         return {
-            "summary": final_answer,
-            "hosts": hosts_data,
+            "result": result.model_dump(),
+            "summary": summary,
             "status": "complete",
         }
+
+    # ------------------------------------------------------------------
+    # Step 1: Port Scan
+    # ------------------------------------------------------------------
+
+    async def _step_port_scan(self, target: str) -> PortScanResult:
+        """Run a full TCP port scan using the tool resolver fallback chain.
+
+        Tries tools from ``find_tools_ranked("port_scanning")`` in order.
+        Returns a PortScanResult even if all tools fail (empty open_ports).
+
+        Args:
+            target: IP or hostname to scan.
+
+        Returns:
+            PortScanResult with discovered open ports.
+        """
+        ranked = self._resolver.find_tools_ranked("port_scanning")
+        if not ranked:
+            self._logger.warning("No port scanning tools available")
+            return PortScanResult(tool_used="none")
+
+        for tool_name in ranked:
+            self._logger.info("Port scan: trying %s", tool_name)
+            match = self._resolver.find_tool("port_scanning")
+            if match is None or match.tool_class is None or not match.available:
+                continue
+
+            try:
+                tool = match.tool_class(scope=self.scope)
+                args = tool.validate_input(
+                    {
+                        "target": target,
+                        "ports": "1-65535",
+                        "flags": "-sS --min-rate 1000",
+                    }
+                )
+                raw = await tool.execute(args)
+                parsed = tool.parse_output(raw)
+
+                # Extract open ports from the parsed output
+                open_ports: list[int] = []
+                if hasattr(parsed, "open_ports"):
+                    open_ports = list(parsed.open_ports)
+                elif hasattr(parsed, "hosts"):
+                    for host in parsed.hosts:
+                        for svc in getattr(host, "services", []):
+                            open_ports.append(svc.port)
+                    open_ports = sorted(set(open_ports))
+
+                await self.state.log_action(
+                    engagement_id=self.engagement_id,
+                    phase="recon",
+                    agent="ReconAgent",
+                    tool=tool_name,
+                    input_data={"target": target, "step": "port_scan"},
+                )
+
+                return PortScanResult(
+                    open_ports=open_ports,
+                    raw_output=raw,
+                    tool_used=tool_name,
+                )
+
+            except Exception as exc:
+                self._logger.warning("Port scan with %s failed: %s", tool_name, exc)
+                continue
+
+        self._logger.warning("All port scanning tools failed for %s", target)
+        return PortScanResult(tool_used="none")
+
+    # ------------------------------------------------------------------
+    # Step 2: LLM Analyze Ports
+    # ------------------------------------------------------------------
+
+    async def _llm_analyze_ports(self, ports: PortScanResult) -> str:
+        """Send port scan results to LLM for analysis.
+
+        Args:
+            ports: Structured port scan result.
+
+        Returns:
+            LLM analysis text.
+        """
+        if not ports.open_ports:
+            return "No open ports found. The host may be firewalled or down."
+
+        prompt = (
+            "You are analyzing port scan results for a penetration test. "
+            f"Open ports found: {ports.open_ports}\n"
+            f"Tool used: {ports.tool_used}\n\n"
+            "Identify:\n"
+            "1. Notable open ports and their likely services\n"
+            "2. Any unusual port combinations that suggest specific infrastructure\n"
+            "3. Priority services to investigate further\n"
+            "Respond concisely."
+        )
+        return await self.llm.generate_text(prompt)
+
+    # ------------------------------------------------------------------
+    # Step 3: Service Scan
+    # ------------------------------------------------------------------
+
+    async def _step_service_scan(self, target: str, open_ports: list[int]) -> ServiceScanResult:
+        """Run service/version detection on discovered open ports.
+
+        Uses nmap -sV -sC on the specific ports (not a full 65535 re-scan).
+
+        Args:
+            target: IP or hostname.
+            open_ports: List of port numbers to fingerprint.
+
+        Returns:
+            ServiceScanResult with service details.
+        """
+        if not open_ports:
+            return ServiceScanResult(tool_used="none")
+
+        match = self._resolver.find_tool("service_detection")
+        if match is None or match.tool_class is None or not match.available:
+            self._logger.warning("No service detection tool available")
+            return ServiceScanResult(tool_used="none")
+
+        port_spec = ",".join(str(p) for p in open_ports)
+        try:
+            tool = match.tool_class(scope=self.scope)
+            args = tool.validate_input(
+                {
+                    "target": target,
+                    "ports": port_spec,
+                    "flags": "-sV -sC",
+                }
+            )
+            raw = await tool.execute(args)
+            parsed = tool.parse_output(raw)
+
+            # Convert parsed hosts/services into ReconService objects
+            services: list[ReconService] = []
+            if hasattr(parsed, "hosts"):
+                for host in parsed.hosts:
+                    for svc in getattr(host, "services", []):
+                        scripts_text = ""
+                        if hasattr(svc, "scripts") and svc.scripts:
+                            scripts_text = json.dumps(svc.scripts)
+                        services.append(
+                            ReconService(
+                                port=svc.port,
+                                protocol=str(getattr(svc, "protocol", "tcp")),
+                                service_name=getattr(svc, "name", ""),
+                                version=(
+                                    getattr(svc, "version", None) or getattr(svc, "product", None)
+                                ),
+                                scripts_output=scripts_text or None,
+                            )
+                        )
+
+            await self.state.log_action(
+                engagement_id=self.engagement_id,
+                phase="recon",
+                agent="ReconAgent",
+                tool=match.name,
+                input_data={"target": target, "ports": port_spec, "step": "service_scan"},
+            )
+
+            return ServiceScanResult(
+                services=services,
+                raw_output=raw,
+                tool_used=match.name,
+            )
+
+        except Exception as exc:
+            self._logger.error("Service scan failed: %s", exc)
+            return ServiceScanResult(tool_used="none")
+
+    # ------------------------------------------------------------------
+    # Step 4: LLM Extract Technologies
+    # ------------------------------------------------------------------
+
+    async def _llm_extract_technologies(self, services: ServiceScanResult) -> TechStack:
+        """Ask LLM to extract the technology stack from service scan results.
+
+        Args:
+            services: Structured service scan result.
+
+        Returns:
+            TechStack with identified technologies.
+        """
+        if not services.services:
+            return TechStack()
+
+        service_descriptions = []
+        for svc in services.services:
+            desc = f"Port {svc.port}/{svc.protocol}: {svc.service_name}"
+            if svc.version:
+                desc += f" (version: {svc.version})"
+            if svc.scripts_output:
+                desc += f" [scripts: {svc.scripts_output[:500]}]"
+            service_descriptions.append(desc)
+
+        prompt = (
+            "Extract the complete technology stack from these service scan results.\n"
+            "For each technology, provide: name, version (if known), category "
+            "(web_server, language, framework, database, os, other).\n"
+            "Respond as a JSON array of objects with keys: name, version, category.\n\n"
+            "Services:\n" + "\n".join(service_descriptions) + "\n\n"
+            "JSON array:"
+        )
+
+        response = await self.llm.generate_text(prompt)
+
+        # Parse LLM JSON response into TechStack
+        try:
+            # Try to extract JSON from the response
+            json_start = response.find("[")
+            json_end = response.rfind("]") + 1
+            if json_start >= 0 and json_end > json_start:
+                tech_list = json.loads(response[json_start:json_end])
+            else:
+                tech_list = json.loads(response)
+
+            technologies = []
+            for item in tech_list:
+                if isinstance(item, dict):
+                    technologies.append(
+                        Technology(
+                            name=item.get("name", "unknown"),
+                            version=item.get("version"),
+                            category=item.get("category", "other"),
+                        )
+                    )
+            return TechStack(technologies=technologies)
+
+        except (json.JSONDecodeError, TypeError, KeyError) as exc:
+            self._logger.warning("Failed to parse LLM tech stack response: %s", exc)
+            return TechStack()
+
+    # ------------------------------------------------------------------
+    # Step 5: Web Recon
+    # ------------------------------------------------------------------
+
+    async def _step_web_recon(self, target: str, services: ServiceScanResult) -> WebReconResult:
+        """Run HTTP-specific recon tools on web services.
+
+        For each HTTP service:
+        1. WhatWeb/httpx for fingerprinting (via tool resolver)
+        2. wafw00f for WAF detection
+        3. Extract response headers via HTTP GET
+
+        Args:
+            target: IP or hostname.
+            services: Service scan results (filtered to HTTP services).
+
+        Returns:
+            WebReconResult with fingerprint, WAF, and header data.
+        """
+        http_services = [s for s in services.services if s.is_http]
+        if not http_services:
+            return WebReconResult()
+
+        fingerprints: list[dict[str, Any]] = []
+        technologies_found: list[str] = []
+        headers: dict[str, str] = {}
+        waf_detected = False
+        waf_name: str | None = None
+
+        for svc in http_services:
+            scheme = "https" if svc.port in {443, 8443} or "ssl" in svc.service_name else "http"
+            url = f"{scheme}://{target}:{svc.port}"
+
+            # 1. Web fingerprinting (whatweb/httpx)
+            fp_match = self._resolver.find_tool("web_fingerprinting")
+            if fp_match and fp_match.available and fp_match.tool_class:
+                try:
+                    fp_tool = fp_match.tool_class(scope=self.scope)
+                    fp_args = fp_tool.validate_input({"target": url})
+                    fp_raw = await fp_tool.execute(fp_args)
+                    fp_parsed = fp_tool.parse_output(fp_raw)
+
+                    fp_data = fp_parsed.model_dump()
+                    fingerprints.append({"url": url, "tool": fp_match.name, "data": fp_data})
+
+                    # Extract technologies from whatweb/httpx results
+                    if hasattr(fp_parsed, "results"):
+                        for r in fp_parsed.results:
+                            if hasattr(r, "technologies"):
+                                technologies_found.extend(r.technologies)
+                            if hasattr(r, "tech"):
+                                technologies_found.extend(r.tech)
+
+                    self._logger.info("Fingerprinted %s with %s", url, fp_match.name)
+                except Exception as exc:
+                    self._logger.warning("Fingerprinting %s failed: %s", url, exc)
+
+            # 2. WAF detection
+            waf_match = self._resolver.find_tool("waf_detection")
+            if waf_match and waf_match.available and waf_match.tool_class:
+                try:
+                    waf_tool = waf_match.tool_class(scope=self.scope)
+                    waf_args = waf_tool.validate_input({"target": url})
+                    waf_raw = await waf_tool.execute(waf_args)
+                    waf_parsed = waf_tool.parse_output(waf_raw)
+
+                    if hasattr(waf_parsed, "results"):
+                        for wr in waf_parsed.results:
+                            if getattr(wr, "waf_detected", False):
+                                waf_detected = True
+                                waf_name = getattr(wr, "waf_name", None)
+
+                    self._logger.info("WAF check on %s: detected=%s", url, waf_detected)
+                except Exception as exc:
+                    self._logger.warning("WAF detection on %s failed: %s", url, exc)
+
+            # 3. HTTP headers via simple GET
+            try:
+                from clinkz.tools.http_client import HTTPClientTool
+
+                http_tool = HTTPClientTool(scope=self.scope, engagement_id=self.engagement_id)
+                http_args = http_tool.validate_input({"url": url, "method": "GET"})
+                http_raw = await http_tool.execute(http_args)
+                http_parsed = http_tool.parse_output(http_raw)
+                if hasattr(http_parsed, "response_headers"):
+                    headers.update(http_parsed.response_headers)
+                self._logger.info("Collected headers from %s", url)
+            except Exception as exc:
+                self._logger.warning("Header collection from %s failed: %s", url, exc)
+
+        # Deduplicate technologies
+        technologies_found = sorted(set(technologies_found))
+
+        return WebReconResult(
+            fingerprints=fingerprints,
+            waf_detected=waf_detected,
+            waf_name=waf_name,
+            headers=headers,
+            technologies_found=technologies_found,
+        )
+
+    # ------------------------------------------------------------------
+    # Step 6: LLM Synthesize
+    # ------------------------------------------------------------------
+
+    async def _llm_synthesize(
+        self,
+        ports: PortScanResult,
+        services: ServiceScanResult,
+        web_info: WebReconResult | None,
+        tech_stack: TechStack,
+    ) -> str:
+        """Synthesize all recon data into a final summary.
+
+        Args:
+            ports: Port scan results.
+            services: Service scan results.
+            web_info: Web recon results (None if no HTTP services).
+            tech_stack: Extracted technology stack.
+
+        Returns:
+            LLM-generated recon summary with attack surface and next steps.
+        """
+        parts = [
+            f"Open ports: {ports.open_ports}",
+            f"Services: {[(s.port, s.service_name, s.version) for s in services.services]}",
+            f"Tech stack: {[(t.name, t.version, t.category) for t in tech_stack.technologies]}",
+        ]
+        if web_info:
+            parts.append(f"WAF detected: {web_info.waf_detected} ({web_info.waf_name or 'N/A'})")
+            parts.append(f"Web technologies: {web_info.technologies_found}")
+            if web_info.headers:
+                security_headers = {
+                    k: v
+                    for k, v in web_info.headers.items()
+                    if any(
+                        h in k.lower()
+                        for h in [
+                            "x-frame",
+                            "x-content",
+                            "strict-transport",
+                            "content-security",
+                            "x-xss",
+                            "server",
+                            "x-powered",
+                        ]
+                    )
+                }
+                parts.append(f"Security headers: {security_headers}")
+
+        prompt = (
+            "You are synthesizing reconnaissance results for a penetration test.\n"
+            "Based on the following data, provide:\n"
+            "1. Attack surface overview\n"
+            "2. Key risk areas and potential vulnerabilities\n"
+            "3. Recommended next steps for scanning and exploitation\n"
+            "4. Priority targets\n\n"
+            "Data:\n" + "\n".join(parts) + "\n\n"
+            "Provide a concise but thorough synthesis."
+        )
+        return await self.llm.generate_text(prompt)
+
+    # ------------------------------------------------------------------
+    # Step 7: Build Result
+    # ------------------------------------------------------------------
+
+    def _build_result(
+        self,
+        target: str,
+        ports: PortScanResult,
+        services: ServiceScanResult,
+        web_info: WebReconResult | None,
+        tech_stack: TechStack,
+        summary: str,
+    ) -> ReconResult:
+        """Assemble all data into the final ReconResult.
+
+        Pure code — no LLM or tool calls.
+
+        Args:
+            target: The scan target.
+            ports: Port scan results.
+            services: Service scan results.
+            web_info: Web recon results (or None).
+            tech_stack: Extracted technology stack.
+            summary: LLM synthesis summary.
+
+        Returns:
+            ReconResult ready for consumption by Orchestrator/downstream agents.
+        """
+        return ReconResult(
+            target=target,
+            ports=ports,
+            services=services,
+            web_info=web_info,
+            tech_stack=tech_stack,
+            llm_summary=summary,
+        )
