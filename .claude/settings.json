@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "PreCommit": [
+      {
+        "type": "command",
+        "command": "ruff check src/ --fix && ruff format src/"
+      }
+    ]
+  }
+}
