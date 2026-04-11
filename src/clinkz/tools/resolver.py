@@ -36,6 +36,7 @@ import importlib
 import logging
 import shutil
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -100,6 +101,22 @@ _CAPABILITY_KEYWORDS: dict[str, list[str]] = {
     "sql_injection_testing": ["sql inject", "sqli", "sqlmap"],
     "sqli_detection": ["sqli detect", "blind sql"],
     "database_fingerprinting": ["database fingerprint", "db fingerprint"],
+}
+
+# ---------------------------------------------------------------------------
+# Tool fallback chains — ranked preference order per capability.
+# Agents request a capability; the resolver tries tools in this order.
+# ---------------------------------------------------------------------------
+
+TOOL_CHAINS: dict[str, list[str]] = {
+    "web_crawling": ["katana", "gospider", "hakrawler", "zap_spider"],
+    "directory_fuzzing": ["ffuf", "gobuster", "feroxbuster", "dirsearch"],
+    "port_scanning": ["nmap", "masscan", "rustscan"],
+    "vulnerability_scanning": ["nuclei", "nikto", "zap_active"],
+    "sql_injection_testing": ["sqlmap", "ghauri"],
+    "web_fingerprinting": ["whatweb", "wappalyzer", "httpx"],
+    "waf_detection": ["wafw00f"],
+    "subdomain_discovery": ["subfinder", "amass", "knockpy"],
 }
 
 # ---------------------------------------------------------------------------
@@ -442,6 +459,108 @@ class ToolResolver:
             if entry["name"] == tool_name:
                 return self._mcp_clients.get(entry["server_key"])
         return None
+
+    # ------------------------------------------------------------------
+    # Fallback chain API
+    # ------------------------------------------------------------------
+
+    def find_tools_ranked(self, capability: str) -> list[str]:
+        """Return available tool names from the fallback chain for a capability.
+
+        Tools are returned in preference order (first = best). Only tools
+        that are currently available (binary found) are included.
+
+        Args:
+            capability: Capability key from TOOL_CHAINS (e.g. "port_scanning").
+
+        Returns:
+            List of available tool names in ranked order. Empty list if the
+            capability is unknown or no tools are available.
+        """
+        chain = TOOL_CHAINS.get(capability, [])
+        return [name for name in chain if self.is_available(name)]
+
+    async def try_until_sufficient(
+        self,
+        capability: str,
+        min_results: int,
+        run_fn: Callable[..., Any],
+        *args: Any,
+    ) -> tuple[str, Any]:
+        """Try each tool in a fallback chain until output meets threshold.
+
+        Calls ``await run_fn(tool_name, *args)`` for each available tool in
+        the chain. The *run_fn* must return a result whose length (or other
+        measure) the caller uses to decide sufficiency — if ``len(result)``
+        meets *min_results*, the search stops.
+
+        If no tool meets the threshold, returns whichever tool produced the
+        best (largest) result.
+
+        Args:
+            capability: Capability key from TOOL_CHAINS.
+            min_results: Minimum number of results considered sufficient.
+            run_fn: Async callable ``(tool_name, *args) -> result``.
+            *args: Extra arguments forwarded to *run_fn*.
+
+        Returns:
+            Tuple of (tool_name, result) for the first sufficient tool, or
+            the best result seen if none met the threshold.
+
+        Raises:
+            ValueError: If no tools are available for the capability.
+        """
+        ranked = self.find_tools_ranked(capability)
+        if not ranked:
+            raise ValueError(f"No available tools for capability '{capability}'")
+
+        best_tool = ranked[0]
+        best_result: Any = None
+
+        for tool_name in ranked:
+            try:
+                result = await run_fn(tool_name, *args)
+            except Exception as exc:
+                logger.warning(
+                    "Resolver: %s failed for capability '%s': %s",
+                    tool_name,
+                    capability,
+                    exc,
+                )
+                continue
+
+            # Track best result seen
+            try:
+                result_size = len(result) if result is not None else 0
+            except TypeError:
+                result_size = 1 if result else 0
+
+            if best_result is None:
+                best_tool, best_result = tool_name, result
+
+            try:
+                best_size = len(best_result) if best_result is not None else 0
+            except TypeError:
+                best_size = 1 if best_result else 0
+
+            if result_size > best_size:
+                best_tool, best_result = tool_name, result
+
+            if result_size >= min_results:
+                logger.info(
+                    "Resolver: %s sufficient for '%s' (%d results)",
+                    tool_name,
+                    capability,
+                    result_size,
+                )
+                return tool_name, result
+
+        logger.info(
+            "Resolver: no tool met threshold for '%s', returning best: %s",
+            capability,
+            best_tool,
+        )
+        return best_tool, best_result
 
     # ------------------------------------------------------------------
     # Internal helpers

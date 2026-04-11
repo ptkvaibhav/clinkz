@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from clinkz.agents.recon import ReconAgent
+from clinkz.agents.recon_v1 import ReconAgent
 from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
@@ -357,7 +357,7 @@ async def _run_recon_agent(
 ) -> None:
     """Instantiate and run a real ReconAgent; send its RESULT to the Orchestrator bus."""
     mock_resolver = _make_mock_resolver()
-    with patch("clinkz.agents.recon.ToolResolver", return_value=mock_resolver):
+    with patch("clinkz.agents.recon_v1.ToolResolver", return_value=mock_resolver):
         agent = ReconAgent(
             llm=llm,
             tools=[],
@@ -721,10 +721,14 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
         from clinkz.agents.crawl import CrawlAgent
         import clinkz.orchestrator.lifecycle as _lifecycle_mod
 
-        _patched_classes = {**_lifecycle_mod._AGENT_CLASSES, "scan": CrawlAgent}
+        _patched_classes = {
+            **_lifecycle_mod._AGENT_CLASSES,
+            "scan": CrawlAgent,
+            "recon": ReconAgent,  # use v1 ReconAgent
+        }
 
         with (
-            patch("clinkz.agents.recon.ToolResolver", return_value=_make_mock_resolver()),
+            patch("clinkz.agents.recon_v1.ToolResolver", return_value=_make_mock_resolver()),
             patch("clinkz.orchestrator.lifecycle._AGENT_CLASSES", _patched_classes),
         ):
             mgr = AgentLifecycleManager(
