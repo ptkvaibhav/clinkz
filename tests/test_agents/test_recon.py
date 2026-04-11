@@ -18,9 +18,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
-from clinkz.agents.recon import ReconAgent
+from clinkz.agents.recon_v1 import ReconAgent
 from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
@@ -274,7 +272,7 @@ def _make_mock_resolver() -> ToolResolver:
     """Return a MagicMock resolver that maps capabilities to mock tool classes."""
     from unittest.mock import MagicMock
 
-    _MAP: dict[str, tuple[type[ToolBase], str]] = {
+    cap_map: dict[str, tuple[type[ToolBase], str]] = {
         "subdomain_enumeration": (_MockSubfinderTool, "subfinder"),
         "port_scanning": (_MockNmapTool, "nmap"),
         "web_fingerprinting": (_MockWhatwebTool, "whatweb"),
@@ -283,7 +281,7 @@ def _make_mock_resolver() -> ToolResolver:
     resolver = MagicMock(spec=ToolResolver)
 
     def _find_tool(capability: str) -> ToolMatch | None:
-        entry = _MAP.get(capability)
+        entry = cap_map.get(capability)
         if entry is None:
             return None
         cls, name = entry
@@ -594,8 +592,15 @@ async def test_lifecycle_sends_result_to_orchestrator_bus(tmp_path: Path) -> Non
     bus = MessageBus(state=state)
     mock_resolver = _make_mock_resolver()
 
-    # Patch ToolResolver so the agent's default ToolResolver() is our mock
-    with patch("clinkz.agents.recon.ToolResolver", return_value=mock_resolver):
+    # Patch ToolResolver in the v1 module and the lifecycle agent class map
+    # so the lifecycle manager uses the v1 ReconAgent (this file tests v1).
+    from clinkz.orchestrator import lifecycle as _lc
+
+    patched_classes = {**_lc._AGENT_CLASSES, "recon": ReconAgent}
+    with (
+        patch("clinkz.agents.recon_v1.ToolResolver", return_value=mock_resolver),
+        patch.object(_lc, "_AGENT_CLASSES", patched_classes),
+    ):
         mgr = AgentLifecycleManager(
             bus=bus,
             llm=MockReconLLM(),

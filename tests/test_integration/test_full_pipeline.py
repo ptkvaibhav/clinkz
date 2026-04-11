@@ -30,7 +30,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from clinkz.agents.exploit import ExploitAgent
-from clinkz.agents.recon import ReconAgent
+from clinkz.agents.recon_v1 import ReconAgent
 from clinkz.agents.report import ReportAgent
 from clinkz.agents.research import ResearchAgent
 from clinkz.agents.scan import ScanAgent
@@ -734,7 +734,7 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
 
         if agent_type == "recon":
             mock_resolver = _make_mock_recon_resolver()
-            with patch("clinkz.agents.recon.ToolResolver", return_value=mock_resolver):
+            with patch("clinkz.agents.recon_v1.ToolResolver", return_value=mock_resolver):
                 agent = ReconAgent(llm=llm, tools=[], scope=scope, state=state, engagement_id=eid)
                 result = await agent.run(task_msg.content)
 
