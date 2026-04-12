@@ -71,6 +71,8 @@ Thumbs.db
 # Clinkz
 reports/
 outputs/
+*.db
+!tests/fixtures/**/*.db
 *.html
 *.pdf
 !src/**/templates/*.html
