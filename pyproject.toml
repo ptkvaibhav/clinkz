@@ -54,6 +54,9 @@ packages = ["src/clinkz"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: live integration tests requiring external services (DVWA, network tools)",
+]
 
 [tool.ruff]
 line-length = 100
