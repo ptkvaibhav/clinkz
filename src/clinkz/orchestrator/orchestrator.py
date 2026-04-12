@@ -37,7 +37,9 @@ from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.config import settings
 from clinkz.credentials.store import CredentialStore
+from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
+from clinkz.knowledge.seed_playbook import seed_tier1_tests
 from clinkz.llm.base import LLMClient
 from clinkz.llm.factory import get_llm_client
 from clinkz.models.scope import EngagementScope
@@ -115,6 +117,9 @@ class OrchestratorAgent:
         self._scope: EngagementScope | None = None
         self._engagement_id: str | None = None
 
+        # Persistent knowledge base (created during run())
+        self._persistent_kb: PersistentKnowledgeBase | None = None
+
         # Cross-phase re-spin counter (shared across all phases)
         self._cross_phase_respins: int = 0
 
@@ -151,6 +156,16 @@ class OrchestratorAgent:
             bus = MessageBus(state=state)
             knowledge_base = KnowledgeBase()
             self._logger.info("KnowledgeBase loaded: %s", knowledge_base.stats())
+
+            # Initialize persistent knowledge base and seed Tier 1 tests
+            persistent_kb = await PersistentKnowledgeBase.create(
+                str(self._db_path).replace(".db", "_knowledge.db")
+                if str(self._db_path) != ":memory:"
+                else "clinkz_knowledge.db"
+            )
+            await seed_tier1_tests(persistent_kb)
+            self._persistent_kb = persistent_kb
+            self._logger.info("PersistentKB initialised and Tier 1 tests seeded")
 
             # Build per-agent LLM clients from env-var config
             agent_llms = self._build_agent_llms()
@@ -208,6 +223,9 @@ class OrchestratorAgent:
                 # Extract technologies for the Research Agent
                 technologies = self._extract_technologies(recon_result)
 
+                # Query persistent KB for playbook entries matching tech stack
+                await self._log_playbook_matches(persistent_kb, technologies)
+
                 # Prepare session cookies for authenticated agents
                 cookies: dict[str, str] = {}
                 authenticated_as = ""
@@ -264,6 +282,8 @@ class OrchestratorAgent:
                 summary["status"] = "failed"
                 summary["error"] = str(exc)
                 return summary
+            finally:
+                await persistent_kb.close()
 
             await state.update_engagement_status(engagement_id, "completed")
 
@@ -829,7 +849,8 @@ class OrchestratorAgent:
         """Extract technology names from recon results.
 
         Searches multiple levels of the result dict:
-        1. Top-level ``tech`` / ``technologies`` / ``tech_stack`` keys.
+        0. v2 ReconResult format: ``result.tech_stack.technologies`` (list of dicts).
+        1. Top-level ``tech`` / ``technologies`` / ``tech_stack`` keys (v1 format).
         2. Nested host/service dicts (``hosts[].services[].product``).
         3. Free-text ``summary`` field — regex-matches common technology names.
 
@@ -843,7 +864,31 @@ class OrchestratorAgent:
 
         techs: set[str] = set()
 
-        # Direct tech lists
+        # v2 ReconResult format: result.tech_stack.technologies is list of dicts
+        nested_result = recon_result.get("result")
+        if isinstance(nested_result, dict):
+            ts = nested_result.get("tech_stack")
+            if isinstance(ts, dict):
+                for tech_item in ts.get("technologies", []):
+                    if isinstance(tech_item, dict):
+                        name = tech_item.get("name", "").strip()
+                        version = tech_item.get("version") or ""
+                        if name:
+                            tech_str = f"{name} {version}".strip().lower()
+                            techs.add(tech_str)
+            # Also extract from nested services
+            svc_data = nested_result.get("services")
+            if isinstance(svc_data, dict):
+                for svc in svc_data.get("services", []):
+                    if isinstance(svc, dict):
+                        svc_name = svc.get("service_name", "").strip()
+                        version = (svc.get("version") or "").strip()
+                        if svc_name and svc_name not in ("tcp", "udp", "unknown", ""):
+                            techs.add(svc_name.lower())
+                        if version:
+                            techs.add(f"{svc_name} {version}".strip().lower())
+
+        # Direct tech lists (v1 format)
         for key in ("tech", "technologies", "tech_stack"):
             val = recon_result.get(key)
             if isinstance(val, list):
@@ -920,6 +965,57 @@ class OrchestratorAgent:
         techs.discard("")
 
         return sorted(techs)
+
+    async def _log_playbook_matches(
+        self,
+        persistent_kb: PersistentKnowledgeBase,
+        technologies: list[str],
+    ) -> None:
+        """Query persistent KB for playbook entries matching discovered tech stack.
+
+        Logs Tier 1 universal entries and Tier 2 technology-specific entries
+        that match the discovered technologies. This helps downstream agents
+        prioritize their testing.
+
+        Args:
+            persistent_kb: The persistent knowledge base instance.
+            technologies: List of technology name strings from recon.
+        """
+        try:
+            # Tier 1 universal tests (always applicable)
+            tier1 = await persistent_kb.get_tier1_tests()
+            self._logger.info(
+                "Playbook: %d Tier 1 universal tests available", len(tier1)
+            )
+
+            # Tier 2 tech-matched tests for each discovered technology
+            matched_count = 0
+            for tech in technologies:
+                tier2 = await persistent_kb.get_tier2_tests(tech)
+                if tier2:
+                    matched_count += len(tier2)
+                    self._logger.info(
+                        "Playbook: %d Tier 2 entries matched for '%s': %s",
+                        len(tier2),
+                        tech,
+                        [e["technique_name"] for e in tier2[:5]],
+                    )
+
+            # Also query by full technology string for broader matches
+            for tech in technologies:
+                entries = await persistent_kb.get_playbook_for_technology(tech)
+                for entry in entries:
+                    if entry.get("tier") not in (1, 2):
+                        matched_count += 1
+
+            self._logger.info(
+                "Playbook summary: %d Tier 1 + %d tech-matched entries for %d technologies",
+                len(tier1),
+                matched_count,
+                len(technologies),
+            )
+        except Exception as exc:
+            self._logger.warning("Playbook matching failed: %s", exc)
 
     async def _find_login_url(
         self,
