@@ -539,6 +539,12 @@ class BaseAgent(ABC):
         _consecutive_same_calls: int = 0
         _max_same_calls = 3
 
+        # URL-level repetition tracking: catches same-URL GETs across
+        # different tool names (e.g. http_request GET /login vs
+        # execute_capability web_crawling /login)
+        _url_visit_counts: dict[str, int] = {}
+        _max_same_url_visits = 3
+
         for iteration in range(limit):
             self._logger.debug("ReAct iteration %d/%d", iteration + 1, limit)
 
@@ -614,6 +620,31 @@ class BaseAgent(ABC):
                     _last_call_key = None
                     _consecutive_same_calls = 0
 
+                # --- URL-level repetition detection ---
+                # Catches the same URL being hit across different tools/methods
+                _target_url = self._extract_url_from_tool_call(action.tool_call)
+                if _target_url:
+                    _url_visit_counts[_target_url] = _url_visit_counts.get(_target_url, 0) + 1
+                    if _url_visit_counts[_target_url] >= _max_same_url_visits:
+                        self._logger.warning(
+                            "Agent '%s' visited URL '%s' %d times — injecting redirect",
+                            self.name,
+                            _target_url,
+                            _url_visit_counts[_target_url],
+                        )
+                        self.messages.append(
+                            LLMMessage(
+                                role="system",
+                                content=(
+                                    f"You have visited the URL '{_target_url}' "
+                                    f"{_url_visit_counts[_target_url]} times across "
+                                    "different tool calls. STOP requesting this URL. "
+                                    "Move on to other targets or return your findings."
+                                ),
+                            )
+                        )
+                        _url_visit_counts[_target_url] = 0
+
                 tool_result = await self._execute_tool(action.tool_call)
 
                 # Track consecutive failures for the same tool+error
@@ -668,6 +699,38 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------
     # Tool execution
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_url_from_tool_call(tool_call: ToolCall) -> str | None:
+        """Extract a normalised URL from a tool call for repetition detection.
+
+        Checks common argument keys (url, target) and nested arguments dicts
+        used by capability meta-tools.  Returns None if no URL is found.
+
+        Args:
+            tool_call: The ToolCall to inspect.
+
+        Returns:
+            Normalised URL string (scheme://host/path, no query/trailing slash),
+            or None.
+        """
+        from urllib.parse import urlparse
+
+        args = tool_call.arguments
+        # Direct url arg (http_request, crawl tools)
+        url = args.get("url") or args.get("target") or ""
+        # Nested inside execute_capability arguments
+        if not url and "arguments" in args and isinstance(args["arguments"], dict):
+            url = args["arguments"].get("url") or args["arguments"].get("target") or ""
+        if not url or not isinstance(url, str):
+            return None
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+        except Exception:
+            pass
+        return None
 
     async def _execute_tool(self, tool_call: ToolCall) -> str:
         """Dispatch a tool call and return the result as a JSON string.
