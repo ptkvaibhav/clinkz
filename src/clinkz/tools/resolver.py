@@ -101,6 +101,7 @@ _CAPABILITY_KEYWORDS: dict[str, list[str]] = {
     "sql_injection_testing": ["sql inject", "sqli", "sqlmap"],
     "sqli_detection": ["sqli detect", "blind sql"],
     "database_fingerprinting": ["database fingerprint", "db fingerprint"],
+    "http_request": ["http request", "http client", "http get", "http post"],
 }
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,7 @@ TOOL_CHAINS: dict[str, list[str]] = {
     "web_fingerprinting": ["whatweb", "wappalyzer", "httpx"],
     "waf_detection": ["wafw00f"],
     "subdomain_discovery": ["subfinder", "amass", "knockpy"],
+    "http_request": ["http_client"],
 }
 
 # ---------------------------------------------------------------------------

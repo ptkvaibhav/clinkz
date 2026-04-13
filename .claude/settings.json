@@ -1,9 +1,14 @@
 {
   "hooks": {
-    "PreCommit": [
+    "PreToolUse": [
       {
-        "type": "command",
-        "command": "ruff check src/ --fix && ruff format src/"
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'INPUT=$(cat); CMD=$(echo \"$INPUT\" | jq -r \".tool_input.command // empty\"); if echo \"$CMD\" | grep -q \"git commit\"; then echo \"Running ruff before commit...\" >&2; cd \"$(echo \"$INPUT\" | jq -r \".cwd\")\" && ruff check src/ --fix >&2 && ruff format src/ >&2 || { echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"ruff check/format failed. Fix lint errors before committing.\\\"}\"; exit 0; }; fi; echo \"{\\\"decision\\\": \\\"approve\\\"}\"'"
+          }
+        ]
       }
     ]
   }

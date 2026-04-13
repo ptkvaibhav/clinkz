@@ -112,6 +112,16 @@ class ReconAgent(BaseAgent):
             targets = input_data.get("targets") or []
             target = targets[0] if targets else ""
         if not target:
+            # Extract from scope dict (as passed by the Orchestrator)
+            scope_data = input_data.get("scope") or {}
+            scope_targets = scope_data.get("targets") or []
+            if scope_targets:
+                target = (
+                    scope_targets[0].get("value", "")
+                    if isinstance(scope_targets[0], dict)
+                    else str(scope_targets[0])
+                )
+        if not target:
             raise ValueError("ReconAgent requires a 'target' in input_data")
 
         self._logger.info("ReconAgent v2 starting — target: %s", target)
@@ -160,7 +170,7 @@ class ReconAgent(BaseAgent):
         self._logger.info("ReconAgent v2 complete for %s", target)
 
         return {
-            "result": result.model_dump(),
+            "result": result.model_dump(mode="json"),
             "summary": summary,
             "status": "complete",
         }
@@ -476,17 +486,21 @@ class ReconAgent(BaseAgent):
                 except Exception as exc:
                     self._logger.warning("WAF detection on %s failed: %s", url, exc)
 
-            # 3. HTTP headers via simple GET
+            # 3. HTTP headers via simple GET (resolved dynamically)
             try:
-                from clinkz.tools.http_client import HTTPClientTool
-
-                http_tool = HTTPClientTool(scope=self.scope, engagement_id=self.engagement_id)
-                http_args = http_tool.validate_input({"url": url, "method": "GET"})
-                http_raw = await http_tool.execute(http_args)
-                http_parsed = http_tool.parse_output(http_raw)
-                if hasattr(http_parsed, "response_headers"):
-                    headers.update(http_parsed.response_headers)
-                self._logger.info("Collected headers from %s", url)
+                http_match = self._resolver.find_tool("http_request")
+                if http_match and http_match.available and http_match.tool_class:
+                    http_tool = http_match.tool_class(
+                        scope=self.scope, engagement_id=self.engagement_id
+                    )
+                    http_args = http_tool.validate_input({"url": url, "method": "GET"})
+                    http_raw = await http_tool.execute(http_args)
+                    http_parsed = http_tool.parse_output(http_raw)
+                    if hasattr(http_parsed, "response_headers"):
+                        headers.update(http_parsed.response_headers)
+                    self._logger.info("Collected headers from %s", url)
+                else:
+                    self._logger.warning("No http_request tool available for header collection")
             except Exception as exc:
                 self._logger.warning("Header collection from %s failed: %s", url, exc)
 

@@ -1,45 +1,32 @@
 # Clinkz — Agentic AI Penetration Testing System
 
 ## What This Is
-An autonomous, multi-agent AI system that performs end-to-end black-box penetration testing. It takes a target scope (IPs/domains) as input and produces a professional pentest report as output, with no human intervention in between. Agents use **deterministic execution steps with LLM reasoning at checkpoints** — code controls what tests run and in what order, while the LLM analyzes responses, crafts context-aware bypasses, and makes strategic decisions.
+An autonomous, multi-agent AI system that performs end-to-end black-box penetration testing. It takes a target scope (IPs/domains) as input and produces a professional pentest report as output, with no human intervention in between. Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamically discovering and executing tools as needed.
 
-## Core Architecture: Deterministic Steps + LLM Checkpoints
+## Core Architecture: LLM-Mediated Multi-Agent System
 
-### The Pattern
-Unlike free-form ReAct loops, Clinkz v2 uses a hybrid approach:
-- **Deterministic steps**: Code defines what tools run, what tests execute, and in what order. Each agent has explicit `_step_*` or `_test_*` methods.
-- **LLM checkpoints**: At defined points, the LLM analyzes tool output, plans next actions, extracts intelligence, and reasons through results. The LLM never controls the execution loop directly.
-- **Persistent Knowledge Base** (`clinkz_knowledge.db`): A separate SQLite database that persists across engagements. Contains a 3-tier unified test plan:
-  - **Tier 1 (Universal)**: Run on EVERY engagement — port scan, crawl, fuzz, OWASP Top 10 checks
-  - **Tier 2 (Technology-matched)**: Run when tech fingerprint matches (e.g., "Apache 2.4.x → test CVE-2019-0211")
-  - **Tier 3 (Experimental)**: New techniques from Research Agent, kept if successful
-- **Tool fallback chains**: Every capability has a ranked list of tools via `ToolResolver`. If the first tool's output is insufficient, the next in the chain is tried automatically.
-- **Post-engagement learning**: Technique success/failure is recorded to the persistent KB after every engagement, informing future tests.
-
-### The Orchestrator
+### The Orchestrator Pattern
 All inter-agent communication flows through a central **Orchestrator Agent**. No agent talks directly to another. The Orchestrator:
 - Receives the engagement scope and defines the mission
-- Controls agent lifecycle (spin up/down)
-- Routes messages between agents
-- Manages concurrent execution phases
-- Triggers post-engagement KB commits
-
-### Concurrent Execution Model
-```
-Recon (sequential) → Default Credential Check → Scan + Research + Exploit (concurrent) → Report (sequential)
-```
-- **Recon** runs first, sequentially — must complete before anything else starts
-- **Scan**, **Research**, and **Exploit** run concurrently, sharing state through the engagement DB
-- **Report** runs last, sequentially, after all concurrent agents complete
+- Spins up phase agents dynamically as needed
+- Routes messages between agents (e.g., Exploit Agent asks for more recon → Orchestrator sends task to Recon Agent → routes result back)
+- Monitors progress and decides when phases are complete
+- Shuts down agents when their work is done
+- Can spin agents back up if a later phase needs them (e.g., re-activating Recon Agent because Exploit Agent found a new subdomain)
+- Triggers the Report Agent when exploitation is complete
+- Maintains the global engagement context that all agents contribute to
 
 ### Agent Lifecycle
-1. Engagement starts → Orchestrator parses scope, enforces boundaries
-2. Orchestrator spins up **Recon Agent** (sequential) → waits for completion
-3. Default credential check via **WebAuthenticator** (deterministic)
-4. Orchestrator starts **Scan + Research + Exploit** agents concurrently
-5. Orchestrator monitors completion → stops all when done
-6. Orchestrator spins up **Report Agent** (sequential)
-7. Post-engagement: commit technique results to persistent KB
+Agents are **not** all running from the start. The Orchestrator spins them up on demand:
+1. Engagement starts → Orchestrator spins up **Recon Agent**
+2. Recon completes → Orchestrator reviews findings, spins up **Scan Agent**
+3. Scan completes → Orchestrator reviews, spins up **Exploit Agent**
+4. Exploit Agent needs more recon → Orchestrator re-spins **Recon Agent** for targeted task
+5. Recon responds → Orchestrator routes result back to **Exploit Agent**
+6. Exploitation complete → Orchestrator spins up **Report Agent**
+7. Report done → Orchestrator delivers final output, shuts everything down
+
+This is NOT a linear pipeline. The Orchestrator can spin up any agent at any time based on what's happening. Multiple agents CAN run concurrently if the Orchestrator decides that's optimal.
 
 ### Message Format
 All agent communication uses a standard message envelope:
@@ -55,110 +42,95 @@ class AgentMessage(BaseModel):
     timestamp: datetime
 ```
 
+### Agent Communication Flow Example
+```
+Exploit Agent → Orchestrator: "I found subdomain api-internal.target.com in a
+    response header. I need it enumerated before I can test it."
+Orchestrator (LLM reasons): "This is a recon task. Recon Agent is not running.
+    I'll spin it up with a targeted task."
+Orchestrator → Recon Agent: "Enumerate api-internal.target.com — ports, services,
+    tech stack. Report back."
+Recon Agent (runs tools, completes): → Orchestrator: "Here are the results:
+    3 open ports, nginx 1.24, Node.js API backend."
+Orchestrator → Exploit Agent: "Recon complete for api-internal.target.com.
+    Here are the findings: [data]"
+Exploit Agent continues exploitation with new intel.
+```
+
 ## Agents
 
 ### Orchestrator Agent
 - **Role**: Central coordinator and message router
-- **LLM**: Uses the most capable model for strategic reasoning
+- **LLM**: Uses the most capable model (Opus/o3) for strategic reasoning
 - **Has access to**: Full engagement state, all agent messages, engagement scope
 - **Decides**: Which agents to spin up/down, how to route messages, when engagement is complete
 - **Does NOT**: Execute tools directly. It delegates ALL tool work to phase agents.
 
 ### Recon Agent
 - **Role**: Reconnaissance and information gathering specialist
-- **Pattern**: 5 deterministic steps with LLM reasoning at checkpoints
-  - Step 1: Port scan all ports (TOOL — nmap first, rustscan fallback)
-  - Step 2: LLM reviews port scan output (REASONING)
-  - Step 3: Service + version scan on open ports (TOOL — nmap -sV -sC)
-  - Step 4: LLM reviews, extracts technology list (REASONING)
-  - Step 5: Structure output → Orchestrator (CODE)
+- **Goal**: Given a target, discover as much as possible — subdomains, services, tech stack, OSINT, leaked credentials, organizational intelligence
+- **Tool discovery**: Researches what tools it needs at runtime. Checks for MCP servers first, falls back to local CLI tools.
+- **Can be spun up multiple times**: Once for initial recon, again later if another agent discovers new targets
 
 ### Scan Agent
 - **Role**: Crawling, fuzzing, and attack surface mapping
-- **Pattern**: Tool-driven with LLM supervision and fallback chains
-  - Step 1: LLM plans scan strategy based on identified services (PLANNING)
-  - Step 2: Service-specific scan methods:
-    - HTTP → crawl (katana→gospider fallback) + fuzz (ffuf→gobuster fallback)
-    - FTP → enumerate (nmap scripts, manual probe)
-    - SSH → version check, auth methods
-    - SMB → share listing, null session
-    - Database → connection test, default creds
-  - Step 3: LLM reviews each tool output, structures into DB (REASONING)
-  - Step 4: LLM checkpoint — sufficient coverage? If not → next tool in fallback chain
-  - Step 5: Output endpoints + analysis to shared state DB (CODE)
-
-### Research Agent (NEW in v2)
-- **Role**: Persistent intelligence brain — cross-engagement knowledge synthesis
-- **Pattern**: Concurrent, persistent brain that enriches the engagement
-  - Step 1: Query persistent KB for existing knowledge on each technology
-  - Step 2: Research NEW vulns via web search (CVEs, HackerOne, blogs, Reddit)
-  - Step 3: LLM synthesizes into actionable techniques → runbook entries
-  - Step 4: Query related technologies from persistent KB
-  - Step 5: LLM adapts past techniques for current target
-  - Step 6: Write entries to per-engagement runbook AND persistent playbook
-  - Ongoing: As Scan discovers new services/tech → research those too
+- **Goal**: Given recon results, map every endpoint, parameter, and input vector. Identify suspicious behaviors and anomalies.
+- **Tool discovery**: Same as Recon — researches and picks tools dynamically
+- **Communicates back**: Can ask Orchestrator to task Recon Agent for additional enumeration if it finds new targets during crawling
 
 ### Exploit Agent
-- **Role**: Exploitation specialist with deterministic test methods
-- **Pattern**: LLM plans → deterministic `_test_*` methods execute → LLM reasons through results
-  - Step 1: LLM PLANS exploits — reviews scan data + runbook (PLANNING)
-  - Step 2: Execute planned exploits via deterministic methods:
-    - Tier 1: `_test_*` methods for WSTG coverage (universal)
-    - Tier 2: Technology-specific tests from persistent playbook
-    - Tier 3: Research Agent techniques from runbook (experimental)
-  - Step 3: LLM reasons through results — retry, bypass, adapt (REASONING)
-  - Step 4: Results to findings DB (CODE)
-  - After: Record technique success/failure to persistent KB
+- **Role**: Exploitation specialist
+- **Goal**: Given scan results and attack surface map, research exploits for the identified technologies, attempt exploitation, validate findings, chain exploits for maximum impact
+- **Runtime research**: Searches the web for CVEs, bug bounty writeups, PoC exploits specific to each identified technology
+- **Communicates back**: Frequently asks Orchestrator to task Recon/Scan agents for additional intel
 
 ### Report Agent
 - **Role**: Report generation specialist
-- **Goal**: Pull all findings from DB, generate professional report
-- **Output**: For each finding — title, severity, CVSS, endpoint, PoC (request+response), LLM-generated remediation
-- **Formats**: JSON + Markdown
+- **Goal**: Transform all engagement data into a professional pentest report
+- **Multi-pass**: Assembles data → generates narrative → synthesizes remediation → quality review → renders PDF/HTML/JSON
+- **Can query other agents**: If a finding needs clarification or additional evidence, asks via Orchestrator
 
 ### Critic Agent
 - **Role**: Quality assurance — validates findings before they enter the report
 - **Reviews**: CVSS scoring accuracy, false positive elimination, evidence completeness, reproduction steps
 - **Can reject findings**: Sends them back to Exploit Agent for re-validation via Orchestrator
 
-## Tool Execution: Fallback Chains + Dynamic Discovery
+## Tool Execution: Dynamic Discovery
 
-### Tool Chains
-Every capability has a ranked fallback chain:
-```python
-TOOL_CHAINS = {
-    "web_crawling": ["katana", "gospider", "hakrawler", "zap_spider"],
-    "directory_fuzzing": ["ffuf", "gobuster", "feroxbuster", "dirsearch"],
-    "port_scanning": ["nmap", "masscan", "rustscan"],
-    "vulnerability_scanning": ["nuclei", "nikto", "zap_active"],
-    "sql_injection_testing": ["sqlmap", "ghauri"],
-    "web_fingerprinting": ["whatweb", "wappalyzer", "httpx"],
-    "waf_detection": ["wafw00f"],
-}
-```
+### How Agents Find and Use Tools
+Agents do NOT have hardcoded tool lists. When an agent needs to perform an action:
+
+1. **LLM Reasoning**: The agent's LLM decides what capability it needs (e.g., "I need to scan ports on this host")
+2. **Tool Research**: The agent checks what's available:
+   a. Query the Tool Resolver for locally installed tools matching the need
+   b. Check for available MCP servers that provide the capability
+   c. If nothing found, use LLM web search to research what tool would work and how to use it
+3. **Execution**:
+   a. If MCP server available → connect as MCP client and call the tool
+   b. If local CLI tool available → execute via subprocess, parse output using existing parsers
+   c. If neither → agent reports to Orchestrator that it lacks the capability
 
 ### Tool Resolver (src/clinkz/tools/resolver.py)
 Central component that agents query to find tools:
-- `find_tools_ranked(capability)` → returns tools in preference order, skipping unavailable ones
-- `try_until_sufficient(capability, min_results, ...)` → tries each tool in the chain until output meets threshold
-- Maintains a registry of locally installed tools (ToolBase wrappers)
+- Maintains a registry of locally installed tools (our existing ToolBase wrappers)
 - Discovers running MCP servers on known endpoints
-- **Tool substitutability principle**: No hard dependency on any single tool. Every capability has alternatives.
+- Returns tool availability and connection method (mcp / local / unavailable)
+- Agents call resolver.find_tool(capability="port_scanning") not resolver.get("nmap")
 
 ### Existing Tool Wrappers
-The existing ToolBase parsers (nmap, subfinder, httpx, etc.) serve as the local execution backend. They are called by the Tool Resolver when an agent needs a locally installed tool.
+The existing ToolBase parsers (nmap, subfinder, httpx, etc.) serve as the local execution backend. They are NOT thrown away — they become one execution path that the Tool Resolver can offer.
 
 ## Tech Stack
 - Python 3.12+ with asyncio for concurrency
-- **LLM-agnostic design** — all LLM calls go through `src/clinkz/llm/base.py`
-- **Per-agent LLM provider selection** via config:
-  - Gemini 2.5 Flash — Recon, Scan, and Report agents (fast, cost-effective)
-  - Claude Opus — Exploit and Research agents (deep reasoning)
-  - LLM provider set via config: `LLM_PROVIDER=gemini` / `anthropic` / `openai` / `ollama`
-  - Per-agent override supported
+- **LLM-agnostic design** — all LLM calls go through `src/clinkz/llm/client.py`
+- Supported LLM backends (implement in order):
+  1. OpenAI API (GPT-4o / GPT-4o-mini) — first implementation
+  2. Anthropic API (Claude Sonnet / Opus) — add second
+  3. Google Gemini API (Flash / Pro) — add third
+  4. Ollama (local models) — add last, for offline/privacy use cases
+- LLM provider is set via config: `LLM_PROVIDER=openai` / `anthropic` / `gemini` / `ollama`
 - MCP Python SDK (`mcp[cli]`) for tool server/client protocol
-- SQLite for engagement state store + message store
-- Separate SQLite DB (`clinkz_knowledge.db`) for persistent knowledge base
+- SQLite for engagement state store + message store (upgrade to PostgreSQL later)
 - Docker for sandboxed tool execution
 - WeasyPrint + Jinja2 for PDF/HTML report rendering
 - Typer for CLI interface
@@ -167,29 +139,8 @@ The existing ToolBase parsers (nmap, subfinder, httpx, etc.) serve as the local 
 ```
 clinkz/
 ├── CLAUDE.md
-├── CLINKZ_V2_IMPLEMENTATION.md
 ├── pyproject.toml
 ├── README.md
-├── .claude/
-│   ├── settings.json               # Hooks config (PreCommit: ruff check + format)
-│   ├── commands/
-│   │   ├── run-dvwa.md             # /project:run-dvwa — full DVWA pipeline test
-│   │   ├── test-skill.md           # /project:test-skill <name> — test specific skill
-│   │   ├── add-tool.md             # /project:add-tool <name> — scaffold tool wrapper
-│   │   └── review-findings.md      # /project:review-findings — review engagement output
-│   ├── agents/
-│   │   ├── implement-agent.md      # Agent: implement phase agent (v2 pattern)
-│   │   ├── implement-kb.md         # Agent: build persistent KB infrastructure
-│   │   ├── implement-tools.md      # Agent: create tool wrappers + fallback chains
-│   │   ├── integrate-pipeline.md   # Agent: wire agents into Orchestrator
-│   │   └── run-engagement.md       # Agent: execute + validate full pipeline
-│   └── skills/
-│       ├── v2-architecture/
-│       │   └── SKILL.md            # Load v2 architecture context
-│       ├── wstg-methodology/
-│       │   └── SKILL.md            # Load OWASP WSTG methodology context
-│       └── tool-patterns/
-│           └── SKILL.md            # Load ToolBase wrapper patterns
 ├── src/
 │   ├── clinkz/
 │   │   ├── __init__.py
@@ -208,20 +159,20 @@ clinkz/
 │   │   │
 │   │   ├── agents/
 │   │   │   ├── __init__.py
-│   │   │   ├── base.py             # Base agent class with deterministic steps + LLM checkpoints
+│   │   │   ├── base.py             # Base agent class with message handling + ReAct loop
 │   │   │   ├── recon.py            # Reconnaissance agent
 │   │   │   ├── scan.py             # Scanning/crawling/fuzzing agent
 │   │   │   ├── crawl.py            # Crawl agent (Katana/ffuf integration)
 │   │   │   ├── exploit.py          # Exploitation agent
-│   │   │   ├── research.py         # Research agent (persistent KB integration)
 │   │   │   ├── report.py           # Report generation agent
 │   │   │   ├── critic.py           # Finding validation agent
+│   │   │   ├── research.py         # Research agent — persistent KB + cross-engagement learning
 │   │   │   └── prompts/
 │   │   │       ├── recon_system.md
 │   │   │       ├── scan_system.md
 │   │   │       ├── exploit_system.md
-│   │   │       ├── research_system.md
 │   │   │       ├── report_system.md
+│   │   │       ├── research_system.md  # Research agent system prompt
 │   │   │       └── critic_system.md
 │   │   │
 │   │   ├── comms/
@@ -238,13 +189,15 @@ clinkz/
 │   │   │   ├── __init__.py
 │   │   │   ├── query.py            # MITRE ATT&CK + OWASP WSTG knowledge base queries
 │   │   │   ├── persistent_kb.py    # Cross-engagement persistent knowledge base
-│   │   │   └── seed_playbook.py    # Tier 1/2/3 seed data for persistent KB
+│   │   │   ├── seed_playbook.py    # Tier 1 universal test seeder
+│   │   │   ├── payload_loader.py   # Payload list loader for exploit methods
+│   │   │   └── skills_loader.py    # OWASP WSTG skills file loader
 │   │   │
 │   │   ├── llm/
 │   │   │   ├── __init__.py
 │   │   │   ├── base.py             # Abstract LLMClient interface
 │   │   │   ├── openai_client.py    # OpenAI GPT-4o / GPT-4o-mini
-│   │   │   ├── anthropic_client.py # Claude Sonnet / Opus
+│   │   │   ├── anthropic_client.py # Claude Sonnet / Opus (stub)
 │   │   │   ├── gemini_client.py    # Gemini Flash / Pro
 │   │   │   ├── ollama_client.py    # Local models via Ollama (stub)
 │   │   │   └── factory.py          # Returns correct client based on config
@@ -252,7 +205,7 @@ clinkz/
 │   │   ├── tools/
 │   │   │   ├── __init__.py
 │   │   │   ├── base.py             # ToolBase ABC (local CLI tool wrapper)
-│   │   │   ├── resolver.py         # Tool Resolver — fallback chains + ranked discovery
+│   │   │   ├── resolver.py         # Tool Resolver — finds tools by capability
 │   │   │   ├── mcp_client.py       # MCP client for connecting to MCP tool servers
 │   │   │   ├── installer.py        # Tool availability checker and installer
 │   │   │   ├── http_client.py      # Built-in HTTP client tool
@@ -265,7 +218,8 @@ clinkz/
 │   │   │   ├── httpx_tool.py       # httpx wrapper (local)
 │   │   │   ├── katana.py           # Katana crawler wrapper (local)
 │   │   │   ├── whatweb.py          # WhatWeb wrapper (local)
-│   │   │   └── wafw00f.py          # WAF detection wrapper (local)
+│   │   │   ├── wafw00f.py          # WAF detection wrapper (local)
+│   │   │   └── auth.py             # WebAuthenticator — default credential testing
 │   │   │
 │   │   ├── research/
 │   │   │   ├── __init__.py
@@ -276,7 +230,8 @@ clinkz/
 │   │   │   ├── scope.py            # Scope/engagement config models
 │   │   │   ├── finding.py          # Vulnerability finding model
 │   │   │   ├── target.py           # Target/host/service models
-│   │   │   └── report.py           # Report data models
+│   │   │   ├── report.py           # Report data models
+│   │   │   └── recon.py            # Recon agent data models (v2)
 │   │   │
 │   │   └── reporting/
 │   │       ├── __init__.py
@@ -323,13 +278,11 @@ clinkz/
 ## Key Design Decisions
 - **LLM-mediated comms**: Agents NEVER talk directly to each other. All messages go through the Orchestrator. The Orchestrator LLM decides how to route.
 - **Dynamic lifecycle**: Agents are spun up and shut down by the Orchestrator as needed. An agent can be re-activated if a later phase needs it.
-- **Deterministic phases + LLM reasoning at checkpoints**: Code controls what tests run and in what order. LLM analyzes responses and crafts context-aware bypasses. NOT free-form iteration.
-- **Behavior-observation-first exploitation**: Observe application behavior before attempting exploits. Payload-list iteration alone is insufficient.
-- **Persistent cross-engagement learning**: Technique success/failure recorded to KB. What worked on Apache 2.4 last month informs today's test.
-- **Tool substitutability**: Every capability has a ranked fallback chain. No hard dependency on any single tool.
+- **Dynamic tool discovery**: Agents research what tools they need at runtime. They use the Tool Resolver to check MCP servers first, then local CLI tools. No hardcoded tool lists in agent code.
 - **LLM-agnostic**: All LLM calls go through `llm/base.py`. Never import openai/anthropic/etc directly in agent code.
 - **Existing parsers preserved**: The ToolBase wrappers and their parse_output() implementations are the local execution backend. They are called by the Tool Resolver when an agent needs a locally installed tool.
 - Tool wrappers return Pydantic models, never raw strings
+- The agent ReAct loop is: Observe → Reason (LLM) → Act (tool/message) → Reflect (evaluate)
 - All LLM calls go through a single client wrapper that handles retries, logging, and token tracking
 - Scope enforcement: every tool execution validates targets against scope before running
 
@@ -339,8 +292,6 @@ clinkz/
 - NEVER scan targets outside the defined scope
 - NEVER have agents communicate directly — all comms go through Orchestrator
 - NEVER hardcode tool names in agent code — agents describe capabilities they need, the Tool Resolver finds the right tool
-- NEVER use free-form LLM loops for exploit execution — use deterministic `_test_*` methods with LLM reasoning at checkpoints only
-- ALWAYS record technique results to persistent KB after exploitation
 - All tool outputs must be parsed into structured Pydantic models
 - Test tool wrappers against real tool output (save sample outputs in tests/fixtures/)
 - Keep agent system prompts in separate .md files under prompts/ directories
