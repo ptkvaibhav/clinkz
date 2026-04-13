@@ -108,15 +108,14 @@ async def test_recon_v2_against_dvwa(tmp_path: Path) -> None:
         # 2. HTTP service detected
         services = recon["services"]["services"]
         http_services = [
-            s for s in services
+            s
+            for s in services
             if s.get("is_http") or s.get("service_name", "").lower() in ("http", "https")
         ]
         assert http_services, f"No HTTP service found in services: {services}"
 
         # 3. tech_stack contains Apache and PHP (DVWA's stack)
-        tech_names = [
-            t["name"].lower() for t in recon["tech_stack"]["technologies"]
-        ]
+        tech_names = [t["name"].lower() for t in recon["tech_stack"]["technologies"]]
         assert any("apache" in t for t in tech_names), (
             f"Expected 'apache' in tech_stack, got: {tech_names}"
         )
@@ -136,9 +135,7 @@ async def test_recon_v2_against_dvwa(tmp_path: Path) -> None:
         # 6. Query persistent KB for playbook entries matching "Apache"
         apache_entries = await persistent_kb.get_playbook_for_technology("Apache")
         tier1_entries = [e for e in apache_entries if e.get("tier") == 1]
-        assert tier1_entries, (
-            "Expected Tier 1 playbook entries for Apache, got none"
-        )
+        assert tier1_entries, "Expected Tier 1 playbook entries for Apache, got none"
         print(f"\nPlaybook: {len(tier1_entries)} Tier 1 entries match 'Apache':")
         for entry in tier1_entries[:5]:
             print(f"  - {entry['technique_name']}: {entry.get('technique_description', '')}")

@@ -228,7 +228,8 @@ class ReportAgent(BaseAgent):
             "",
             f"**Scope:** {', '.join(report.target_scope)}",
             f"**Date:** {report.test_start:%Y-%m-%d} - {report.test_end:%Y-%m-%d}",
-            f"**Risk Rating:** {report.executive_summary.risk_rating if report.executive_summary else 'N/A'}",
+            f"**Risk Rating:** "
+            f"{report.executive_summary.risk_rating if report.executive_summary else 'N/A'}",
             f"**Total Findings:** {len(findings)}",
             "",
             "---",
@@ -241,14 +242,16 @@ class ReportAgent(BaseAgent):
 
         for i, f in enumerate(findings, 1):
             cvss_str = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "N/A"
-            lines.extend([
-                f"## {i}. {f.title}",
-                "",
-                f"- **Severity:** {f.severity.value.upper()}",
-                f"- **CVSS:** {cvss_str}",
-                f"- **Endpoint:** {f.target}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"## {i}. {f.title}",
+                    "",
+                    f"- **Severity:** {f.severity.value.upper()}",
+                    f"- **CVSS:** {cvss_str}",
+                    f"- **Endpoint:** {f.target}",
+                    "",
+                ]
+            )
 
             # PoC evidence (request + response)
             if f.evidence:

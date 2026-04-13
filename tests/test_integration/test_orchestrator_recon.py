@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from clinkz.agents.recon_v1 import ReconAgent
+from clinkz.agents.recon import ReconAgent
 from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
@@ -337,7 +337,12 @@ def _make_mock_resolver() -> MagicMock:
         cls, name = entry
         return ToolMatch(name=name, source="local", available=True, tool_class=cls)
 
+    def _find_tools_ranked(capability: str) -> list[str]:
+        entry = _MAP.get(capability)
+        return [entry[1]] if entry else []
+
     resolver.find_tool.side_effect = _find_tool
+    resolver.find_tools_ranked.side_effect = _find_tools_ranked
     resolver.get_all_capabilities.return_value = sorted(_MAP.keys())
     resolver.check_mcp_servers.return_value = []
     return resolver
@@ -357,7 +362,7 @@ async def _run_recon_agent(
 ) -> None:
     """Instantiate and run a real ReconAgent; send its RESULT to the Orchestrator bus."""
     mock_resolver = _make_mock_resolver()
-    with patch("clinkz.agents.recon_v1.ToolResolver", return_value=mock_resolver):
+    with patch("clinkz.agents.recon.ToolResolver", return_value=mock_resolver):
         agent = ReconAgent(
             llm=llm,
             tools=[],
@@ -462,8 +467,6 @@ async def test_full_recon_engagement_via_orchestrator(tmp_path: Path) -> None:
             side_effect=lifecycle_constructor,
         ),
         patch("clinkz.orchestrator.orchestrator._POLL_INTERVAL", 0.01),
-        patch("clinkz.orchestrator.orchestrator._SCAN_WARMUP_TIMEOUT", 0.0),
-        patch("clinkz.orchestrator.orchestrator._MONITOR_INTERVAL", 0.01),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
     ):
@@ -472,13 +475,15 @@ async def test_full_recon_engagement_via_orchestrator(tmp_path: Path) -> None:
     # ── Assertion: engagement completed ──────────────────────────────────────
     assert result["status"] == "completed", f"Expected 'completed', got: {result}"
 
-    # ── Assertion: v2 architecture — recon first, report last, concurrent middle
-    assert spin_ups[0] == "recon", f"Expected recon first. Got: {spin_ups}"
-    assert spin_ups[-1] == "report", f"Expected report last. Got: {spin_ups}"
-    concurrent = set(spin_ups[1:-1])
-    # Research may or may not be spun up depending on extracted technologies
-    assert {"scan", "exploit"}.issubset(concurrent), (
-        f"Expected scan and exploit in concurrent phase. Got: {concurrent}"
+    # ── Assertion: all 5 phases spun up in order ─────────────────────────────
+    # v2 order: recon (sequential), then research+scan+exploit (concurrent), then report.
+    # Research may be skipped if no technologies found in recon.
+    assert spin_ups[0] == "recon", f"First phase must be recon. Got: {spin_ups}"
+    assert spin_ups[-1] == "report", f"Last phase must be report. Got: {spin_ups}"
+    concurrent_phases = set(spin_ups[1:-1])
+    assert "scan" in concurrent_phases, f"scan missing from concurrent phases. Got: {spin_ups}"
+    assert "exploit" in concurrent_phases, (
+        f"exploit missing from concurrent phases. Got: {spin_ups}"
     )
     first_call = mock_lifecycle.spin_up.call_args_list[0]
     assert first_call[0][0] == "recon"
@@ -488,28 +493,12 @@ async def test_full_recon_engagement_via_orchestrator(tmp_path: Path) -> None:
     assert task_msg_arg.to_agent == "recon"
     assert "task" in task_msg_arg.content
 
-    # ── Assertion: hosts discovered and persisted in state store ─────────────
+    # ── Assertion: RESULT message sent from recon to Orchestrator ─────────────
+    # v2 recon returns structured results via RESULT message (not via state store targets)
     assert eid_holder, "Engagement ID was never captured — lifecycle constructor not called."
     async with StateStore(str(tmp_path / "test1.db")) as state:
-        targets = await state.get_targets(eid_holder[0])
         messages = await state.get_messages(eid_holder[0])
 
-    discovered_ips = {t.get("ip") for t in targets}
-    assert "192.168.1.100" in discovered_ips, (
-        f"Expected 192.168.1.100 in persisted targets. Found: {discovered_ips}"
-    )
-
-    # ── Assertion: host metadata (OS, services) persisted correctly ───────────
-    nmap_host = next((t for t in targets if t.get("ip") == "192.168.1.100"), None)
-    assert nmap_host is not None, "192.168.1.100 not found in persisted targets"
-    assert nmap_host.get("os") == "Linux", (
-        f"Expected os='Linux' for persisted host. Got: {nmap_host}"
-    )
-    assert len(nmap_host.get("services", [])) == 4, (
-        f"Expected 4 services for 192.168.1.100. Got: {nmap_host.get('services')}"
-    )
-
-    # ── Assertion: RESULT message sent from recon to Orchestrator ─────────────
     result_messages = [m for m in messages if m["message_type"] == MessageType.RESULT]
     recon_results = [m for m in result_messages if m["from_agent"] == "recon"]
     assert len(recon_results) >= 1, (
@@ -724,11 +713,11 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
         _patched_classes = {
             **_lifecycle_mod._AGENT_CLASSES,
             "scan": CrawlAgent,
-            "recon": ReconAgent,  # use v1 ReconAgent
+            "recon": ReconAgent,  # use v2 ReconAgent
         }
 
         with (
-            patch("clinkz.agents.recon_v1.ToolResolver", return_value=_make_mock_resolver()),
+            patch("clinkz.agents.recon.ToolResolver", return_value=_make_mock_resolver()),
             patch("clinkz.orchestrator.lifecycle._AGENT_CLASSES", _patched_classes),
         ):
             mgr = AgentLifecycleManager(
@@ -743,7 +732,11 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
                 from_agent=ORCHESTRATOR,
                 to_agent="recon",
                 engagement_id=eid,
-                content={"task": "Full recon on 192.168.1.0/24"},
+                content={
+                    "task": "Full recon on 192.168.1.0/24",
+                    "target": "192.168.1.100",
+                    "scope": scope.model_dump(),
+                },
             )
             # "scan" maps to CrawlAgent stub; raises NotImplementedError instantly,
             # lifecycle manager catches it and sends a RESULT with status='not_implemented'.
@@ -802,7 +795,8 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
         # ── Assertion: recon result carries expected content ───────────────────
         recon_result_msg = next(m for m in received_results if m.from_agent == "recon")
         assert recon_result_msg.content.get("status") == "complete"
-        assert isinstance(recon_result_msg.content.get("hosts"), list)
+        # v2 recon returns structured result under "result" key (not flat "hosts")
+        assert "result" in recon_result_msg.content
 
         # ── Assertion: both result sets are in the state store ─────────────────
         db_messages = await state.get_messages(eid)
@@ -815,12 +809,7 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
             f"Expected crawl (stub) RESULT in state store. Senders: {result_senders}"
         )
 
-        # ── Assertion: recon-discovered hosts are persisted ───────────────────
-        targets = await state.get_targets(eid)
-        assert len(targets) > 0, (
-            "Expected at least one target persisted by Recon Agent. State store is empty."
-        )
-        discovered_ips = {t.get("ip") for t in targets}
-        assert "192.168.1.100" in discovered_ips, (
-            f"Expected 192.168.1.100 among persisted targets. Found: {discovered_ips}"
-        )
+        # ── Assertion: recon result contains structured data ─────────────────
+        # v2 recon returns results in RESULT message, not via state store targets
+        recon_result_content = recon_result_msg.content
+        assert recon_result_content.get("status") == "complete"

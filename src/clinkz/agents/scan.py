@@ -553,9 +553,7 @@ class ScanAgent(BaseAgent):
                     parsed = urlparse(login_url)
                     normalised = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
                     self._auth_skip_urls.add(normalised)
-                    self._logger.info(
-                        "Added login URL to skip list: %s", normalised
-                    )
+                    self._logger.info("Added login URL to skip list: %s", normalised)
                 self._logger.info(
                     "Authenticated for scan via WebAuthenticator — cookies: %s",
                     list(result.session_cookies.keys()),
@@ -616,24 +614,18 @@ class ScanAgent(BaseAgent):
             if check_url:
                 session_valid = await authenticator.verify_session(check_url, direct_cookies)
                 if session_valid:
-                    self._session_cookies = "; ".join(
-                        f"{k}={v}" for k, v in direct_cookies.items()
-                    )
+                    self._session_cookies = "; ".join(f"{k}={v}" for k, v in direct_cookies.items())
                     self._logger.info(
                         "Using orchestrator-provided session cookies (%d cookies, verified)",
                         len(direct_cookies),
                     )
                 else:
-                    self._logger.warning(
-                        "Orchestrator session cookies expired — re-authenticating"
-                    )
+                    self._logger.warning("Orchestrator session cookies expired — re-authenticating")
                     self._session_cookies = await self._authenticate_with_creds(
                         authenticator, creds, scope_values
                     )
             else:
-                self._session_cookies = "; ".join(
-                    f"{k}={v}" for k, v in direct_cookies.items()
-                )
+                self._session_cookies = "; ".join(f"{k}={v}" for k, v in direct_cookies.items())
                 self._logger.info(
                     "Using orchestrator-provided session cookies (%d, unverified)",
                     len(direct_cookies),
@@ -650,9 +642,7 @@ class ScanAgent(BaseAgent):
                     check_url = f"http://{scope_values[0]}/" if scope_values else ""
 
                     if check_url:
-                        session_valid = await authenticator.verify_session(
-                            check_url, cookies_dict
-                        )
+                        session_valid = await authenticator.verify_session(check_url, cookies_dict)
                         if session_valid:
                             self._session_cookies = "; ".join(
                                 f"{k}={v}" for k, v in cookies_dict.items()
@@ -662,9 +652,7 @@ class ScanAgent(BaseAgent):
                                 len(cookies_dict),
                             )
                         else:
-                            self._logger.warning(
-                                "State-store session expired — re-authenticating"
-                            )
+                            self._logger.warning("State-store session expired — re-authenticating")
                             self._session_cookies = await self._authenticate_with_creds(
                                 authenticator, creds, scope_values
                             )
@@ -679,8 +667,7 @@ class ScanAgent(BaseAgent):
             elif creds:
                 # No session at all — authenticate from scratch
                 self._logger.info(
-                    "No existing session — authenticating via WebAuthenticator "
-                    "with %d credentials",
+                    "No existing session — authenticating via WebAuthenticator with %d credentials",
                     len(creds),
                 )
                 self._session_cookies = await self._authenticate_with_creds(
