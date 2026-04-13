@@ -36,6 +36,7 @@ from clinkz.tools.base import ToolBase
 
 if TYPE_CHECKING:
     from clinkz.comms.bus import MessageBus
+    from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
     from clinkz.knowledge.query import KnowledgeBase
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ class BaseAgent(ABC):
         engagement_id: str,
         knowledge_base: KnowledgeBase | None = None,
         bus: MessageBus | None = None,
+        persistent_kb: PersistentKnowledgeBase | None = None,
     ) -> None:
         self.llm = llm
         self.tools: dict[str, ToolBase] = {t.name: t for t in tools}
@@ -178,6 +180,7 @@ class BaseAgent(ABC):
         self.engagement_id = engagement_id
         self.knowledge_base = knowledge_base
         self._bus: MessageBus | None = bus
+        self.persistent_kb: PersistentKnowledgeBase | None = persistent_kb
         self._skills_loader = SkillsLoader()
         self.messages: list[LLMMessage] = []
         self._inbox: asyncio.Queue[AgentMessage] = asyncio.Queue()

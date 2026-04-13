@@ -47,6 +47,7 @@ from clinkz.comms.protocol import ORCHESTRATOR
 
 if TYPE_CHECKING:
     from clinkz.comms.bus import MessageBus
+    from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
     from clinkz.knowledge.query import KnowledgeBase
     from clinkz.llm.base import LLMClient
     from clinkz.models.scope import EngagementScope
@@ -132,6 +133,7 @@ class AgentLifecycleManager:
         tools_per_agent: dict[str, list[ToolBase]] | None = None,
         knowledge_base: KnowledgeBase | None = None,
         llm_per_agent: dict[str, LLMClient] | None = None,
+        persistent_kb: PersistentKnowledgeBase | None = None,
     ) -> None:
         self._bus = bus
         self._llm = llm
@@ -141,6 +143,7 @@ class AgentLifecycleManager:
         self._tools_per_agent: dict[str, list[ToolBase]] = tools_per_agent or {}
         self._knowledge_base = knowledge_base
         self._llm_per_agent: dict[str, LLMClient] = llm_per_agent or {}
+        self._persistent_kb = persistent_kb
         # Keyed by agent.name (e.g. "recon", "crawl", "exploit")
         self._records: dict[str, _AgentRecord] = {}
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -174,6 +177,10 @@ class AgentLifecycleManager:
         agent_cls = _AGENT_CLASSES[agent_type]
         tools = self._tools_for(agent_type)
         agent_llm = self._llm_for(agent_type)
+
+        # Only pass persistent_kb to agents that need cross-engagement knowledge
+        kb_for_agent = self._persistent_kb if agent_type in ("exploit", "research") else None
+
         agent = agent_cls(
             llm=agent_llm,
             tools=tools,
@@ -182,6 +189,7 @@ class AgentLifecycleManager:
             engagement_id=self._engagement_id,
             knowledge_base=self._knowledge_base,
             bus=self._bus,
+            persistent_kb=kb_for_agent,
         )
 
         # Shut down any pre-existing agent with the same canonical name

@@ -814,10 +814,7 @@ class WebAuthenticator(ToolBase):
         if redirect_chain and login_url:
             login_path = urlparse(login_url).path.rstrip("/")
             # Only count as success if at least one redirect goes somewhere other than login
-            if any(
-                urlparse(r).path.rstrip("/") != login_path
-                for r in redirect_chain
-            ):
+            if any(urlparse(r).path.rstrip("/") != login_path for r in redirect_chain):
                 return True
 
         # Status 200 without any positive or negative signals is ambiguous —

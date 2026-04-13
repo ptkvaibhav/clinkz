@@ -5,6 +5,7 @@ All tests mock the Anthropic SDK so no API key or network is needed.
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +13,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from clinkz.llm.base import AgentAction, LLMMessage, ToolCall
+
+pytestmark = pytest.mark.skipif(
+    not os.getenv("ANTHROPIC_API_KEY"),
+    reason="ANTHROPIC_API_KEY not set",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -42,9 +48,7 @@ def _text_block(text: str) -> SimpleNamespace:
     return SimpleNamespace(type="text", text=text)
 
 
-def _tool_use_block(
-    tool_id: str, name: str, input_data: dict[str, Any]
-) -> SimpleNamespace:
+def _tool_use_block(tool_id: str, name: str, input_data: dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(type="tool_use", id=tool_id, name=name, input=input_data)
 
 
@@ -149,12 +153,16 @@ class TestReason:
     async def test_reason_returns_tool_call(self, _reload_settings: None) -> None:
         from clinkz.llm.anthropic_client import AnthropicClient
 
-        response = _make_response([
-            _text_block("I need to scan ports."),
-            _tool_use_block("toolu_abc", "run_nmap", {"target": "1.2.3.4"}),
-        ])
+        response = _make_response(
+            [
+                _text_block("I need to scan ports."),
+                _tool_use_block("toolu_abc", "run_nmap", {"target": "1.2.3.4"}),
+            ]
+        )
 
-        with patch.object(AnthropicClient, "_call_with_backoff", new_callable=AsyncMock) as mock_call:
+        with patch.object(
+            AnthropicClient, "_call_with_backoff", new_callable=AsyncMock
+        ) as mock_call:
             mock_call.return_value = response
             client = AnthropicClient()
             action = await client.reason(
@@ -175,7 +183,9 @@ class TestReason:
 
         response = _make_response([_text_block("Scan complete, no issues found.")])
 
-        with patch.object(AnthropicClient, "_call_with_backoff", new_callable=AsyncMock) as mock_call:
+        with patch.object(
+            AnthropicClient, "_call_with_backoff", new_callable=AsyncMock
+        ) as mock_call:
             mock_call.return_value = response
             client = AnthropicClient()
             action = await client.reason(
@@ -198,7 +208,9 @@ class TestGenerateText:
 
         response = _make_response([_text_block("Generated report text.")])
 
-        with patch.object(AnthropicClient, "_call_with_backoff", new_callable=AsyncMock) as mock_call:
+        with patch.object(
+            AnthropicClient, "_call_with_backoff", new_callable=AsyncMock
+        ) as mock_call:
             mock_call.return_value = response
             client = AnthropicClient()
             text = await client.generate_text("Write a report.")
@@ -213,19 +225,24 @@ class TestGenerateText:
 
 class TestResearch:
     @pytest.mark.asyncio
-    async def test_research_without_gemini_key(self, _reload_settings: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_research_without_gemini_key(
+        self, _reload_settings: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Without Gemini key, research() uses generate_text()."""
         monkeypatch.setenv("GEMINI_API_KEY", "")
         monkeypatch.setenv("GOOGLE_API_KEY", "")
 
         from clinkz import config
+
         config.settings = config.Settings.from_env()
 
         from clinkz.llm.anthropic_client import AnthropicClient
 
         response = _make_response([_text_block("CVE-2021-41773 affects Apache 2.4.49")])
 
-        with patch.object(AnthropicClient, "_call_with_backoff", new_callable=AsyncMock) as mock_call:
+        with patch.object(
+            AnthropicClient, "_call_with_backoff", new_callable=AsyncMock
+        ) as mock_call:
             mock_call.return_value = response
             client = AnthropicClient()
             result = await client.research("CVE Apache 2.4.49")
@@ -246,7 +263,9 @@ class TestTokenTracking:
         r1 = _make_response([_text_block("a")], input_tokens=100, output_tokens=50)
         r2 = _make_response([_text_block("b")], input_tokens=200, output_tokens=75)
 
-        with patch.object(AnthropicClient, "_call_with_backoff", new_callable=AsyncMock) as mock_call:
+        with patch.object(
+            AnthropicClient, "_call_with_backoff", new_callable=AsyncMock
+        ) as mock_call:
             mock_call.side_effect = [r1, r2]
             client = AnthropicClient()
             await client.generate_text("first")

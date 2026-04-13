@@ -166,11 +166,13 @@ clinkz/
 │   │   │   ├── exploit.py          # Exploitation agent
 │   │   │   ├── report.py           # Report generation agent
 │   │   │   ├── critic.py           # Finding validation agent
+│   │   │   ├── research.py         # Research agent — persistent KB + cross-engagement learning
 │   │   │   └── prompts/
 │   │   │       ├── recon_system.md
 │   │   │       ├── scan_system.md
 │   │   │       ├── exploit_system.md
 │   │   │       ├── report_system.md
+│   │   │       ├── research_system.md  # Research agent system prompt
 │   │   │       └── critic_system.md
 │   │   │
 │   │   ├── comms/
@@ -185,7 +187,11 @@ clinkz/
 │   │   │
 │   │   ├── knowledge/
 │   │   │   ├── __init__.py
-│   │   │   └── query.py            # MITRE ATT&CK + OWASP WSTG knowledge base queries
+│   │   │   ├── query.py            # MITRE ATT&CK + OWASP WSTG knowledge base queries
+│   │   │   ├── persistent_kb.py    # Cross-engagement persistent knowledge base
+│   │   │   ├── seed_playbook.py    # Tier 1 universal test seeder
+│   │   │   ├── payload_loader.py   # Payload list loader for exploit methods
+│   │   │   └── skills_loader.py    # OWASP WSTG skills file loader
 │   │   │
 │   │   ├── llm/
 │   │   │   ├── __init__.py
@@ -212,7 +218,8 @@ clinkz/
 │   │   │   ├── httpx_tool.py       # httpx wrapper (local)
 │   │   │   ├── katana.py           # Katana crawler wrapper (local)
 │   │   │   ├── whatweb.py          # WhatWeb wrapper (local)
-│   │   │   └── wafw00f.py          # WAF detection wrapper (local)
+│   │   │   ├── wafw00f.py          # WAF detection wrapper (local)
+│   │   │   └── auth.py             # WebAuthenticator — default credential testing
 │   │   │
 │   │   ├── research/
 │   │   │   ├── __init__.py
@@ -223,7 +230,8 @@ clinkz/
 │   │   │   ├── scope.py            # Scope/engagement config models
 │   │   │   ├── finding.py          # Vulnerability finding model
 │   │   │   ├── target.py           # Target/host/service models
-│   │   │   └── report.py           # Report data models
+│   │   │   ├── report.py           # Report data models
+│   │   │   └── recon.py            # Recon agent data models (v2)
 │   │   │
 │   │   └── reporting/
 │   │       ├── __init__.py

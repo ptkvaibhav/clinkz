@@ -42,6 +42,7 @@ def test_tool_chains_keys_exist():
         "web_fingerprinting",
         "waf_detection",
         "subdomain_discovery",
+        "http_request",
     }
     assert set(TOOL_CHAINS.keys()) == expected_keys
 

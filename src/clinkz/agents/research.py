@@ -157,7 +157,15 @@ class ResearchAgent(BaseAgent):
                 },
                 "source_type": {
                     "type": "string",
-                    "enum": ["cve", "hackerone", "bugcrowd", "exploit_db", "medium", "reddit", "other"],
+                    "enum": [
+                        "cve",
+                        "hackerone",
+                        "bugcrowd",
+                        "exploit_db",
+                        "medium",
+                        "reddit",
+                        "other",
+                    ],
                     "description": "Type of source.",
                     "default": "other",
                 },
