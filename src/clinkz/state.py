@@ -665,8 +665,17 @@ class StateStore:
                 "discovered_by, service_type, port, notes, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, 'discovered', ?, ?, ?, ?, ?, ?)",
                 (
-                    eid, engagement_id, url, method, params_json,
-                    discovered_by, service_type, port, notes, now, now,
+                    eid,
+                    engagement_id,
+                    url,
+                    method,
+                    params_json,
+                    discovered_by,
+                    service_type,
+                    port,
+                    notes,
+                    now,
+                    now,
                 ),
             )
             await self._conn.commit()
@@ -795,10 +804,18 @@ class StateStore:
                 "applicable_to, cve_id, severity, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    rid, engagement_id, technology, technique_name,
-                    technique_description, source_url, source_type,
-                    json.dumps(steps or []), json.dumps(applicable_to or []),
-                    cve_id, severity, now,
+                    rid,
+                    engagement_id,
+                    technology,
+                    technique_name,
+                    technique_description,
+                    source_url,
+                    source_type,
+                    json.dumps(steps or []),
+                    json.dumps(applicable_to or []),
+                    cve_id,
+                    severity,
+                    now,
                 ),
             )
             await self._conn.commit()
@@ -806,7 +823,8 @@ class StateStore:
         except Exception:  # noqa: BLE001 — UNIQUE constraint = dedup skip
             logger.debug(
                 "Runbook dedup: %s / %s already exists — skipping",
-                technology, technique_name,
+                technology,
+                technique_name,
             )
             return None
 
@@ -825,8 +843,7 @@ class StateStore:
             List of runbook entry dicts with deserialized JSON fields.
         """
         async with self._conn.execute(
-            "SELECT * FROM runbook WHERE engagement_id=? AND technology=? "
-            "ORDER BY created_at",
+            "SELECT * FROM runbook WHERE engagement_id=? AND technology=? ORDER BY created_at",
             (engagement_id, technology),
         ) as cursor:
             rows = await cursor.fetchall()

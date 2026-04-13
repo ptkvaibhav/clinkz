@@ -157,9 +157,7 @@ async def _run_orchestrator(
         ),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
-        patch.object(
-            orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)
-        ),
+        patch.object(orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_build_agent_llms", return_value={}),
     ):
         result = await orchestrator.run(scope)
@@ -217,10 +215,7 @@ async def test_phase_results_carry_forward() -> None:
     )
 
     # Find scan and exploit spin_up calls
-    spin_calls = {
-        call[0][0]: call[0][1]
-        for call in mock_lifecycle.spin_up.call_args_list
-    }
+    spin_calls = {call[0][0]: call[0][1] for call in mock_lifecycle.spin_up.call_args_list}
 
     # Scan task should include recon_findings
     assert "recon_findings" in spin_calls["scan"].content
@@ -365,9 +360,7 @@ async def test_phase_error_returns_error_result() -> None:
         ),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
-        patch.object(
-            orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)
-        ),
+        patch.object(orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_build_agent_llms", return_value={}),
     ):
         result = await orchestrator.run(SCOPE)

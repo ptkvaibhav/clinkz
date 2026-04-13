@@ -75,9 +75,7 @@ class TestEndpoints:
     @pytest.mark.asyncio
     async def test_dedup_same_url_method(self, store: StateStore) -> None:
         id1 = await store.add_endpoint(EID, url="http://x.com/a", method="GET")
-        id2 = await store.add_endpoint(
-            EID, url="http://x.com/a", method="GET", notes="updated"
-        )
+        id2 = await store.add_endpoint(EID, url="http://x.com/a", method="GET", notes="updated")
         assert id1 == id2  # same endpoint returned
         rows = await store.get_endpoints(EID)
         assert len(rows) == 1
@@ -168,12 +166,8 @@ class TestRunbook:
 
     @pytest.mark.asyncio
     async def test_dedup_same_tech_technique(self, store: StateStore) -> None:
-        r1 = await store.add_runbook_entry(
-            EID, technology="nginx", technique_name="path traversal"
-        )
-        r2 = await store.add_runbook_entry(
-            EID, technology="nginx", technique_name="path traversal"
-        )
+        r1 = await store.add_runbook_entry(EID, technology="nginx", technique_name="path traversal")
+        r2 = await store.add_runbook_entry(EID, technology="nginx", technique_name="path traversal")
         assert r1 is not None
         assert r2 is None  # duplicate skipped
         rows = await store.get_all_runbook_entries(EID)

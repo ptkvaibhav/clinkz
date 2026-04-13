@@ -241,14 +241,16 @@ class ReportAgent(BaseAgent):
 
         for i, f in enumerate(findings, 1):
             cvss_str = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "N/A"
-            lines.extend([
-                f"## {i}. {f.title}",
-                "",
-                f"- **Severity:** {f.severity.value.upper()}",
-                f"- **CVSS:** {cvss_str}",
-                f"- **Endpoint:** {f.target}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"## {i}. {f.title}",
+                    "",
+                    f"- **Severity:** {f.severity.value.upper()}",
+                    f"- **CVSS:** {cvss_str}",
+                    f"- **Endpoint:** {f.target}",
+                    "",
+                ]
+            )
 
             # PoC evidence (request + response)
             if f.evidence:

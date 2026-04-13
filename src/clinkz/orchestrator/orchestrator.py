@@ -178,6 +178,7 @@ class OrchestratorAgent:
                 engagement_id=engagement_id,
                 knowledge_base=knowledge_base,
                 llm_per_agent=agent_llms,
+                persistent_kb=persistent_kb,
             )
             resolver = ToolResolver()
             cred_store = CredentialStore(state)
@@ -230,9 +231,7 @@ class OrchestratorAgent:
                 cookies: dict[str, str] = {}
                 authenticated_as = ""
                 if sessions:
-                    login_url = await self._find_login_url(
-                        recon_result, "", scan_result=None
-                    )
+                    login_url = await self._find_login_url(recon_result, "", scan_result=None)
                     if not login_url:
                         for t in scope.targets:
                             login_url = f"http://{t.value}/login"
@@ -315,13 +314,10 @@ class OrchestratorAgent:
         for agent_type, provider in agent_provider_map.items():
             try:
                 llms[agent_type] = get_llm_client(provider)
-                self._logger.debug(
-                    "Agent '%s' LLM: provider=%s", agent_type, provider
-                )
+                self._logger.debug("Agent '%s' LLM: provider=%s", agent_type, provider)
             except Exception as exc:
                 self._logger.warning(
-                    "Failed to create LLM for agent '%s' (provider=%s): %s — "
-                    "will use default",
+                    "Failed to create LLM for agent '%s' (provider=%s): %s — will use default",
                     agent_type,
                     provider,
                     exc,
@@ -417,15 +413,12 @@ class OrchestratorAgent:
         }
         if cookies:
             exploit_content["session_cookies"] = cookies
-            exploit_content["cookie_jar_path"] = (
-                f"/tmp/clinkz_{self._engagement_id}_cookies.txt"
-            )
+            exploit_content["cookie_jar_path"] = f"/tmp/clinkz_{self._engagement_id}_cookies.txt"
             exploit_content["authenticated_as"] = authenticated_as
             exploit_content["task"] = (
                 f"You are already authenticated as '{authenticated_as}'. "
                 f"Use the provided session cookies for ALL requests. "
-                f"Do NOT attempt to login again.\n\n"
-                + exploit_content["task"]
+                f"Do NOT attempt to login again.\n\n" + exploit_content["task"]
             )
         exploit_task = asyncio.create_task(
             self._run_phase("exploit", exploit_content),
@@ -455,9 +448,7 @@ class OrchestratorAgent:
                         try:
                             results[name] = task.result()
                         except Exception as exc:
-                            self._logger.error(
-                                "Concurrent agent '%s' failed: %s", name, exc
-                            )
+                            self._logger.error("Concurrent agent '%s' failed: %s", name, exc)
                             results[name] = {"status": "error", "error": str(exc)}
                         del all_tasks[name]
                         self._logger.info(
@@ -469,9 +460,7 @@ class OrchestratorAgent:
 
             if all_tasks:
                 running_names = list(all_tasks.keys())
-                self._logger.debug(
-                    "Monitor: still running: %s", ", ".join(running_names)
-                )
+                self._logger.debug("Monitor: still running: %s", ", ".join(running_names))
 
         # Fill in any missing results
         for name in ("research", "scan", "exploit"):
@@ -825,7 +814,9 @@ class OrchestratorAgent:
                 if combo in tested_combos:
                     self._logger.debug(
                         "Skipping duplicate cred test: %s:%s @ %s",
-                        cred.username, "***", login_url,
+                        cred.username,
+                        "***",
+                        login_url,
                     )
                     continue
                 tested_combos.add(combo)
@@ -984,9 +975,7 @@ class OrchestratorAgent:
         try:
             # Tier 1 universal tests (always applicable)
             tier1 = await persistent_kb.get_tier1_tests()
-            self._logger.info(
-                "Playbook: %d Tier 1 universal tests available", len(tier1)
-            )
+            self._logger.info("Playbook: %d Tier 1 universal tests available", len(tier1))
 
             # Tier 2 tech-matched tests for each discovered technology
             matched_count = 0

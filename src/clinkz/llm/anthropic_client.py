@@ -57,12 +57,7 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     """Return True if the exception indicates a retryable error (429/529/overloaded)."""
     msg = str(exc).lower()
     code = getattr(exc, "status_code", None)
-    return (
-        code in (429, 529)
-        or "429" in msg
-        or "overloaded" in msg
-        or "rate_limit" in msg
-    )
+    return code in (429, 529) or "429" in msg or "overloaded" in msg or "rate_limit" in msg
 
 
 class AnthropicClient(LLMClient):
@@ -106,11 +101,13 @@ class AnthropicClient(LLMClient):
         result: list[dict[str, Any]] = []
         for tool in tools:
             spec = tool.get("function", tool) if "function" in tool else tool
-            result.append({
-                "name": spec["name"],
-                "description": spec.get("description", ""),
-                "input_schema": spec.get("parameters", {"type": "object", "properties": {}}),
-            })
+            result.append(
+                {
+                    "name": spec["name"],
+                    "description": spec.get("description", ""),
+                    "input_schema": spec.get("parameters", {"type": "object", "properties": {}}),
+                }
+            )
         return result
 
     @staticmethod
@@ -136,10 +133,12 @@ class AnthropicClient(LLMClient):
                 continue
 
             if msg.role == "user":
-                result.append({
-                    "role": "user",
-                    "content": [{"type": "text", "text": msg.content}],
-                })
+                result.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": msg.content}],
+                    }
+                )
                 continue
 
             if msg.role == "assistant":
@@ -148,24 +147,30 @@ class AnthropicClient(LLMClient):
                     content.append({"type": "text", "text": msg.content})
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
-                        content.append({
-                            "type": "tool_use",
-                            "id": tc.id,
-                            "name": tc.name,
-                            "input": tc.arguments,
-                        })
+                        content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tc.id,
+                                "name": tc.name,
+                                "input": tc.arguments,
+                            }
+                        )
                 result.append({"role": "assistant", "content": content})
                 continue
 
             if msg.role == "tool":
-                result.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": msg.tool_call_id or "",
-                        "content": msg.content,
-                    }],
-                })
+                result.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": msg.tool_call_id or "",
+                                "content": msg.content,
+                            }
+                        ],
+                    }
+                )
 
         return system_prompt, result
 
@@ -188,7 +193,7 @@ class AnthropicClient(LLMClient):
                 return await self._client.messages.create(**kwargs)
             except Exception as exc:
                 if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES - 1:
-                    wait = 2 ** attempt
+                    wait = 2**attempt
                     logger.warning(
                         "Rate limit hit (attempt %d/%d) — retrying in %.0fs: %s",
                         attempt + 1,

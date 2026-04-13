@@ -233,9 +233,7 @@ async def test_runbook_entry_has_steps(tmp_path: Path) -> None:
 
     for entry in entries:
         assert isinstance(entry["steps"], list)
-        assert len(entry["steps"]) > 0, (
-            f"Entry '{entry['technique_name']}' has no steps."
-        )
+        assert len(entry["steps"]) > 0, f"Entry '{entry['technique_name']}' has no steps."
 
 
 async def test_runbook_entry_has_severity(tmp_path: Path) -> None:
@@ -403,12 +401,14 @@ async def test_agent_system_prompt_loaded(tmp_path: Path) -> None:
 async def test_write_runbook_rejects_empty_technology(tmp_path: Path) -> None:
     """write_runbook_entry rejects entries with no technology."""
     agent, state, _ = await _make_agent(tmp_path / "test.db")
-    result = await agent._do_write_runbook_entry({
-        "technology": "",
-        "technique_name": "test",
-        "technique_description": "desc",
-        "steps": ["step1"],
-    })
+    result = await agent._do_write_runbook_entry(
+        {
+            "technology": "",
+            "technique_name": "test",
+            "technique_description": "desc",
+            "steps": ["step1"],
+        }
+    )
     await state.close()
     assert "Error" in result
 
@@ -416,12 +416,14 @@ async def test_write_runbook_rejects_empty_technology(tmp_path: Path) -> None:
 async def test_write_runbook_rejects_empty_steps(tmp_path: Path) -> None:
     """write_runbook_entry rejects entries with no steps."""
     agent, state, _ = await _make_agent(tmp_path / "test.db")
-    result = await agent._do_write_runbook_entry({
-        "technology": "Apache",
-        "technique_name": "test",
-        "technique_description": "desc",
-        "steps": [],
-    })
+    result = await agent._do_write_runbook_entry(
+        {
+            "technology": "Apache",
+            "technique_name": "test",
+            "technique_description": "desc",
+            "steps": [],
+        }
+    )
     await state.close()
     assert "Error" in result
 
@@ -429,11 +431,13 @@ async def test_write_runbook_rejects_empty_steps(tmp_path: Path) -> None:
 async def test_write_runbook_rejects_empty_description(tmp_path: Path) -> None:
     """write_runbook_entry rejects entries with no description."""
     agent, state, _ = await _make_agent(tmp_path / "test.db")
-    result = await agent._do_write_runbook_entry({
-        "technology": "Apache",
-        "technique_name": "test",
-        "technique_description": "",
-        "steps": ["step1"],
-    })
+    result = await agent._do_write_runbook_entry(
+        {
+            "technology": "Apache",
+            "technique_name": "test",
+            "technique_description": "",
+            "steps": ["step1"],
+        }
+    )
     await state.close()
     assert "Error" in result
