@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _MAX_CALLS_PER_MINUTE: int = 5
 _RATE_LIMIT_PERIOD: float = 60.0
 _MAX_RETRIES: int = 6
+_REQUEST_TIMEOUT: float = 120.0  # Hard timeout for every Gemini API call
 
 
 class _RateLimiter:
@@ -243,7 +244,18 @@ class GeminiClient(LLMClient):
         for attempt in range(_MAX_RETRIES):
             try:
                 await self._rate_limiter.acquire()
-                return await coro_factory()
+                return await asyncio.wait_for(coro_factory(), timeout=_REQUEST_TIMEOUT)
+            except TimeoutError:
+                logger.error(
+                    "Gemini API call timed out after %.0fs (attempt %d/%d)",
+                    _REQUEST_TIMEOUT,
+                    attempt + 1,
+                    _MAX_RETRIES,
+                )
+                if attempt < _MAX_RETRIES - 1:
+                    await asyncio.sleep(2**attempt)
+                    continue
+                raise
             except Exception as exc:
                 if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES - 1:
                     wait = _extract_retry_delay(exc) or 2**attempt
@@ -316,7 +328,14 @@ class GeminiClient(LLMClient):
                 kwargs["config"] = config
             return self._client.aio.models.generate_content(**kwargs)
 
-        response = await self._call_with_backoff(_make_coro)
+        try:
+            response = await self._call_with_backoff(_make_coro)
+        except TimeoutError:
+            logger.error("reason() timed out — returning error as final_answer")
+            return AgentAction(
+                thought="Gemini API call timed out",
+                final_answer="Error: Gemini API call timed out after all retries.",
+            )
         self._track_usage(response)
 
         candidate = response.candidates[0]
@@ -371,7 +390,11 @@ class GeminiClient(LLMClient):
                 config=config,
             )
 
-        response = await self._call_with_backoff(_make_coro)
+        try:
+            response = await self._call_with_backoff(_make_coro)
+        except TimeoutError:
+            logger.error("research() timed out — returning error string")
+            return "Error: Gemini research call timed out after all retries."
         self._track_usage(response)
         return response.text
 
@@ -391,7 +414,11 @@ class GeminiClient(LLMClient):
                 contents=prompt,
             )
 
-        response = await self._call_with_backoff(_make_coro)
+        try:
+            response = await self._call_with_backoff(_make_coro)
+        except TimeoutError:
+            logger.error("generate_text() timed out — returning error string")
+            return "Error: Gemini generate_text call timed out after all retries."
         self._track_usage(response)
         return response.text
 
