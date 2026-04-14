@@ -124,8 +124,7 @@ async def _run_orchestrator(
 ) -> tuple[dict, MagicMock]:
     """Run OrchestratorAgent with mocked lifecycle and instant phase completion.
 
-    Also patches _wait_for_scan_warmup to return instantly (no real endpoints
-    in the DB) and _build_agent_llms to skip real LLM client creation.
+    Patches _build_agent_llms to skip real LLM client creation.
 
     Args:
         phase_results: Optional mapping of agent_type → result content for each phase.
@@ -153,7 +152,6 @@ async def _run_orchestrator(
         ),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
-        patch.object(orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_build_agent_llms", return_value={}),
     ):
         result = await orchestrator.run(scope)
@@ -356,7 +354,6 @@ async def test_phase_error_returns_error_result() -> None:
         ),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
-        patch.object(orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_build_agent_llms", return_value={}),
     ):
         result = await orchestrator.run(SCOPE)
