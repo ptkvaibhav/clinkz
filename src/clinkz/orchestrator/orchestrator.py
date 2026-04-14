@@ -43,10 +43,6 @@ from clinkz.knowledge.seed_playbook import seed_tier1_tests
 from clinkz.llm.base import LLMClient
 from clinkz.llm.factory import get_llm_client
 from clinkz.models.scope import EngagementScope
-from clinkz.orchestrator.adapters import (
-    adapt_research_result_for_exploit,
-    adapt_scan_result_for_exploit,
-)
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
@@ -340,11 +336,8 @@ class OrchestratorAgent:
         1. Start Research + Scan concurrently (asyncio.Tasks)
         2. Wait for Scan to complete (Exploit needs scan results)
         3. Wait for Research to complete (may finish before or after Scan)
-        4. Adapt v2 results for the v1 Exploit Agent
-        5. Run Exploit with both adapted inputs
-
-        In Phase 3 the Exploit Agent will be rewritten to consume v2 models
-        directly and to poll for scan results incrementally.
+        4. Pass v2 ScanResult and ResearchResult directly to Exploit
+        5. Run Exploit with both inputs
 
         Args:
             targets_str: Human-readable target list.
@@ -422,47 +415,25 @@ class OrchestratorAgent:
                 self._logger.error("Research failed (proceeding without): %s", exc)
                 results["research"] = {"status": "error", "error": str(exc)}
 
-        # --- Adapt v2 results for the v1 Exploit Agent ---
-        adapted_scan: dict[str, Any] = {}
-        adapted_research: dict[str, Any] = {}
-
-        if results.get("scan", {}).get("status") != "error":
-            scan_result_data = results["scan"].get("result")
-            if scan_result_data:
-                try:
-                    adapted_scan = adapt_scan_result_for_exploit(scan_result_data)
-                    self._logger.info(
-                        "Adapted scan: %d endpoints, %d technologies",
-                        len(adapted_scan.get("endpoints", [])),
-                        len(adapted_scan.get("technologies", [])),
-                    )
-                except Exception as exc:
-                    self._logger.warning("Scan result adaptation failed: %s", exc)
-
-        if research_data.get("result"):
-            try:
-                adapted_research = adapt_research_result_for_exploit(research_data["result"])
-                self._logger.info(
-                    "Adapted research: %d techniques",
-                    len(adapted_research.get("techniques", [])),
-                )
-            except Exception as exc:
-                self._logger.warning("Research result adaptation failed: %s", exc)
-
-        # --- Run Exploit with adapted results ---
+        # --- Run Exploit with v2 models directly ---
         exploit_content: dict[str, Any] = {
             "task": f"Exploit all identified vulnerabilities on {targets_str}. "
             f"Check the runbook for techniques. Test all discovered endpoints. "
             f"Validate findings and chain exploits for maximum impact.",
-            "recon_findings": recon_result,
+            "recon_result": recon_result,
             "credentials": cred_data,
             "sessions": session_data,
         }
-        # Merge in adapted scan data (endpoints, hosts, technologies)
-        exploit_content.update(adapted_scan)
-        # Merge in adapted research data (techniques)
-        if adapted_research:
-            exploit_content["research_techniques"] = adapted_research.get("techniques", [])
+
+        # Pass v2 ScanResult directly (the exploit agent parses it via _parse_scan_result)
+        if results.get("scan", {}).get("status") != "error":
+            scan_result_data = results["scan"].get("result")
+            if scan_result_data:
+                exploit_content["scan_result"] = scan_result_data
+
+        # Pass v2 ResearchResult directly (the exploit agent parses it via _parse_research_result)
+        if research_data.get("result"):
+            exploit_content["research_result"] = research_data["result"]
 
         if cookies:
             exploit_content["session_cookies"] = cookies
@@ -474,7 +445,7 @@ class OrchestratorAgent:
                 f"Do NOT attempt to login again.\n\n" + exploit_content["task"]
             )
 
-        self._logger.info("Starting Exploit with scan + research results")
+        self._logger.info("Starting Exploit with v2 scan + research results")
         try:
             exploit_result = await self._run_phase("exploit", exploit_content)
             results["exploit"] = exploit_result
