@@ -21,10 +21,6 @@ from clinkz.models.scan import (
     ScanResult,
     ServiceScanResult,
 )
-from clinkz.orchestrator.adapters import (
-    adapt_research_result_for_exploit,
-    adapt_scan_result_for_exploit,
-)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -111,49 +107,6 @@ def _make_recon_result() -> dict[str, Any]:
         "status": "completed",
         "summary": "Target has Apache 2.4.49, PHP 7.4, SSH",
     }
-
-
-# ---------------------------------------------------------------------------
-# Adapter unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestAdapters:
-    """Test v2→v1 adapter functions."""
-
-    def test_adapt_scan_result(self) -> None:
-        scan_data = _make_scan_result()
-        adapted = adapt_scan_result_for_exploit(scan_data)
-
-        assert "endpoints" in adapted
-        assert "hosts" in adapted
-        assert "technologies" in adapted
-        assert len(adapted["endpoints"]) == 2
-        assert adapted["endpoints"][0]["url"] == "http://127.0.0.1/"
-        assert adapted["hosts"][0]["ip"] == "127.0.0.1"
-        assert "php" in adapted["technologies"]
-
-    def test_adapt_research_result(self) -> None:
-        research_data = _make_research_result()
-        adapted = adapt_research_result_for_exploit(research_data)
-
-        assert "technologies" in adapted
-        assert "techniques" in adapted
-        assert len(adapted["techniques"]) == 1
-        assert adapted["techniques"][0]["name"] == "PHP Type Juggling"
-        assert adapted["techniques"][0]["severity"] == "high"
-
-    def test_adapt_empty_scan_result(self) -> None:
-        sr = ScanResult(target="127.0.0.1")
-        adapted = adapt_scan_result_for_exploit(sr)
-        assert adapted["endpoints"] == []
-        assert adapted["technologies"] == []
-
-    def test_adapt_empty_research_result(self) -> None:
-        rr = ResearchResult()
-        adapted = adapt_research_result_for_exploit(rr)
-        assert adapted["techniques"] == []
-        assert adapted["technologies"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -263,10 +216,9 @@ async def test_research_failure_doesnt_block_scan() -> None:
     except Exception:
         pass  # Expected — research failure is non-blocking
 
-    # Exploit proceeds with scan results + empty research
-    adapted_scan = adapt_scan_result_for_exploit(scan_result["result"])
-    exploit_input: dict[str, Any] = {**adapted_scan}
-    # No research techniques available — exploit should still run
+    # Exploit proceeds with v2 scan result directly (no adapter needed)
+    exploit_input: dict[str, Any] = {"scan_result": scan_result["result"]}
+    # No research result available — exploit should still run
     exploit_result = await mock_exploit_run(exploit_input)
 
     assert exploit_completed
