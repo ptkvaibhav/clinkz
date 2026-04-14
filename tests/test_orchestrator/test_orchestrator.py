@@ -214,8 +214,8 @@ async def test_phase_results_carry_forward() -> None:
     # Scan task should include recon_findings
     assert "recon_findings" in spin_calls["scan"].content
 
-    # Exploit task should include recon_findings
-    assert "recon_findings" in spin_calls["exploit"].content
+    # Exploit task should include recon_result (v2 format)
+    assert "recon_result" in spin_calls["exploit"].content
 
     assert result["status"] == "completed"
 
