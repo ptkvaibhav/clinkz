@@ -43,6 +43,10 @@ from clinkz.knowledge.seed_playbook import seed_tier1_tests
 from clinkz.llm.base import LLMClient
 from clinkz.llm.factory import get_llm_client
 from clinkz.models.scope import EngagementScope
+from clinkz.orchestrator.adapters import (
+    adapt_research_result_for_exploit,
+    adapt_scan_result_for_exploit,
+)
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
@@ -57,15 +61,6 @@ MAX_CROSS_PHASE_RESPINS = 3
 
 # Poll interval when waiting for agent messages (seconds).
 _POLL_INTERVAL = 1.0
-
-# Concurrent phase: how often the monitor loop checks progress (seconds).
-_MONITOR_INTERVAL = 10.0
-
-# How long to wait for Scan to discover endpoints before starting Exploit (seconds).
-_SCAN_WARMUP_TIMEOUT = 60.0
-
-# Minimum endpoints Scan should discover before Exploit starts early.
-_SCAN_WARMUP_MIN_ENDPOINTS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -339,14 +334,17 @@ class OrchestratorAgent:
         cookies: dict[str, str],
         authenticated_as: str,
     ) -> dict[str, dict[str, Any]]:
-        """Run Research + Scan + Exploit concurrently via asyncio.Tasks.
+        """Run Research + Scan in parallel, then Exploit sequentially.
 
         Flow:
-        1. Start Research Agent (technologies → runbook)
-        2. Start Scan Agent (recon results → endpoints)
-        3. Wait for Scan to discover ≥5 endpoints OR 60s
-        4. Start Exploit Agent (endpoints + runbook → findings)
-        5. Monitor loop every 10s until all done
+        1. Start Research + Scan concurrently (asyncio.Tasks)
+        2. Wait for Scan to complete (Exploit needs scan results)
+        3. Wait for Research to complete (may finish before or after Scan)
+        4. Adapt v2 results for the v1 Exploit Agent
+        5. Run Exploit with both adapted inputs
+
+        In Phase 3 the Exploit Agent will be rewritten to consume v2 models
+        directly and to poll for scan results incrementally.
 
         Args:
             targets_str: Human-readable target list.
@@ -400,10 +398,58 @@ class OrchestratorAgent:
             name="clinkz-concurrent-scan",
         )
 
-        # --- Wait for Scan warmup before starting Exploit ---
-        await self._wait_for_scan_warmup()
+        # --- Wait for Scan to complete (Exploit needs scan results) ---
+        self._logger.info("Waiting for Scan to complete before starting Exploit")
+        try:
+            scan_result = await scan_task
+            results["scan"] = scan_result
+            self._logger.info("Scan complete — %s", scan_result.get("status", "unknown"))
+        except Exception as exc:
+            self._logger.error("Scan failed: %s", exc)
+            results["scan"] = {"status": "error", "error": str(exc)}
 
-        # --- Start Exploit Agent as asyncio.Task ---
+        # --- Wait for Research (may already be done) ---
+        research_data: dict[str, Any] = {}
+        if research_task is not None:
+            try:
+                research_result = await research_task
+                results["research"] = research_result
+                research_data = research_result
+                self._logger.info(
+                    "Research complete — %s", research_result.get("status", "unknown")
+                )
+            except Exception as exc:
+                self._logger.error("Research failed (proceeding without): %s", exc)
+                results["research"] = {"status": "error", "error": str(exc)}
+
+        # --- Adapt v2 results for the v1 Exploit Agent ---
+        adapted_scan: dict[str, Any] = {}
+        adapted_research: dict[str, Any] = {}
+
+        if results.get("scan", {}).get("status") != "error":
+            scan_result_data = results["scan"].get("result")
+            if scan_result_data:
+                try:
+                    adapted_scan = adapt_scan_result_for_exploit(scan_result_data)
+                    self._logger.info(
+                        "Adapted scan: %d endpoints, %d technologies",
+                        len(adapted_scan.get("endpoints", [])),
+                        len(adapted_scan.get("technologies", [])),
+                    )
+                except Exception as exc:
+                    self._logger.warning("Scan result adaptation failed: %s", exc)
+
+        if research_data.get("result"):
+            try:
+                adapted_research = adapt_research_result_for_exploit(research_data["result"])
+                self._logger.info(
+                    "Adapted research: %d techniques",
+                    len(adapted_research.get("techniques", [])),
+                )
+            except Exception as exc:
+                self._logger.warning("Research result adaptation failed: %s", exc)
+
+        # --- Run Exploit with adapted results ---
         exploit_content: dict[str, Any] = {
             "task": f"Exploit all identified vulnerabilities on {targets_str}. "
             f"Check the runbook for techniques. Test all discovered endpoints. "
@@ -412,6 +458,12 @@ class OrchestratorAgent:
             "credentials": cred_data,
             "sessions": session_data,
         }
+        # Merge in adapted scan data (endpoints, hosts, technologies)
+        exploit_content.update(adapted_scan)
+        # Merge in adapted research data (techniques)
+        if adapted_research:
+            exploit_content["research_techniques"] = adapted_research.get("techniques", [])
+
         if cookies:
             exploit_content["session_cookies"] = cookies
             exploit_content["cookie_jar_path"] = f"/tmp/clinkz_{self._engagement_id}_cookies.txt"
@@ -421,47 +473,14 @@ class OrchestratorAgent:
                 f"Use the provided session cookies for ALL requests. "
                 f"Do NOT attempt to login again.\n\n" + exploit_content["task"]
             )
-        exploit_task = asyncio.create_task(
-            self._run_phase("exploit", exploit_content),
-            name="clinkz-concurrent-exploit",
-        )
 
-        # --- Monitor loop ---
-        self._logger.info("Concurrent agents started — entering monitor loop")
-        all_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {
-            "scan": scan_task,
-            "exploit": exploit_task,
-        }
-        if research_task is not None:
-            all_tasks["research"] = research_task
-
-        while all_tasks:
-            done, _pending = await asyncio.wait(
-                all_tasks.values(),
-                timeout=_MONITOR_INTERVAL,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            for task in done:
-                # Find which agent this task belongs to
-                for name, t in list(all_tasks.items()):
-                    if t is task:
-                        try:
-                            results[name] = task.result()
-                        except Exception as exc:
-                            self._logger.error("Concurrent agent '%s' failed: %s", name, exc)
-                            results[name] = {"status": "error", "error": str(exc)}
-                        del all_tasks[name]
-                        self._logger.info(
-                            "Concurrent agent '%s' finished — %d remaining",
-                            name,
-                            len(all_tasks),
-                        )
-                        break
-
-            if all_tasks:
-                running_names = list(all_tasks.keys())
-                self._logger.debug("Monitor: still running: %s", ", ".join(running_names))
+        self._logger.info("Starting Exploit with scan + research results")
+        try:
+            exploit_result = await self._run_phase("exploit", exploit_content)
+            results["exploit"] = exploit_result
+        except Exception as exc:
+            self._logger.error("Exploit failed: %s", exc)
+            results["exploit"] = {"status": "error", "error": str(exc)}
 
         # Fill in any missing results
         for name in ("research", "scan", "exploit"):
@@ -469,35 +488,6 @@ class OrchestratorAgent:
                 results[name] = {"status": "not_started"}
 
         return results
-
-    async def _wait_for_scan_warmup(self) -> None:
-        """Wait until Scan discovers enough endpoints or timeout expires.
-
-        Polls the state store for discovered endpoints. Returns when either
-        ≥ _SCAN_WARMUP_MIN_ENDPOINTS exist or _SCAN_WARMUP_TIMEOUT seconds
-        have elapsed.
-        """
-        assert self._state is not None
-        assert self._engagement_id is not None
-
-        deadline = asyncio.get_event_loop().time() + _SCAN_WARMUP_TIMEOUT
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                endpoints = await self._state.get_endpoints(self._engagement_id)
-                if len(endpoints) >= _SCAN_WARMUP_MIN_ENDPOINTS:
-                    self._logger.info(
-                        "Scan warmup: %d endpoints discovered — starting Exploit",
-                        len(endpoints),
-                    )
-                    return
-            except Exception:
-                pass
-            await asyncio.sleep(2.0)
-
-        self._logger.info(
-            "Scan warmup timeout (%ds) — starting Exploit with available endpoints",
-            int(_SCAN_WARMUP_TIMEOUT),
-        )
 
     # ------------------------------------------------------------------
     # Phase runner
