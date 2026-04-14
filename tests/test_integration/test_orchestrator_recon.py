@@ -707,8 +707,8 @@ async def test_multiple_agents_running_concurrently(tmp_path: Path) -> None:
         # LLM call counter is not consumed by the scan agent — only the recon
         # agent calls the LLM in this test.  The real lifecycle uses ScanAgent;
         # full ScanAgent behaviour is tested in tests/test_agents/test_scan.py.
-        from clinkz.agents.crawl import CrawlAgent
         import clinkz.orchestrator.lifecycle as _lifecycle_mod
+        from clinkz.agents.crawl import CrawlAgent
 
         _patched_classes = {
             **_lifecycle_mod._AGENT_CLASSES,
