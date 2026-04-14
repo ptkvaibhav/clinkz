@@ -159,6 +159,8 @@ class StateStore:
         """Open the database and create schema if needed."""
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+        # Enable WAL mode for safe concurrent reads + writes from multiple agents
+        await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.executescript(_SCHEMA_SQL)
         await self._db.commit()
         # Run ALTER TABLE migrations (idempotent — duplicates are ignored)
@@ -168,7 +170,7 @@ class StateStore:
             except Exception:  # noqa: BLE001 — column already exists
                 pass
         await self._db.commit()
-        logger.info("State store connected: %s", self.db_path)
+        logger.info("State store connected (WAL mode): %s", self.db_path)
 
     async def close(self) -> None:
         """Close the database connection."""

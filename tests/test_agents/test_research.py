@@ -14,9 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-from clinkz.agents.research import ResearchAgent
+from clinkz.agents.research_v1 import ResearchAgent
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.state import StateStore
@@ -390,7 +388,7 @@ async def test_agent_system_prompt_loaded(tmp_path: Path) -> None:
     agent, state, _ = await _make_agent(tmp_path / "test.db")
     await state.close()
     assert agent.system_prompt
-    assert "security research specialist" in agent.system_prompt.lower()
+    assert "research agent" in agent.system_prompt.lower()
 
 
 # ---------------------------------------------------------------------------
