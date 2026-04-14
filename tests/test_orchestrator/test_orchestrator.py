@@ -26,19 +26,15 @@ Coverage:
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
-from clinkz.llm.base import LLMClient, LLMMessage
+from clinkz.llm.base import LLMClient
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
-from clinkz.orchestrator.orchestrator import OrchestratorAgent, MAX_CROSS_PHASE_RESPINS
-from clinkz.state import StateStore
+from clinkz.orchestrator.orchestrator import MAX_CROSS_PHASE_RESPINS, OrchestratorAgent
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -128,8 +124,7 @@ async def _run_orchestrator(
 ) -> tuple[dict, MagicMock]:
     """Run OrchestratorAgent with mocked lifecycle and instant phase completion.
 
-    Also patches _wait_for_scan_warmup to return instantly (no real endpoints
-    in the DB) and _build_agent_llms to skip real LLM client creation.
+    Patches _build_agent_llms to skip real LLM client creation.
 
     Args:
         phase_results: Optional mapping of agent_type → result content for each phase.
@@ -157,7 +152,6 @@ async def _run_orchestrator(
         ),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
-        patch.object(orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_build_agent_llms", return_value={}),
     ):
         result = await orchestrator.run(scope)
@@ -360,7 +354,6 @@ async def test_phase_error_returns_error_result() -> None:
         ),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
-        patch.object(orchestrator, "_wait_for_scan_warmup", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_build_agent_llms", return_value={}),
     ):
         result = await orchestrator.run(SCOPE)

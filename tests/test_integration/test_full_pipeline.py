@@ -750,8 +750,6 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
             side_effect=lifecycle_constructor,
         ),
         patch("clinkz.orchestrator.orchestrator._POLL_INTERVAL", 0.01),
-        patch("clinkz.orchestrator.orchestrator._MONITOR_INTERVAL", 0.01),
-        patch("clinkz.orchestrator.orchestrator._SCAN_WARMUP_TIMEOUT", 0.1),
         patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
         patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
     ):

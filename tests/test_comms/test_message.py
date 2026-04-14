@@ -12,7 +12,6 @@ import pytest
 
 from clinkz.comms.message import AgentMessage, MessageType
 
-
 EID = "engagement-0001"
 
 
