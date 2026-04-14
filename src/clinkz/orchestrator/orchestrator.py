@@ -388,6 +388,7 @@ class OrchestratorAgent:
             "task": f"Map the complete attack surface of {targets_str}. "
             f"Crawl all endpoints, fuzz parameters, identify "
             f"suspicious behaviors and anomalies.",
+            "recon_result": recon_result,
             "recon_findings": recon_result,
             "credentials": cred_data,
             "sessions": session_data,

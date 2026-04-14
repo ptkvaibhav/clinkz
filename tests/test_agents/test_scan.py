@@ -18,9 +18,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
-from clinkz.agents.scan import ScanAgent
+from clinkz.agents.scan_v1 import ScanAgent
 from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
@@ -100,6 +98,14 @@ class MockScanLLM(LLMClient):
         return ""
 
     async def generate_text(self, prompt: str) -> str:
+        import json as _json
+
+        if "coverage" in prompt.lower() or "sufficient" in prompt.lower():
+            return _json.dumps({"sufficient": True, "gaps": [], "recommendations": []})
+        if "plan" in prompt.lower() or "strategy" in prompt.lower():
+            return "Scan plan: crawl HTTP services."
+        if "review" in prompt.lower():
+            return "Scan results look good."
         return ""
 
 
@@ -269,7 +275,7 @@ def _make_mock_resolver() -> ToolResolver:
     """Return a MagicMock resolver that maps capabilities to mock tool classes."""
     from unittest.mock import MagicMock
 
-    _MAP: dict[str, tuple[type[ToolBase], str]] = {
+    _cap_map: dict[str, tuple[type[ToolBase], str]] = {
         "web_crawling": (_MockKatanaTool, "katana"),
         "directory_fuzzing": (_MockFfufTool, "ffuf"),
         "parameter_discovery": (_MockParamTool, "arjun"),
@@ -278,13 +284,28 @@ def _make_mock_resolver() -> ToolResolver:
     resolver = MagicMock(spec=ToolResolver)
 
     def _find_tool(capability: str) -> ToolMatch | None:
-        entry = _MAP.get(capability)
+        entry = _cap_map.get(capability)
         if entry is None:
             return None
         cls, name = entry
         return ToolMatch(name=name, source="local", available=True, tool_class=cls)
 
     resolver.find_tool.side_effect = _find_tool
+    resolver.find_tools_ranked.return_value = ["katana"]
+
+    from unittest.mock import AsyncMock
+
+    async def _try_until_sufficient(
+        capability: str, min_results: int, run_fn: Any, *args: Any
+    ) -> tuple[str, Any]:
+        ent = _cap_map.get(capability)
+        if ent is None:
+            raise ValueError(f"No tools for {capability}")
+        cls, name = ent
+        result = await run_fn(name, *args)
+        return name, result
+
+    resolver.try_until_sufficient = AsyncMock(side_effect=_try_until_sufficient)
     return resolver
 
 
@@ -619,13 +640,39 @@ async def test_urls_derived_from_host_services(tmp_path: Path) -> None:
 
 
 async def test_lifecycle_sends_result_to_orchestrator_bus(tmp_path: Path) -> None:
-    """After ScanAgent finishes, the lifecycle manager sends RESULT to Orchestrator."""
+    """After ScanAgent finishes, the lifecycle manager sends RESULT to Orchestrator.
+
+    Note: This test uses the v2 ScanAgent which requires recon_result input.
+    The lifecycle manager imports from clinkz.agents.scan (v2).
+    """
+    from clinkz.models.recon import (
+        PortScanResult,
+        ReconResult,
+        ReconService,
+        TechStack,
+    )
+    from clinkz.models.recon import (
+        ServiceScanResult as ReconServiceScanResult,
+    )
+
     state = StateStore(tmp_path / "lifecycle.db")
     await state.connect()
     eid = await state.create_engagement("lifecycle-scan-test", SCOPE.model_dump())
 
     bus = MessageBus(state=state)
     mock_resolver = _make_mock_resolver()
+
+    # Build a minimal ReconResult for the v2 ScanAgent
+    recon = ReconResult(
+        target="example.com",
+        ports=PortScanResult(open_ports=[80], tool_used="nmap"),
+        services=ReconServiceScanResult(
+            services=[ReconService(port=80, service_name="http")],
+            tool_used="nmap",
+        ),
+        tech_stack=TechStack(),
+        llm_summary="Test recon.",
+    )
 
     with patch("clinkz.agents.scan.ToolResolver", return_value=mock_resolver):
         mgr = AgentLifecycleManager(
@@ -640,7 +687,7 @@ async def test_lifecycle_sends_result_to_orchestrator_bus(tmp_path: Path) -> Non
             from_agent=ORCHESTRATOR,
             to_agent="scan",
             engagement_id=eid,
-            content={"urls": ["http://example.com"]},
+            content={"recon_result": recon.model_dump(mode="json")},
         )
 
         await mgr.spin_up("scan", task_msg)
@@ -652,7 +699,7 @@ async def test_lifecycle_sends_result_to_orchestrator_bus(tmp_path: Path) -> Non
     )
     assert result_msg.from_agent == "scan"
     assert result_msg.to_agent == ORCHESTRATOR
-    assert "endpoints" in result_msg.content
+    assert "result" in result_msg.content
     assert "summary" in result_msg.content
 
     await state.close()

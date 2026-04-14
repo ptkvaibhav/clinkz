@@ -8,11 +8,11 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from clinkz.llm.base import AgentAction, LLMMessage, ToolCall
+from clinkz.llm.base import LLMMessage, ToolCall
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("ANTHROPIC_API_KEY"),

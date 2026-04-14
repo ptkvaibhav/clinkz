@@ -26,19 +26,15 @@ Coverage:
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
-from clinkz.llm.base import LLMClient, LLMMessage
+from clinkz.llm.base import LLMClient
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
-from clinkz.orchestrator.orchestrator import OrchestratorAgent, MAX_CROSS_PHASE_RESPINS
-from clinkz.state import StateStore
+from clinkz.orchestrator.orchestrator import MAX_CROSS_PHASE_RESPINS, OrchestratorAgent
 
 # ---------------------------------------------------------------------------
 # Shared constants

@@ -9,12 +9,9 @@ import pytest
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.tools.auth import (
     AuthOutput,
-    AuthResult,
     WebAuthenticator,
-    _FormFieldParser,
     _parse_form_fields,
 )
-
 
 # ---------------------------------------------------------------------------
 # HTML form parsing tests

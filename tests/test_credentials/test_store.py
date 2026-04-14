@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
-from clinkz.credentials.store import CredentialStore, _DEFAULT_CREDENTIALS
+from clinkz.credentials.store import CredentialStore
 from clinkz.state import StateStore
 
 

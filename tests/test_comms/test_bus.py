@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from clinkz.comms.bus import MessageBus
-from clinkz.comms.message import AgentMessage, MessageType
+from clinkz.comms.message import AgentMessage
 from clinkz.comms.protocol import EXPLOIT, KNOWN_AGENTS, ORCHESTRATOR, RECON, SCAN
 from clinkz.state import StateStore
 

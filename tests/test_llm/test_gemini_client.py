@@ -12,8 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from clinkz.llm.base import AgentAction, LLMMessage, ToolCall
-
+from clinkz.llm.base import LLMMessage, ToolCall
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
