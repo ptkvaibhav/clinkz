@@ -1,4 +1,5 @@
 ---
+name: run-dvwa
 description: "Run full Clinkz pipeline against DVWA and report vulnerability coverage"
 ---
 Verify DVWA is running at http://localhost:8080 (check docker compose -f docker/docker-compose.yml ps).

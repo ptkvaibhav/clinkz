@@ -1,4 +1,5 @@
 ---
+name: review-findings
 description: "Review latest engagement findings for accuracy, false positives, and evidence quality"
 ---
 Read the latest engagement output (check outputs/ directory for the most recent
