@@ -42,6 +42,14 @@ from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
 from clinkz.llm.base import LLMClient
 from clinkz.llm.factory import get_llm_client
+from clinkz.models.recon import (
+    PortScanResult,
+    ReconResult,
+    ReconService,
+    ServiceScanResult,
+    TechStack,
+    WebReconResult,
+)
 from clinkz.models.scope import EngagementScope
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.state import StateStore
@@ -203,6 +211,14 @@ class OrchestratorAgent:
                 summary["phases"]["recon"] = recon_result
                 self._logger.info("PHASE 1 (RECON) complete")
 
+                # If recon failed (error dict), construct a minimal ReconResult
+                # from the scope targets so downstream agents can still work.
+                if recon_result.get("status") == "error" or "result" not in recon_result:
+                    self._logger.warning(
+                        "Recon returned error — constructing fallback ReconResult from scope"
+                    )
+                    recon_result = self._build_fallback_recon(scope)
+
                 # Try default credentials for discovered technologies
                 await self._try_default_credentials(recon_result)
 
@@ -225,7 +241,12 @@ class OrchestratorAgent:
                     login_url = await self._find_login_url(recon_result, "", scan_result=None)
                     if not login_url:
                         for t in scope.targets:
-                            login_url = f"http://{t.value}/login"
+                            base = (
+                                t.value
+                                if t.value.startswith(("http://", "https://"))
+                                else f"http://{t.value}"
+                            )
+                            login_url = f"{base.rstrip('/')}/login"
                             break
                     cookies, authenticated_as = await self._verify_and_refresh_session(
                         login_url or "", sessions, valid_creds
@@ -250,6 +271,22 @@ class OrchestratorAgent:
                 )
                 summary["phases"].update(concurrent_results)
                 self._logger.info("PHASE 2 (CONCURRENT) complete")
+
+                # Persist exploit findings to the findings table so the
+                # Report Agent can query them.
+                exploit_data = concurrent_results.get("exploit", {})
+                exploit_result = exploit_data.get("result", {})
+                persisted_findings = exploit_result.get("findings", [])
+                if persisted_findings:
+                    self._logger.info(
+                        "Persisting %d exploit findings to state",
+                        len(persisted_findings),
+                    )
+                    for finding in persisted_findings:
+                        if isinstance(finding, dict):
+                            await state.add_finding(engagement_id, finding)
+                else:
+                    self._logger.warning("No exploit findings to persist")
 
                 # =============================================================
                 # PHASE 3: REPORT (sequential)
@@ -829,6 +866,12 @@ class OrchestratorAgent:
                         if name:
                             tech_str = f"{name} {version}".strip().lower()
                             techs.add(tech_str)
+            # Extract from web_info.technologies_found (body fingerprinting)
+            web_info = nested_result.get("web_info")
+            if isinstance(web_info, dict):
+                for wt in web_info.get("technologies_found", []):
+                    if isinstance(wt, str) and wt.strip():
+                        techs.add(wt.strip().lower())
             # Also extract from nested services
             svc_data = nested_result.get("services")
             if isinstance(svc_data, dict):
@@ -1054,7 +1097,10 @@ class OrchestratorAgent:
             probe_bases.append(base_url.rstrip("/"))
         if self._scope:
             for t in self._scope.targets:
-                candidate = f"http://{t.value}"
+                if t.value.startswith(("http://", "https://")):
+                    candidate = t.value
+                else:
+                    candidate = f"http://{t.value}"
                 if candidate.rstrip("/") not in [b.rstrip("/") for b in probe_bases]:
                     probe_bases.append(candidate)
 
@@ -1212,6 +1258,41 @@ class OrchestratorAgent:
 
         self._logger.warning("Re-authentication failed — proceeding without session")
         return {}, ""
+
+    # ------------------------------------------------------------------
+    # Fallback recon from scope targets
+    # ------------------------------------------------------------------
+
+    def _build_fallback_recon(self, scope: EngagementScope) -> dict[str, Any]:
+        """Construct a minimal recon result from scope targets when recon fails.
+
+        Parses URL targets to infer ports, services, and basic tech stack
+        so downstream agents have something to work with.
+        """
+        from urllib.parse import urlparse
+
+        target_val = scope.targets[0].value if scope.targets else "unknown"
+        parsed = urlparse(target_val) if "://" in target_val else None
+
+        port = 80
+        scheme = "http"
+        if parsed and parsed.hostname:
+            scheme = parsed.scheme or "http"
+            port = parsed.port or (443 if scheme == "https" else 80)
+
+        svc_name = "https" if scheme == "https" else "http"
+        fallback = ReconResult(
+            target=target_val,
+            ports=PortScanResult(open_ports=[port], tool_used="fallback_inference"),
+            services=ServiceScanResult(
+                services=[ReconService(port=port, protocol="tcp", service_name=svc_name)],
+                tool_used="fallback_inference",
+            ),
+            tech_stack=TechStack(technologies=[]),
+            web_info=WebReconResult(),
+            llm_summary="Fallback recon — LLM unavailable, inferred from scope target URL.",
+        )
+        return {"result": fallback.model_dump(mode="json"), "status": "fallback"}
 
     # ------------------------------------------------------------------
     # URL probing helper
