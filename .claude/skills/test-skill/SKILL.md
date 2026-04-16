@@ -1,4 +1,5 @@
 ---
+name: test-skill
 description: "Test a specific exploit skill against DVWA to verify it produces findings"
 ---
 The skill to test is: $ARGUMENTS

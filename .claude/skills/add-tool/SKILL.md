@@ -1,4 +1,5 @@
 ---
+name: add-tool
 description: "Scaffold a new tool wrapper with ToolBase subclass, parser, tests, and resolver registration"
 ---
 The tool to add is: $ARGUMENTS
