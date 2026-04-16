@@ -21,6 +21,7 @@ import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
@@ -126,9 +127,22 @@ class ReconAgent(BaseAgent):
 
         self._logger.info("ReconAgent v2 starting — target: %s", target)
 
+        # Detect if the target is a URL — if so, we already know the port/protocol
+        parsed_url = urlparse(target) if target.startswith(("http://", "https://")) else None
+        url_port: int | None = None
+        url_host: str = target
+        if parsed_url and parsed_url.hostname:
+            url_host = parsed_url.hostname
+            url_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+
         # Step 1: Full TCP port scan (TOOL — deterministic)
         self._logger.info("Step 1: Port scan — %s", target)
-        ports = await self._step_port_scan(target)
+        ports = await self._step_port_scan(url_host)
+
+        # If port scan found nothing but we have a URL, infer the port
+        if not ports.open_ports and url_port is not None:
+            self._logger.info("Port scan empty but target is a URL — inferring port %d", url_port)
+            ports = PortScanResult(open_ports=[url_port], tool_used="url_inference")
         self._logger.info("Step 1 complete: %d open ports found", len(ports.open_ports))
 
         # Step 2: LLM reviews port scan output (REASONING checkpoint)
@@ -138,7 +152,25 @@ class ReconAgent(BaseAgent):
 
         # Step 3: Service + version detection on open ports (TOOL — deterministic)
         self._logger.info("Step 3: Service scan on %d ports", len(ports.open_ports))
-        services = await self._step_service_scan(target, ports.open_ports)
+        services = await self._step_service_scan(url_host, ports.open_ports)
+
+        # If service scan found nothing but we have a URL, create synthetic HTTP service
+        if not services.services and parsed_url:
+            self._logger.info(
+                "Service scan empty but target is a URL — creating synthetic HTTP service"
+            )
+            scheme = parsed_url.scheme or "http"
+            svc_name = "https" if scheme == "https" else "http"
+            services = ServiceScanResult(
+                services=[
+                    ReconService(
+                        port=url_port or 80,
+                        protocol="tcp",
+                        service_name=svc_name,
+                    )
+                ],
+                tool_used="url_inference",
+            )
         self._logger.info("Step 3 complete: %d services identified", len(services.services))
 
         # Step 4: LLM extracts technology fingerprint (REASONING checkpoint)
@@ -154,7 +186,7 @@ class ReconAgent(BaseAgent):
         has_http = any(s.is_http for s in services.services)
         if has_http:
             self._logger.info("Step 5: Web recon (HTTP services detected)")
-            web_info = await self._step_web_recon(target, services)
+            web_info = await self._step_web_recon(url_host, services)
             self._logger.info("Step 5 complete: web recon done")
         else:
             self._logger.info("Step 5: Skipped (no HTTP services)")
@@ -486,18 +518,29 @@ class ReconAgent(BaseAgent):
                 except Exception as exc:
                     self._logger.warning("WAF detection on %s failed: %s", url, exc)
 
-            # 3. HTTP headers via simple GET (resolved dynamically)
+            # 3. HTTP headers + body fingerprinting via simple GET
             try:
                 http_match = self._resolver.find_tool("http_request")
                 if http_match and http_match.available and http_match.tool_class:
                     http_tool = http_match.tool_class(
                         scope=self.scope, engagement_id=self.engagement_id
                     )
-                    http_args = http_tool.validate_input({"url": url, "method": "GET"})
+                    http_args = http_tool.validate_input(
+                        {
+                            "url": url,
+                            "method": "GET",
+                            "follow_redirects": True,
+                        }
+                    )
                     http_raw = await http_tool.execute(http_args)
                     http_parsed = http_tool.parse_output(http_raw)
                     if hasattr(http_parsed, "response_headers"):
                         headers.update(http_parsed.response_headers)
+                    # Extract app identity from response body
+                    body = getattr(http_parsed, "response_body", "")
+                    if body:
+                        body_techs = self._fingerprint_from_body(body)
+                        technologies_found.extend(body_techs)
                     self._logger.info("Collected headers from %s", url)
                 else:
                     self._logger.warning("No http_request tool available for header collection")
@@ -514,6 +557,65 @@ class ReconAgent(BaseAgent):
             headers=headers,
             technologies_found=technologies_found,
         )
+
+    @staticmethod
+    def _fingerprint_from_body(body: str) -> list[str]:
+        """Extract application/framework identity from HTML response body.
+
+        Checks for common signatures in page titles, meta tags, and body content.
+
+        Args:
+            body: Raw HTML response body.
+
+        Returns:
+            List of identified technology/application names.
+        """
+        import re
+
+        techs: list[str] = []
+        body_lower = body.lower()
+
+        # Known application signatures: (pattern, tech_name)
+        signatures = [
+            ("damn vulnerable web application", "dvwa"),
+            ("dvwa", "dvwa"),
+            ("owasp juice shop", "juice_shop"),
+            ("wp-content", "wordpress"),
+            ("wp-login", "wordpress"),
+            ("/wp-admin", "wordpress"),
+            ("joomla", "joomla"),
+            ("drupal", "drupal"),
+            ("phpmyadmin", "phpmyadmin"),
+            ("tomcat", "tomcat"),
+            ("jenkins", "jenkins"),
+            ("gitlab", "gitlab"),
+            ("grafana", "grafana"),
+            ("kibana", "kibana"),
+            ("nextcloud", "nextcloud"),
+        ]
+        for pattern, tech_name in signatures:
+            if pattern in body_lower:
+                techs.append(tech_name)
+
+        # Extract from meta generator tag
+        gen_match = re.search(
+            r'<meta[^>]+name=["\']generator["\'][^>]+content=["\']([^"\']+)["\']',
+            body,
+            re.I,
+        )
+        if gen_match:
+            techs.append(gen_match.group(1).strip().lower())
+
+        # Server-side language hints
+        if "x-powered-by" not in body_lower:
+            if ".php" in body_lower:
+                techs.append("php")
+            if ".asp" in body_lower or ".aspx" in body_lower:
+                techs.append("asp.net")
+            if ".jsp" in body_lower:
+                techs.append("java")
+
+        return list(set(techs))
 
     # ------------------------------------------------------------------
     # Step 6: LLM Synthesize
