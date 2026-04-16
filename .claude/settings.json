@@ -10,6 +10,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'INPUT=$(cat); FILE=$(echo \"$INPUT\" | jq -r \".tool_input.file_path // empty\"); if echo \"$FILE\" | grep -qE \"\\.py$\"; then DIR=$(dirname \"$FILE\"); cd \"$(echo \"$INPUT\" | jq -r \".cwd\")\" && ruff check \"$FILE\" --fix --quiet 2>&1 && ruff format \"$FILE\" --quiet 2>&1; fi; echo \"{\\\"decision\\\": \\\"approve\\\"}\"'"
+          }
+        ]
+      }
     ]
   }
 }
