@@ -21,13 +21,20 @@ from google import genai
 from google.genai import types
 
 from clinkz.config import settings
-from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
+from clinkz.llm.base import (
+    AgentAction,
+    LLMClient,
+    LLMMessage,
+    LLMTimeoutError,
+    RateLimitError,
+    ServiceUnavailableError,
+    ToolCall,
+)
 
 logger = logging.getLogger(__name__)
 
 _MAX_CALLS_PER_MINUTE: int = 5
 _RATE_LIMIT_PERIOD: float = 60.0
-_MAX_RETRIES: int = 6
 _REQUEST_TIMEOUT: float = 120.0  # Hard timeout for every Gemini API call
 
 
@@ -62,18 +69,34 @@ class _RateLimiter:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Return True if the exception indicates a retryable server error (429/503)."""
+    """Return True if the exception indicates HTTP 429 / quota exhaustion."""
     msg = str(exc).lower()
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
     return (
-        code in (429, 503)
+        code == 429
         or "429" in msg
-        or "503" in msg
         or "resource exhausted" in msg
         or "quota" in msg
+        or "rate limit" in msg
+    )
+
+
+def _is_service_unavailable_error(exc: Exception) -> bool:
+    """Return True if the exception indicates HTTP 503 / overloaded."""
+    msg = str(exc).lower()
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    return (
+        code == 503
+        or "503" in msg
         or "unavailable" in msg
         or "high demand" in msg
+        or "overloaded" in msg
     )
+
+
+def _is_retriable_error(exc: Exception) -> bool:
+    """Return True for any retriable provider error."""
+    return _is_rate_limit_error(exc) or _is_service_unavailable_error(exc)
 
 
 def _extract_retry_delay(exc: Exception) -> float | None:
@@ -234,41 +257,67 @@ class GeminiClient(LLMClient):
     ) -> Any:
         """Execute a coroutine factory with rate limiting and exponential backoff.
 
-        Retries up to ``_MAX_RETRIES`` times on 429 / quota errors.  Tries to
-        extract the server-recommended retry delay from the error details;
-        falls back to exponential backoff (1s, 2s, 4s, 8s, 16s, 32s).
+        Retries up to ``settings.llm_max_retries`` times on retriable errors
+        (429, 503, timeout). Honours the server-recommended ``retryDelay``
+        when the 429 includes one, otherwise uses exponential backoff capped
+        at ``settings.llm_retry_max_delay`` so we fail fast and let the
+        resilient wrapper move to the next provider.
+
+        Raises:
+            RateLimitError: when retries are exhausted on a 429.
+            ServiceUnavailableError: when retries are exhausted on a 503.
+            LLMTimeoutError: when all attempts time out.
 
         Args:
             coro_factory: Callable that returns a fresh coroutine each time.
         """
-        for attempt in range(_MAX_RETRIES):
+        max_retries = max(1, settings.llm_max_retries)
+        base_delay = settings.llm_retry_base_delay
+        max_delay = settings.llm_retry_max_delay
+        last_exc: Exception | None = None
+
+        for attempt in range(max_retries):
             try:
                 await self._rate_limiter.acquire()
                 return await asyncio.wait_for(coro_factory(), timeout=_REQUEST_TIMEOUT)
-            except TimeoutError:
+            except TimeoutError as exc:
+                last_exc = exc
                 logger.error(
                     "Gemini API call timed out after %.0fs (attempt %d/%d)",
                     _REQUEST_TIMEOUT,
                     attempt + 1,
-                    _MAX_RETRIES,
+                    max_retries,
                 )
-                if attempt < _MAX_RETRIES - 1:
-                    await asyncio.sleep(2**attempt)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(min(base_delay * (2**attempt), max_delay))
                     continue
-                raise
+                raise LLMTimeoutError(f"Gemini API timed out after {max_retries} attempts") from exc
             except Exception as exc:
-                if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES - 1:
-                    wait = _extract_retry_delay(exc) or 2**attempt
+                last_exc = exc
+                if _is_retriable_error(exc) and attempt < max_retries - 1:
+                    wait = _extract_retry_delay(exc) or min(base_delay * (2**attempt), max_delay)
+                    wait = min(wait, max_delay)
                     logger.warning(
-                        "Rate limit hit (attempt %d/%d) — retrying in %.0fs: %s",
+                        "Retriable error (attempt %d/%d) — retrying in %.0fs: %s",
                         attempt + 1,
-                        _MAX_RETRIES,
+                        max_retries,
                         wait,
                         exc,
                     )
                     await asyncio.sleep(wait)
-                else:
-                    raise
+                    continue
+                # Out of retries (or non-retriable) — translate to typed error
+                if _is_rate_limit_error(exc):
+                    raise RateLimitError(
+                        f"Gemini rate-limited: {exc}",
+                        retry_after=_extract_retry_delay(exc),
+                    ) from exc
+                if _is_service_unavailable_error(exc):
+                    raise ServiceUnavailableError(f"Gemini 503: {exc}") from exc
+                raise
+
+        # Defensive — should be unreachable because the loop always raises.
+        raise RateLimitError(f"Gemini exhausted retries: {last_exc}")
 
     def _track_usage(self, response: Any) -> None:
         """Accumulate token counts from a Gemini response and log them."""
@@ -328,14 +377,7 @@ class GeminiClient(LLMClient):
                 kwargs["config"] = config
             return self._client.aio.models.generate_content(**kwargs)
 
-        try:
-            response = await self._call_with_backoff(_make_coro)
-        except TimeoutError:
-            logger.error("reason() timed out — returning error as final_answer")
-            return AgentAction(
-                thought="Gemini API call timed out",
-                final_answer="Error: Gemini API call timed out after all retries.",
-            )
+        response = await self._call_with_backoff(_make_coro)
         self._track_usage(response)
 
         candidate = response.candidates[0]
@@ -390,11 +432,7 @@ class GeminiClient(LLMClient):
                 config=config,
             )
 
-        try:
-            response = await self._call_with_backoff(_make_coro)
-        except TimeoutError:
-            logger.error("research() timed out — returning error string")
-            return "Error: Gemini research call timed out after all retries."
+        response = await self._call_with_backoff(_make_coro)
         self._track_usage(response)
         return response.text
 
@@ -414,11 +452,7 @@ class GeminiClient(LLMClient):
                 contents=prompt,
             )
 
-        try:
-            response = await self._call_with_backoff(_make_coro)
-        except TimeoutError:
-            logger.error("generate_text() timed out — returning error string")
-            return "Error: Gemini generate_text call timed out after all retries."
+        response = await self._call_with_backoff(_make_coro)
         self._track_usage(response)
         return response.text
 

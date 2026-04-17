@@ -11,6 +11,34 @@ from typing import Any
 
 from pydantic import BaseModel
 
+# ---------------------------------------------------------------------------
+# Typed errors — used by ResilientLLMClient to distinguish retriable failures
+# ---------------------------------------------------------------------------
+
+
+class LLMError(Exception):
+    """Base class for all LLM client errors."""
+
+
+class RateLimitError(LLMError):
+    """Provider returned 429 or signalled quota exhaustion."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class ServiceUnavailableError(LLMError):
+    """Provider returned 503 / overloaded / temporarily unavailable."""
+
+
+class LLMTimeoutError(LLMError):
+    """Request to the provider timed out."""
+
+
+class LLMUnavailableError(LLMError):
+    """Every provider in the fallback chain failed."""
+
 
 class ToolCall(BaseModel):
     """A tool call requested by the LLM."""
