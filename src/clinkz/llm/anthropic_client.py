@@ -19,13 +19,19 @@ from typing import Any
 from anthropic import AsyncAnthropic
 
 from clinkz.config import settings
-from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
+from clinkz.llm.base import (
+    AgentAction,
+    LLMClient,
+    LLMMessage,
+    RateLimitError,
+    ServiceUnavailableError,
+    ToolCall,
+)
 
 logger = logging.getLogger(__name__)
 
 _MAX_CALLS_PER_MINUTE: int = 50
 _RATE_LIMIT_PERIOD: float = 60.0
-_MAX_RETRIES: int = 5
 
 
 class _RateLimiter:
@@ -53,10 +59,21 @@ class _RateLimiter:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Return True if the exception indicates a retryable error (429/529/overloaded)."""
+    """Return True if the exception indicates HTTP 429 / quota exhaustion."""
     msg = str(exc).lower()
     code = getattr(exc, "status_code", None)
-    return code in (429, 529) or "429" in msg or "overloaded" in msg or "rate_limit" in msg
+    return code == 429 or "429" in msg or "rate_limit" in msg
+
+
+def _is_service_unavailable_error(exc: Exception) -> bool:
+    """Return True if the exception indicates HTTP 503/529 / overloaded."""
+    msg = str(exc).lower()
+    code = getattr(exc, "status_code", None)
+    return code in (503, 529) or "503" in msg or "529" in msg or "overloaded" in msg
+
+
+def _is_retriable_error(exc: Exception) -> bool:
+    return _is_rate_limit_error(exc) or _is_service_unavailable_error(exc)
 
 
 class AnthropicClient(LLMClient):
@@ -178,33 +195,45 @@ class AnthropicClient(LLMClient):
     # ------------------------------------------------------------------
 
     async def _call_with_backoff(self, **kwargs: Any) -> Any:
-        """Execute an API call with rate limiting and exponential backoff.
+        """Execute an API call with rate limiting and bounded exponential backoff.
 
-        Args:
-            **kwargs: Arguments to pass to ``messages.create()``.
+        Retry budget and caps come from ``settings.llm_max_retries`` /
+        ``llm_retry_base_delay`` / ``llm_retry_max_delay`` so the resilient
+        wrapper can move on quickly when a provider is persistently down.
 
-        Returns:
-            The Anthropic API response.
+        Raises:
+            RateLimitError: retries exhausted on a 429.
+            ServiceUnavailableError: retries exhausted on a 503/529.
         """
-        for attempt in range(_MAX_RETRIES):
+        max_retries = max(1, settings.llm_max_retries)
+        base_delay = settings.llm_retry_base_delay
+        max_delay = settings.llm_retry_max_delay
+        last_exc: Exception | None = None
+
+        for attempt in range(max_retries):
             try:
                 await self._rate_limiter.acquire()
                 return await self._client.messages.create(**kwargs)
             except Exception as exc:
-                if _is_rate_limit_error(exc) and attempt < _MAX_RETRIES - 1:
-                    wait = 2**attempt
+                last_exc = exc
+                if _is_retriable_error(exc) and attempt < max_retries - 1:
+                    wait = min(base_delay * (2**attempt), max_delay)
                     logger.warning(
-                        "Rate limit hit (attempt %d/%d) — retrying in %.0fs: %s",
+                        "Retriable error (attempt %d/%d) — retrying in %.0fs: %s",
                         attempt + 1,
-                        _MAX_RETRIES,
+                        max_retries,
                         wait,
                         exc,
                     )
                     await asyncio.sleep(wait)
-                else:
-                    raise
-        # Should never reach here, but satisfy the type checker
-        raise RuntimeError("Exhausted all retries")  # pragma: no cover
+                    continue
+                if _is_rate_limit_error(exc):
+                    raise RateLimitError(f"Anthropic rate-limited: {exc}") from exc
+                if _is_service_unavailable_error(exc):
+                    raise ServiceUnavailableError(f"Anthropic 503/529: {exc}") from exc
+                raise
+
+        raise RateLimitError(f"Anthropic exhausted retries: {last_exc}")  # pragma: no cover
 
     def _track_usage(self, response: Any) -> None:
         """Accumulate token counts from an Anthropic response."""

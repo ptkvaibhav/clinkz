@@ -14,9 +14,27 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 
 from clinkz.config import settings
-from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
+from clinkz.llm.base import (
+    AgentAction,
+    LLMClient,
+    LLMMessage,
+    RateLimitError,
+    ServiceUnavailableError,
+    ToolCall,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _translate_openai_error(exc: Exception) -> Exception:
+    """Translate provider-specific errors to Clinkz typed errors."""
+    code = getattr(exc, "status_code", None)
+    msg = str(exc).lower()
+    if code == 429 or "429" in msg or "rate_limit" in msg:
+        return RateLimitError(f"OpenAI rate-limited: {exc}")
+    if code == 503 or "503" in msg or "overloaded" in msg or "unavailable" in msg:
+        return ServiceUnavailableError(f"OpenAI 503: {exc}")
+    return exc
 
 
 class OpenAIClient(LLMClient):
@@ -105,7 +123,10 @@ class OpenAIClient(LLMClient):
             kwargs["tools"] = self._to_openai_tools(tools)
             kwargs["tool_choice"] = "auto"
 
-        response: ChatCompletion = await self._client.chat.completions.create(**kwargs)
+        try:
+            response: ChatCompletion = await self._client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            raise _translate_openai_error(exc) from exc
         self._track_usage(response)
 
         choice = response.choices[0]
@@ -155,10 +176,13 @@ class OpenAIClient(LLMClient):
         Returns:
             Generated text content.
         """
-        response: ChatCompletion = await self._client.chat.completions.create(
-            model=self._agent_model,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        try:
+            response: ChatCompletion = await self._client.chat.completions.create(
+                model=self._agent_model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:
+            raise _translate_openai_error(exc) from exc
         self._track_usage(response)
         return response.choices[0].message.content or ""
 
