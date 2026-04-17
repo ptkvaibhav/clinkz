@@ -232,11 +232,13 @@ class TestMigrations:
 class TestPerAgentLLMConfig:
     def test_defaults(self) -> None:
         s = Settings()
+        # Fast agents → Gemini Flash (high-volume).
         assert s.recon_llm_provider == "gemini"
         assert s.scan_llm_provider == "gemini"
-        assert s.exploit_llm_provider == "gemini"
-        assert s.research_llm_provider == "gemini"
         assert s.report_llm_provider == "gemini"
+        # Reasoning agents → Claude (complex, fewer calls).
+        assert s.exploit_llm_provider == "anthropic"
+        assert s.research_llm_provider == "anthropic"
 
     def test_override_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RECON_LLM_PROVIDER", "openai")
@@ -246,3 +248,10 @@ class TestPerAgentLLMConfig:
         assert s.exploit_llm_provider == "ollama"
         # Unchanged defaults
         assert s.scan_llm_provider == "gemini"
+
+    def test_override_via_modern_env_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Modern ``LLM_PROVIDER_<ROLE>`` names take priority over legacy names."""
+        monkeypatch.setenv("LLM_PROVIDER_RESEARCH", "gemini")
+        monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "openai")  # should be ignored
+        s = Settings.from_env()
+        assert s.research_llm_provider == "gemini"
