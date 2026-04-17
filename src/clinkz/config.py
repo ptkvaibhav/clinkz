@@ -41,12 +41,29 @@ class Settings(BaseModel):
     gemini_model: str = Field(default="gemini-2.5-pro")
     gemini_exploit_model: str = Field(default="gemini-2.5-pro")
 
-    # Per-agent LLM provider overrides (default to global llm_provider if unset)
+    # Per-agent LLM provider overrides
+    # - Fast, cheap, high-volume calls → gemini (Flash)
+    # - Complex reasoning, fewer calls  → anthropic (Claude)
     recon_llm_provider: LLMProvider = Field(default="gemini")
     scan_llm_provider: LLMProvider = Field(default="gemini")
-    exploit_llm_provider: LLMProvider = Field(default="gemini")
-    research_llm_provider: LLMProvider = Field(default="gemini")
     report_llm_provider: LLMProvider = Field(default="gemini")
+    exploit_llm_provider: LLMProvider = Field(default="anthropic")
+    research_llm_provider: LLMProvider = Field(default="anthropic")
+
+    # Global default used by the resilient client when no per-agent override
+    # matches and the profile chain is exhausted.
+    llm_provider_default: LLMProvider = Field(default="gemini")
+
+    # Per-provider retry budget (used by each LLMClient's backoff loop).
+    # With fallback chains we keep each provider's budget low so we move to
+    # the next provider quickly instead of burning minutes on a single one.
+    llm_max_retries: int = Field(default=3, description="Max retries per provider")
+    llm_retry_base_delay: float = Field(
+        default=2.0, description="Initial exponential backoff delay (seconds)"
+    )
+    llm_retry_max_delay: float = Field(
+        default=30.0, description="Cap on exponential backoff (seconds)"
+    )
 
     # State store
     db_path: Path = Field(default=Path("clinkz.db"))
@@ -66,7 +83,24 @@ class Settings(BaseModel):
 
     @classmethod
     def from_env(cls) -> Settings:
-        """Construct Settings from environment variables."""
+        """Construct Settings from environment variables.
+
+        Per-agent LLM providers accept both the modern ``LLM_PROVIDER_<AGENT>``
+        names and the legacy ``<AGENT>_LLM_PROVIDER`` names (in that priority
+        order) so old ``.env`` files keep working.
+        """
+
+        def _agent_provider(agent: str, fallback: str) -> str:
+            upper = agent.upper()
+            return (
+                os.getenv(f"LLM_PROVIDER_{upper}")
+                or os.getenv(f"{upper}_LLM_PROVIDER")
+                or os.getenv("LLM_PROVIDER_DEFAULT")
+                or fallback
+            )
+
+        global_default = os.getenv("LLM_PROVIDER_DEFAULT") or os.getenv("LLM_PROVIDER", "openai")
+
         return cls(
             llm_provider=os.getenv("LLM_PROVIDER", "openai"),  # type: ignore[arg-type]
             openai_api_key=os.getenv("OPENAI_API_KEY"),
@@ -79,11 +113,15 @@ class Settings(BaseModel):
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-pro"),
             gemini_exploit_model=os.getenv("GEMINI_EXPLOIT_MODEL", "gemini-2.5-pro"),
-            recon_llm_provider=os.getenv("RECON_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
-            scan_llm_provider=os.getenv("SCAN_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
-            exploit_llm_provider=os.getenv("EXPLOIT_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
-            research_llm_provider=os.getenv("RESEARCH_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
-            report_llm_provider=os.getenv("REPORT_LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
+            recon_llm_provider=_agent_provider("recon", "gemini"),  # type: ignore[arg-type]
+            scan_llm_provider=_agent_provider("scan", "gemini"),  # type: ignore[arg-type]
+            exploit_llm_provider=_agent_provider("exploit", "anthropic"),  # type: ignore[arg-type]
+            research_llm_provider=_agent_provider("research", "anthropic"),  # type: ignore[arg-type]
+            report_llm_provider=_agent_provider("report", "gemini"),  # type: ignore[arg-type]
+            llm_provider_default=global_default,  # type: ignore[arg-type]
+            llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
+            llm_retry_base_delay=float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0")),
+            llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
             tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "local"),

@@ -42,6 +42,7 @@ from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
 from clinkz.llm.base import LLMClient
 from clinkz.llm.factory import get_llm_client
+from clinkz.llm.fallback import ResilientLLMClient
 from clinkz.models.recon import (
     PortScanResult,
     ReconResult,
@@ -322,32 +323,26 @@ class OrchestratorAgent:
     # ------------------------------------------------------------------
 
     def _build_agent_llms(self) -> dict[str, LLMClient]:
-        """Create per-agent LLM clients from settings.
+        """Create a ResilientLLMClient per agent role.
 
-        Reads RECON_LLM_PROVIDER, SCAN_LLM_PROVIDER, etc. from config
-        and returns a mapping of agent_type → LLMClient.
+        Each agent gets a wrapper tied to its profile (``fast`` or
+        ``reasoning``) so a 429/503 from the primary provider silently
+        falls back to the next one in the chain.
 
         Returns:
             Dict mapping agent type strings to LLMClient instances.
         """
-        agent_provider_map: dict[str, str] = {
-            "recon": settings.recon_llm_provider,
-            "scan": settings.scan_llm_provider,
-            "exploit": settings.exploit_llm_provider,
-            "research": settings.research_llm_provider,
-            "report": settings.report_llm_provider,
-        }
+        agent_roles = ("recon", "scan", "exploit", "research", "report")
 
         llms: dict[str, LLMClient] = {}
-        for agent_type, provider in agent_provider_map.items():
+        for agent_type in agent_roles:
             try:
-                llms[agent_type] = get_llm_client(provider)
-                self._logger.debug("Agent '%s' LLM: provider=%s", agent_type, provider)
+                llms[agent_type] = ResilientLLMClient(agent_role=agent_type)
+                self._logger.debug("Agent '%s' LLM: ResilientLLMClient", agent_type)
             except Exception as exc:
                 self._logger.warning(
-                    "Failed to create LLM for agent '%s' (provider=%s): %s — will use default",
+                    "Failed to create ResilientLLMClient for '%s': %s — using default",
                     agent_type,
-                    provider,
                     exc,
                 )
         return llms

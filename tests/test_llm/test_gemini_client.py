@@ -235,7 +235,7 @@ class TestBackoff:
 
     @pytest.mark.asyncio
     async def test_backoff_sleep_duration_doubles(self) -> None:
-        """Verify sleep durations follow 2^attempt (1, 2, 4…)."""
+        """Sleep follows base_delay * 2^attempt, capped by llm_retry_max_delay."""
         client = _make_client()
         sleep_calls: list[float] = []
         call_count = 0
@@ -247,19 +247,31 @@ class TestBackoff:
             candidates=[MagicMock(content=MagicMock(parts=[]))], usage_metadata=None
         )
 
-        async def fail_3_times() -> Any:
+        async def fail_twice_then_succeed() -> Any:
             nonlocal call_count
             call_count += 1
-            if call_count < 4:
+            if call_count < 3:
                 raise Exception("429 Resource Exhausted")
             return mock_response
 
         client._rate_limiter.acquire = AsyncMock()
 
-        with patch("clinkz.llm.gemini_client.asyncio.sleep", side_effect=fake_sleep):
-            await client._call_with_backoff(lambda: fail_3_times())
+        # Default llm_max_retries=3, base_delay=2.0 → sleeps are 2, 4 before
+        # the third attempt finally succeeds.
+        from clinkz.llm import gemini_client as gemini_mod
 
-        assert sleep_calls == [1, 2, 4]  # 2^0, 2^1, 2^2
+        fake_settings = MagicMock()
+        fake_settings.llm_max_retries = 3
+        fake_settings.llm_retry_base_delay = 2.0
+        fake_settings.llm_retry_max_delay = 30.0
+
+        with (
+            patch("clinkz.llm.gemini_client.asyncio.sleep", side_effect=fake_sleep),
+            patch.object(gemini_mod, "settings", fake_settings),
+        ):
+            await client._call_with_backoff(lambda: fail_twice_then_succeed())
+
+        assert sleep_calls == [2.0, 4.0]
 
 
 # ---------------------------------------------------------------------------

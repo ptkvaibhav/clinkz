@@ -417,30 +417,25 @@ async def test_messages_persisted_in_state_store() -> None:
 
 
 def test_build_agent_llms() -> None:
-    """_build_agent_llms creates per-agent LLM clients from settings."""
+    """_build_agent_llms creates a ResilientLLMClient per agent role."""
+    from clinkz.llm.fallback import ResilientLLMClient
+
     llm = _MockLLM()
     orchestrator = OrchestratorAgent(llm=llm, db_path=":memory:")
 
-    # Patch get_llm_client to return mock LLMs and track calls
-    created_providers: list[str] = []
+    agent_llms = orchestrator._build_agent_llms()
 
-    def _mock_get_llm_client(provider: str) -> _MockLLM:
-        created_providers.append(provider)
-        return _MockLLM()
+    for role in ("recon", "scan", "exploit", "research", "report"):
+        assert role in agent_llms
+        assert isinstance(agent_llms[role], ResilientLLMClient)
+        assert agent_llms[role].agent_role == role
 
-    with patch(
-        "clinkz.orchestrator.orchestrator.get_llm_client",
-        side_effect=_mock_get_llm_client,
-    ):
-        agent_llms = orchestrator._build_agent_llms()
-
-    # Should have created LLM clients for each agent type
-    assert "recon" in agent_llms
-    assert "scan" in agent_llms
-    assert "exploit" in agent_llms
-    assert "research" in agent_llms
-    assert "report" in agent_llms
-    assert len(created_providers) == 5
+    # Reasoning-profile agents lead with Claude; fast-profile lead with Gemini.
+    assert agent_llms["exploit"].fallback_chain[0] == "anthropic"
+    assert agent_llms["research"].fallback_chain[0] == "anthropic"
+    assert agent_llms["recon"].fallback_chain[0] == "gemini"
+    assert agent_llms["scan"].fallback_chain[0] == "gemini"
+    assert agent_llms["report"].fallback_chain[0] == "gemini"
 
 
 # ---------------------------------------------------------------------------
