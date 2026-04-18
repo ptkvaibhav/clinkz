@@ -67,6 +67,13 @@ MAX_CROSS_PHASE_RESPINS = 3
 # Poll interval when waiting for agent messages (seconds).
 _POLL_INTERVAL = 1.0
 
+# Generic service/protocol names that should NOT be fed to the Research Agent
+# as "technologies". These are transport or protocol labels, not products —
+# researching "http" yields no useful CVEs or writeups.
+_GENERIC_SERVICE_NAMES: frozenset[str] = frozenset(
+    {"", "tcp", "udp", "unknown", "http", "https", "ssh", "ftp", "smtp", "dns", "telnet"}
+)
+
 
 # ---------------------------------------------------------------------------
 # OrchestratorAgent
@@ -214,11 +221,17 @@ class OrchestratorAgent:
 
                 # If recon failed (error dict), construct a minimal ReconResult
                 # from the scope targets so downstream agents can still work.
+                # Preserve any top-level v1-style hints (tech, hosts, summary)
+                # so downstream extraction still sees them.
                 if recon_result.get("status") == "error" or "result" not in recon_result:
                     self._logger.warning(
                         "Recon returned error — constructing fallback ReconResult from scope"
                     )
-                    recon_result = self._build_fallback_recon(scope)
+                    fallback = self._build_fallback_recon(scope)
+                    for hint_key in ("tech", "technologies", "tech_stack", "hosts", "summary"):
+                        if hint_key in recon_result:
+                            fallback[hint_key] = recon_result[hint_key]
+                    recon_result = fallback
 
                 # Try default credentials for discovered technologies
                 await self._try_default_credentials(recon_result)
@@ -874,9 +887,9 @@ class OrchestratorAgent:
                     if isinstance(svc, dict):
                         svc_name = svc.get("service_name", "").strip()
                         version = (svc.get("version") or "").strip()
-                        if svc_name and svc_name not in ("tcp", "udp", "unknown", ""):
+                        if svc_name and svc_name.lower() not in _GENERIC_SERVICE_NAMES:
                             techs.add(svc_name.lower())
-                        if version:
+                        if version and svc_name:
                             techs.add(f"{svc_name} {version}".strip().lower())
 
         # Direct tech lists (v1 format)
@@ -912,7 +925,7 @@ class OrchestratorAgent:
                         tech = f"{product} {version}".strip().lower()
                         techs.add(tech)
                     name = svc.get("name", "").strip()
-                    if name and name not in ("tcp", "udp", "unknown"):
+                    if name and name.lower() not in _GENERIC_SERVICE_NAMES:
                         techs.add(name.lower())
 
         # Parse the summary text for common technology names
