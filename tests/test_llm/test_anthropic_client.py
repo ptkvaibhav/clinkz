@@ -5,7 +5,6 @@ All tests mock the Anthropic SDK so no API key or network is needed.
 
 from __future__ import annotations
 
-import os
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -13,12 +12,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from clinkz.llm.base import LLMMessage, ToolCall
-
-pytestmark = pytest.mark.skipif(
-    not os.getenv("ANTHROPIC_API_KEY"),
-    reason="ANTHROPIC_API_KEY not set",
-)
-
 
 # ---------------------------------------------------------------------------
 # Fixtures — patch settings so the client can be instantiated without a key
