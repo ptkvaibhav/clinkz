@@ -2,6 +2,8 @@
 name: run-dvwa
 description: "Run full Clinkz pipeline against DVWA and report vulnerability coverage"
 ---
+Apply phase-work rules unless overridden by this skill.
+
 DVWA is the **target**, not the tool runtime. Only start DVWA here — the
 orchestrator's own pre-flight now handles the `clinkz-tools` container
 (auto-build, auto-start, binary identity check).

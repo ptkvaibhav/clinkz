@@ -2,6 +2,8 @@
 name: add-tool
 description: "Scaffold a new tool wrapper with ToolBase subclass, parser, tests, and resolver registration"
 ---
+Apply phase-work rules unless overridden by this skill.
+
 The tool to add is: $ARGUMENTS
 
 1. Read src/clinkz/tools/base.py for the ToolBase interface.

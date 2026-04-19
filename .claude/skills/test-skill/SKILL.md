@@ -2,6 +2,8 @@
 name: test-skill
 description: "Test a specific exploit skill against DVWA to verify it produces findings"
 ---
+Apply phase-work rules unless overridden by this skill.
+
 The skill to test is: $ARGUMENTS
 
 Find the corresponding deterministic _test_* method in the Exploit Agent

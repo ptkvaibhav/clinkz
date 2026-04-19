@@ -2,6 +2,7 @@
 name: review-engagement
 description: "After a pipeline run, analyze what worked and what didn't, update persistent KB with lessons learned"
 ---
+Apply phase-work rules unless overridden by this skill.
 
 Review the results of the most recent Clinkz engagement:
 
