@@ -90,3 +90,11 @@ nul
 
 # sqlmap temp output
 sqlmap_*/
+
+# graphify — keep GRAPH_REPORT.md and graph.json checked in for navigation
+graphify-out/graph.html
+graphify-out/cache/
+graphify-out/transcripts/
+graphify-out/.graphify_python
+graphify-out/manifest.json
+graphify-out/cost.json

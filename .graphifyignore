@@ -1,0 +1,47 @@
+# .graphifyignore for Clinkz
+
+# Runtime engagement data
+outputs/
+clinkz_knowledge.db
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+sqlmap_*/
+*sqlmap_*/
+CUsers*/
+nuclei-templates/
+report_*.md
+report_*.json
+engagements/
+reports/
+
+# Python cache and build
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Secrets and env files
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
