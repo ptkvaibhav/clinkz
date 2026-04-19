@@ -32,6 +32,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import shutil
@@ -41,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from clinkz.tools.base import ToolBase
+from clinkz.tools.binary_identity import BINARY_SIGNATURES, verify_binary_identity
 
 if TYPE_CHECKING:
     from clinkz.tools.mcp_client import MCPClient
@@ -354,18 +356,25 @@ class ToolResolver:
     _ALWAYS_AVAILABLE: set[str] = {"http_client", "web_authenticator", "tool_installer"}
 
     def is_available(self, tool_name: str) -> bool:
-        """Check whether a tool binary is available.
+        """Check whether a tool binary is available *and* is the expected program.
 
         Tools in ``_ALWAYS_AVAILABLE`` are Python-native and don't need a
         binary check.  For all others, when ``TOOL_EXEC_MODE=docker``, checks
         inside the configured Docker container via ``docker exec ... which <tool>``.
         Otherwise checks the host PATH with ``shutil.which()``.
 
+        In both modes, when ``binary_identity.BINARY_SIGNATURES`` lists the
+        tool, its ``--version`` output is additionally verified against the
+        expected signature so that unrelated programs sharing the same name
+        (e.g. the Python ``httpx`` library CLI) are not mistaken for the
+        tool Clinkz actually wants.
+
         Args:
             tool_name: Binary name (e.g., "nmap", "ffuf").
 
         Returns:
-            True if the binary is found.
+            True if the binary is found *and* identity-verified (or not
+            registered for verification).
 
         Raises:
             RuntimeError: If the Docker container is not running.
@@ -391,13 +400,22 @@ class ToolResolver:
                             f"Docker container '{settings.docker_container}' is not "
                             f"running. Start it with: docker start {settings.docker_container}"
                         )
-                return result.returncode == 0
+                    return False
+                exec_prefix: list[str] = [
+                    "docker",
+                    "exec",
+                    settings.docker_container,
+                ]
             except RuntimeError:
                 raise
             except Exception:
                 return False
+        else:
+            if shutil.which(tool_name) is None:
+                return False
+            exec_prefix = []
 
-        return shutil.which(tool_name) is not None
+        return _identity_ok(tool_name, exec_prefix)
 
     def get_all_capabilities(self) -> list[str]:
         """Return every capability the system knows about (sorted).
@@ -620,6 +638,45 @@ def _import_tool_modules() -> None:
 # ---------------------------------------------------------------------------
 # MCP capability inference
 # ---------------------------------------------------------------------------
+
+
+def _identity_ok(tool_name: str, exec_prefix: list[str]) -> bool:
+    """Sync wrapper around :func:`verify_binary_identity`.
+
+    Tools without a registered signature short-circuit to True (unchanged
+    legacy behavior). Otherwise the async verifier is run to completion —
+    driven via ``asyncio.run`` when no loop is active, or via a throw-away
+    thread when called from within a running loop.
+    """
+    if tool_name not in BINARY_SIGNATURES:
+        return True
+
+    # If we're already inside a running event loop, hop to a helper thread
+    # with its own loop. Otherwise drive the coroutine directly.
+    try:
+        asyncio.get_running_loop()
+        in_loop = True
+    except RuntimeError:
+        in_loop = False
+
+    if not in_loop:
+        return asyncio.run(verify_binary_identity(tool_name, exec_prefix))
+
+    import threading
+
+    result: dict[str, bool] = {"ok": False}
+
+    def _runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            result["ok"] = loop.run_until_complete(verify_binary_identity(tool_name, exec_prefix))
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join(timeout=10.0)
+    return result["ok"]
 
 
 def _infer_capabilities(tool_name: str, description: str) -> list[str]:

@@ -71,8 +71,12 @@ class Settings(BaseModel):
     # Tool execution
     tool_timeout: int = Field(default=300, description="Max seconds per tool invocation")
 
-    # Tool execution mode: "local" runs tools directly, "docker" runs via docker exec
-    tool_exec_mode: str = Field(default="local", description="'local' or 'docker'")
+    # Tool execution mode: "local" runs tools directly, "docker" runs via docker exec.
+    # Default is "docker" because local mode is a footgun — the resolver can
+    # match unrelated host binaries that share a name (e.g., the Python `httpx`
+    # CLI masquerading as ProjectDiscovery's httpx). Override with
+    # TOOL_EXEC_MODE=local when a developer genuinely wants host execution.
+    tool_exec_mode: str = Field(default="docker", description="'local' or 'docker'")
     docker_container: str = Field(
         default="clinkz-tools", description="Docker container name for tool execution"
     )
@@ -124,7 +128,7 @@ class Settings(BaseModel):
             llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
-            tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "local"),
+            tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "docker"),
             docker_container=os.getenv("DOCKER_CONTAINER", "clinkz-tools"),
             mcp_servers=json.loads(os.getenv("MCP_SERVERS", "[]")),
         )
