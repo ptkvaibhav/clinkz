@@ -18,7 +18,22 @@ from unittest.mock import patch
 
 import pytest
 
+from clinkz.config import settings
 from clinkz.tools.resolver import ToolResolver
+
+
+@pytest.fixture(autouse=True)
+def _local_mode_with_identity_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin tests to local mode and skip the new binary identity probe.
+
+    The resolver now defaults to docker mode (to avoid misidentifying host
+    binaries) and additionally runs a ``--version`` probe against every
+    registered tool. Both behaviors would require a live Docker daemon and
+    real tool binaries. Tests here work against mocked ``shutil.which``, so
+    we pin the mode back to ``local`` and short-circuit the identity check.
+    """
+    monkeypatch.setattr(settings, "tool_exec_mode", "local")
+    monkeypatch.setattr("clinkz.tools.resolver._identity_ok", lambda *_a, **_k: True)
 
 # ---------------------------------------------------------------------------
 # Expected values

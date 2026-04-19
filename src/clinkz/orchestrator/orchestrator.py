@@ -54,6 +54,7 @@ from clinkz.models.recon import (
 from clinkz.models.scope import EngagementScope
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.state import StateStore
+from clinkz.tools.docker_preflight import ensure_container_ready
 from clinkz.tools.resolver import ToolResolver
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,12 @@ class OrchestratorAgent:
             "OrchestratorAgent starting engagement — scope: %s",
             scope.name,
         )
+
+        # Container-first tool execution: verify the tools container is
+        # reachable before we touch state or spin up any agent. Propagates
+        # ClinkzDockerError to the caller (CLI) for clean exit.
+        if settings.tool_exec_mode == "docker":
+            await ensure_container_ready(settings.docker_container)
 
         async with StateStore(self._db_path) as state:
             engagement_id = await state.create_engagement(scope.name, scope.model_dump())
