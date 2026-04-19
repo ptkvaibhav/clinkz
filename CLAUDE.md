@@ -3,6 +3,15 @@
 ## What This Is
 An autonomous, multi-agent AI system that performs end-to-end black-box penetration testing. It takes a target scope (IPs/domains) as input and produces a professional pentest report as output, with no human intervention in between. Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamically discovering and executing tools as needed.
 
+## Navigation — context loading
+
+This project has a graphify knowledge graph at `graphify-out/`. Use it before falling back to raw globs/greps.
+
+- Before answering architecture or codebase questions, read `graphify-out/GRAPH_REPORT.md` for god nodes and community structure
+- If `graphify-out/wiki/index.md` exists, navigate it instead of reading raw files
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+- Edges tagged `INFERRED` or `AMBIGUOUS` are guesses — verify against actual source before acting on them
+
 ## Core Architecture: LLM-Mediated Multi-Agent System
 
 ### The Orchestrator Pattern
@@ -296,3 +305,4 @@ clinkz/
 - Test tool wrappers against real tool output (save sample outputs in tests/fixtures/)
 - Keep agent system prompts in separate .md files under prompts/ directories
 - Always push to origin after committing
+

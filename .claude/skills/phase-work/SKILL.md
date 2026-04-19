@@ -6,6 +6,12 @@ description: "Load Clinkz v2 development rules of engagement. Invoke at the star
 You are doing phase work on Clinkz v2. These rules apply to every task under
 this skill unless the user overrides explicitly.
 
+## Before you start
+
+- Read `graphify-out/GRAPH_REPORT.md` first — it lists god nodes (core abstractions), community structure, and suggested questions. Use it to orient before falling back to raw globs/greps.
+- When an edge or relationship is tagged `INFERRED` or `AMBIGUOUS` in the graph, treat it as a hypothesis — verify against the actual source file before acting on it.
+- After modifying code files, run `graphify update .` so the graph stays current (AST-only, no API cost).
+
 ## Foundation reading (always)
 
 - CLAUDE.md — architecture, rules, code style
