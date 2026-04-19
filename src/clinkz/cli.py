@@ -52,9 +52,9 @@ def scan(
         typer.Option("--scope", "-s", help="Path to scope JSON file (EngagementScope)"),
     ] = None,
     provider: Annotated[
-        str,
+        str | None,
         typer.Option("--provider", "-p", help="LLM provider: openai | anthropic | gemini | ollama"),
-    ] = "openai",
+    ] = None,
     output: Annotated[
         Path | None,
         typer.Option("--output", "-o", help="Directory to write reports into"),
@@ -68,6 +68,7 @@ def scan(
 
     from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
     from clinkz.orchestrator.orchestrator import OrchestratorAgent
+    from clinkz.tools.docker_preflight import ClinkzDockerError
 
     # Build engagement scope
     if scope is not None:
@@ -92,7 +93,12 @@ def scan(
         orchestrator = OrchestratorAgent(provider=provider)
         return await orchestrator.run(scope_obj)
 
-    result = asyncio.run(_run())
+    try:
+        result = asyncio.run(_run())
+    except ClinkzDockerError as exc:
+        typer.echo(f"Docker pre-flight failed:\n{exc}", err=True)
+        raise typer.Exit(code=2) from None
+
     status = result.get("status", "unknown")
     summary = result.get("summary", "No summary.")
     typer.echo(f"Engagement {status}: {summary}")
