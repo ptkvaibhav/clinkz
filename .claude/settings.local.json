@@ -47,7 +47,10 @@
       "Bash(cmd.exe /c \"where gh\" 2>/dev/null)",
       "Bash(pkill -f \"pytest\")",
       "Bash(git commit:*)",
-      "Bash(key=value\" string,:*)"
+      "Bash(key=value\" string,:*)",
+      "Bash(cp /tmp/exploit_fixed.py src/clinkz/agents/exploit.py)",
+      "Bash(cp /tmp/report_fixed.py src/clinkz/agents/report.py)",
+      "Bash(cp .claude/settings.json .claude/settings.json.bak)"
     ]
   }
 }
