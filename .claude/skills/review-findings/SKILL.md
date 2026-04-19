@@ -2,6 +2,8 @@
 name: review-findings
 description: "Review latest engagement findings for accuracy, false positives, and evidence quality"
 ---
+Apply phase-work rules unless overridden by this skill.
+
 Read the latest engagement output (check outputs/ directory for the most recent
 JSON report, or query the engagement state DB).
 

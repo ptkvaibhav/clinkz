@@ -2,6 +2,7 @@
 name: inspect-agent
 description: "Deep-inspect a specific Clinkz agent — verify it follows v2 patterns, check for violations, review test coverage"
 ---
+Apply phase-work rules unless overridden by this skill.
 
 Inspect the specified agent for v2 compliance. The agent to inspect: $ARGUMENTS
 

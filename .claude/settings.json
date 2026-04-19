@@ -21,6 +21,16 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'echo \"=== Clinkz session context ===\"; echo; echo \"Current branch: $(git branch --show-current)\"; echo; echo \"Last 3 commits:\"; git log --oneline -3; echo; echo \"Uncommitted changes:\"; git diff --stat | tail -5; echo; echo \"Test suite health:\"; pytest tests/ -q --tb=no 2>&1 | tail -3 || echo \"(pytest not yet run this session)\"; echo; echo \"v2 agents present:\"; ls src/clinkz/agents/*.py 2>/dev/null | grep -v __init__ | xargs -n1 basename; echo; echo \"Read these for full context: CLAUDE.md, CLINKZ_V2_IMPLEMENTATION.md\"'"
+          }
+        ]
+      }
     ]
   }
 }
