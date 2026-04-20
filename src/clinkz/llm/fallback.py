@@ -44,11 +44,12 @@ logger = logging.getLogger(__name__)
 
 #: Fallback chain per profile. ``reasoning`` prioritises Claude (best for
 #: multi-step planning); ``fast`` prioritises Gemini Flash (cheap + high
-#: volume). Every chain ends with Ollama so an offline local model can
-#: carry the engagement if all cloud providers are down.
+#: volume). Ollama is intentionally omitted: the client is still a stub,
+#: so putting it in a production chain guarantees terminal failure. Add
+#: it back once the Ollama client is fully implemented.
 LLM_FALLBACK_CHAINS: dict[str, list[str]] = {
-    "reasoning": ["anthropic", "gemini", "openai", "ollama"],
-    "fast": ["gemini", "anthropic", "openai", "ollama"],
+    "reasoning": ["anthropic", "gemini", "openai"],
+    "fast": ["gemini", "anthropic", "openai"],
 }
 
 #: Maps an agent role to the profile whose fallback chain it should use.
@@ -157,7 +158,13 @@ class ResilientLLMClient(LLMClient):
 
         for provider in self.fallback_chain:
             if not self._has_api_key(provider):
-                self._logger.debug("Skipping %s — no API key configured", provider)
+                env_var = _API_KEY_ENV.get(provider) or "<no env var>"
+                self._logger.warning(
+                    "LLM provider %s skipped for agent %s: %s not set",
+                    provider,
+                    self.agent_role,
+                    env_var,
+                )
                 continue
 
             try:
@@ -219,6 +226,14 @@ class ResilientLLMClient(LLMClient):
 
         return base
 
+    def has_usable_provider(self) -> bool:
+        """Return True if at least one provider in the chain has a configured API key.
+
+        Used at engagement start to fail fast when no LLM backend is reachable,
+        rather than waiting for the first real request to exhaust the chain.
+        """
+        return any(self._has_api_key(p) for p in self.fallback_chain)
+
     def _has_api_key(self, provider: str) -> bool:
         """Return True if the provider has a usable credential or needs none."""
         env_var = _API_KEY_ENV.get(provider)
@@ -243,3 +258,39 @@ class ResilientLLMClient(LLMClient):
         if provider not in self._clients:
             self._clients[provider] = get_llm_client(provider)
         return self._clients[provider]
+
+
+# ---------------------------------------------------------------------------
+# Engagement-start validation
+# ---------------------------------------------------------------------------
+
+
+def validate_agent_chains(
+    roles: list[str],
+    config: Settings | None = None,
+) -> None:
+    """Verify every agent's fallback chain has at least one provider with an API key.
+
+    Raises ``LLMUnavailableError`` before any agent runs when validation fails —
+    better to fail in 2 seconds than waste a full pipeline run hitting an empty
+    chain on every LLM call.
+
+    Args:
+        roles: Agent roles to check (e.g., ``["recon", "scan", "exploit"]``).
+        config: Optional Settings override. Defaults to the process-wide settings.
+
+    Raises:
+        LLMUnavailableError: If any role has no usable provider in its chain.
+    """
+    cfg = config or global_settings
+    missing: list[tuple[str, list[str]]] = []
+    for role in roles:
+        probe = ResilientLLMClient(role, config=cfg)
+        if not probe.has_usable_provider():
+            missing.append((role, probe.fallback_chain))
+    if missing:
+        details = "; ".join(f"{role} (chain={chain})" for role, chain in missing)
+        raise LLMUnavailableError(
+            f"No configured LLM provider for agents: {details}. "
+            f"Set at least one of ANTHROPIC_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY."
+        )

@@ -30,9 +30,18 @@ def _bypass_docker_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     current settings singleton. The env var covers tests that reload
     settings mid-run (e.g. ``tests/test_llm/test_anthropic_client.py``
     which does ``config.settings = Settings.from_env()``).
+
+    Also seeds dummy LLM API keys so the orchestrator's engagement-start
+    chain validation (``validate_agent_chains``) passes in tests that do
+    not mock out the whole ``run()`` path. Tests that specifically
+    exercise the no-key case override with ``monkeypatch.delenv``.
     """
     monkeypatch.setenv("TOOL_EXEC_MODE", "local")
     monkeypatch.setattr(settings, "tool_exec_mode", "local")
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai")
 
     async def _noop_preflight(container_name: str = "clinkz-tools") -> None:
         return None
