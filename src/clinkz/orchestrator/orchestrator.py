@@ -42,7 +42,7 @@ from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
 from clinkz.llm.base import LLMClient
 from clinkz.llm.factory import get_llm_client
-from clinkz.llm.fallback import ResilientLLMClient
+from clinkz.llm.fallback import ResilientLLMClient, validate_agent_chains
 from clinkz.models.recon import (
     PortScanResult,
     ReconResult,
@@ -164,6 +164,10 @@ class OrchestratorAgent:
         # ClinkzDockerError to the caller (CLI) for clean exit.
         if settings.tool_exec_mode == "docker":
             await ensure_container_ready(settings.docker_container)
+
+        # Fail fast if no agent has a usable LLM provider — otherwise every
+        # LLM call later in the engagement walks an empty fallback chain.
+        validate_agent_chains(["recon", "scan", "exploit", "research", "report"])
 
         async with StateStore(self._db_path) as state:
             engagement_id = await state.create_engagement(scope.name, scope.model_dump())
