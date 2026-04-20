@@ -296,3 +296,71 @@ class TestFactory:
 
         client = get_llm_client("anthropic")
         assert isinstance(client, AnthropicClient)
+
+
+# ---------------------------------------------------------------------------
+# Tests: model ID string validation (no API key required)
+# ---------------------------------------------------------------------------
+
+
+# Currently-supported Anthropic model IDs as of the Claude 4.x family.
+# Update this list when Anthropic publishes new aliases or retires old ones.
+_SUPPORTED_ANTHROPIC_MODEL_IDS: frozenset[str] = frozenset(
+    {
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+    }
+)
+
+# Retired / deprecated IDs that must never appear as defaults.
+_RETIRED_ANTHROPIC_MODEL_IDS: frozenset[str] = frozenset(
+    {
+        "claude-sonnet-4-20250514",
+        "claude-3-opus-20240229",
+        "claude-3-sonnet-20240229",
+        "claude-3-haiku-20240307",
+        "claude-3-5-sonnet-20240620",
+        "claude-3-5-sonnet-20241022",
+    }
+)
+
+
+class TestModelId:
+    """Validate the configured model ID is a currently-supported Anthropic ID.
+
+    These tests run in CI without an API key — they're pure string checks
+    on the settings defaults. Guards against shipping a retired model ID.
+    """
+
+    def test_default_model_is_supported(self, _reload_settings: None) -> None:
+        from clinkz.config import settings
+
+        assert settings.anthropic_model in _SUPPORTED_ANTHROPIC_MODEL_IDS, (
+            f"settings.anthropic_model={settings.anthropic_model!r} is not in the "
+            f"supported set {sorted(_SUPPORTED_ANTHROPIC_MODEL_IDS)}"
+        )
+
+    def test_default_model_is_not_retired(self, _reload_settings: None) -> None:
+        from clinkz.config import settings
+
+        assert settings.anthropic_model not in _RETIRED_ANTHROPIC_MODEL_IDS, (
+            f"settings.anthropic_model={settings.anthropic_model!r} is a retired ID"
+        )
+
+    def test_client_uses_configured_model(self, _reload_settings: None) -> None:
+        from clinkz.config import settings
+        from clinkz.llm.anthropic_client import AnthropicClient
+
+        client = AnthropicClient()
+        assert client._model == settings.anthropic_model
+        assert client._model in _SUPPORTED_ANTHROPIC_MODEL_IDS
+
+    def test_env_override_threads_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-fake")
+        monkeypatch.setenv("ANTHROPIC_MODEL", "claude-opus-4-7")
+
+        from clinkz import config
+
+        reloaded = config.Settings.from_env()
+        assert reloaded.anthropic_model == "claude-opus-4-7"
