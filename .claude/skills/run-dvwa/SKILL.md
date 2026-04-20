@@ -1,29 +1,15 @@
 ---
 name: run-dvwa
-description: "Run full Clinkz pipeline against DVWA and report vulnerability coverage"
+description: "Run the full Clinkz pipeline against DVWA and report vulnerability coverage across the 14 categories."
 ---
-Apply phase-work rules unless overridden by this skill.
 
-DVWA is the **target**, not the tool runtime. Only start DVWA here — the
-orchestrator's own pre-flight now handles the `clinkz-tools` container
-(auto-build, auto-start, binary identity check).
+Apply phase-work skill.
 
-1. Verify DVWA is reachable at http://localhost:8080.
-   If not, start only the DVWA service:
-   `docker compose -f docker/docker-compose.yml up -d dvwa`
+1. Verify DVWA is running at http://localhost:8080 (check via curl or docker compose ps). If not running: docker compose -f docker/docker-compose.yml up -d dvwa
+2. The orchestrator handles clinkz-tools container readiness via its preflight. Just invoke: python -m clinkz scan --target http://localhost:8080
+3. Parse the JSON report from outputs/
+4. Report coverage as X/14 with a breakdown table across: SQL Injection, XSS Reflected, XSS Stored, Command Injection, File Inclusion, File Upload, CSRF, Brute Force, Weak Session IDs, DOM XSS, JavaScript Attacks, Authorization Bypass, Open HTTP Redirect, CSP Bypass.
+5. Include: total findings, by severity, engagement ID, runtime.
+6. If coverage < target, briefly note which categories were missed and why (single-line each).
 
-2. Run the full pentest pipeline:
-   `python -m clinkz scan --target http://localhost:8080`
-   (container readiness is handled automatically; do not set
-   `TOOL_EXEC_MODE` — docker is the default).
-
-3. Parse the JSON report produced in the working directory
-   (`report_<engagement-id>.json`) and compare findings against the
-   14 DVWA vulnerability categories:
-   SQL Injection, XSS Reflected, XSS Stored, Command Injection,
-   File Inclusion, File Upload, CSRF, Brute Force, Weak Session IDs,
-   DOM XSS, JavaScript Attacks, Authorization Bypass, Open HTTP Redirect,
-   CSP Bypass.
-
-4. Report coverage as X/14 with details on what was found and what was
-   missed.
+Do NOT fix issues found during the run. Measurement only unless the user asks for fixes.

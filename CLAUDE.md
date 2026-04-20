@@ -296,3 +296,4 @@ clinkz/
 - Test tool wrappers against real tool output (save sample outputs in tests/fixtures/)
 - Keep agent system prompts in separate .md files under prompts/ directories
 - Always push to origin after committing
+

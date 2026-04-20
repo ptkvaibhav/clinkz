@@ -14,7 +14,6 @@ registered via the module-level factory so we can verify:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -32,6 +31,7 @@ from clinkz.llm.fallback import (
     AGENT_LLM_PROFILE,
     LLM_FALLBACK_CHAINS,
     ResilientLLMClient,
+    validate_agent_chains,
 )
 
 # ---------------------------------------------------------------------------
@@ -189,22 +189,13 @@ async def test_all_providers_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
     openai = _FakeLLM("openai", [LLMTimeoutError("timeout")])
     _register(monkeypatch, {"anthropic": anthropic, "gemini": gemini, "openai": openai})
 
-    # Ollama is in the chain but has no key requirement — stub it to fail too.
-    ollama = _FakeLLM("ollama", [RuntimeError("ollama down")])
-    with patch.dict(fallback_mod._API_KEY_ENV, {"ollama": None}):
-        _register(
-            monkeypatch,
-            {"anthropic": anthropic, "gemini": gemini, "openai": openai, "ollama": ollama},
-        )
-
-        client = ResilientLLMClient(agent_role="research")
-        with pytest.raises(LLMUnavailableError):
-            await client.generate_text("hi")
+    client = ResilientLLMClient(agent_role="research")
+    with pytest.raises(LLMUnavailableError):
+        await client.generate_text("hi")
 
     assert anthropic.calls == 1
     assert gemini.calls == 1
     assert openai.calls == 1
-    assert ollama.calls == 1
 
 
 # ---------------------------------------------------------------------------
@@ -284,3 +275,48 @@ async def test_per_agent_config_override(monkeypatch: pytest.MonkeyPatch) -> Non
     result = await client.generate_text("hi")
     assert result == "ok-from-gemini"
     assert anthropic.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# 9. Ollama is not in the production fallback chains (stub guard)
+# ---------------------------------------------------------------------------
+
+
+def test_ollama_not_in_fallback_chains() -> None:
+    """Ollama client is a stub — it must not appear in any production chain."""
+    for profile, chain in LLM_FALLBACK_CHAINS.items():
+        assert "ollama" not in chain, f"ollama leaked into '{profile}' chain: {chain}"
+
+
+# ---------------------------------------------------------------------------
+# 10. validate_agent_chains: engagement-start fail-fast when no key is set
+# ---------------------------------------------------------------------------
+
+
+def test_validate_agent_chains_raises_when_no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_all_keys(monkeypatch)
+
+    # Force the Settings snapshot to have no keys either (covers the config
+    # fallback path inside _has_api_key).
+    from clinkz import config as config_mod
+
+    fresh = config_mod.Settings.from_env()
+
+    with pytest.raises(LLMUnavailableError) as excinfo:
+        validate_agent_chains(
+            ["recon", "scan", "exploit", "research", "report"],
+            config=fresh,
+        )
+
+    msg = str(excinfo.value)
+    assert "recon" in msg
+    assert "exploit" in msg
+    assert "ANTHROPIC_API_KEY" in msg or "GEMINI_API_KEY" in msg or "OPENAI_API_KEY" in msg
+
+
+def test_validate_agent_chains_passes_with_one_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_all_keys(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini")
+
+    # Should not raise — every agent's chain contains gemini as a viable entry.
+    validate_agent_chains(["recon", "scan", "exploit", "research", "report"])
