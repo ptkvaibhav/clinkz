@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re as _re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin, urlparse
 
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
@@ -85,6 +87,7 @@ class ScanAgent(BaseAgent):
             **kwargs,
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
+        self._session_cookies: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -131,6 +134,13 @@ class ScanAgent(BaseAgent):
             raise TypeError(f"Unexpected recon_result type: {type(raw_recon)}")
 
         target = recon_result.target
+        # Capture session cookies from orchestrator for authenticated crawling
+        self._session_cookies: dict[str, str] = input_data.get("session_cookies", {})
+        if self._session_cookies:
+            self._logger.info(
+                "ScanAgent received session cookies: %s",
+                list(self._session_cookies.keys()),
+            )
         self._logger.info("ScanAgent v2 starting — target: %s", target)
 
         # Step 1: LLM plans scan strategy (PLANNING checkpoint)
@@ -319,15 +329,28 @@ class ScanAgent(BaseAgent):
         """Scan an HTTP service using crawling and fuzzing fallback chains.
 
         Args:
-            target: IP or hostname.
+            target: IP, hostname, or URL.
             port: HTTP port number.
             tech_stack: List of technology names (lowercase).
 
         Returns:
             HTTPScanResult with endpoints, forms, directories.
         """
-        scheme = "https" if port in {443, 8443} else "http"
-        url = f"{scheme}://{target}:{port}" if port not in {80, 443} else f"{scheme}://{target}"
+        # If target is already a URL, use it directly
+        if target.startswith(("http://", "https://")):
+            parsed_target = urlparse(target)
+            host = parsed_target.hostname or target
+            scheme = parsed_target.scheme
+            actual_port = parsed_target.port or port
+            url = (
+                f"{scheme}://{host}:{actual_port}"
+                if actual_port not in {80, 443}
+                else f"{scheme}://{host}"
+            )
+        else:
+            host = target
+            scheme = "https" if port in {443, 8443} else "http"
+            url = f"{scheme}://{target}:{port}" if port not in {80, 443} else f"{scheme}://{target}"
 
         endpoints: list[Endpoint] = []
         directories: list[str] = []
@@ -346,7 +369,11 @@ class ScanAgent(BaseAgent):
                 for ep_url in crawl_result:
                     endpoints.append(Endpoint(url=str(ep_url)))
         except ValueError:
-            self._logger.warning("No crawling tools available")
+            self._logger.warning("No crawling tools available — using HTTP client fallback")
+            crawl_tool = "http_client_crawl"
+            fallback_urls = await self._http_crawl_fallback(url, max_depth=2, max_pages=50)
+            for ep_url in fallback_urls:
+                endpoints.append(Endpoint(url=ep_url))
 
         # Fuzz using fallback chain
         try:
@@ -360,6 +387,17 @@ class ScanAgent(BaseAgent):
                 directories = [str(d) for d in fuzz_result]
         except ValueError:
             self._logger.warning("No fuzzing tools available")
+
+        # Merge parameterized endpoints from crawl fallback (forms, query params)
+        if hasattr(self, "_crawl_endpoints") and self._crawl_endpoints:
+            # Deduplicate by (url, method) — prefer the version with params
+            seen: set[tuple[str, str]] = {(ep.url, ep.method) for ep in endpoints}
+            for ep in self._crawl_endpoints:
+                key = (ep.url, ep.method)
+                if key not in seen:
+                    endpoints.append(ep)
+                    seen.add(key)
+            self._crawl_endpoints = []
 
         return HTTPScanResult(
             endpoints=endpoints,
@@ -419,6 +457,148 @@ class ScanAgent(BaseAgent):
         if hasattr(parsed, "directories"):
             paths.extend(str(d) for d in parsed.directories)
         return paths
+
+    async def _http_crawl_fallback(
+        self, base_url: str, max_depth: int = 2, max_pages: int = 50
+    ) -> list[str]:
+        """Crawl a website using the HTTP client tool when no dedicated crawler is available.
+
+        Fetches pages, parses links from HTML, and follows them up to max_depth.
+        Also stores discovered forms in ``self._crawl_forms`` for the scan result.
+
+        Args:
+            base_url: Starting URL to crawl.
+            max_depth: Maximum link-following depth.
+            max_pages: Maximum number of pages to fetch.
+
+        Returns:
+            List of discovered URL strings.
+        """
+        http_match = self._resolver.find_tool("http_request")
+        if not http_match or not http_match.available or not http_match.tool_class:
+            self._logger.warning("No HTTP client tool available for crawl fallback")
+            return []
+
+        parsed_base = urlparse(base_url)
+        base_origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+        visited: set[str] = set()
+        discovered: list[str] = []
+        self._crawl_endpoints: list[Endpoint] = []
+        queue: list[tuple[str, int]] = [(base_url, 0)]
+
+        while queue and len(visited) < max_pages:
+            current_url, depth = queue.pop(0)
+            # Normalize for dedup (strip fragment/query)
+            normalized = current_url.split("#")[0].split("?")[0].rstrip("/")
+            if normalized in visited:
+                continue
+            visited.add(normalized)
+
+            try:
+                tool = http_match.tool_class(scope=self.scope, engagement_id=self.engagement_id)
+                req_input: dict[str, Any] = {
+                    "url": current_url,
+                    "method": "GET",
+                    "follow_redirects": True,
+                }
+                if self._session_cookies:
+                    req_input["cookies"] = self._session_cookies
+                args = tool.validate_input(req_input)
+                raw = await tool.execute(args)
+                parsed = tool.parse_output(raw)
+
+                status = getattr(parsed, "status_code", 0)
+                body = getattr(parsed, "response_body", "")
+                if status < 200 or status >= 400 or not body:
+                    continue
+
+                discovered.append(current_url)
+
+                # Extract forms and their parameters
+                forms = self._extract_forms(body, current_url)
+                for action_url, method, param_names in forms:
+                    self._crawl_endpoints.append(
+                        Endpoint(url=action_url, method=method, params=param_names)
+                    )
+
+                # Extract query parameters from links
+                links = self._extract_links(body, current_url, base_origin)
+                for link in links:
+                    link_parsed = urlparse(link)
+                    if link_parsed.query:
+                        param_names = [
+                            p.split("=")[0] for p in link_parsed.query.split("&") if "=" in p
+                        ]
+                        if param_names:
+                            self._crawl_endpoints.append(
+                                Endpoint(url=link, method="GET", params=param_names)
+                            )
+
+                # Follow links
+                if depth < max_depth:
+                    for link in links:
+                        link_norm = link.split("#")[0].split("?")[0].rstrip("/")
+                        if link_norm not in visited:
+                            queue.append((link, depth + 1))
+
+            except Exception as exc:
+                self._logger.debug("Crawl fallback failed for %s: %s", current_url, exc)
+                continue
+
+        self._logger.info(
+            "HTTP crawl fallback: discovered %d URLs, %d parameterized endpoints",
+            len(discovered),
+            len(self._crawl_endpoints),
+        )
+        return discovered
+
+    @staticmethod
+    def _extract_links(html: str, page_url: str, base_origin: str) -> list[str]:
+        """Extract same-origin links from HTML content."""
+        links: list[str] = []
+        for match in _re.finditer(r'(?:href|src|action)\s*=\s*["\']([^"\']+)["\']', html, _re.I):
+            raw_link = match.group(1)
+            if raw_link.startswith(("javascript:", "mailto:", "data:", "#")):
+                continue
+            absolute = urljoin(page_url, raw_link)
+            if absolute.startswith(base_origin):
+                links.append(absolute)
+        return list(set(links))
+
+    @staticmethod
+    def _extract_forms(html: str, page_url: str) -> list[tuple[str, str, list[str]]]:
+        """Extract form action URLs, methods, and input field names from HTML.
+
+        Returns:
+            List of (action_url, method, [param_names]).
+        """
+        forms: list[tuple[str, str, list[str]]] = []
+        # Split on <form tags
+        form_blocks = _re.split(r"<form\b", html, flags=_re.I)
+        for block in form_blocks[1:]:  # skip text before first <form
+            # Extract action and method
+            action_match = _re.search(r'action\s*=\s*["\']([^"\']*)["\']', block, _re.I)
+            method_match = _re.search(r'method\s*=\s*["\']([^"\']*)["\']', block, _re.I)
+            action = action_match.group(1) if action_match else ""
+            method = (method_match.group(1) if method_match else "GET").upper()
+            action_url = urljoin(page_url, action) if action else page_url
+
+            # Extract input names (up to </form> or next <form)
+            form_end = block.find("</form")
+            form_html = block[:form_end] if form_end > 0 else block
+            param_names: list[str] = []
+            for inp in _re.finditer(
+                r'<(?:input|textarea|select)\b[^>]*\bname\s*=\s*["\']([^"\']+)["\']',
+                form_html,
+                _re.I,
+            ):
+                name = inp.group(1)
+                if name.lower() not in ("submit", "user_token"):
+                    param_names.append(name)
+
+            if param_names:
+                forms.append((action_url, method, param_names))
+        return forms
 
     async def _scan_ftp_service(self, target: str, port: int) -> FTPScanResult:
         """Scan an FTP service using nmap scripts.
