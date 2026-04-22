@@ -60,9 +60,32 @@ def test_validate_input_requires_url() -> None:
         make_tool().validate_input({})
 
 
-def test_validate_input_requires_fuzz_placeholder() -> None:
-    with pytest.raises(ValueError, match="FUZZ placeholder"):
-        make_tool().validate_input({"url": "http://172.20.0.2/admin"})
+def test_validate_input_auto_inserts_fuzz_when_missing() -> None:
+    """Regression: bare URLs must have /FUZZ appended so ffuf can run.
+
+    The scan agent passes base URLs like http://host into the fuzz fallback
+    chain; the wrapper must not reject them.
+    """
+    result = make_tool().validate_input({"url": "http://172.20.0.2"})
+    assert "FUZZ" in result["url"]
+    assert result["url"] == "http://172.20.0.2/FUZZ"
+
+
+def test_validate_input_auto_inserts_fuzz_strips_trailing_slash() -> None:
+    result = make_tool().validate_input({"url": "http://172.20.0.2/"})
+    assert result["url"] == "http://172.20.0.2/FUZZ"
+
+
+def test_validate_input_auto_inserts_fuzz_on_path() -> None:
+    result = make_tool().validate_input({"url": "http://172.20.0.2/admin"})
+    assert "FUZZ" in result["url"]
+    assert result["url"] == "http://172.20.0.2/admin/FUZZ"
+
+
+def test_validate_input_preserves_explicit_fuzz_placement() -> None:
+    """Parameter fuzzing URLs with FUZZ in the query string must be untouched."""
+    result = make_tool().validate_input({"url": "http://172.20.0.2/search?q=FUZZ"})
+    assert result["url"] == "http://172.20.0.2/search?q=FUZZ"
 
 
 def test_validate_input_checks_scope() -> None:
@@ -102,7 +125,7 @@ def test_parse_output_null_results() -> None:
 
 def test_parse_output_ansi_stripped() -> None:
     """ANSI escape codes from Docker exec should be stripped before parsing."""
-    raw = '\x1b[0m{"commandline": "ffuf", "results": [{"url": "http://172.20.0.2/test", "status": 200, "length": 100, "words": 10, "lines": 5}]}\x1b[0m'
+    raw = '\x1b[0m{"commandline": "ffuf", "results": [{"url": "http://172.20.0.2/test", "status": 200, "length": 100, "words": 10, "lines": 5}]}\x1b[0m'  # noqa: E501
     out = make_tool().parse_output(raw)
     assert out.success is True
     assert len(out.results) == 1
@@ -111,7 +134,7 @@ def test_parse_output_ansi_stripped() -> None:
 
 def test_parse_output_mixed_banner_and_json() -> None:
     """Banner text before JSON should be ignored."""
-    raw = 'ffuf v2.1.0\n:: Progress: [100/100]\n{"commandline": "ffuf", "results": [{"url": "http://172.20.0.2/a", "status": 200, "length": 50, "words": 5, "lines": 2}]}'
+    raw = 'ffuf v2.1.0\n:: Progress: [100/100]\n{"commandline": "ffuf", "results": [{"url": "http://172.20.0.2/a", "status": 200, "length": 50, "words": 5, "lines": 2}]}'  # noqa: E501
     out = make_tool().parse_output(raw)
     assert out.success is True
     assert len(out.results) == 1

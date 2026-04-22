@@ -91,8 +91,11 @@ class FfufTool(ToolBase):
         url = args.get("url", "").strip()
         if not url:
             raise ValueError("'url' is required for ffuf")
+        # Auto-insert FUZZ placeholder for directory fuzzing when caller passes
+        # a bare URL. Parameter fuzzing requires the caller to place FUZZ
+        # explicitly (e.g. "?q=FUZZ"), so only append when FUZZ is absent.
         if "FUZZ" not in url:
-            raise ValueError("'url' must contain the FUZZ placeholder")
+            url = url.rstrip("/") + "/FUZZ"
         # Extract base URL for scope check
         from urllib.parse import urlparse
 

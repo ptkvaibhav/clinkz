@@ -56,6 +56,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: live integration tests requiring external services (DVWA, network tools)",
+    "dvwa_smoke: live DVWA skill smoke tests (require running DVWA at localhost:8080)",
 ]
 
 [tool.ruff]
