@@ -128,7 +128,9 @@ class EngagementScope(BaseModel):
                 return False
 
         if entry.type in (ScopeType.DOMAIN, ScopeType.URL):
+            # Normalize the entry value the same way we normalize the target
+            entry_host = self._extract_host(entry.value)
             # Simple suffix match — handles subdomains
-            return target == entry.value or target.endswith(f".{entry.value}")
+            return target == entry_host or target.endswith(f".{entry_host}")
 
         return False
