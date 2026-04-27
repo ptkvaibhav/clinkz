@@ -218,18 +218,17 @@ async def test_weak_session_against_dvwa(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason="DOM XSS sink is pure client-side — no _test_xss_dom skill exists "
-    "in v2 exploit agent; _test_xss_reflected cannot see JS-executed reflection"
-)
 async def test_dom_xss_against_dvwa(
     dvwa_url: str,
     exploit_agent: ExploitAgent,
 ) -> None:
     url = f"{dvwa_url}/vulnerabilities/xss_d/?default=English"
     page = await exploit_agent._fetch_page(url, params=["default"])
-    findings = await exploit_agent._test_xss_reflected(page)
-    assert len(findings) >= 1
+    findings = await exploit_agent._test_xss_dom(page)
+    assert len(findings) >= 1, (
+        f"_test_xss_dom failed to detect DOM XSS at {url} "
+        f"(params={page.input_params}, status={page.status})"
+    )
 
 
 # ---------------------------------------------------------------------------
