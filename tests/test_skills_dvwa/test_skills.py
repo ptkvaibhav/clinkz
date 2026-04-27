@@ -236,17 +236,17 @@ async def test_dom_xss_against_dvwa(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(reason="skill not implemented in v2 exploit agent — no _test_javascript_attacks")
 async def test_javascript_attacks_against_dvwa(
     dvwa_url: str,
     exploit_agent: ExploitAgent,
 ) -> None:
     url = f"{dvwa_url}/vulnerabilities/javascript/"
     page = await exploit_agent._fetch_page(url)
-    # Method intentionally referenced to trigger AttributeError -> xfail
-    method = getattr(exploit_agent, "_test_javascript_attacks")
-    findings = await method(page)
-    assert len(findings) >= 1
+    findings = await exploit_agent._test_javascript_attacks(page)
+    assert len(findings) >= 1, (
+        f"_test_javascript_attacks failed to detect client-side security logic at {url} "
+        f"(forms={len(page.forms)}, status={page.status})"
+    )
 
 
 # ---------------------------------------------------------------------------
