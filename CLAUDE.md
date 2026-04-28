@@ -286,6 +286,15 @@ clinkz/
 - All LLM calls go through a single client wrapper that handles retries, logging, and token tracking
 - Scope enforcement: every tool execution validates targets against scope before running
 
+## Pre-Push Verification
+Every change must pass three gates before `git push`. If a gate fails, fix the root cause — never bypass with `--no-verify`, blanket `# noqa`/`# type: ignore`, or skip/xfail added solely to keep CI green.
+
+1. **Lint** — `ruff check src/ tests/` and `ruff format --check src/ tests/`. Use `ruff format src/ tests/` to auto-format. All warnings must be resolved or explicitly justified inline.
+2. **Audit (tests)** — `pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_integration` for unit/agent/tool/orchestrator tests on every change. Run the integration and DVWA skill suites (`pytest tests/test_integration/` and `pytest tests/test_skills_dvwa/ -m dvwa_smoke`) when DVWA is up and the change touches scan/exploit/orchestrator paths.
+3. **Security review** — Invoke the `security-review` skill (`/security-review`) on the diff whenever the change touches: tool execution (`src/clinkz/tools/`), scope enforcement, credential handling/storage, LLM input/output, HTTP/network/subprocess calls, deserialization, file I/O on user-controlled paths, MCP server interactions, or report rendering. Resolve every finding before pushing — never ship command/SQL injection, unsafe deserialization, secret leakage, hardcoded credentials, SSRF, path traversal, or scope-bypass code paths.
+
+Doc/config-only changes (no `.py` modified) may skip gates 1–2, but gate 3 still applies if the change can affect runtime behavior (new permission, new tool entry, new hook, new payload list, etc.).
+
 ## Important Rules
 - NEVER import a specific LLM SDK outside of the llm/ directory
 - NEVER hardcode API keys. Use environment variables via python-dotenv
@@ -295,5 +304,6 @@ clinkz/
 - All tool outputs must be parsed into structured Pydantic models
 - Test tool wrappers against real tool output (save sample outputs in tests/fixtures/)
 - Keep agent system prompts in separate .md files under prompts/ directories
-- Always push to origin after committing
+- Run the **Pre-Push Verification** gates above before every `git push`
+- Always push to origin after committing (and after pre-push verification passes)
 
