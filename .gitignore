@@ -79,6 +79,13 @@ outputs/
 !src/**/templates/*.css
 engagements/
 
+# Engagement run artifacts (UUID-named report dumps emitted by the pipeline)
+report_*.json
+report_*.md
+
+# Claude Code local scheduler lock
+.claude/scheduled_tasks.lock
+
 # Docker
 docker/volumes/
 
