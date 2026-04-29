@@ -407,6 +407,13 @@ class ScanAgent(BaseAgent):
             fuzz_tool_used=fuzz_tool,
         )
 
+    def _build_tool_input(self, url: str) -> dict[str, Any]:
+        """Build the tool input dict, attaching session cookies when present."""
+        tool_input: dict[str, Any] = {"url": url, "target": url}
+        if self._session_cookies:
+            tool_input["cookies"] = "; ".join(f"{k}={v}" for k, v in self._session_cookies.items())
+        return tool_input
+
     async def _run_crawl_tool(self, tool_name: str, url: str) -> list[str]:
         """Execute a crawling tool by name and return discovered URLs.
 
@@ -422,7 +429,7 @@ class ScanAgent(BaseAgent):
             return []
 
         tool = match.tool_class(scope=self.scope)
-        args = tool.validate_input({"url": url, "target": url})
+        args = tool.validate_input(self._build_tool_input(url))
         raw = await tool.execute(args)
         parsed = tool.parse_output(raw)
 
@@ -447,7 +454,7 @@ class ScanAgent(BaseAgent):
             return []
 
         tool = match.tool_class(scope=self.scope)
-        args = tool.validate_input({"url": url, "target": url})
+        args = tool.validate_input(self._build_tool_input(url))
         raw = await tool.execute(args)
         parsed = tool.parse_output(raw)
 
