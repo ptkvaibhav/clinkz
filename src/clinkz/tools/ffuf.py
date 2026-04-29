@@ -82,6 +82,14 @@ class FfufTool(ToolBase):
                         "description": "Number of concurrent threads.",
                         "default": 40,
                     },
+                    "cookies": {
+                        "type": "string",
+                        "description": (
+                            "Session cookies for authenticated fuzzing. "
+                            "Format: 'PHPSESSID=abc123; security=low'."
+                        ),
+                        "default": "",
+                    },
                 },
                 "required": ["url"],
             },
@@ -111,6 +119,7 @@ class FfufTool(ToolBase):
             "wordlist": wordlist,
             "filter_status": args.get("filter_status", "404"),
             "threads": int(args.get("threads", 40)),
+            "cookies": str(args.get("cookies", "")).strip(),
         }
 
     async def execute(self, args: dict[str, Any]) -> str:
@@ -130,6 +139,8 @@ class FfufTool(ToolBase):
             str(args["threads"]),
             "-s",  # silent mode
         ]
+        if args.get("cookies"):
+            cmd.extend(["-H", f"Cookie: {args['cookies']}"])
         stdout, stderr, _ = await self._run_subprocess(cmd)
         return stdout or stderr
 
