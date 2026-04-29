@@ -368,6 +368,14 @@ class ScanAgent(BaseAgent):
             if crawl_result:
                 for ep_url in crawl_result:
                     endpoints.append(Endpoint(url=str(ep_url)))
+                # Tools like katana return URL strings only — they don't extract
+                # form fields or query-string parameters. Without that, every
+                # Endpoint downstream has params=[] and the Exploit Agent can't
+                # build a single _test_* probe. Visit each discovered URL and
+                # extract forms + query params so the data contract holds.
+                enriched = await self._enrich_endpoints_with_params([str(u) for u in crawl_result])
+                if enriched:
+                    self._merge_into_crawl_endpoints(enriched)
         except ValueError:
             self._logger.warning("No crawling tools available — using HTTP client fallback")
             crawl_tool = "http_client_crawl"
@@ -464,6 +472,120 @@ class ScanAgent(BaseAgent):
         if hasattr(parsed, "directories"):
             paths.extend(str(d) for d in parsed.directories)
         return paths
+
+    def _merge_into_crawl_endpoints(self, new_endpoints: list[Endpoint]) -> None:
+        """Append new parameterized endpoints into ``self._crawl_endpoints``.
+
+        ``_crawl_endpoints`` is the staging list that ``_scan_http_service``
+        merges into the final endpoint set just before assembling
+        ``HTTPScanResult``. Tools that produce URL-only output (katana) and
+        tools that produce form-aware output (the HTTP fallback) both land
+        here so the merge step is the single point of truth.
+        """
+        existing = getattr(self, "_crawl_endpoints", None)
+        if existing is None:
+            self._crawl_endpoints = []
+            existing = self._crawl_endpoints
+        seen: set[tuple[str, str, tuple[str, ...]]] = {
+            (ep.url, ep.method, tuple(ep.params)) for ep in existing
+        }
+        for ep in new_endpoints:
+            key = (ep.url, ep.method, tuple(ep.params))
+            if key not in seen:
+                existing.append(ep)
+                seen.add(key)
+
+    async def _enrich_endpoints_with_params(self, urls: list[str]) -> list[Endpoint]:
+        """Fetch each URL and extract forms / query-param links as Endpoints.
+
+        URL-only crawlers (katana, gospider) discover endpoints but don't open
+        them and read forms — so without this enrichment the Endpoint objects
+        downstream have empty ``params`` lists and the Exploit Agent has
+        nothing to probe. We call this after the crawler returns and merge the
+        results in alongside the bare URLs.
+
+        Args:
+            urls: List of URL strings discovered by the crawler.
+
+        Returns:
+            List of Endpoint objects with method + params for each form and
+            each parameterized link found on the visited pages.
+        """
+        if not urls:
+            return []
+        http_match = self._resolver.find_tool("http_request")
+        if not http_match or not http_match.available or not http_match.tool_class:
+            self._logger.debug("No HTTP client available for endpoint enrichment")
+            return []
+
+        # De-duplicate URLs (strip fragment + trailing slash) before visiting.
+        # Cap the visit count so a giant katana run doesn't make scan O(n).
+        max_visits = 80
+        visited: set[str] = set()
+        ordered_urls: list[str] = []
+        for u in urls:
+            norm = u.split("#", 1)[0].rstrip("/")
+            if norm and norm not in visited:
+                visited.add(norm)
+                ordered_urls.append(u)
+                if len(ordered_urls) >= max_visits:
+                    break
+
+        enriched: list[Endpoint] = []
+        seen_keys: set[tuple[str, str, tuple[str, ...]]] = set()
+        for current_url in ordered_urls:
+            try:
+                tool = http_match.tool_class(scope=self.scope, engagement_id=self.engagement_id)
+                req_input: dict[str, Any] = {
+                    "url": current_url,
+                    "method": "GET",
+                    "follow_redirects": True,
+                }
+                if self._session_cookies:
+                    req_input["cookies"] = self._session_cookies
+                args = tool.validate_input(req_input)
+                raw = await tool.execute(args)
+                parsed = tool.parse_output(raw)
+
+                status = getattr(parsed, "status_code", 0)
+                body = getattr(parsed, "response_body", "")
+                if status < 200 or status >= 400 or not body:
+                    continue
+
+                # Extract forms — Endpoint per form action.
+                for action_url, method, param_names in self._extract_forms(body, current_url):
+                    if not param_names:
+                        continue
+                    key = (action_url, method, tuple(param_names))
+                    if key not in seen_keys:
+                        enriched.append(Endpoint(url=action_url, method=method, params=param_names))
+                        seen_keys.add(key)
+
+                # Extract query-param links — Endpoint per parameterized link.
+                base_origin = f"{urlparse(current_url).scheme}://{urlparse(current_url).netloc}"
+                for link in self._extract_links(body, current_url, base_origin):
+                    link_parsed = urlparse(link)
+                    if not link_parsed.query:
+                        continue
+                    param_names = [
+                        p.split("=", 1)[0] for p in link_parsed.query.split("&") if "=" in p
+                    ]
+                    if not param_names:
+                        continue
+                    key = (link, "GET", tuple(param_names))
+                    if key not in seen_keys:
+                        enriched.append(Endpoint(url=link, method="GET", params=param_names))
+                        seen_keys.add(key)
+            except Exception as exc:
+                self._logger.debug("Endpoint enrichment failed for %s: %s", current_url, exc)
+                continue
+
+        self._logger.info(
+            "Endpoint enrichment: visited %d URLs, produced %d parameterized endpoints",
+            len(ordered_urls),
+            len(enriched),
+        )
+        return enriched
 
     async def _http_crawl_fallback(
         self, base_url: str, max_depth: int = 2, max_pages: int = 50
