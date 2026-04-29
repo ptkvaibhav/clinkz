@@ -31,6 +31,7 @@ from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.knowledge.skills_loader import SkillsLoader
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.trace import Stopwatch, get_active_trace_writer
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 
@@ -190,6 +191,33 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------
     # Iteration limit — per-agent, configurable
     # ------------------------------------------------------------------
+
+    def _trace_step(
+        self,
+        step_name: str,
+        *,
+        input_summary: str = "",
+        output_summary: str = "",
+        duration_ms: float | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit an agent_step trace event for this agent.
+
+        Used by deterministic v2 agents to mark step boundaries (Step 1 plan,
+        Step 2 execute, etc.). No-op when no engagement-level TraceWriter is
+        active, so it's safe to call from agent code without checking.
+        """
+        writer = get_active_trace_writer()
+        if writer is None:
+            return
+        writer.agent_step(
+            agent=self.name,
+            step_name=step_name,
+            input_summary=input_summary,
+            output_summary=output_summary,
+            duration_ms=duration_ms,
+            extra=extra,
+        )
 
     @property
     def max_iterations(self) -> int:
@@ -547,6 +575,7 @@ class BaseAgent(ABC):
 
         for iteration in range(limit):
             self._logger.debug("ReAct iteration %d/%d", iteration + 1, limit)
+            iteration_sw = Stopwatch()
 
             # Warn the LLM when it's about to hit the iteration limit
             if iteration == limit - 2:
@@ -571,6 +600,13 @@ class BaseAgent(ABC):
             # Done?
             if action.final_answer is not None:
                 self._logger.info("Agent '%s' done after %d iteration(s)", self.name, iteration + 1)
+                self._trace_step(
+                    f"react_iteration_{iteration + 1}_final",
+                    input_summary=action.thought,
+                    output_summary=action.final_answer,
+                    duration_ms=iteration_sw.elapsed_ms,
+                    extra={"iteration": iteration + 1, "outcome": "final_answer"},
+                )
                 return action.final_answer
 
             # Act
@@ -685,6 +721,18 @@ class BaseAgent(ABC):
                         content=tool_result,
                         tool_call_id=action.tool_call.id,
                     )
+                )
+                tc_args_summary = json.dumps(action.tool_call.arguments, default=str)[:200]
+                self._trace_step(
+                    f"react_iteration_{iteration + 1}_tool",
+                    input_summary=f"{action.tool_call.name}({tc_args_summary})",
+                    output_summary=tool_result,
+                    duration_ms=iteration_sw.elapsed_ms,
+                    extra={
+                        "iteration": iteration + 1,
+                        "tool": action.tool_call.name,
+                        "outcome": "tool_call",
+                    },
                 )
                 # Check for incoming messages between ReAct iterations
                 await self._process_inbox()

@@ -52,6 +52,10 @@ from clinkz.models.recon import (
     WebReconResult,
 )
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.trace import (
+    TraceWriter,
+    set_active_trace_writer,
+)
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.state import StateStore
 from clinkz.tools.docker_preflight import ensure_container_ready
@@ -171,6 +175,11 @@ class OrchestratorAgent:
 
         async with StateStore(self._db_path) as state:
             engagement_id = await state.create_engagement(scope.name, scope.model_dump())
+            # Open the engagement-scoped trace writer before any agents spin up
+            # so tool/LLM/handoff events from the very first phase are captured.
+            trace_writer = TraceWriter(engagement_id=engagement_id)
+            set_active_trace_writer(trace_writer)
+            self._logger.info("TraceWriter opened: %s", trace_writer.path)
             bus = MessageBus(state=state)
             knowledge_base = KnowledgeBase()
             self._logger.info("KnowledgeBase loaded: %s", knowledge_base.stats())
@@ -336,6 +345,13 @@ class OrchestratorAgent:
                 return summary
             finally:
                 await persistent_kb.close()
+                # Always close + unset the trace writer so module-level state
+                # cannot leak between back-to-back engagements (relevant in
+                # tests and long-running daemon processes).
+                try:
+                    trace_writer.close()
+                finally:
+                    set_active_trace_writer(None)
 
             await state.update_engagement_status(engagement_id, "completed")
 
