@@ -198,11 +198,13 @@ class ToolBase(ABC):
             asyncio.TimeoutError: If the command exceeds self.timeout seconds.
         """
         from clinkz.config import settings
+        from clinkz.observability.trace import Stopwatch, get_active_trace_writer
 
         if settings.tool_exec_mode == "docker":
             cmd = ["docker", "exec", settings.docker_container, *cmd]
 
         self._logger.debug("Executing: %s", " ".join(cmd))
+        stopwatch = Stopwatch()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -216,6 +218,18 @@ class ToolBase(ABC):
         self._logger.debug("Exit code: %d", returncode)
         stdout = stdout_bytes.decode(errors="replace")
         stderr = stderr_bytes.decode(errors="replace")
+
+        writer = get_active_trace_writer()
+        if writer is not None:
+            writer.tool_call(
+                stage=getattr(self, "category", "utility"),
+                cmd=cmd,
+                stdout_summary=stdout,
+                stderr_summary=stderr,
+                exit_code=returncode,
+                duration_ms=stopwatch.elapsed_ms,
+                extra={"tool": self.name},
+            )
         return stdout, stderr, returncode
 
     async def _run_subprocess_stdin(self, cmd: list[str], stdin_data: str) -> tuple[str, str, int]:
@@ -236,11 +250,13 @@ class ToolBase(ABC):
             asyncio.TimeoutError: If the command exceeds self.timeout seconds.
         """
         from clinkz.config import settings
+        from clinkz.observability.trace import Stopwatch, get_active_trace_writer
 
         if settings.tool_exec_mode == "docker":
             cmd = ["docker", "exec", "-i", settings.docker_container, *cmd]
 
         self._logger.debug("Executing (stdin): %s", " ".join(cmd))
+        stopwatch = Stopwatch()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -255,4 +271,16 @@ class ToolBase(ABC):
         self._logger.debug("Exit code: %d", returncode)
         stdout = stdout_bytes.decode(errors="replace")
         stderr = stderr_bytes.decode(errors="replace")
+
+        writer = get_active_trace_writer()
+        if writer is not None:
+            writer.tool_call(
+                stage=getattr(self, "category", "utility"),
+                cmd=cmd,
+                stdout_summary=stdout,
+                stderr_summary=stderr,
+                exit_code=returncode,
+                duration_ms=stopwatch.elapsed_ms,
+                extra={"tool": self.name, "via_stdin": True},
+            )
         return stdout, stderr, returncode
