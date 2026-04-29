@@ -44,11 +44,16 @@ logger = logging.getLogger(__name__)
 
 #: Fallback chain per profile. ``reasoning`` prioritises Claude (best for
 #: multi-step planning); ``fast`` prioritises Gemini Flash (cheap + high
-#: volume). Ollama is intentionally omitted: the client is still a stub,
-#: so putting it in a production chain guarantees terminal failure. Add
-#: it back once the Ollama client is fully implemented.
+#: volume). ``reasoning_pinned`` is a single-provider chain — Claude only,
+#: no fallback — used by Exploit-Agent methodology checkpoints (character
+#: probing, payload synthesis, encoding selection) where switching mid-test
+#: from Claude to Gemini changes the deterministic path the test depends on.
+#: Ollama is intentionally omitted from the fallback chains: the client is
+#: still a stub, so putting it in a production chain guarantees terminal
+#: failure. Add it back once the Ollama client is fully implemented.
 LLM_FALLBACK_CHAINS: dict[str, list[str]] = {
     "reasoning": ["anthropic", "gemini", "openai"],
+    "reasoning_pinned": ["anthropic"],
     "fast": ["gemini", "anthropic", "openai"],
 }
 

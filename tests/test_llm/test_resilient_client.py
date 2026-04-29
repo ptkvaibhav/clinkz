@@ -320,3 +320,134 @@ def test_validate_agent_chains_passes_with_one_key(monkeypatch: pytest.MonkeyPat
 
     # Should not raise — every agent's chain contains gemini as a viable entry.
     validate_agent_chains(["recon", "scan", "exploit", "research", "report"])
+
+
+# ---------------------------------------------------------------------------
+# 11. reasoning_pinned profile — Anthropic only, no fallback
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_pinned_chain_is_anthropic_only() -> None:
+    """The pinned profile is the contract that mid-test the model never swaps.
+
+    Exploit-Agent methodology checkpoints (character probing, payload
+    synthesis, encoding selection) require deterministic LLM behaviour. A
+    mid-test fallback to Gemini changes which probes get sent and which
+    findings emerge, so the pinned profile must be exactly one provider.
+    """
+    assert LLM_FALLBACK_CHAINS["reasoning_pinned"] == ["anthropic"]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_pinned_does_not_fall_back_on_anthropic_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Anthropic raises, the pinned chain must NOT switch to Gemini."""
+    _set_all_keys(monkeypatch)
+    anthropic = _FakeLLM("anthropic", [ServiceUnavailableError("503")])
+    gemini = _FakeLLM("gemini", ["should-never-be-called"])
+    openai = _FakeLLM("openai", ["should-never-be-called"])
+    _register(monkeypatch, {"anthropic": anthropic, "gemini": gemini, "openai": openai})
+
+    client = ResilientLLMClient(
+        agent_role="exploit",
+        override_chain=list(LLM_FALLBACK_CHAINS["reasoning_pinned"]),
+    )
+    with pytest.raises(LLMUnavailableError):
+        await client.generate_text("char probe")
+
+    assert anthropic.calls == 1
+    assert gemini.calls == 0
+    assert openai.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_exploit_methodology_llm_is_anthropic_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ExploitAgent._methodology_llm must use the Anthropic-only chain.
+
+    This is the integration glue that ties the pinned profile to the
+    methodology call sites in the Exploit Agent.
+    """
+    _set_all_keys(monkeypatch)
+    anthropic = _FakeLLM("anthropic", ["pinned-response"])
+    gemini = _FakeLLM("gemini", ["never-called"])
+    openai = _FakeLLM("openai", ["never-called"])
+    _register(monkeypatch, {"anthropic": anthropic, "gemini": gemini, "openai": openai})
+
+    from unittest.mock import AsyncMock
+
+    from clinkz.agents.exploit import ExploitAgent
+    from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
+    from clinkz.state import StateStore
+    from clinkz.tools.resolver import ToolResolver
+
+    # A regular reasoning client that would normally cycle through providers.
+    top_level_llm = ResilientLLMClient(agent_role="exploit")
+
+    agent = ExploitAgent(
+        llm=top_level_llm,
+        tools=[],
+        scope=EngagementScope(
+            name="t",
+            targets=[ScopeEntry(value="http://localhost", type=ScopeType.URL)],
+        ),
+        state=AsyncMock(spec=StateStore),
+        engagement_id="t",
+        resolver=ToolResolver(),
+    )
+
+    # The methodology client should be a separate Resilient client with the
+    # pinned single-provider chain.
+    assert isinstance(agent._methodology_llm, ResilientLLMClient)
+    assert agent._methodology_llm.fallback_chain == ["anthropic"]
+
+    # _llm_analyze must route through the methodology client, not the
+    # top-level llm. Verify by counting calls per fake.
+    result = await agent._llm_analyze("Is this single quote a SQL error?")
+    assert result == "pinned-response"
+    assert anthropic.calls == 1
+    assert gemini.calls == 0
+    assert openai.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_exploit_methodology_swallows_anthropic_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When Anthropic fails the methodology call returns "" (no silent provider swap).
+
+    The Exploit Agent's _llm_analyze MUST swallow the exception and return
+    an empty string so the deterministic _test_* signature checks still run
+    — but it must NOT fall through to Gemini, otherwise the test path
+    bifurcates based on Anthropic uptime.
+    """
+    _set_all_keys(monkeypatch)
+    anthropic = _FakeLLM("anthropic", [ServiceUnavailableError("503")])
+    gemini = _FakeLLM("gemini", ["never-called"])
+    _register(monkeypatch, {"anthropic": anthropic, "gemini": gemini, "openai": gemini})
+
+    from unittest.mock import AsyncMock
+
+    from clinkz.agents.exploit import ExploitAgent
+    from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
+    from clinkz.state import StateStore
+    from clinkz.tools.resolver import ToolResolver
+
+    agent = ExploitAgent(
+        llm=ResilientLLMClient(agent_role="exploit"),
+        tools=[],
+        scope=EngagementScope(
+            name="t",
+            targets=[ScopeEntry(value="http://localhost", type=ScopeType.URL)],
+        ),
+        state=AsyncMock(spec=StateStore),
+        engagement_id="t",
+        resolver=ToolResolver(),
+    )
+
+    result = await agent._llm_analyze("char probe")
+    assert result == ""
+    assert anthropic.calls == 1
+    assert gemini.calls == 0
