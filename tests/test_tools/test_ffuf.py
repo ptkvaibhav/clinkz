@@ -94,6 +94,64 @@ def test_validate_input_checks_scope() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cookies — authenticated fuzzing
+# ---------------------------------------------------------------------------
+
+
+def test_validate_input_accepts_cookies() -> None:
+    """Cookies provided to validate_input are normalized into the args dict."""
+    result = make_tool().validate_input(
+        {"url": "http://172.20.0.2/FUZZ", "cookies": "PHPSESSID=abc123; security=low"}
+    )
+    assert result["cookies"] == "PHPSESSID=abc123; security=low"
+
+
+def test_validate_input_cookies_default_empty() -> None:
+    """When no cookies are passed, the args dict carries an empty string."""
+    result = make_tool().validate_input({"url": "http://172.20.0.2/FUZZ"})
+    assert result["cookies"] == ""
+
+
+async def test_execute_injects_cookie_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cookies must be passed to ffuf via -H "Cookie: ..." identically to katana."""
+    captured: dict[str, list[str]] = {}
+
+    async def _fake_run_subprocess(self: FfufTool, cmd: list[str]) -> tuple[str, str, int]:
+        captured["cmd"] = cmd
+        return ("{}", "", 0)
+
+    monkeypatch.setattr(FfufTool, "_run_subprocess", _fake_run_subprocess)
+
+    args = make_tool().validate_input(
+        {"url": "http://172.20.0.2/FUZZ", "cookies": "PHPSESSID=abc123; security=low"}
+    )
+    await make_tool().execute(args)
+
+    cmd = captured["cmd"]
+    assert "-H" in cmd
+    header_idx = cmd.index("-H")
+    assert cmd[header_idx + 1] == "Cookie: PHPSESSID=abc123; security=low"
+
+
+async def test_execute_omits_cookie_header_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No -H Cookie flag should appear when cookies is empty."""
+    captured: dict[str, list[str]] = {}
+
+    async def _fake_run_subprocess(self: FfufTool, cmd: list[str]) -> tuple[str, str, int]:
+        captured["cmd"] = cmd
+        return ("{}", "", 0)
+
+    monkeypatch.setattr(FfufTool, "_run_subprocess", _fake_run_subprocess)
+
+    args = make_tool().validate_input({"url": "http://172.20.0.2/FUZZ"})
+    await make_tool().execute(args)
+
+    cmd = captured["cmd"]
+    # No Cookie header should be present
+    assert not any("Cookie:" in part for part in cmd)
+
+
+# ---------------------------------------------------------------------------
 # parse_output — edge cases
 # ---------------------------------------------------------------------------
 

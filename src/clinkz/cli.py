@@ -29,6 +29,13 @@ app = typer.Typer(
     add_completion=False,
 )
 
+trace_app = typer.Typer(
+    name="trace",
+    help="Inspect engagement execution traces.",
+    add_completion=False,
+)
+app.add_typer(trace_app, name="trace")
+
 
 def _setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
@@ -193,6 +200,114 @@ def report(
     # TODO: instantiate ReportGenerator and render
     typer.echo(f"[TODO] Report generation not yet implemented. Engagement: {engagement_id}")
     raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# trace inspect
+# ---------------------------------------------------------------------------
+
+
+@trace_app.command("inspect")
+def trace_inspect(
+    engagement_id: Annotated[
+        str,
+        typer.Argument(help="Engagement UUID. Reads outputs/<id>/trace.jsonl"),
+    ],
+    stage: Annotated[
+        str | None,
+        typer.Option("--stage", help="Filter to events for a single stage (e.g. 'recon')."),
+    ] = None,
+    category: Annotated[
+        str | None,
+        typer.Option(
+            "--category",
+            help="Filter by category: tool_call | llm_call | agent_step | data_handoff",
+        ),
+    ] = None,
+    outputs_root: Annotated[
+        Path,
+        typer.Option(
+            "--outputs-root",
+            help="Root dir containing engagement subdirs.",
+        ),
+    ] = Path("outputs"),
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="Emit JSONL instead of the human timeline."),
+    ] = False,
+) -> None:
+    """Render a human-readable timeline (or raw JSONL) from a trace file."""
+    trace_path = outputs_root / engagement_id / "trace.jsonl"
+    if not trace_path.exists():
+        typer.echo(f"No trace file at {trace_path}", err=True)
+        raise typer.Exit(code=1)
+
+    valid_categories = {"tool_call", "llm_call", "agent_step", "data_handoff"}
+    if category is not None and category not in valid_categories:
+        typer.echo(
+            f"Invalid --category '{category}'. Choose from: {sorted(valid_categories)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    with trace_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if stage and record.get("stage") != stage:
+                continue
+            if category and record.get("category") != category:
+                continue
+            if raw:
+                typer.echo(line)
+            else:
+                typer.echo(_format_trace_record(record))
+
+
+def _format_trace_record(record: dict) -> str:
+    """Render one JSONL trace record as a single human-readable timeline line."""
+    ts = record.get("ts", "")
+    stage = record.get("stage", "?")
+    cat = record.get("category", "?")
+    payload = record.get("payload", {}) or {}
+    short_ts = ts.split("T", 1)[1].split("+", 1)[0].split(".", 1)[0] if "T" in ts else ts
+
+    if cat == "tool_call":
+        cmd = payload.get("cmd", "")
+        rc = payload.get("exit_code")
+        dur = payload.get("duration_ms")
+        dur_str = f"{dur:.0f}ms" if isinstance(dur, (int, float)) else "-"
+        return f"[{short_ts}] {stage:>8} TOOL  rc={rc} {dur_str:>7}  {cmd[:140]}"
+    if cat == "llm_call":
+        provider = payload.get("provider", "")
+        model = payload.get("model", "")
+        dur = payload.get("duration_ms")
+        dur_str = f"{dur:.0f}ms" if isinstance(dur, (int, float)) else "-"
+        prompt = (payload.get("prompt_summary") or "").replace("\n", " ")[:80]
+        resp = (payload.get("response_summary") or "").replace("\n", " ")[:80]
+        return (
+            f"[{short_ts}] {stage:>8} LLM   {provider}/{model} {dur_str:>7}  "
+            f"q={prompt!r} a={resp!r}"
+        )
+    if cat == "agent_step":
+        step = payload.get("step_name", "")
+        dur = payload.get("duration_ms")
+        dur_str = f"{dur:.0f}ms" if isinstance(dur, (int, float)) else "-"
+        out = (payload.get("output_summary") or "").replace("\n", " ")[:80]
+        return f"[{short_ts}] {stage:>8} STEP  {step:<30} {dur_str:>7}  {out!r}"
+    if cat == "data_handoff":
+        frm = payload.get("from_agent", "?")
+        to = payload.get("to_agent", "?")
+        mtype = payload.get("message_type", "")
+        size = payload.get("size_bytes", 0)
+        summary = (payload.get("data_summary") or "").replace("\n", " ")[:80]
+        return f"[{short_ts}] {stage:>8} HAND  {frm}->{to} [{mtype}] {size}B  {summary!r}"
+    return f"[{short_ts}] {stage:>8} {cat:<5} {json.dumps(payload, default=str)[:140]}"
 
 
 def main() -> None:

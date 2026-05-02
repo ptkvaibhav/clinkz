@@ -765,3 +765,109 @@ class TestScanModels:
         restored = ScanResult.model_validate_json(json_str)
         assert restored.target == "10.0.0.1"
         assert restored.coverage_assessment.sufficient is True
+
+
+# ---------------------------------------------------------------------------
+# Test: session cookies forwarded to crawl/fuzz tool invocations
+# ---------------------------------------------------------------------------
+
+
+class _CookieCapturingCrawlTool(_MockCrawlTool):
+    """Crawler that records the input dict passed to validate_input."""
+
+    captured: list[dict[str, Any]] = []
+
+    def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
+        type(self).captured.append(dict(args))
+        return args
+
+
+class _CookieCapturingFuzzTool(_MockFuzzTool):
+    """Fuzzer that records the input dict passed to validate_input."""
+
+    captured: list[dict[str, Any]] = []
+
+    def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
+        type(self).captured.append(dict(args))
+        return args
+
+
+def _make_capturing_resolver(crawl_cls: type[ToolBase], fuzz_cls: type[ToolBase]) -> ToolResolver:
+    resolver = MagicMock(spec=ToolResolver)
+    cap_map = {
+        "web_crawling": (crawl_cls, "katana"),
+        "directory_fuzzing": (fuzz_cls, "ffuf"),
+    }
+
+    def _find_tool(cap: str) -> ToolMatch | None:
+        entry = cap_map.get(cap)
+        if entry is None:
+            return None
+        cls, name = entry
+        return ToolMatch(name=name, source="local", available=True, tool_class=cls)
+
+    resolver.find_tool.side_effect = _find_tool
+    return resolver
+
+
+async def test_run_crawl_tool_includes_cookies_when_session_present(tmp_path: Path) -> None:
+    """_run_crawl_tool forwards session cookies to validate_input as a 'k=v; ...' string."""
+    _CookieCapturingCrawlTool.captured = []
+    resolver = _make_capturing_resolver(_CookieCapturingCrawlTool, _CookieCapturingFuzzTool)
+    agent, state, _ = await _make_agent(tmp_path / "test.db", resolver=resolver)
+    agent._session_cookies = {"PHPSESSID": "abc123", "security": "low"}
+
+    await agent._run_crawl_tool("katana", "http://10.0.0.1/")
+    await state.close()
+
+    assert len(_CookieCapturingCrawlTool.captured) == 1
+    args = _CookieCapturingCrawlTool.captured[0]
+    assert "cookies" in args
+    # Order of dict keys is preserved in Python 3.7+
+    assert args["cookies"] == "PHPSESSID=abc123; security=low"
+
+
+async def test_run_crawl_tool_omits_cookies_when_session_empty(tmp_path: Path) -> None:
+    """_run_crawl_tool must not set 'cookies' key when no session cookies exist."""
+    _CookieCapturingCrawlTool.captured = []
+    resolver = _make_capturing_resolver(_CookieCapturingCrawlTool, _CookieCapturingFuzzTool)
+    agent, state, _ = await _make_agent(tmp_path / "test.db", resolver=resolver)
+    agent._session_cookies = {}
+
+    await agent._run_crawl_tool("katana", "http://10.0.0.1/")
+    await state.close()
+
+    assert len(_CookieCapturingCrawlTool.captured) == 1
+    args = _CookieCapturingCrawlTool.captured[0]
+    assert "cookies" not in args
+
+
+async def test_run_fuzz_tool_includes_cookies_when_session_present(tmp_path: Path) -> None:
+    """_run_fuzz_tool forwards session cookies to validate_input as a 'k=v; ...' string."""
+    _CookieCapturingFuzzTool.captured = []
+    resolver = _make_capturing_resolver(_CookieCapturingCrawlTool, _CookieCapturingFuzzTool)
+    agent, state, _ = await _make_agent(tmp_path / "test.db", resolver=resolver)
+    agent._session_cookies = {"PHPSESSID": "abc123", "security": "low"}
+
+    await agent._run_fuzz_tool("ffuf", "http://10.0.0.1/")
+    await state.close()
+
+    assert len(_CookieCapturingFuzzTool.captured) == 1
+    args = _CookieCapturingFuzzTool.captured[0]
+    assert "cookies" in args
+    assert args["cookies"] == "PHPSESSID=abc123; security=low"
+
+
+async def test_run_fuzz_tool_omits_cookies_when_session_empty(tmp_path: Path) -> None:
+    """_run_fuzz_tool must not set 'cookies' key when no session cookies exist."""
+    _CookieCapturingFuzzTool.captured = []
+    resolver = _make_capturing_resolver(_CookieCapturingCrawlTool, _CookieCapturingFuzzTool)
+    agent, state, _ = await _make_agent(tmp_path / "test.db", resolver=resolver)
+    agent._session_cookies = {}
+
+    await agent._run_fuzz_tool("ffuf", "http://10.0.0.1/")
+    await state.close()
+
+    assert len(_CookieCapturingFuzzTool.captured) == 1
+    args = _CookieCapturingFuzzTool.captured[0]
+    assert "cookies" not in args
