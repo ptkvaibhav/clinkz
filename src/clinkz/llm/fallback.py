@@ -44,11 +44,16 @@ logger = logging.getLogger(__name__)
 
 #: Fallback chain per profile. ``reasoning`` prioritises Claude (best for
 #: multi-step planning); ``fast`` prioritises Gemini Flash (cheap + high
-#: volume). Ollama is intentionally omitted: the client is still a stub,
-#: so putting it in a production chain guarantees terminal failure. Add
-#: it back once the Ollama client is fully implemented.
+#: volume). ``reasoning_pinned`` is a single-provider chain — Claude only,
+#: no fallback — used by Exploit-Agent methodology checkpoints (character
+#: probing, payload synthesis, encoding selection) where switching mid-test
+#: from Claude to Gemini changes the deterministic path the test depends on.
+#: Ollama is intentionally omitted from the fallback chains: the client is
+#: still a stub, so putting it in a production chain guarantees terminal
+#: failure. Add it back once the Ollama client is fully implemented.
 LLM_FALLBACK_CHAINS: dict[str, list[str]] = {
     "reasoning": ["anthropic", "gemini", "openai"],
+    "reasoning_pinned": ["anthropic"],
     "fast": ["gemini", "anthropic", "openai"],
 }
 
@@ -116,6 +121,7 @@ class ResilientLLMClient(LLMClient):
             self.fallback_chain = self._build_chain(agent_role, self.profile)
 
         self._clients: dict[str, LLMClient] = {}
+        self._last_used_provider: str | None = None
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self._logger.info(
             "ResilientLLMClient initialised — role=%s profile=%s chain=%s",
@@ -123,6 +129,23 @@ class ResilientLLMClient(LLMClient):
             self.profile,
             self.fallback_chain,
         )
+
+    def _resolve_model(self, provider: str | None) -> str:
+        """Return the configured model name for a provider, for trace tagging."""
+        if not provider:
+            return ""
+        if provider == "anthropic":
+            return self.config.anthropic_model
+        if provider == "gemini":
+            # Exploit pinning may use a different gemini model
+            if self.agent_role == "exploit":
+                return self.config.gemini_exploit_model
+            return self.config.gemini_model
+        if provider == "openai":
+            return self.config.agent_model
+        if provider == "ollama":
+            return "ollama"
+        return provider
 
     # ------------------------------------------------------------------
     # LLMClient interface — each method delegates through the chain
@@ -139,7 +162,35 @@ class ResilientLLMClient(LLMClient):
         return await self._dispatch("research", query)
 
     async def generate_text(self, prompt: str) -> str:
-        return await self._dispatch("generate_text", prompt)
+        from clinkz.observability.trace import Stopwatch, get_active_trace_writer
+
+        writer = get_active_trace_writer()
+        stopwatch = Stopwatch()
+        try:
+            response = await self._dispatch("generate_text", prompt)
+        except Exception as exc:
+            if writer is not None:
+                writer.llm_call(
+                    stage=self.agent_role,
+                    provider=self._last_used_provider or "exhausted",
+                    model=self._resolve_model(self._last_used_provider),
+                    prompt_summary=prompt,
+                    response_summary=f"<error: {type(exc).__name__}: {exc}>",
+                    duration_ms=stopwatch.elapsed_ms,
+                    extra={"profile": self.profile, "chain": self.fallback_chain},
+                )
+            raise
+        if writer is not None:
+            writer.llm_call(
+                stage=self.agent_role,
+                provider=self._last_used_provider or "unknown",
+                model=self._resolve_model(self._last_used_provider),
+                prompt_summary=prompt,
+                response_summary=response,
+                duration_ms=stopwatch.elapsed_ms,
+                extra={"profile": self.profile, "chain": self.fallback_chain},
+            )
+        return response
 
     # ------------------------------------------------------------------
     # Core dispatch with fallback
@@ -176,7 +227,9 @@ class ResilientLLMClient(LLMClient):
 
             try:
                 fn = getattr(client, method)
-                return await fn(*args, **kwargs)
+                result = await fn(*args, **kwargs)
+                self._last_used_provider = provider
+                return result
             except (RateLimitError, ServiceUnavailableError, LLMTimeoutError) as exc:
                 self._logger.warning(
                     "LLM provider %s raised %s — trying next in chain",

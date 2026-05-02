@@ -100,6 +100,29 @@ class MessageBus:
         if self._state is not None:
             await self._state.save_message(message)
 
+        # Trace inter-agent message passing (Orchestrator-mediated handoffs).
+        # The bus is where every cross-agent message physically transits, so
+        # this single hook captures all of them — task issuance, results,
+        # queries, responses, broadcasts.
+        from clinkz.observability.trace import get_active_trace_writer
+
+        writer = get_active_trace_writer()
+        if writer is not None:
+            try:
+                import json as _json
+
+                payload_str = _json.dumps(message.content, default=str)
+            except (TypeError, ValueError):
+                payload_str = str(message.content)
+            writer.data_handoff(
+                from_agent=message.from_agent,
+                to_agent=message.to_agent,
+                data_summary=payload_str,
+                size_bytes=len(payload_str.encode("utf-8")),
+                message_type=str(message.message_type),
+                extra={"message_id": message.id, "parent_id": message.parent_message_id},
+            )
+
         await self._queues[message.to_agent].put(message)
 
     async def receive(self, agent_name: str) -> AgentMessage:
