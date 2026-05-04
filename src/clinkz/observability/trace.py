@@ -47,6 +47,7 @@ class TraceCategory(StrEnum):
     LLM_CALL = "llm_call"
     AGENT_STEP = "agent_step"
     DATA_HANDOFF = "data_handoff"
+    METHODOLOGY_PHASE = "methodology_phase"
 
 
 _DEFAULT_OUTPUTS_ROOT = Path("outputs")
@@ -208,6 +209,36 @@ class TraceWriter:
         if extra:
             payload.update(extra)
         self.write(stage=agent, category=TraceCategory.AGENT_STEP, payload=payload)
+
+    def methodology_phase(
+        self,
+        *,
+        stage: str,
+        skill: str,
+        phase_number: int,
+        phase_name: str,
+        payload_summary: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Record one phase of an adaptive methodology skill.
+
+        Adaptive ``_test_*`` methods (XSS-reflected, SQLi, etc.) emit one
+        event per phase so the trace shows the full chain of decisions the
+        skill made — reflection mapping, char fingerprinting, payload
+        synthesis, bypass attempts, verification, finding emission.
+        ``payload_summary`` is the short human-readable form; ``extra``
+        carries the structured per-phase result (CharacterMap dump,
+        SynthesizedPayload, etc.).
+        """
+        payload: dict[str, Any] = {
+            "skill": skill,
+            "phase_number": phase_number,
+            "phase_name": phase_name,
+            "payload_summary": _summarise(payload_summary),
+        }
+        if extra:
+            payload.update(extra)
+        self.write(stage=stage, category=TraceCategory.METHODOLOGY_PHASE, payload=payload)
 
     def data_handoff(
         self,
