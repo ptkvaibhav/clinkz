@@ -561,3 +561,288 @@ class TestXSSReflectedIntegration:
         )
         findings = await agent._test_xss_reflected(page)
         assert findings == []
+
+
+# ===========================================================================
+# Fragment URL preservation through the request layer
+# ===========================================================================
+
+
+class TestFragmentURLPreservation:
+    """``_build_request_url`` must preserve fragments and merge SPA params."""
+
+    def test_url_with_fragment_round_trips_intact_when_no_params(self) -> None:
+        agent = _make_agent()
+        url = "http://example.com/#/search?q=test"
+        assert agent._build_request_url(url, {}) == url
+
+    def test_plain_url_with_fragment_preserves_fragment(self) -> None:
+        agent = _make_agent()
+        url = "http://example.com/page#section"
+        assert agent._build_request_url(url, {}) == url
+
+    def test_spa_fragment_param_overrides_in_fragment_query(self) -> None:
+        agent = _make_agent()
+        url = "http://example.com/#/search?q=test"
+        out = agent._build_request_url(url, {"q": "<probe>"})
+        # Fragment must still be present and updated; server query stays empty.
+        assert "#/search?" in out
+        assert "q=" in out
+        assert "?q=" not in out.split("#")[0]  # nothing leaked to server query
+        assert "<probe>" in out or "%3Cprobe%3E" in out
+
+    def test_extra_param_falls_through_to_server_query(self) -> None:
+        agent = _make_agent()
+        url = "http://example.com/#/search?q=test"
+        out = agent._build_request_url(url, {"q": "X", "extra": "Y"})
+        # ``q`` lands in the fragment route (route key already there);
+        # ``extra`` falls through to the server-side query string.
+        assert "#/search?" in out
+        # Server-side portion (before #) carries extra=Y.
+        server_part = out.split("#")[0]
+        assert "extra=Y" in server_part
+        # Fragment portion carries q=X.
+        frag_part = out.split("#")[1]
+        assert "q=X" in frag_part
+
+    def test_url_without_fragment_appends_to_server_query(self) -> None:
+        # Preserves the original DVWA-style behaviour: parameters append
+        # to the existing server-side query.
+        agent = _make_agent()
+        url = "http://example.com/vuln/?name=test"
+        out = agent._build_request_url(url, {"name": "<probe>"})
+        assert out.startswith("http://example.com/vuln/?name=test")
+        assert "name=%3Cprobe%3E" in out or "name=<probe>" in out
+
+    async def test_fragment_url_reaches_http_client_intact(self) -> None:
+        """End-to-end: passing a fragment URL through ``_http_get`` keeps it."""
+        from clinkz.tools import http_client
+
+        captured: dict[str, Any] = {}
+        original_validate = http_client.HTTPClientTool.validate_input
+
+        def capture_validate(self: Any, args: dict[str, Any]) -> dict[str, Any]:
+            captured["url"] = args.get("url", "")
+            # Stop the request from actually going out — return validated
+            # args, then ``execute`` will be patched to short-circuit.
+            return original_validate(self, args)
+
+        async def fake_execute(self: Any, args: dict[str, Any]) -> str:
+            import json as _json
+
+            return _json.dumps({"status_code": 200, "response_body": "ok"})
+
+        agent = _make_agent()
+        http_client.HTTPClientTool.validate_input = capture_validate  # type: ignore[method-assign]
+        http_client.HTTPClientTool.execute = fake_execute  # type: ignore[method-assign]
+        try:
+            url = "http://example.com/#/search?q=test"
+            await agent._http_get(url, {})
+            assert "#/search?q=test" in captured["url"]
+        finally:
+            http_client.HTTPClientTool.validate_input = original_validate  # type: ignore[method-assign]
+
+
+# ===========================================================================
+# SPA shell detection
+# ===========================================================================
+
+
+class TestSPAShellDetection:
+    """``_is_spa_shell`` must distinguish SPA bootstraps from plain HTML."""
+
+    def test_angular_shell_detected(self) -> None:
+        agent = _make_agent()
+        body = (
+            "<!doctype html><html><head><title>App</title></head>"
+            "<body><app-root></app-root>"
+            '<script src="runtime.abcd1234.js"></script>'
+            '<script src="main.abcd1234.js"></script>'
+            "</body></html>"
+        )
+        assert agent._is_spa_shell(body) is True
+
+    def test_react_shell_detected(self) -> None:
+        agent = _make_agent()
+        body = (
+            "<!doctype html><html><body>"
+            '<div id="root"></div>'
+            '<script src="/static/js/main.abc.js"></script>'
+            "</body></html>"
+        )
+        assert agent._is_spa_shell(body) is True
+
+    def test_vue_shell_detected(self) -> None:
+        agent = _make_agent()
+        body = (
+            "<!doctype html><html><body>"
+            '<div id="app"></div>'
+            '<script src="/assets/index-9f8e7d.js"></script>'
+            "</body></html>"
+        )
+        assert agent._is_spa_shell(body) is True
+
+    def test_plain_html_not_spa(self) -> None:
+        agent = _make_agent()
+        body = (
+            "<html><body>"
+            "<h1>Welcome</h1><p>Some content here.</p>"
+            "<form><input name=q></form>"
+            "</body></html>"
+        )
+        assert agent._is_spa_shell(body) is False
+
+    def test_html_with_jquery_not_spa(self) -> None:
+        # Plain page with a jQuery script tag — not an SPA shell.
+        agent = _make_agent()
+        body = (
+            "<html><body>"
+            "<h1>Hi</h1><p>regular content</p>"
+            '<script src="/static/jquery.min.js"></script>'
+            "</body></html>"
+        )
+        assert agent._is_spa_shell(body) is False
+
+    def test_empty_body_not_spa(self) -> None:
+        agent = _make_agent()
+        assert agent._is_spa_shell("") is False
+
+
+# ===========================================================================
+# Phase 1 — DOM-context (JS_DOM) classification
+# ===========================================================================
+
+
+class TestPhase1JSDOMClassification:
+    """Phase 1 must classify SPA + fragment route param as ``JS_DOM``."""
+
+    def test_spa_shell_with_fragment_param_classifies_as_js_dom(self) -> None:
+        agent = _make_agent()
+        body = (
+            "<!doctype html><html><body>"
+            "<app-root></app-root>"
+            '<script src="main.abc.js"></script>'
+            "</body></html>"
+        )
+        # Canary not in body — server didn't reflect, but the fragment
+        # carries the param being tested. JS_DOM context expected.
+        url = "http://example.com/#/search?q=test"
+        points = agent._xss_phase1_reflection_mapping(
+            "CLNKZabcdef", body, request_url=url, param="q"
+        )
+        contexts = [p.context for p in points]
+        assert ReflectionContext.JS_DOM in contexts
+
+    def test_plain_html_with_fragment_param_does_not_classify_dom(self) -> None:
+        # Same fragment URL but server-rendered page — no JS_DOM point.
+        agent = _make_agent()
+        body = "<html><body><h1>Welcome</h1><p>regular page</p></body></html>"
+        url = "http://example.com/#/search?q=test"
+        points = agent._xss_phase1_reflection_mapping(
+            "CLNKZabcdef", body, request_url=url, param="q"
+        )
+        assert all(p.context != ReflectionContext.JS_DOM for p in points)
+
+    def test_spa_shell_without_fragment_param_does_not_classify_dom(self) -> None:
+        # SPA shell but the param being probed isn't in the fragment route.
+        agent = _make_agent()
+        body = '<html><body><app-root></app-root><script src="main.abc.js"></script></body></html>'
+        url = "http://example.com/page"  # no fragment
+        points = agent._xss_phase1_reflection_mapping(
+            "CLNKZabcdef", body, request_url=url, param="q"
+        )
+        assert all(p.context != ReflectionContext.JS_DOM for p in points)
+
+    def test_legacy_signature_still_works(self) -> None:
+        # Phase 1 used to take only (canary, body); existing callers must
+        # keep working unchanged — the SPA branch is opt-in via kwargs.
+        agent = _make_agent()
+        body = "<html><body><p>CLNKZabcdef</p></body></html>"
+        points = agent._xss_phase1_reflection_mapping("CLNKZabcdef", body)
+        assert len(points) == 1
+        assert points[0].context == ReflectionContext.HTML_BODY
+
+
+# ===========================================================================
+# JS_DOM end-to-end methodology
+# ===========================================================================
+
+
+class TestXSSReflectedJSDOMIntegration:
+    """End-to-end: SPA shell + fragment route + reachable sink → finding."""
+
+    async def test_spa_search_with_innerhtml_sink_emits_finding(self) -> None:
+        """Juice-Shop-style flow: fragment search route, bundle uses innerHTML."""
+        agent = _make_agent(_ScriptedLLM(answers=[""]))  # LLM silent → fallback
+        agent._methodology_llm = agent.llm
+
+        spa_shell = (
+            "<!doctype html><html><head><title>Shop</title></head>"
+            "<body><app-root></app-root>"
+            '<script src="runtime.abc.js"></script>'
+            '<script src="main.def.js"></script>'
+            "</body></html>"
+        )
+        bundle_js = (
+            "function consume(){"
+            "  var q = location.hash.split('?q=')[1];"
+            "  document.getElementById('out').innerHTML = q;"
+            "}"
+        )
+
+        async def stub_http_get(url: str, params: dict[str, str]) -> _HTTPResponse:
+            # Bundle URLs return the fake bundle JS; everything else
+            # returns the SPA shell so phase-5 sees an SPA on the
+            # fragment payload request.
+            if url.endswith(".js"):
+                return _HTTPResponse(status=200, body=bundle_js)
+            return _HTTPResponse(status=200, body=spa_shell)
+
+        agent._http_get = stub_http_get  # type: ignore[method-assign]
+
+        page = PageAnalysis(
+            url="http://example.com/#/search?q=test",
+            body=spa_shell,
+            status=200,
+            input_params=["q"],
+        )
+        findings = await agent._test_xss_reflected(page)
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "js_dom" in joined
+        assert "strength=likely" in joined
+
+    async def test_spa_search_without_sinks_does_not_verify(self) -> None:
+        """SPA shell + fragment but bundle has no dangerous sinks → no finding."""
+        agent = _make_agent(_ScriptedLLM(answers=[""]))
+        agent._methodology_llm = agent.llm
+
+        spa_shell = (
+            "<!doctype html><html><body>"
+            '<div id="root"></div>'
+            '<script src="main.abc.js"></script>'
+            "</body></html>"
+        )
+        # Bundle reads the source but routes to a safe textContent sink.
+        safe_bundle = (
+            "function show(){"
+            "  var q = location.hash;"
+            "  document.getElementById('o').textContent = q;"
+            "}"
+        )
+
+        async def stub_http_get(url: str, params: dict[str, str]) -> _HTTPResponse:
+            if url.endswith(".js"):
+                return _HTTPResponse(status=200, body=safe_bundle)
+            return _HTTPResponse(status=200, body=spa_shell)
+
+        agent._http_get = stub_http_get  # type: ignore[method-assign]
+
+        page = PageAnalysis(
+            url="http://example.com/#/search?q=test",
+            body=spa_shell,
+            status=200,
+            input_params=["q"],
+        )
+        findings = await agent._test_xss_reflected(page)
+        assert findings == []
