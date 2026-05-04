@@ -33,6 +33,7 @@ class ReflectionContext(StrEnum):
     JS_STRING_SINGLE = "js_string_single"
     JS_STRING_DOUBLE = "js_string_double"
     JS_CODE = "js_code"
+    JS_DOM = "js_dom"
     CSS = "css"
     URL = "url"
     COMMENT = "comment"
@@ -120,6 +121,13 @@ class MethodologyResult(BaseModel):
     synthesized_payload: SynthesizedPayload | None = None
     bypass_attempts: list[str] = Field(default_factory=list)
     verified: bool = False
+    # ``verified`` means the methodology emitted a finding. ``verification_strength``
+    # qualifies how strong that confirmation is. ``"verified"`` = the payload
+    # was observed landing in an executable position on the server; ``"likely"``
+    # = the methodology has strong static evidence (e.g. SPA shell + fragment
+    # route + JS sink reachable via static analysis) but cannot run the JS to
+    # observe execution without a headless browser.
+    verification_strength: str = "verified"
 
 
 __all__ = [
