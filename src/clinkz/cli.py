@@ -221,7 +221,10 @@ def trace_inspect(
         str | None,
         typer.Option(
             "--category",
-            help="Filter by category: tool_call | llm_call | agent_step | data_handoff",
+            help=(
+                "Filter by category: tool_call | llm_call | agent_step | "
+                "data_handoff | methodology_phase"
+            ),
         ),
     ] = None,
     outputs_root: Annotated[
@@ -242,7 +245,13 @@ def trace_inspect(
         typer.echo(f"No trace file at {trace_path}", err=True)
         raise typer.Exit(code=1)
 
-    valid_categories = {"tool_call", "llm_call", "agent_step", "data_handoff"}
+    valid_categories = {
+        "tool_call",
+        "llm_call",
+        "agent_step",
+        "data_handoff",
+        "methodology_phase",
+    }
     if category is not None and category not in valid_categories:
         typer.echo(
             f"Invalid --category '{category}'. Choose from: {sorted(valid_categories)}",
@@ -307,6 +316,12 @@ def _format_trace_record(record: dict) -> str:
         size = payload.get("size_bytes", 0)
         summary = (payload.get("data_summary") or "").replace("\n", " ")[:80]
         return f"[{short_ts}] {stage:>8} HAND  {frm}->{to} [{mtype}] {size}B  {summary!r}"
+    if cat == "methodology_phase":
+        skill = payload.get("skill", "?")
+        phase_num = payload.get("phase_number", "?")
+        phase_name = payload.get("phase_name", "")
+        summary = (payload.get("payload_summary") or "").replace("\n", " ")[:80]
+        return f"[{short_ts}] {stage:>8} METH  {skill}/p{phase_num}:{phase_name:<22}  {summary!r}"
     return f"[{short_ts}] {stage:>8} {cat:<5} {json.dumps(payload, default=str)[:140]}"
 
 
