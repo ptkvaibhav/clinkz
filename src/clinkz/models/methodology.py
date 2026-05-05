@@ -130,11 +130,117 @@ class MethodologyResult(BaseModel):
     verification_strength: str = "verified"
 
 
+# ---------------------------------------------------------------------------
+# SQLi methodology types
+# ---------------------------------------------------------------------------
+
+
+class SQLDialect(StrEnum):
+    """Backend SQL dialect classified during phase-2 fingerprinting.
+
+    Drives payload synthesis: the operators, comment markers, and built-in
+    functions that work in MySQL are different from PostgreSQL or MSSQL,
+    and a wrong dialect guess produces a payload that won't trigger.
+    ``UNKNOWN`` is reserved for the case where every dialect probe came back
+    indistinguishable from baseline — synthesis can still try a portable
+    payload, but verification confidence is lower.
+    """
+
+    MYSQL = "mysql"
+    POSTGRES = "postgres"
+    MSSQL = "mssql"
+    SQLITE = "sqlite"
+    ORACLE = "oracle"
+    UNKNOWN = "unknown"
+
+
+class InjectionType(StrEnum):
+    """The shape of the SQL injection that the synthesis phase will target.
+
+    Selected by the LLM checkpoint at phase 3 given dialect + observed
+    primitives. Each value implies a different verification rule:
+
+    - ``ERROR_BASED``: parse for an expected error substring.
+    - ``UNION_BASED``: check for extracted data appearing in the response.
+    - ``BOOLEAN_BLIND``: compare body length / hash between true / false
+      payloads sharing the same shape.
+    - ``TIME_BLIND``: measure response time delta vs baseline.
+    - ``STACKED``: only meaningful on dialects that allow multi-statement
+      execution (MSSQL, PostgreSQL with semicolon separator, etc.).
+    """
+
+    ERROR_BASED = "error_based"
+    UNION_BASED = "union_based"
+    BOOLEAN_BLIND = "boolean_blind"
+    TIME_BLIND = "time_blind"
+    STACKED = "stacked"
+
+
+class InjectionPrimitives(BaseModel):
+    """Operators, quote chars, and comment syntax confirmed available.
+
+    Populated during phase-2 fingerprinting. Phase-4 payload synthesis
+    constrains itself to these primitives — synthesizing with characters
+    that didn't survive the round-trip produces a payload the server will
+    sanitise away. Empty lists / ``None`` mean the corresponding probe came
+    back inconclusive (or the character is filtered).
+
+    Attributes:
+        quote_chars: Quote characters whose use produced a distinguishable
+            response from baseline (``'``, ``"``, backtick).
+        comment_syntax: Comment markers that successfully terminated a
+            tail-of-statement injection (``--``, ``#``, ``/* */``).
+        concat_op: First string-concatenation operator that was observed to
+            work — ``"||"`` (PG/Oracle/SQLite), ``"+"`` (MSSQL), or
+            ``"CONCAT"`` (MySQL function form). ``None`` if none worked.
+    """
+
+    quote_chars: list[str] = Field(default_factory=list)
+    comment_syntax: list[str] = Field(default_factory=list)
+    concat_op: str | None = None
+
+
+class SQLiMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one SQLi ``_test_*`` invocation.
+
+    Mirrors :class:`MethodologyResult` but with SQLi-specific fields. Stored
+    on the resulting Finding's evidence so the report has a complete audit
+    trail of dialect classification, primitive enumeration, the LLM-picked
+    injection type, the synthesized payload, and the verification outcome.
+
+    ``phases_completed`` is the highest 1-indexed phase that finished —
+    useful for triaging methodology failures (e.g. phase 2 always producing
+    ``UNKNOWN`` means dialect fingerprinting needs work).
+    """
+
+    phases_completed: int = 0
+    dialect: SQLDialect = SQLDialect.UNKNOWN
+    primitives: InjectionPrimitives = Field(default_factory=InjectionPrimitives)
+    injection_type: InjectionType | None = None
+    synthesized_payload: str | None = None
+    expected_indicator: str | None = None
+    indicator_type: str | None = None
+    indicator_observed: str | None = None
+    candidate_param: str | None = None
+    verified: bool = False
+    # ``verified`` means the methodology emitted a finding. ``verification_strength``
+    # qualifies how strong that confirmation is. ``"verified"`` = the indicator
+    # for the chosen injection type was directly observed (error string seen,
+    # union row in body, boolean diff matching, or time delta beyond threshold).
+    # ``"likely"`` = sqlmap fallback flagged the param injectable but our
+    # in-process verification did not match the indicator type cleanly.
+    verification_strength: str = "verified"
+
+
 __all__ = [
     "CharacterMap",
     "FilterBehavior",
+    "InjectionPrimitives",
+    "InjectionType",
     "MethodologyResult",
     "ReflectionContext",
     "ReflectionPoint",
+    "SQLDialect",
+    "SQLiMethodologyResult",
     "SynthesizedPayload",
 ]

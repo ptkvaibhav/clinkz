@@ -171,4 +171,9 @@ async def exploit_agent(dvwa_url: str, dvwa_session: dict[str, str]) -> ExploitA
         persistent_kb=None,
     )
     agent._session_cookies = dict(dvwa_session)
+    # Pin the methodology LLM to the silent stub so the skill tests exercise
+    # the deterministic methodology fallback (the v2 contract) rather than
+    # whichever Anthropic-hosted model is currently configured. Real-LLM
+    # behaviour is covered by integration tests, not skill smoke.
+    agent._methodology_llm = agent.llm
     return agent
