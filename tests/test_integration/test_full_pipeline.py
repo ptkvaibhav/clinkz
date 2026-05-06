@@ -541,7 +541,7 @@ class _IntTestKatanaTool(ToolBase):
 
 def _make_mock_recon_resolver() -> MagicMock:
     """Resolver for the recon phase: subfinder / nmap / whatweb."""
-    _MAP: dict[str, tuple[type[ToolBase], str]] = {
+    cap_map: dict[str, tuple[type[ToolBase], str]] = {
         "subdomain_enumeration": (_IntTestSubfinderTool, "subfinder"),
         "port_scanning": (_IntTestNmapTool, "nmap"),
         "web_fingerprinting": (_IntTestWhatwebTool, "whatweb"),
@@ -549,39 +549,39 @@ def _make_mock_recon_resolver() -> MagicMock:
     resolver = MagicMock(spec=ToolResolver)
 
     def _find(capability: str) -> ToolMatch | None:
-        entry = _MAP.get(capability)
+        entry = cap_map.get(capability)
         if entry is None:
             return None
         cls, name = entry
         return ToolMatch(name=name, source="local", available=True, tool_class=cls)
 
     def _find_ranked(capability: str) -> list[str]:
-        entry = _MAP.get(capability)
+        entry = cap_map.get(capability)
         return [entry[1]] if entry else []
 
     resolver.find_tool.side_effect = _find
     resolver.find_tools_ranked.side_effect = _find_ranked
-    resolver.get_all_capabilities.return_value = sorted(_MAP.keys())
+    resolver.get_all_capabilities.return_value = sorted(cap_map.keys())
     resolver.check_mcp_servers.return_value = []
     return resolver
 
 
 def _make_mock_scan_resolver() -> MagicMock:
     """Resolver for the scan phase: katana (web_crawling)."""
-    _MAP: dict[str, tuple[type[ToolBase], str]] = {
+    cap_map: dict[str, tuple[type[ToolBase], str]] = {
         "web_crawling": (_IntTestKatanaTool, "katana"),
     }
     resolver = MagicMock(spec=ToolResolver)
 
     def _find(capability: str) -> ToolMatch | None:
-        entry = _MAP.get(capability)
+        entry = cap_map.get(capability)
         if entry is None:
             return None
         cls, name = entry
         return ToolMatch(name=name, source="local", available=True, tool_class=cls)
 
     resolver.find_tool.side_effect = _find
-    resolver.get_all_capabilities.return_value = sorted(_MAP.keys())
+    resolver.get_all_capabilities.return_value = sorted(cap_map.keys())
     resolver.check_mcp_servers.return_value = []
     return resolver
 

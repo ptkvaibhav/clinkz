@@ -34,13 +34,18 @@ def _cookie_jar_path(engagement_id: str) -> str:
     All curl calls within the same engagement share this file, so cookies
     obtained during authentication persist across agents and tool invocations.
 
+    The path is rooted at /tmp because curl runs inside the dedicated
+    clinkz-tools Docker container. Predictability is required (the next
+    curl call must find the same jar) and the UUID prefix prevents
+    cross-engagement collisions; the container is single-tenant.
+
     Args:
         engagement_id: UUID of the active engagement.
 
     Returns:
         Absolute path string (``/tmp/clinkz_{engagement_id}_cookies.txt``).
     """
-    return f"/tmp/clinkz_{engagement_id}_cookies.txt"
+    return f"/tmp/clinkz_{engagement_id}_cookies.txt"  # nosec B108
 
 
 def get_session_cookies(engagement_id: str) -> dict[str, str]:
@@ -205,11 +210,13 @@ class HTTPClientTool(ToolBase):
         cookies: dict[str, str] = args.get("cookies") or {}
         follow_redirects: bool = args.get("follow_redirects", False)
 
-        # Per-engagement cookie jar so sessions persist across all requests
+        # Per-engagement cookie jar so sessions persist across all requests.
+        # /tmp here is inside the clinkz-tools Docker container; see
+        # _cookie_jar_path() for the rationale.
         cookie_jar = (
             _cookie_jar_path(self._engagement_id)
             if self._engagement_id
-            else "/tmp/clinkz_cookies.txt"
+            else "/tmp/clinkz_cookies.txt"  # nosec B108
         )
 
         # Build curl command

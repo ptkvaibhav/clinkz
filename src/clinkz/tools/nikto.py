@@ -5,9 +5,12 @@ Sample fixture: tests/fixtures/nikto_output.xml
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
+# defusedxml hardens parsing against XML attacks (XXE, billion laughs, etc.) —
+# nikto reports include URIs/banners reflected from the target, so treat the
+# XML as untrusted even though we invoke the tool ourselves.
 from typing import Any
 
+from defusedxml import ElementTree as ET  # noqa: N817 — ET is the canonical ElementTree alias
 from pydantic import BaseModel
 
 from clinkz.tools.base import ToolBase, ToolOutput
