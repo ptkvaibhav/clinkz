@@ -5,8 +5,13 @@ Sample fixture: tests/fixtures/nmap_sample_output.xml
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
+# defusedxml hardens parsing against XML attacks (XXE, billion laughs, etc.) —
+# nmap output reflects target-controlled banners/hostnames, so treat it as
+# untrusted even though we invoke the tool ourselves.
 from typing import Any
+from xml.etree.ElementTree import Element  # noqa: S405 — type only, parsing uses defusedxml
+
+from defusedxml import ElementTree as ET  # noqa: N817 — ET is the canonical ElementTree alias
 
 from clinkz.models.target import Host, Service, ServiceProtocol
 from clinkz.tools.base import ToolBase, ToolOutput
@@ -182,7 +187,7 @@ class NmapTool(ToolBase):
             os_version = ""
             os_el = host_el.find("os")
             if os_el is not None:
-                best_match: ET.Element | None = None
+                best_match: Element | None = None
                 best_accuracy = -1
                 for osmatch_el in os_el.findall("osmatch"):
                     accuracy = int(osmatch_el.get("accuracy", "0"))
