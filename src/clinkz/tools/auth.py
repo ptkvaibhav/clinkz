@@ -559,10 +559,13 @@ class WebAuthenticator(ToolBase):
         username_field_override = args.get("username_field", "")
         password_field_override = args.get("password_field", "")
 
+        # /tmp here is inside the clinkz-tools Docker container — predictable
+        # by design so subsequent curl calls find the same jar; UUID prefix
+        # keeps engagements isolated, and the container is single-tenant.
         cookie_jar = (
-            f"/tmp/clinkz_{self._engagement_id}_cookies.txt"
+            f"/tmp/clinkz_{self._engagement_id}_cookies.txt"  # nosec B108
             if self._engagement_id
-            else "/tmp/clinkz_auth_cookies.txt"
+            else "/tmp/clinkz_auth_cookies.txt"  # nosec B108
         )
 
         try:

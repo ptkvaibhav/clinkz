@@ -509,7 +509,10 @@ class OrchestratorAgent:
 
         if cookies:
             exploit_content["session_cookies"] = cookies
-            exploit_content["cookie_jar_path"] = f"/tmp/clinkz_{self._engagement_id}_cookies.txt"
+            # /tmp path is inside the clinkz-tools Docker container — predictable
+            # by design (subsequent curl calls reuse the jar); UUID prefix keeps
+            # engagements isolated and the container is single-tenant.
+            exploit_content["cookie_jar_path"] = f"/tmp/clinkz_{self._engagement_id}_cookies.txt"  # nosec B108
             exploit_content["authenticated_as"] = authenticated_as
             exploit_content["task"] = (
                 f"You are already authenticated as '{authenticated_as}'. "
@@ -1195,7 +1198,8 @@ class OrchestratorAgent:
                 await self._cred_store.mark_valid(
                     credential_id,
                     session_cookies=result.session_cookies,
-                    cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",
+                    # Container-internal path; see _cookie_jar_path() in tools/http_client.py
+                    cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",  # nosec B108
                     engagement_id=self._engagement_id,
                     agent="orchestrator",
                 )
@@ -1285,7 +1289,8 @@ class OrchestratorAgent:
                     await self._cred_store.mark_valid(
                         matched_cred.id,
                         session_cookies=result.session_cookies,
-                        cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",
+                        # Container-internal path; see _cookie_jar_path() in tools/http_client.py
+                        cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",  # nosec B108
                         engagement_id=self._engagement_id,
                         agent="orchestrator",
                     )
