@@ -83,9 +83,7 @@ async def test_verify_identity_with_docker_prefix(
     spawn = _spawn_returning(stdout=b"Nmap version 7.94")
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
 
-    ok = await verify_binary_identity(
-        "nmap", exec_prefix=["docker", "exec", "clinkz-tools"]
-    )
+    ok = await verify_binary_identity("nmap", exec_prefix=["docker", "exec", "clinkz-tools"])
 
     assert ok is True
     argv = spawn.captured["argv"]  # type: ignore[attr-defined]
