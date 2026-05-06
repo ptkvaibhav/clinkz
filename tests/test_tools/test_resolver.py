@@ -35,6 +35,7 @@ def _local_mode_with_identity_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "tool_exec_mode", "local")
     monkeypatch.setattr("clinkz.tools.resolver._identity_ok", lambda *_a, **_k: True)
 
+
 # ---------------------------------------------------------------------------
 # Expected values
 # ---------------------------------------------------------------------------

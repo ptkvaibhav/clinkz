@@ -342,7 +342,7 @@ async def test_findings_pulled_from_state_when_not_provided(tmp_path: Path) -> N
     async with StateStore(tmp_path / "test.db") as state:
         eid = await state.create_engagement("Test", SCOPE.model_dump())
         finding = _make_finding()
-        fid = await state.add_finding(eid, finding)
+        await state.add_finding(eid, finding)
 
         llm = MockCriticLLM("VALID")
         agent = CriticAgent(llm=llm, tools=[], scope=SCOPE, state=state, engagement_id=eid)
