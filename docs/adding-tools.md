@@ -83,13 +83,21 @@ Agents request tools by capability (e.g., `resolver.find_tool("my_capability")`)
 
 ## 3. Add to Docker image
 
-Add the tool installation to `docker/Dockerfile.tools`:
+Clinkz defaults to `TOOL_EXEC_MODE=docker`, so every tool wrapper's
+`_run_subprocess()` is wrapped in `docker exec` against the `clinkz-tools`
+container. New binaries must therefore be installed inside the image — add
+them to `docker/Dockerfile.tools`:
 
 ```dockerfile
 RUN apt-get install -y mytool
 # or
 RUN go install github.com/author/mytool@latest
 ```
+
+If your tool ships a versioned CLI under a generic name that already exists
+on `$PATH` (e.g. `httpx` collides with the Python package), add a fingerprint
+to `src/clinkz/tools/binary_identity.py::BINARY_SIGNATURES` so the resolver
+can refuse the impostor.
 
 ## 4. Create a fixture and write tests
 

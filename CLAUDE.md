@@ -59,41 +59,44 @@ Exploit Agent continues exploitation with new intel.
 
 ## Agents
 
+All v2 phase agents follow the **deterministic-steps-with-LLM-checkpoints** pattern: a fixed sequence of tool calls and code, with the LLM invoked only at named reasoning checkpoints (planning, classification, synthesis). No free-form ReAct.
+
 ### Orchestrator Agent
 - **Role**: Central coordinator and message router
-- **LLM**: Uses the most capable model (Opus/o3) for strategic reasoning
-- **Has access to**: Full engagement state, all agent messages, engagement scope
-- **Decides**: Which agents to spin up/down, how to route messages, when engagement is complete
-- **Does NOT**: Execute tools directly. It delegates ALL tool work to phase agents.
+- **Default LLM**: Anthropic (Claude) for strategic reasoning, with a resilient fallback to Gemini and OpenAI
+- **Phase shape**: Recon (sequential) → **Scan + Research + Exploit run concurrently** sharing SQLite state → Report (sequential)
+- **Cross-phase re-spins**: Capped at `MAX_CROSS_PHASE_RESPINS = 3` per engagement
+- **Does NOT**: Execute tools directly — delegates all tool work to phase agents.
 
-### Recon Agent
-- **Role**: Reconnaissance and information gathering specialist
-- **Goal**: Given a target, discover as much as possible — subdomains, services, tech stack, OSINT, leaked credentials, organizational intelligence
-- **Tool discovery**: Researches what tools it needs at runtime. Checks for MCP servers first, falls back to local CLI tools.
-- **Can be spun up multiple times**: Once for initial recon, again later if another agent discovers new targets
+### Recon Agent (v2)
+- **LLM**: Gemini Flash (per-agent override `LLM_PROVIDER_RECON=gemini`)
+- **Steps**: Full TCP port scan → LLM analyzes ports → service/version detection → LLM extracts tech stack → web-specific recon → LLM synthesizes summary → structured `ReconResult`
+- **Tool discovery**: Always via `ToolResolver.find_tool(capability=...)` — never direct imports
 
-### Scan Agent
-- **Role**: Crawling, fuzzing, and attack surface mapping
-- **Goal**: Given recon results, map every endpoint, parameter, and input vector. Identify suspicious behaviors and anomalies.
-- **Tool discovery**: Same as Recon — researches and picks tools dynamically
-- **Communicates back**: Can ask Orchestrator to task Recon Agent for additional enumeration if it finds new targets during crawling
+### Scan Agent (v2)
+- **LLM**: Gemini Flash
+- **Steps**: LLM plans scan strategy → service-specific methods (HTTP / FTP / SSH / SMB / DB) → LLM reviews each tool output → LLM checks coverage sufficiency → expand via fallback chain if insufficient → structured `ScanResult`
+- **Fallback chains**: `katana → gospider → hakrawler` for crawling; `ffuf → gobuster → feroxbuster` for fuzzing (declared in `tools/resolver.py::TOOL_CHAINS`)
 
-### Exploit Agent
-- **Role**: Exploitation specialist
-- **Goal**: Given scan results and attack surface map, research exploits for the identified technologies, attempt exploitation, validate findings, chain exploits for maximum impact
-- **Runtime research**: Searches the web for CVEs, bug bounty writeups, PoC exploits specific to each identified technology
-- **Communicates back**: Frequently asks Orchestrator to task Recon/Scan agents for additional intel
+### Research Agent (v2)
+- **LLM**: Anthropic (Claude Opus)
+- **Runs concurrently** with Scan and Exploit
+- **Steps**: Query persistent KB for tech → web-search new vulns (CVEs, writeups) → LLM synthesizes techniques → query related techs → LLM adapts past techniques → persist to engagement runbook AND `clinkz_knowledge.db`
+- **Mid-engagement hook**: `research_additional()` for techs Scan discovers later
 
-### Report Agent
-- **Role**: Report generation specialist
-- **Goal**: Transform all engagement data into a professional pentest report
-- **Multi-pass**: Assembles data → generates narrative → synthesizes remediation → quality review → renders PDF/HTML/JSON
-- **Can query other agents**: If a finding needs clarification or additional evidence, asks via Orchestrator
+### Exploit Agent (v2)
+- **LLM**: Anthropic (Claude Opus) — pinned by `LLM_PROVIDER_EXPLOIT=anthropic`
+- **Steps**: LLM plans exploits from scan + research data → execute deterministic `_test_*` methods by tier → LLM reasons through results → adaptive retry/bypass → record technique success/failure to persistent KB
+- **Adaptive methodologies (W2.1)**: `_test_xss_reflected` and `_test_sqli` use multi-phase reflection-mapping / dialect-fingerprinting flows with LLM-driven payload synthesis. Other `_test_*` methods (`_test_xss_stored`, `_test_xss_dom`, `_test_cmdi`, `_test_lfi`, `_test_file_upload`, `_test_csrf`, `_test_idor`, `_test_brute_force`, `_test_open_redirect`, `_test_security_headers`, `_test_weak_session`, `_test_javascript_attacks`) remain deterministic skills.
+- **Tier 2/3**: `_test_tier2_technique` / `_test_tier3_technique` consume Research Agent runbook entries
 
 ### Critic Agent
 - **Role**: Quality assurance — validates findings before they enter the report
 - **Reviews**: CVSS scoring accuracy, false positive elimination, evidence completeness, reproduction steps
 - **Can reject findings**: Sends them back to Exploit Agent for re-validation via Orchestrator
+
+### Report Agent
+- **LLM**: Zero LLM calls today — pulls findings from the state store and emits structured JSON + a Markdown summary in <30 s. (The LLM-driven multi-pass narrative described in earlier plans is on the W3 horizon.)
 
 ## Tool Execution: Dynamic Discovery
 
@@ -122,140 +125,144 @@ The existing ToolBase parsers (nmap, subfinder, httpx, etc.) serve as the local 
 
 ## Tech Stack
 - Python 3.12+ with asyncio for concurrency
-- **LLM-agnostic design** — all LLM calls go through `src/clinkz/llm/client.py`
-- Supported LLM backends (implement in order):
-  1. OpenAI API (GPT-4o / GPT-4o-mini) — first implementation
-  2. Anthropic API (Claude Sonnet / Opus) — add second
-  3. Google Gemini API (Flash / Pro) — add third
-  4. Ollama (local models) — add last, for offline/privacy use cases
+- **LLM-agnostic design** — all LLM calls go through `src/clinkz/llm/base.py`
+- Supported LLM backends:
+  1. Anthropic API (Claude Sonnet / Opus) — primary for Exploit + Research agents
+  2. Google Gemini API (Flash / Pro) — primary for Recon / Scan / Report agents
+  3. OpenAI API (GPT-4o / GPT-4o-mini) — third in the resilient fallback chain
+  4. Ollama (local models) — stub, not yet wired into the fallback chain
 - LLM provider is set via config: `LLM_PROVIDER=openai` / `anthropic` / `gemini` / `ollama`
+- Per-agent provider overrides via `LLM_PROVIDER_<AGENT>` (e.g. `LLM_PROVIDER_EXPLOIT=anthropic`)
+- Resilient client (`llm/fallback.py`) automatically rotates providers on rate-limit/timeout
 - MCP Python SDK (`mcp[cli]`) for tool server/client protocol
-- SQLite for engagement state store + message store (upgrade to PostgreSQL later)
-- Docker for sandboxed tool execution
-- WeasyPrint + Jinja2 for PDF/HTML report rendering
-- Typer for CLI interface
+- SQLite — `clinkz.db` for per-engagement state, `clinkz_knowledge.db` for the cross-engagement persistent KB
+- Docker for sandboxed tool execution (`clinkz-tools` container; preflight in `tools/docker_preflight.py`)
+- Report agent emits JSON + Markdown directly (no Jinja/WeasyPrint pipeline today)
+- Typer for CLI interface; `clinkz trace inspect <engagement>` renders execution traces
 
 ## Project Structure
 ```
 clinkz/
 ├── CLAUDE.md
-├── pyproject.toml
+├── CLINKZ_V2_IMPLEMENTATION.md
 ├── README.md
+├── pyproject.toml
 ├── src/
 │   ├── clinkz/
 │   │   ├── __init__.py
 │   │   ├── __main__.py             # python -m clinkz entry point
-│   │   ├── cli.py                  # Typer CLI entry point
-│   │   ├── config.py               # Scope config, API keys, settings
+│   │   ├── cli.py                  # Typer CLI (scan / recon / crawl / exploit / report / trace)
+│   │   ├── config.py               # Settings (env vars, per-agent LLM overrides)
 │   │   ├── state.py                # Engagement state store + message store (SQLite)
-│   │   ├── orchestrator.py         # Legacy orchestrator module (thin wrapper)
 │   │   │
 │   │   ├── orchestrator/
 │   │   │   ├── __init__.py
-│   │   │   ├── orchestrator.py     # Orchestrator Agent — the central brain
-│   │   │   ├── lifecycle.py        # Agent lifecycle manager (spin up/down)
-│   │   │   └── prompts/
-│   │   │       └── orchestrator_system.md
+│   │   │   ├── orchestrator.py     # OrchestratorAgent — sequential Recon → concurrent (Scan + Research + Exploit) → Report
+│   │   │   ├── lifecycle.py        # AgentLifecycleManager (spin up/down, re-spin tracking)
+│   │   │   └── prompts/orchestrator_system.md
 │   │   │
 │   │   ├── agents/
 │   │   │   ├── __init__.py
-│   │   │   ├── base.py             # Base agent class with message handling + ReAct loop
-│   │   │   ├── recon.py            # Reconnaissance agent
-│   │   │   ├── scan.py             # Scanning/crawling/fuzzing agent
-│   │   │   ├── crawl.py            # Crawl agent (Katana/ffuf integration)
-│   │   │   ├── exploit.py          # Exploitation agent
-│   │   │   ├── report.py           # Report generation agent
-│   │   │   ├── critic.py           # Finding validation agent
-│   │   │   ├── research.py         # Research agent — persistent KB + cross-engagement learning
-│   │   │   └── prompts/
-│   │   │       ├── recon_system.md
-│   │   │       ├── scan_system.md
-│   │   │       ├── exploit_system.md
-│   │   │       ├── report_system.md
-│   │   │       ├── research_system.md  # Research agent system prompt
-│   │   │       └── critic_system.md
+│   │   │   ├── base.py             # BaseAgent — message bus integration + LLM hookup
+│   │   │   ├── recon.py            # Recon v2 — deterministic steps + LLM checkpoints
+│   │   │   ├── scan.py             # Scan v2  — service-specific methods + fallback chains
+│   │   │   ├── crawl.py            # Crawl agent stub (TODO — currently inert)
+│   │   │   ├── exploit.py          # Exploit v2 — LLM plans, deterministic _test_* execute, adaptive XSS/SQLi methodologies
+│   │   │   ├── research.py         # Research v2 — persistent KB + cross-engagement learning
+│   │   │   ├── critic.py           # Finding validation
+│   │   │   ├── report.py           # Report agent — emits JSON + Markdown (zero LLM)
+│   │   │   └── prompts/            # System prompts (recon, scan, exploit, research, critic, report)
 │   │   │
 │   │   ├── comms/
 │   │   │   ├── __init__.py
 │   │   │   ├── message.py          # AgentMessage model + message types
-│   │   │   ├── bus.py              # Message bus (async queue-based, Orchestrator-mediated)
-│   │   │   └── protocol.py         # Communication protocol definitions
+│   │   │   ├── bus.py              # Async message bus (Orchestrator-mediated)
+│   │   │   └── protocol.py         # Communication protocol constants
 │   │   │
 │   │   ├── credentials/
-│   │   │   ├── __init__.py
-│   │   │   └── store.py            # Credential store + default credential database
+│   │   │   └── store.py            # CredentialStore + default credential database
 │   │   │
 │   │   ├── knowledge/
 │   │   │   ├── __init__.py
-│   │   │   ├── query.py            # MITRE ATT&CK + OWASP WSTG knowledge base queries
-│   │   │   ├── persistent_kb.py    # Cross-engagement persistent knowledge base
-│   │   │   ├── seed_playbook.py    # Tier 1 universal test seeder
-│   │   │   ├── payload_loader.py   # Payload list loader for exploit methods
-│   │   │   └── skills_loader.py    # OWASP WSTG skills file loader
+│   │   │   ├── query.py            # KnowledgeBase — MITRE ATT&CK + OWASP WSTG/API/LLM queries
+│   │   │   ├── persistent_kb.py    # PersistentKnowledgeBase — clinkz_knowledge.db (cross-engagement)
+│   │   │   ├── seed_playbook.py    # Tier 1 universal-test seeder
+│   │   │   ├── payload_loader.py   # Payload list loader
+│   │   │   ├── skills_loader.py    # OWASP WSTG skill snippet loader
+│   │   │   ├── mitre_attack.json   # MITRE ATT&CK enterprise dataset
+│   │   │   ├── owasp_wstg.json     # OWASP WSTG v4.2 dataset
+│   │   │   ├── owasp_api.json      # OWASP API Top 10 (2023)
+│   │   │   ├── owasp_llm.json      # OWASP LLM Top 10
+│   │   │   ├── payloads.json       # Curated payload lists per vuln class
+│   │   │   └── skills/             # Reusable skill snippets (xss_*, sqli_*, wstg_*, ...)
 │   │   │
 │   │   ├── llm/
 │   │   │   ├── __init__.py
 │   │   │   ├── base.py             # Abstract LLMClient interface
+│   │   │   ├── factory.py          # Returns correct client per provider/agent
+│   │   │   ├── fallback.py         # ResilientLLMClient — per-agent fallback chains
 │   │   │   ├── openai_client.py    # OpenAI GPT-4o / GPT-4o-mini
-│   │   │   ├── anthropic_client.py # Claude Sonnet / Opus (stub)
+│   │   │   ├── anthropic_client.py # Claude Sonnet / Opus
 │   │   │   ├── gemini_client.py    # Gemini Flash / Pro
-│   │   │   ├── ollama_client.py    # Local models via Ollama (stub)
-│   │   │   └── factory.py          # Returns correct client based on config
+│   │   │   └── ollama_client.py    # Stub (not yet in fallback chain)
 │   │   │
 │   │   ├── tools/
 │   │   │   ├── __init__.py
-│   │   │   ├── base.py             # ToolBase ABC (local CLI tool wrapper)
-│   │   │   ├── resolver.py         # Tool Resolver — finds tools by capability
-│   │   │   ├── mcp_client.py       # MCP client for connecting to MCP tool servers
-│   │   │   ├── installer.py        # Tool availability checker and installer
+│   │   │   ├── base.py             # ToolBase ABC + ToolOutput
+│   │   │   ├── resolver.py         # ToolResolver — capability lookup + ranked fallback chains
+│   │   │   ├── mcp_client.py       # MCP client (stdio + HTTP/SSE)
+│   │   │   ├── installer.py        # Binary availability checker
+│   │   │   ├── binary_identity.py  # Verifies host binary identity (catches namesake imposters)
+│   │   │   ├── docker_preflight.py # Ensures clinkz-tools container is up before tool execution
 │   │   │   ├── http_client.py      # Built-in HTTP client tool
-│   │   │   ├── nmap.py             # Nmap wrapper (local)
-│   │   │   ├── ffuf.py             # ffuf wrapper (local)
-│   │   │   ├── nuclei.py           # Nuclei wrapper (local)
-│   │   │   ├── nikto.py            # Nikto wrapper (local)
-│   │   │   ├── sqlmap.py           # sqlmap wrapper (local)
-│   │   │   ├── subfinder.py        # Subfinder wrapper (local)
-│   │   │   ├── httpx_tool.py       # httpx wrapper (local)
-│   │   │   ├── katana.py           # Katana crawler wrapper (local)
-│   │   │   ├── whatweb.py          # WhatWeb wrapper (local)
-│   │   │   ├── wafw00f.py          # WAF detection wrapper (local)
-│   │   │   └── auth.py             # WebAuthenticator — default credential testing
+│   │   │   ├── auth.py             # WebAuthenticator — default-credential testing
+│   │   │   ├── nmap.py / subfinder.py / httpx_tool.py / whatweb.py / wafw00f.py
+│   │   │   ├── katana.py / ffuf.py / nuclei.py / nikto.py / sqlmap.py
 │   │   │
 │   │   ├── research/
-│   │   │   ├── __init__.py
 │   │   │   └── runtime_research.py # Live web search for CVEs, exploits, writeups
 │   │   │
-│   │   ├── models/
-│   │   │   ├── __init__.py
-│   │   │   ├── scope.py            # Scope/engagement config models
-│   │   │   ├── finding.py          # Vulnerability finding model
-│   │   │   ├── target.py           # Target/host/service models
-│   │   │   ├── report.py           # Report data models
-│   │   │   └── recon.py            # Recon agent data models (v2)
+│   │   ├── observability/
+│   │   │   └── trace.py            # Per-engagement JSONL execution trace
 │   │   │
-│   │   └── reporting/
-│   │       ├── __init__.py
-│   │       ├── generator.py        # Multi-pass report generation
-│   │       ├── renderer.py         # PDF/HTML/JSON rendering
-│   │       └── templates/
-│   │           ├── report.html
-│   │           └── styles.css
+│   │   └── models/
+│   │       ├── scope.py            # EngagementScope, ScopeEntry, ScopeType
+│   │       ├── target.py           # Host / Service models
+│   │       ├── recon.py            # Recon v2 result models
+│   │       ├── scan.py             # Scan v2 result models (HTTP/FTP/SSH/SMB/DB)
+│   │       ├── methodology.py      # Adaptive XSS/SQLi intermediate-result models
+│   │       ├── research.py         # Research v2 result models
+│   │       ├── finding.py          # Finding, ExploitPlan, ExploitTask, ExploitResult
+│   │       └── report.py           # PentestReport, ExecutiveSummary
 │   │
 ├── docker/
 │   ├── Dockerfile.tools
-│   └── docker-compose.yml
-├── scripts/
-│   └── live_full_pipeline.py       # Demo / example scripts
+│   ├── Dockerfile.dvwa
+│   ├── docker-compose.yml
+│   └── dvwa-init.sh
+├── scripts/                        # Demo / live integration helpers
+│   ├── live_full_pipeline.py
+│   ├── test_auth_chain.py
+│   └── test_dvwa_exploit_direct.py
 ├── tests/
-│   ├── __init__.py
-│   ├── test_tools/                 # Tool wrapper unit tests
-│   ├── test_agents/                # Agent logic tests
-│   ├── test_comms/                 # Communication layer tests
-│   ├── test_orchestrator/          # Orchestrator tests
-│   └── test_integration/           # End-to-end integration tests
+│   ├── conftest.py
+│   ├── fixtures/                   # Real tool output samples
+│   ├── test_tools/                 # Tool wrapper unit tests (incl. resolver chains, binary identity, docker preflight)
+│   ├── test_agents/                # Agent logic tests (recon_v2, scan_v2, exploit_v2, research_v2, methodology_xss/sqli, ...)
+│   ├── test_comms/                 # Message bus + protocol
+│   ├── test_credentials/           # CredentialStore tests
+│   ├── test_knowledge/             # query.py, persistent_kb.py, payload_loader.py
+│   ├── test_llm/                   # Per-provider client tests + resilient fallback
+│   ├── test_orchestrator/          # Orchestrator + lifecycle
+│   ├── test_integration/           # End-to-end (DVWA pipeline, recon→exploit flow, concurrent agents)
+│   ├── test_skills_dvwa/           # Live DVWA skill smoke suite (marker: dvwa_smoke)
+│   ├── test_skills_juiceshop/      # Live Juice Shop skill smoke suite (marker: juiceshop_smoke)
+│   └── test_state.py
 └── docs/
     ├── architecture.md
-    └── adding-tools.md
+    ├── adding-tools.md
+    ├── playbooks.md
+    └── analysis/                   # Threat model, data flow, control flow, semantic review, dependencies
 ```
 
 ## Commands
@@ -276,15 +283,18 @@ clinkz/
 - Follow Google Python Style Guide
 
 ## Key Design Decisions
-- **LLM-mediated comms**: Agents NEVER talk directly to each other. All messages go through the Orchestrator. The Orchestrator LLM decides how to route.
-- **Dynamic lifecycle**: Agents are spun up and shut down by the Orchestrator as needed. An agent can be re-activated if a later phase needs it.
-- **Dynamic tool discovery**: Agents research what tools they need at runtime. They use the Tool Resolver to check MCP servers first, then local CLI tools. No hardcoded tool lists in agent code.
-- **LLM-agnostic**: All LLM calls go through `llm/base.py`. Never import openai/anthropic/etc directly in agent code.
-- **Existing parsers preserved**: The ToolBase wrappers and their parse_output() implementations are the local execution backend. They are called by the Tool Resolver when an agent needs a locally installed tool.
+- **Deterministic agent steps + LLM checkpoints**: Phase agents follow fixed step sequences with the LLM invoked only at named reasoning checkpoints. No free-form ReAct loops in v2.
+- **LLM-mediated comms**: Agents NEVER talk directly to each other. All messages go through the Orchestrator.
+- **Dynamic lifecycle**: Agents are spun up and shut down by the Orchestrator as needed. An agent can be re-activated if a later phase needs it (capped at `MAX_CROSS_PHASE_RESPINS`).
+- **Dynamic tool discovery**: Agents call `ToolResolver.find_tool(capability=...)` — never `resolver.get("nmap")`. Resolver checks MCP servers first, then local CLI tools, then walks declared `TOOL_CHAINS` fallback orders.
+- **LLM-agnostic + per-agent providers**: All LLM calls go through `llm/base.py`. Never import openai/anthropic/etc directly in agent code. Each agent has a default provider (`recon/scan/report=gemini`, `exploit/research=anthropic`) overridable via `LLM_PROVIDER_<AGENT>`.
+- **Resilient client**: `llm/fallback.py::ResilientLLMClient` rotates providers automatically on rate-limit / timeout, with per-provider retry budgets (`LLM_MAX_RETRIES`).
+- **Deterministic skills as contracts**: `_test_*` methods are contracts — if the vulnerability is present, the method MUST find it. Adaptive methodologies (XSS-reflected, SQLi) layer LLM-driven synthesis on top of deterministic phases.
+- **Persistent KB feedback loop**: Every technique result (success or miss) is recorded to `clinkz_knowledge.db` so future engagements adapt.
+- **Existing parsers preserved**: The ToolBase wrappers and their `parse_output()` implementations remain the local execution backend.
 - Tool wrappers return Pydantic models, never raw strings
-- The agent ReAct loop is: Observe → Reason (LLM) → Act (tool/message) → Reflect (evaluate)
-- All LLM calls go through a single client wrapper that handles retries, logging, and token tracking
 - Scope enforcement: every tool execution validates targets against scope before running
+- **Execution traces**: Each engagement writes `outputs/<engagement_id>/trace.jsonl` capturing tool calls, LLM calls, agent steps, data handoffs, and methodology-phase events. Inspect with `clinkz trace inspect <engagement_id>`.
 
 ## Pre-Push Verification
 Every change must pass three gates before `git push`. If a gate fails, fix the root cause — never bypass with `--no-verify`, blanket `# noqa`/`# type: ignore`, or skip/xfail added solely to keep CI green.

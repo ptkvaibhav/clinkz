@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/clinkz-banner.svg" alt="Clinkz — Autonomous AI-Driven Penetration Testing Framework" width="100%"/>
+</p>
+
 # Clinkz
 
 **Autonomous AI penetration testing system powered by multi-agent collaboration.**
@@ -16,44 +20,49 @@ Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamicall
 
 ```
                          ┌──────────────────┐
-                         │   Orchestrator    │
-                         │  (Central Brain)  │
+                         │   Orchestrator   │
+                         │  (Central Brain) │
                          └────────┬─────────┘
                                   │
-              ┌───────────┬───────┼───────┬───────────┐
-              │           │       │       │           │
-        ┌─────┴──┐  ┌────┴──┐ ┌──┴───┐ ┌─┴────┐ ┌───┴────┐
-        │ Recon  │  │ Scan  │ │Exploit│ │Critic│ │ Report │
-        │ Agent  │  │ Agent │ │ Agent │ │Agent │ │ Agent  │
-        └───┬────┘  └───┬───┘ └──┬───┘ └──────┘ └────────┘
-            │            │        │
-        ┌───┴────────────┴────────┴───┐
-        │      Tool Resolver          │
-        │  MCP Servers │ Local CLI    │
-        └─────────────────────────────┘
+        Recon (sequential) ──► Scan + Research + Exploit (concurrent) ──► Report
+              │                    │         │           │
+              ▼                    ▼         ▼           ▼
+        ┌─────────────────────────────────────────────────────┐
+        │                  Tool Resolver                      │
+        │      MCP Servers   │   Local CLI (with fallback)    │
+        └─────────────────────────────────────────────────────┘
+                                  │
+                ┌─────────────────┴────────────────┐
+                ▼                                  ▼
+       Engagement state                 Persistent KB
+       (clinkz.db)                      (clinkz_knowledge.db,
+                                         cross-engagement)
 ```
 
 **How it works:**
 
-1. The **Orchestrator** receives the engagement scope and spins up agents on demand
-2. **Recon Agent** discovers subdomains, services, and tech stack
-3. **Scan Agent** maps endpoints, parameters, and attack surface
-4. **Exploit Agent** researches CVEs in real-time and attempts exploitation
-5. **Critic Agent** validates findings, eliminates false positives, scores CVSS
-6. **Report Agent** generates a professional pentest report
+1. The **Orchestrator** validates scope and runs **Recon** sequentially
+2. **Scan**, **Research**, and **Exploit** then run **concurrently**, sharing SQLite state — Scan writes endpoints, Research writes runbook entries, Exploit reads both and writes findings
+3. **Recon** discovers subdomains, ports, services, and tech stack
+4. **Scan** crawls + fuzzes every HTTP service and enumerates non-HTTP services (FTP/SSH/SMB/DB)
+5. **Research** queries the persistent KB for known techniques and live-searches the web for new CVEs/writeups, persisting results back to the KB
+6. **Exploit** plans tests with an LLM and executes deterministic `_test_*` skills (with adaptive multi-phase methodologies for XSS-reflected and SQLi)
+7. **Critic** validates findings; **Report** emits JSON + Markdown
 
-Agents are not all running from the start — the Orchestrator spins them up and down dynamically. Any agent can request the Orchestrator to re-activate a previous phase agent for additional intelligence.
+Phase agents follow **deterministic step sequences with LLM checkpoints** (no free-form ReAct). Every technique result is recorded to the persistent KB so future engagements adapt.
 
 ## Features
 
-- **Multi-Agent Autonomy** — Agents reason, act, and collaborate through an LLM-mediated orchestrator with no human intervention
-- **Dynamic Tool Discovery** — Agents describe capabilities they need; the Tool Resolver finds the right tool (MCP server or local CLI)
-- **Runtime CVE Research** — Exploit Agent searches the web for CVEs, PoC exploits, and bug bounty writeups specific to discovered technologies
-- **Credential Chaining** — Discovered credentials are stored and reused across agents for authenticated testing
-- **MITRE ATT&CK + OWASP WSTG** — Built-in knowledge base drives methodology-aware testing
-- **MCP Protocol Support** — Connect external tool servers via the Model Context Protocol
-- **LLM-Agnostic** — Supports OpenAI, Anthropic, Google Gemini, and Ollama (local models)
-- **Professional Reporting** — Multi-pass report generation in HTML, PDF, JSON, and Markdown
+- **Concurrent multi-agent execution** — Scan, Research, and Exploit run in parallel through an LLM-mediated orchestrator
+- **Deterministic skills + LLM checkpoints** — Each `_test_*` is a contract: if the vuln is present it MUST be found; LLMs only step in at named planning/synthesis points
+- **Adaptive methodologies** — XSS-reflected and SQLi use multi-phase reflection-mapping / dialect-fingerprinting flows with LLM-driven payload synthesis and bypass
+- **Cross-engagement learning** — Persistent knowledge base (`clinkz_knowledge.db`) records every technique success/failure; future engagements adapt
+- **Dynamic tool discovery + fallback chains** — Agents request capabilities (`web_crawling`, `directory_fuzzing`, ...); the resolver walks declared `TOOL_CHAINS` until output meets threshold
+- **Runtime CVE research** — Research Agent live-searches CVEs, bug-bounty writeups, and PoCs per identified technology
+- **Credential chaining** — Discovered credentials are stored and reused across agents for authenticated testing
+- **Resilient LLM client** — Per-agent provider chains (Anthropic / Gemini / OpenAI) with automatic rotation on rate-limit/timeout
+- **MCP protocol support** — Connect external tool servers via the Model Context Protocol
+- **Execution traces** — Every engagement writes `outputs/<id>/trace.jsonl` with tool calls, LLM calls, and methodology phases; inspect via `clinkz trace inspect <id>`
 
 ## Quick Start
 
@@ -75,130 +84,167 @@ pip install -e ".[dev]"
 
 ### Configuration
 
-Copy the example environment file and fill in your API key:
+Copy the example environment file and fill in your API keys:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your settings (see [Configuration](#configuration-1) below).
+At minimum, set `ANTHROPIC_API_KEY` **and** `GEMINI_API_KEY` — the resilient client rotates between them on rate-limit / timeout. Edit `.env` for full options (see [Configuration](#configuration-1) below).
 
 ### Docker Setup
 
-Start the test targets (DVWA, Juice Shop, etc.):
+Clinkz runs every security tool inside the `clinkz-tools` container by default (`TOOL_EXEC_MODE=docker`). Build the tools image and start the test targets in one go:
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d
 ```
 
+This brings up:
+
+- `clinkz-tools` — the sandboxed tool container (nmap, nuclei, ffuf, sqlmap, ...)
+- `clinkz-dvwa` on `http://localhost:8080`
+- `clinkz-juiceshop` on `http://localhost:3000`
+
 ### Running a Scan
 
 ```bash
-# Full autonomous pentest
-clinkz scan --target example.com --scope scope.json
+# Full autonomous pentest against a local DVWA
+clinkz scan --target http://localhost:8080
 
-# Recon phase only
-clinkz recon --target example.com
+# Override the orchestrator LLM provider for a single run
+clinkz scan --target http://localhost:8080 --provider anthropic
+
+# Inspect the execution trace afterwards
+clinkz trace inspect <engagement_id>
 ```
+
+> Note: `recon`, `crawl`, `exploit`, and `report` subcommands exist for future per-phase invocation but are still TODO. Use `scan` for the full pipeline.
 
 ## Configuration
 
-All configuration is via environment variables in `.env`:
+All configuration is via environment variables in `.env`. The defaults below are the values produced by `Settings.from_env()` in `src/clinkz/config.py`.
+
+### LLM providers and models
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LLM_PROVIDER` | LLM backend: `openai`, `anthropic`, `gemini`, `ollama` | `openai` |
+| `LLM_PROVIDER` | Legacy global provider: `openai`, `anthropic`, `gemini`, `ollama` | `openai` |
+| `LLM_PROVIDER_DEFAULT` | Default for any agent without an explicit override | `gemini` |
+| `LLM_PROVIDER_RECON` | Recon agent provider | `gemini` |
+| `LLM_PROVIDER_SCAN` | Scan agent provider | `gemini` |
+| `LLM_PROVIDER_REPORT` | Report agent provider | `gemini` |
+| `LLM_PROVIDER_EXPLOIT` | Exploit agent provider | `anthropic` |
+| `LLM_PROVIDER_RESEARCH` | Research agent provider | `anthropic` |
 | `ORCHESTRATOR_MODEL` | Model for the Orchestrator agent | `gpt-4o` |
-| `AGENT_MODEL` | Model for phase agents | `gpt-4o-mini` |
-| `OPENAI_API_KEY` | OpenAI API key | — |
-| `ANTHROPIC_API_KEY` | Anthropic API key | — |
-| `GEMINI_API_KEY` | Google Gemini API key | — |
-| `GOOGLE_API_KEY` | Google API key (legacy alias for `GEMINI_API_KEY`) | — |
-| `GEMINI_MODEL` | Gemini model name | `gemini-2.5-flash` |
-| `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
-| `DB_PATH` | SQLite database path | `clinkz.db` |
+| `AGENT_MODEL` | Model for phase agents (when provider is OpenAI) | `gpt-4o-mini` |
+| `ANTHROPIC_MODEL` | Claude model name | `claude-sonnet-4-6` |
+| `GEMINI_MODEL` | Gemini model name | `gemini-2.5-pro` |
+| `GEMINI_EXPLOIT_MODEL` | Gemini model used when Exploit falls back to Gemini | `gemini-2.5-pro` |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | Provider API keys | — |
+| `GOOGLE_API_KEY` | Legacy alias for `GEMINI_API_KEY` | — |
+| `OLLAMA_BASE_URL` | Ollama server URL (Ollama client is currently a stub) | `http://localhost:11434` |
+| `LLM_MAX_RETRIES` | Per-provider retry budget before falling over to the next provider | `3` |
+| `LLM_RETRY_BASE_DELAY` | Initial exponential backoff delay (seconds) | `2.0` |
+| `LLM_RETRY_MAX_DELAY` | Cap on exponential backoff (seconds) | `30.0` |
+
+### Tool execution + state
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DB_PATH` | Per-engagement SQLite database path | `clinkz.db` |
 | `TOOL_TIMEOUT` | Tool execution timeout (seconds) | `300` |
-| `TOOL_EXEC_MODE` | Tool execution mode: `local` or `docker` | `local` |
+| `TOOL_EXEC_MODE` | `docker` (sandboxed) or `local` (host binaries — footgun: namesake binaries can match) | `docker` |
 | `DOCKER_CONTAINER` | Docker container name for sandboxed execution | `clinkz-tools` |
-| `MCP_SERVERS` | JSON list of MCP server commands/URLs | `[]` |
+| `MCP_SERVERS` | JSON list of MCP server commands or URLs | `[]` |
+
+The cross-engagement persistent KB lives at `clinkz_knowledge.db` (path is fixed today; planned to become configurable).
 
 ## Supported Tools
 
 | Tool | Capability | Type |
 |------|-----------|------|
-| Nmap | Port scanning & service detection | Local CLI |
-| Subfinder | Subdomain enumeration | Local CLI |
-| httpx | HTTP probing & tech detection | Local CLI |
-| WhatWeb | Web technology fingerprinting | Local CLI |
-| wafw00f | WAF detection | Local CLI |
-| Katana | Web crawling | Local CLI |
-| ffuf | Directory & parameter fuzzing | Local CLI |
-| Nuclei | Vulnerability scanning | Local CLI |
-| Nikto | Web server scanning | Local CLI |
-| sqlmap | SQL injection testing | Local CLI |
-| HTTP Client | Custom HTTP requests | Built-in |
-| MCP Servers | Any MCP-compatible tool | MCP Protocol |
+| Nmap | Port scanning & service detection | Local CLI / Docker |
+| Subfinder | Subdomain enumeration | Local CLI / Docker |
+| httpx | HTTP probing & tech detection | Local CLI / Docker |
+| WhatWeb | Web technology fingerprinting | Local CLI / Docker |
+| wafw00f | WAF detection | Local CLI / Docker |
+| Katana | Web crawling | Local CLI / Docker |
+| ffuf | Directory & parameter fuzzing | Local CLI / Docker |
+| Nuclei | Vulnerability scanning | Local CLI / Docker |
+| Nikto | Web server scanning | Local CLI / Docker |
+| sqlmap | SQL injection testing | Local CLI / Docker |
+| HTTP Client | Custom HTTP requests | Built-in (aiohttp) |
+| WebAuthenticator | Default-credential testing | Built-in |
+| MCP Servers | Any MCP-compatible tool | MCP Protocol (stdio / HTTP / SSE) |
 
-Tools are discovered dynamically at runtime — agents never hardcode tool names.
+Tools are discovered dynamically at runtime via `ToolResolver.find_tool(capability=...)` — agents never hardcode tool names. Each capability (e.g. `web_crawling`, `directory_fuzzing`, `port_scanning`) declares a ranked fallback chain in `tools/resolver.py::TOOL_CHAINS`; the resolver walks the chain until a tool is available. Host binary identity is verified at startup (`tools/binary_identity.py`) so a namesake on `$PATH` cannot impersonate a real tool.
 
 ## Agents
 
-| Agent | Role |
-|-------|------|
-| **Orchestrator** | Central coordinator — routes messages, manages agent lifecycle, makes strategic decisions |
-| **Recon** | Reconnaissance — discovers subdomains, services, tech stack, OSINT |
-| **Scan** | Attack surface mapping — crawls endpoints, fuzzes parameters, identifies input vectors |
-| **Exploit** | Exploitation — researches CVEs, attempts exploits, chains vulnerabilities |
-| **Critic** | Quality assurance — validates findings, checks CVSS scores, eliminates false positives |
-| **Report** | Report generation — produces professional pentest reports with remediation guidance |
+| Agent | Default LLM | Role |
+|-------|-------------|------|
+| **Orchestrator** | Anthropic (resilient fallback) | Central coordinator — Recon → concurrent (Scan + Research + Exploit) → Report |
+| **Recon** | Gemini Flash | Port scan → service/version → web recon → tech stack |
+| **Scan** | Gemini Flash | Crawl + fuzz HTTP, enumerate FTP/SSH/SMB/DB; coverage checkpoint via fallback chains |
+| **Research** | Anthropic Claude | Cross-engagement KB lookup + live web search; persists techniques back to `clinkz_knowledge.db` |
+| **Exploit** | Anthropic Claude | LLM plans tests; deterministic `_test_*` skills execute; adaptive XSS-reflected and SQLi methodologies |
+| **Critic** | (LLM-only) | Validates findings, checks CVSS, eliminates false positives |
+| **Report** | (no LLM today) | Pulls findings from state store, emits JSON + Markdown |
 
 ## Report Output
 
-The final report includes:
+The current report agent emits:
 
-- Executive summary with risk rating
-- Detailed findings with CVSS scores
-- Proof-of-concept evidence for each vulnerability
-- Step-by-step reproduction instructions
-- Remediation recommendations prioritized by severity
-- MITRE ATT&CK and OWASP WSTG technique references
-- Full methodology checklist with coverage statistics
+- `report_<engagement_id>.json` — structured findings (title, severity, CVSS, endpoint, request/response evidence, remediation)
+- `report_<engagement_id>.md` — human-readable summary
 
-Output formats: **HTML**, **PDF**, **JSON**, **Markdown**
+Each engagement also produces `outputs/<engagement_id>/trace.jsonl` for post-mortem inspection.
+
+Output formats today: **JSON**, **Markdown**. The HTML/PDF Jinja+WeasyPrint pipeline described in earlier plans is on the W3 horizon.
 
 ## Testing
 
 ```bash
-# Run all tests
-pytest tests/
+# Run all unit / agent / tool / orchestrator tests (skips live integration + DVWA suites)
+pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_integration
 
-# Run a specific test module
+# Run integration suite (requires DVWA + tools containers up)
+pytest tests/test_integration/
+
+# Run live DVWA skill smoke suite (requires DVWA at http://localhost:8080)
+pytest tests/test_skills_dvwa/ -m dvwa_smoke
+
+# Run a single test module
 pytest tests/test_tools/test_nmap.py -v
-
-# Run with coverage
-pytest --cov=clinkz tests/
 ```
+
+The full suite is ~750 tests as of W2.1. API-key-gated tests skip cleanly when no keys are present.
 
 ## Project Structure
 
 ```
 clinkz/
 ├── src/clinkz/
-│   ├── agents/          # Phase agents (recon, scan, exploit, critic, report)
-│   │   └── prompts/     # Agent system prompts
-│   ├── comms/           # Message bus and communication protocol
-│   ├── credentials/     # Credential store for chaining
-│   ├── knowledge/       # MITRE ATT&CK, OWASP WSTG/API/LLM knowledge bases
-│   ├── llm/             # LLM client abstraction (OpenAI, Anthropic, Gemini, Ollama)
-│   ├── models/          # Pydantic models (scope, finding, target, report)
-│   ├── orchestrator/    # Orchestrator agent and lifecycle manager
-│   ├── reporting/       # Report generator and HTML/PDF renderer
-│   ├── research/        # Runtime CVE/exploit research
-│   └── tools/           # Tool wrappers and dynamic resolver
-├── scripts/             # Demo and example scripts
-├── tests/               # Test suite
-├── docker/              # Docker configs for sandboxed execution
-└── docs/                # Architecture and development docs
+│   ├── agents/          # Phase agents (recon v2, scan v2, exploit v2, research v2, critic, report)
+│   │   └── prompts/     # Agent system prompts (.md per agent)
+│   ├── comms/           # Message bus + communication protocol
+│   ├── credentials/     # CredentialStore for default-credential chaining
+│   ├── knowledge/       # MITRE ATT&CK + OWASP WSTG/API/LLM datasets,
+│   │                    # persistent_kb (cross-engagement), seed_playbook (Tier 1)
+│   ├── llm/             # LLM abstraction (Anthropic, Gemini, OpenAI, Ollama) + ResilientLLMClient
+│   ├── models/          # Pydantic v2 models (scope, target, recon, scan, methodology,
+│   │                    # research, finding, report)
+│   ├── observability/   # Per-engagement JSONL execution trace
+│   ├── orchestrator/    # OrchestratorAgent + AgentLifecycleManager
+│   ├── research/        # Runtime web search for CVEs / writeups
+│   └── tools/           # ToolBase + ToolResolver (capability + fallback chains),
+│                        # binary_identity, docker_preflight, MCP client, individual wrappers
+├── scripts/             # Demo / live integration helpers
+├── tests/               # Unit, agent, comms, credentials, knowledge, llm,
+│                        # orchestrator, integration, skills_dvwa, skills_juiceshop
+├── docker/              # Dockerfile.tools + Dockerfile.dvwa + docker-compose.yml
+└── docs/                # architecture, adding-tools, playbooks, analysis/*
 ```
 
 ## Contributing
