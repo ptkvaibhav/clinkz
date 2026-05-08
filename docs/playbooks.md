@@ -3,15 +3,26 @@
 This document describes the structured testing methodology used by Clinkz agents
 and the security knowledge base that drives test selection at runtime.
 
-## Overview
+## Two layers of methodology
 
-Clinkz agents do not rely on static checklists compiled at build time. Instead,
-each agent queries the **KnowledgeBase** (`src/clinkz/knowledge/query.py`) at
-runtime to discover tests relevant to the technologies, services, and
-vulnerability classes found during the engagement. The orchestrator calls
-`kb.get_all_for_phase(phase)` when an agent starts and
+Clinkz separates **what we aspire to test** (the WSTG/MITRE-aligned methodology
+checklists below — REC-XX, SCN-XX, EXP-XX, ...) from **what is wired as
+deterministic-skill code** (the `_test_*` methods in `agents/exploit.py` and
+the per-service Scan methods).
+
+- The **knowledge base** (`src/clinkz/knowledge/query.py`) is queried by every
+  agent at startup to surface methodology-aligned context — WSTG references,
+  ATT&CK techniques, payload hints — and is injected into LLM checkpoints.
+- The **deterministic skills** are the contract layer: if the vulnerability is
+  present and the skill runs, the skill MUST find it. CI proves this against
+  DVWA and Juice Shop.
+- Two skills today (`_test_xss_reflected`, `_test_sqli`) are **adaptive
+  methodologies** — multi-phase deterministic flows with LLM-driven payload
+  synthesis at named checkpoints.
+
+The orchestrator calls `kb.get_all_for_phase(phase)` when an agent starts and
 `kb.get_techniques_for_technology(tech)` each time a new technology is
-discovered, injecting the results into the agent's observation context.
+discovered, injecting the results into the agent's planning context.
 
 Agents track every test they execute using a standardised checklist format:
 
@@ -123,6 +134,33 @@ and exploit chaining.
 - `kb.get_tests_by_category("injection")` — all injection-class tests with steps and payloads
 - OWASP API sub-tests with specific payloads
 - OWASP LLM sub-tests for AI application targets
+
+### Implementation status (W2.1) — deterministic `_test_*` skills
+
+| Checklist ID | Skill in `agents/exploit.py` | Methodology |
+|--------------|------------------------------|-------------|
+| EXP-04 | `_test_xss_reflected` | **Adaptive** — reflection mapping → char fingerprint → LLM payload synthesis → bypass |
+| EXP-03 | `_test_sqli` | **Adaptive** — dialect fingerprint → primitive enumeration → LLM injection-type selection → synthesis |
+| EXP-05 | `_test_xss_stored` | Deterministic |
+| —      | `_test_xss_dom` | Deterministic (DOM canary + script-context sink scan) |
+| EXP-06 | `_test_cmdi` | Deterministic |
+| EXP-07 | `_test_lfi` | Deterministic |
+| EXP-09 | `_test_file_upload` | Deterministic |
+| EXP-14 | `_test_csrf` | Deterministic |
+| EXP-11 | `_test_idor` | Deterministic |
+| —      | `_test_brute_force` | Deterministic (lockout-policy probe) |
+| —      | `_test_open_redirect` | Deterministic |
+| —      | `_test_security_headers` | Deterministic |
+| EXP-13 | `_test_weak_session` | Deterministic (cookie predictability) |
+| —      | `_test_javascript_attacks` | Deterministic (static client-side security-logic + bypass) |
+| EXP-XX (Tier 2) | `_test_tier2_technique` | Persistent-KB driven |
+| EXP-XX (Tier 3) | `_test_tier3_technique` | Research-Agent runbook driven |
+
+Checklist items without a row above (EXP-08 RFI, EXP-10 SSRF, EXP-12 auth-bypass,
+EXP-15 SSTI, EXP-16 XXE, EXP-17 privesc, EXP-18 chaining, EXP-19 prompt
+injection) are still aspirational — they live in the WSTG knowledge base and
+are surfaced to the Exploit Agent's planner, but no deterministic skill
+guarantees coverage yet. They sit on the W3 horizon.
 
 ---
 

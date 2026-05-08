@@ -1,233 +1,199 @@
-# Clinkz v2: Implementation Plan (Final — with all adjustments)
+# Clinkz v2: Implementation Plan
 
-## Key Adjustments from Review
+The north-star vision and the architectural decisions below were the design
+brief for the v2 rewrite. Items marked **DONE** are wired and tested. Items
+marked **partial** have the deterministic substrate landed but the adaptive
+LLM-driven layer still pending. The "On the horizon" section lists what is
+genuinely next.
 
-### 1. Unified Test Plan (replaces separate runbook/playbook/tests)
-Single document with three tiers:
-- **Tier 1 (Universal):** Run on EVERY engagement. Port scan, crawl, fuzz, 
+## North-star vision
+
+A multi-agent system where:
+
+- **Agents follow deterministic step sequences** with the LLM invoked only at
+  named reasoning checkpoints — no free-form ReAct.
+- **Skills are contracts.** If the vulnerability is present and the skill
+  runs, the skill MUST find it. CI proves this against DVWA and Juice Shop.
+- **The system grows smarter with every engagement.** Every technique result
+  (success or miss) is recorded to a persistent KB. Future engagements query
+  the KB before reaching for the web.
+- **Tools are substitutable.** Agents request capabilities, not tools. Every
+  capability has a ranked fallback chain.
+- **LLMs are substitutable.** Agents are pinned to providers that suit their
+  workload (cheap/high-volume vs. complex reasoning), but a resilient client
+  rotates providers on rate-limit / timeout.
+
+## Key architectural decisions
+
+### 1. Unified test plan (3 tiers) — **DONE**
+Single playbook stored in `clinkz_knowledge.db` with three tiers:
+
+- **Tier 1 (Universal):** Run on EVERY engagement. Port scan, crawl, fuzz,
   OWASP Top 10 checks. Never skipped.
-- **Tier 2 (Technology-matched):** Run when tech fingerprint matches. 
-  "Apache 2.4.x → test CVE-2019-0211, CVE-2017-9798." 
-  "PHP → test type juggling, LFI via php:// wrappers."
-  Grows as more technologies are encountered.
-- **Tier 3 (Experimental):** New techniques from Research Agent.
-  Kept if successful, removed/adjusted if not.
-  Source: bug bounty writeups, researcher blogs, adapted past techniques.
+- **Tier 2 (Technology-matched):** Run when tech fingerprint matches. Grows
+  as more technologies are encountered.
+- **Tier 3 (Experimental):** New techniques from the Research Agent. Kept if
+  successful, removed/adjusted if not.
 
-Storage: persistent_playbook table in clinkz_knowledge.db
-Each entry has: tier (1/2/3), technology_pattern, times_tried, times_succeeded
+Storage: `playbook_entries` table. Each entry has `tier (1/2/3)`,
+`technology_pattern`, `times_tried`, `times_succeeded`, `success_rate`.
+Tier 1 entries are seeded by `knowledge/seed_playbook.py`.
 
-### 2. Tool Substitutability
-Every capability has a RANKED fallback chain:
+### 2. Tool substitutability — **DONE**
+Every capability has a ranked fallback chain in
+`tools/resolver.py::TOOL_CHAINS`:
+
 ```python
 TOOL_CHAINS = {
-    "web_crawling": ["katana", "gospider", "hakrawler", "zap_spider"],
-    "directory_fuzzing": ["ffuf", "gobuster", "feroxbuster", "dirsearch"],
-    "port_scanning": ["nmap", "masscan", "rustscan"],
+    "web_crawling":           ["katana", "gospider", "hakrawler", "zap_spider"],
+    "directory_fuzzing":      ["ffuf", "gobuster", "feroxbuster", "dirsearch"],
+    "port_scanning":          ["nmap", "masscan", "rustscan"],
     "vulnerability_scanning": ["nuclei", "nikto", "zap_active"],
-    "sql_injection_testing": ["sqlmap", "ghauri"],
-    "web_fingerprinting": ["whatweb", "wappalyzer", "httpx"],
-    "waf_detection": ["wafw00f"],
+    "sql_injection_testing":  ["sqlmap", "ghauri"],
+    "web_fingerprinting":     ["whatweb", "wappalyzer", "httpx"],
+    "waf_detection":          ["wafw00f"],
 }
 ```
-Agent tries first tool. If output is insufficient (< 5 URLs from crawl), 
-tries the next. ToolResolver returns ranked list, agent iterates.
 
-### 3. Deterministic Skills = Guaranteed Findings
-A skill is a CONTRACT: "If Apache 2.4.25 is present AND this skill runs, 
+Agents call `resolver.find_tool(capability=...)` and walk the chain until a
+tool is available. `try_until_sufficient(capability, min_results, ...)`
+keeps trying tools until output meets a threshold.
+
+### 3. Deterministic skills = guaranteed findings — **DONE**
+A skill is a contract: "If the vulnerability is present AND this skill runs,
 the vulnerability MUST be found."
 
-Skills are tested in CI:
-- test_skill_apache_2425.py runs against DVWA → must find the vuln
-- test_skill_sqli.py runs against DVWA /sqli/ → must find SQLi
-- If a skill test fails, the skill is BROKEN and must be fixed
+CI proves this:
 
-Skills are versioned. After each engagement:
-- Skills that produced findings: validated, success_count++
-- Skills that missed known vulns: flagged for review
-- New skills from Research Agent: added as Tier 3 (experimental)
+- `tests/test_skills_dvwa/` — direct skill invocation against DVWA
+  (15 Tier-1 skills covered, marker `dvwa_smoke`)
+- `tests/test_skills_juiceshop/` — same shape against Juice Shop
 
-### 4. Claude Code Workflow Enhancement (awesome-claude-code)
-Add to the repository:
-- .claude/commands/ — custom slash commands for common workflows:
-  /project:run-dvwa — runs the full DVWA pipeline test
-  /project:test-skill <name> — tests a specific skill against DVWA
-  /project:add-tool <name> — scaffolds a new tool wrapper
-  /project:review-findings — reviews latest engagement findings
-- Hooks: auto-run ruff check + ruff format before every commit
-- Skills infrastructure: hooks that load context-appropriate skills
+After each engagement, `record_technique_result(...)` updates
+`times_tried` / `times_succeeded` / `success_rate` on the playbook entry.
 
-### 5. Agent Flow (Final — incorporating all corrections)
+### 4. Claude Code workflow — **DONE**
+Repository ships with:
 
-ORCHESTRATOR:
-  1. Parse scope, enforce boundaries
-  2. Run Recon (sequential) → wait for output
-  3. Try default credentials (WebAuthenticator — deterministic)
-  4. Start Scan + Research + Exploit concurrently
-  5. Monitor completion → stop all when done
-  6. Run Report (sequential)
-  7. Post-engagement: commit results to persistent KB
+- `.claude/skills/run-dvwa/SKILL.md` — runs the full DVWA pipeline and
+  reports coverage across the 14 categories
+- `.claude/skills/phase-work/SKILL.md` — loads v2 rules of engagement for
+  any phase-implementation or fix task
+- `.githooks/pre-commit` — runs the lint + test gates before every commit
+- `.github/workflows/ci.yml` — matching CI gates
 
-RECON:
-  Step 1: Port scan all ports (TOOL — always nmap first, rustscan fallback)
-  Step 2: LLM reviews output (REASONING)
-  Step 3: Service+version scan on open ports (TOOL — nmap -sV -sC)
-  Step 4: LLM reviews, extracts technology list (REASONING)
-  Step 5: Structure output → Orchestrator (CODE)
-
-SCAN:
-  Step 1: LLM plans scan strategy based on identified services (PLANNING)
-  Step 2: For each service type, run appropriate tools:
-    HTTP → crawl (katana→gospider fallback) + fuzz (ffuf→gobuster fallback)
-    FTP → enumerate (nmap scripts, manual probe)
-    SSH → version check, auth methods
-    SMB → share listing, null session
-    Database → connection test, default creds
-  Step 3: LLM reviews each tool output, structures into DB (REASONING)
-  Step 4: LLM checkpoint: sufficient coverage? (REASONING)
-    If no → try next tool in fallback chain, bigger wordlist, deeper crawl
-  Step 5: Output endpoints + analysis to shared state DB (CODE)
-
-RESEARCH (concurrent, persistent brain):
-  Step 1: Query persistent KB for existing knowledge on each technology
-  Step 2: Research NEW vulns via web search (CVEs, HackerOne, blogs, Reddit)
-  Step 3: LLM synthesizes into actionable techniques → runbook entries
-  Step 4: Query related technologies from persistent KB
-  Step 5: LLM adapts past techniques for current target
-  Step 6: Write all entries to per-engagement runbook AND persistent playbook
-  Ongoing: As Scan discovers new services/tech → research those too
-
-EXPLOIT (concurrent, reads from Scan + Research):
-  Step 1: LLM PLANS exploits — reviews scan data + runbook (PLANNING)
-  Step 2: Tools + code execute planned exploits:
-    - Deterministic _test_* methods for WSTG coverage (Tier 1)
-    - Technology-specific tests from persistent playbook (Tier 2)
-    - Research Agent techniques from runbook (Tier 3)
-  Step 3: LLM reasons through results — retry, bypass, adapt (REASONING)
-  Step 4: Results to findings DB (CODE)
-  After: Record technique success/failure to persistent KB
-
-REPORT:
-  - Pull all findings from DB
-  - For each: title, severity, CVSS, endpoint, PoC (request+response)
-  - LLM adds remediation per finding
-  - Output: JSON + Markdown
-
-## Implementation Phases
-
-### Phase 1: Persistent KB + Recon (Week 1)
-- Persistent knowledge base schema + API (clinkz_knowledge.db)
-- Unified test plan structure (3 tiers)
-- Tool fallback chains in resolver
-- Rewrite Recon Agent (deterministic steps)
-- Verify against DVWA
-
-### Phase 2: Scan + Research (Week 2)
-- Rewrite Scan Agent (tool-driven + LLM supervision + fallback chains)
-- Service-specific scan methods (HTTP, FTP, SSH, SMB, DB)
-- Build Research Agent with persistent KB integration
-- Cross-technology adaptation engine
-- Concurrent execution wiring
-
-### Phase 3: Exploit + Integration (Week 3)
-- Rewrite Exploit Agent (LLM plans, deterministic methods execute)
-- Connect to runbook (reads Research Agent output)
-- Endpoint polling from shared state (reads Scan Agent output)
-- Full pipeline integration against DVWA
-- Target: 12+/14 findings
-
-### Phase 4: Consistency + Skills (Week 4)
-- Run 5 consecutive DVWA engagements
-- Create skill tests in CI for each DVWA vulnerability
-- Fix any flaky skills until 14/14 consistent
-- Claude Code workflow setup (commands, hooks)
-- Update CLAUDE.md to match v2 architecture exactly
-
-### Phase 5: Expansion (Weeks 5-6)
-- Juice Shop testing (Node.js stack)
-- First HTB retired machine (multi-service)
-- Validate cross-engagement learning
-- Second HTB machine (adapted techniques from first)
-
-## First Claude Code Prompt (Phase 1, Day 1-2)
+### 5. Agent flow — **DONE (with adaptive layer partially in)**
 
 ```
-Read CLAUDE.md. We are implementing the v2 architecture.
-Create branch feat/v2-architecture if not already on it.
+ORCHESTRATOR
+  1. Parse scope, enforce boundaries                              [DONE]
+  2. Recon (sequential)                                           [DONE]
+  3. Default credential testing (WebAuthenticator, deterministic) [DONE]
+  4. Concurrent: Scan + Research + Exploit                        [DONE]
+  5. Monitor completion                                           [DONE]
+  6. Report (sequential)                                          [DONE]
+  7. Persist results to KB                                        [DONE]
 
-PART A — Persistent Knowledge Base:
+RECON (deterministic + LLM checkpoints)                          [DONE]
+  Steps: full TCP scan → LLM analyze ports → service/version →
+         LLM extract tech stack → web recon → LLM synthesize →
+         structured ReconResult
 
-Create src/clinkz/knowledge/persistent_kb.py:
+SCAN (service-specific methods + LLM supervision)                [DONE]
+  Steps: LLM plan → per-service methods (HTTP, FTP, SSH, SMB, DB) →
+         LLM review each output → LLM coverage checkpoint →
+         expand via fallback chain if insufficient → ScanResult
 
-class PersistentKnowledgeBase:
-    """Cross-engagement knowledge base that grows with every pentest.
-    Uses a separate SQLite DB (clinkz_knowledge.db) that persists forever."""
-    
-    def __init__(self, db_path="clinkz_knowledge.db"):
-        ...
-    
-    Tables:
-    
-    playbook_entries:
-      id, tier (1/2/3), technology_pattern (regex), technique_name (unique per tech),
-      technique_description, steps (JSON), source_url, source_type,
-      cve_id, severity, applicable_vuln_classes (JSON),
-      times_tried (int), times_succeeded (int), success_rate (float),
-      last_used_date, created_from_engagement, created_at, updated_at
-    
-    past_engagements:
-      id, engagement_id, target_description, technologies (JSON),
-      findings_count, findings_summary (JSON), date, duration_minutes
-    
-    technique_results:
-      id, playbook_entry_id (FK), engagement_id, technology_actual,
-      success (bool), finding_id, response_summary, adaptation_notes, created_at
-    
-    technology_relations:
-      id, tech_a, tech_b, relation_type, similarity_score (0-1), notes
-    
-    Methods:
-    - add_playbook_entry(tier, technology_pattern, technique_name, ...)
-    - get_playbook_for_technology(technology) -> matches by regex pattern
-    - get_tier1_tests() -> all universal tests
-    - get_tier2_tests(technology) -> technology-specific tests
-    - get_tier3_tests(technology) -> experimental tests
-    - record_technique_result(entry_id, engagement_id, success, ...)
-    - update_success_rates() -> recalculate from technique_results
-    - get_related_technologies(technology) -> similar techs
-    - add_technology_relation(tech_a, tech_b, relation_type, similarity)
-    - record_engagement(engagement_id, target, technologies, findings)
-    - get_past_results_for_technology(technology) -> what worked before
+RESEARCH (concurrent, persistent brain)                          [DONE]
+  Steps: query persistent KB → web search new vulns → LLM
+         synthesize techniques → query related techs → LLM
+         adapt past techniques → persist to engagement +
+         persistent KB
 
-PART B — Tool Fallback Chains:
+EXPLOIT (LLM plans, deterministic skills execute)                [DONE]
+  Steps: LLM plans tasks from scan + research → execute by tier →
+         LLM reasons through results → adaptive retry → record
+         success/failure to KB
+  Adaptive methodologies (W2.1):
+    - _test_xss_reflected: reflection mapping + char fingerprint +
+      LLM-driven payload synthesis + bypass                      [DONE]
+    - _test_sqli: dialect fingerprint + primitive enumeration +
+      LLM-driven injection-type selection + synthesis            [DONE]
+    - Other _test_* skills remain deterministic                  [DONE]
 
-Update src/clinkz/tools/resolver.py:
-  - Add TOOL_CHAINS dict mapping capability → ranked list of tool names
-  - find_tools_ranked(capability) -> returns tools in preference order
-  - If first tool is unavailable, return next in chain
-  - Add try_until_sufficient(capability, min_results, ...) method that
-    tries each tool in the chain until output meets threshold
-
-PART C — Seed Tier 1 universal tests:
-
-Pre-populate the persistent KB with Tier 1 entries:
-  - port_scan_full: "Scan all 65535 ports" (universal, every engagement)
-  - service_version_detect: "Identify service versions on open ports"
-  - web_crawl: "Deep crawl all HTTP services"
-  - directory_fuzz: "Fuzz directories with common.txt"
-  - sqli_detection: "Test all input params for SQL injection"
-  - xss_detection: "Test all reflected params for XSS"
-  - cmdi_detection: "Test suspicious params for command injection"
-  - lfi_detection: "Test file-path params for LFI"
-  - csrf_detection: "Test state-changing forms for CSRF"
-  - file_upload_test: "Test upload forms for unrestricted upload"
-  - brute_force_test: "Test login forms for lockout policy"
-  - security_headers: "Check all HTTP responses for security headers"
-
-Tests for PersistentKnowledgeBase (all CRUD + pattern matching).
-Run pytest. Commit and push.
+REPORT                                                           [partial]
+  - Pulls findings from state store                              [DONE]
+  - Emits JSON + Markdown                                        [DONE]
+  - LLM-driven narrative + remediation pass                      [PENDING — W3]
+  - HTML/PDF rendering (Jinja + WeasyPrint)                      [PENDING — W3]
 ```
 
-Save this file to your repo. Start a new conversation referencing this 
-plan to continue building.
-```
+## Implementation phases — status
+
+### Phase 1: Persistent KB + Recon — **DONE**
+- Persistent KB schema + CRUD (`clinkz_knowledge.db`) — done
+- Unified test plan (3 tiers) — done
+- Tool fallback chains in resolver — done
+- Deterministic Recon Agent — done
+- Verified against DVWA — done
+
+### Phase 2: Scan + Research — **DONE**
+- Deterministic Scan Agent (service-specific methods + fallback chains) — done
+- HTTP / FTP / SSH / SMB / DB scan methods — done
+- Research Agent with persistent KB integration — done
+- Cross-technology adaptation — done
+- Concurrent execution wiring (Scan + Research + Exploit) — done
+
+### Phase 3: Exploit + Integration — **mostly DONE**
+- Deterministic Exploit Agent (LLM plans, `_test_*` execute) — done
+- Runbook consumption (Tier 2 / Tier 3 from Research) — done
+- Endpoint polling from shared SQLite state — done
+- Full pipeline integration against DVWA — done
+- Adaptive methodologies (W2.1):
+  - XSS-reflected — done
+  - SQLi — done
+  - **Pending**: XSS-stored, command injection, LFI, file-upload,
+    weak-session, JS-attacks, IDOR, brute-force, open-redirect,
+    security-headers — currently still deterministic-only
+- Target of 12+/14 DVWA findings — measured per run via `/run-dvwa` skill
+
+### Phase 4: Consistency + Skills — **partial**
+- Skill smoke tests in CI for DVWA Tier-1 vulns — done
+- Skill smoke tests for Juice Shop SPA-style targets — done
+- 5-consecutive-engagement consistency drill — pending
+- Claude Code commands + hooks — done (`run-dvwa`, `phase-work`,
+  `pre-commit`, `ci.yml`)
+- CLAUDE.md / README / docs alignment with v2 — done (this pass)
+
+### Phase 5: Expansion — **partial**
+- Juice Shop testing (SPA / Node.js stack) — first skill suite landed
+- HTB retired machines (multi-service, AD) — pending
+- Cross-engagement learning validation — pending (depends on consistency
+  drill)
+
+## On the horizon
+
+In rough priority order:
+
+1. **Adaptive methodologies for the rest of the `_test_*` family.** XSS-reflected
+   and SQLi proved the pattern (multi-phase, LLM at synthesis checkpoints,
+   intermediate results persisted to trace). Apply the same shape to
+   command-injection escape contexts, LFI traversal payload synthesis, file-
+   upload bypass selection, and weak-session entropy analysis.
+2. **LLM-driven reporting.** Today's report agent is zero-LLM: it dumps
+   findings to JSON + Markdown. The v2 plan calls for a multi-pass
+   generator (assemble → narrative → remediation → quality review) with
+   Jinja + WeasyPrint rendering. Models are already in `models/report.py`.
+3. **Consistency drill.** Run 5 consecutive DVWA engagements end-to-end and
+   measure category-level coverage variance. Lock in any remaining flaky
+   skills.
+4. **HTB / multi-service expansion.** Pick a retired HTB box that exercises
+   non-HTTP services (SMB share enumeration, SSH key reuse, AD-style
+   credential chaining). Validates Scan's non-HTTP service methods end-to-
+   end.
+5. **Cross-engagement learning validation.** After the consistency drill,
+   verify that techniques flagged successful in run N actually shorten
+   run N+1 by being picked up via the persistent KB instead of re-discovered
+   via web search.
+6. **Ollama client.** Currently a stub. Wiring it into the resilient client
+   chain unblocks fully-offline / privacy-sensitive engagements.
