@@ -232,15 +232,207 @@ class SQLiMethodologyResult(BaseModel):
     verification_strength: str = "verified"
 
 
+# ---------------------------------------------------------------------------
+# Command-injection methodology types
+# ---------------------------------------------------------------------------
+
+
+class ShellType(StrEnum):
+    """The shell context inferred during command-injection fingerprinting.
+
+    Drives payload synthesis: bash / sh accept ``$IFS``, backticks, and the
+    full ``;|&&||`` separator set; CMD accepts ``&`` and ``|`` but neither
+    backticks nor ``$()``; PowerShell parses ``;`` plus its own substitution
+    syntax. ``UNKNOWN`` means the OS-detection probes were inconclusive and
+    payload synthesis must rely on portable primitives.
+    """
+
+    BASH = "bash"
+    SH = "sh"
+    CMD = "cmd"
+    POWERSHELL = "powershell"
+    UNKNOWN = "unknown"
+
+
+class CMDIExecutionType(StrEnum):
+    """The shape of the command injection that the synthesis phase will target.
+
+    Selected by the LLM checkpoint at phase 3 given OS + confirmed
+    primitives. Each value implies a different verification rule:
+
+    - ``DIRECT_EXEC``: response body reflects command output (whoami →
+      user-shaped string, ``id`` → ``uid=``).
+    - ``BLIND_TIME``: response time delta vs baseline beyond a sleep
+      threshold.
+    - ``BLIND_OOB``: out-of-band callback observed (DNS/HTTP) — skipped
+      when no oast collaborator is available.
+    - ``ERROR_BASED``: malformed command produces a shell error string in
+      the response body.
+    """
+
+    DIRECT_EXEC = "direct_exec"
+    BLIND_TIME = "blind_time"
+    BLIND_OOB = "blind_oob"
+    ERROR_BASED = "error_based"
+
+
+class ShellPrimitives(BaseModel):
+    """Operators, separators, and quoting forms confirmed available.
+
+    Populated during phase-2 fingerprinting. Phase-4 payload synthesis
+    constrains itself to these primitives — synthesizing with a separator
+    that didn't survive the round-trip produces a payload that runs nothing.
+
+    Attributes:
+        separators: Command-chaining tokens whose use produced a
+            distinguishable response from baseline (``";"``, ``"&&"``,
+            ``"||"``, ``"|"``, ``"&"``, ``"%0a"``, ``"$IFS"``, ...).
+        quotes: Quoting forms whose presence around a payload survived the
+            server's parsing (``"single"``, ``"double"``, ``"none"``).
+        substitution: Command-substitution forms confirmed available
+            (``"$()"``, ``"backtick"``, ``"%COMMAND%"``).
+        working_time_payload: First time-based probe payload that actually
+            produced a measurable delay during phase-2 confirmation. ``None``
+            if the time channel hasn't been confirmed.
+    """
+
+    separators: list[str] = Field(default_factory=list)
+    quotes: list[str] = Field(default_factory=list)
+    substitution: list[str] = Field(default_factory=list)
+    working_time_payload: str | None = None
+
+
+class CMDIMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one CMDI ``_test_*`` invocation.
+
+    Mirrors :class:`SQLiMethodologyResult` but with CMDI-specific fields.
+    Stored on the resulting Finding's evidence so the report has a complete
+    audit trail of OS classification, primitive enumeration, the LLM-picked
+    execution type, the synthesized payload, and the verification outcome.
+    """
+
+    phases_completed: int = 0
+    shell_type: ShellType = ShellType.UNKNOWN
+    primitives: ShellPrimitives = Field(default_factory=ShellPrimitives)
+    execution_type: CMDIExecutionType | None = None
+    synthesized_payload: str | None = None
+    expected_indicator: str | None = None
+    indicator_type: str | None = None
+    indicator_observed: str | None = None
+    candidate_param: str | None = None
+    verified: bool = False
+    # ``verified`` means the methodology emitted a finding.
+    # ``verification_strength`` qualifies how strong that confirmation is.
+    # ``"verified"`` = the indicator for the chosen execution type was
+    # directly observed (canary echoed, time delta beyond threshold, shell
+    # error string seen). ``"likely"`` = secondary signal (e.g. status flip
+    # alone) without a clean indicator match.
+    verification_strength: str = "verified"
+
+
+# ---------------------------------------------------------------------------
+# LFI methodology types
+# ---------------------------------------------------------------------------
+
+
+class LFIRetrievalType(StrEnum):
+    """The shape of the LFI primitive that the synthesis phase will target.
+
+    Selected by the LLM checkpoint at phase 3 given the traversal primitives
+    confirmed during fingerprinting. Each value implies a different
+    verification rule:
+
+    - ``DIRECT_READ``: file content reflected in the response body (look
+      for known file signatures — ``root:x:0:0:`` etc.).
+    - ``WRAPPER_EXTRACTION``: ``php://filter/convert.base64-encode/...``
+      returns a base64 blob that decodes to a recognised file signature.
+    - ``ERROR_BASED_PATH``: the absolute filesystem path leaks in an error
+      message (path-disclosure, useful but not directly content-disclosing).
+    - ``SOURCE_DISCLOSURE``: PHP source returned via ``php://filter`` —
+      same indicator family as ``WRAPPER_EXTRACTION``, just aimed at code
+      rather than data.
+    """
+
+    DIRECT_READ = "direct_read"
+    WRAPPER_EXTRACTION = "wrapper_extraction"
+    ERROR_BASED_PATH = "error_based_path"
+    SOURCE_DISCLOSURE = "source_disclosure"
+
+
+class LFITraversalPrimitives(BaseModel):
+    """Path-handling primitives confirmed during phase-2 fingerprinting.
+
+    Phase-4 payload synthesis constrains itself to these primitives —
+    synthesizing with a traversal sequence that the server normalises away
+    produces a payload that resolves back to the application's directory.
+
+    Attributes:
+        traversal_sequence: First traversal token whose use produced a
+            distinguishable response from baseline (``"../"``, ``"..\\"``,
+            ``"....//"``, ``"%2e%2e%2f"``, ...). ``None`` when no traversal
+            shape worked.
+        wrapper_support: PHP / similar wrappers whose use produced a
+            response distinguishable from a generic 404 (``"php://filter"``,
+            ``"php://input"``, ``"file://"``, ``"data://"``, ...).
+        prefix_required: ``True`` when the server rejects relative paths
+            and only an absolute path-prefixed payload (``"/etc/passwd"``)
+            triggers a recognisable response.
+        suffix_handling: How the server treats trailing input. ``"none"``
+            = no suffix manipulation observed; ``"appends_extension"`` =
+            the server appended ``.php`` / ``.txt``; ``"truncatable_nul"``
+            = a legacy-PHP nul byte truncation works to defeat the suffix.
+    """
+
+    traversal_sequence: str | None = None
+    wrapper_support: list[str] = Field(default_factory=list)
+    prefix_required: bool = False
+    suffix_handling: str = "none"
+
+
+class LFIMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one LFI ``_test_*`` invocation.
+
+    Mirrors :class:`SQLiMethodologyResult` but with LFI-specific fields.
+    Stored on the resulting Finding's evidence so the report has a complete
+    audit trail of traversal-sequence selection, wrapper-support fingerprint,
+    the LLM-picked retrieval type, the synthesized payload, and the
+    verification outcome.
+    """
+
+    phases_completed: int = 0
+    primitives: LFITraversalPrimitives = Field(default_factory=LFITraversalPrimitives)
+    retrieval_type: LFIRetrievalType | None = None
+    synthesized_payload: str | None = None
+    expected_indicator: str | None = None
+    indicator_type: str | None = None
+    indicator_observed: str | None = None
+    candidate_param: str | None = None
+    verified: bool = False
+    # ``verified`` means the methodology emitted a finding.
+    # ``verification_strength`` qualifies how strong that confirmation is.
+    # ``"verified"`` = the indicator for the chosen retrieval type was
+    # directly observed (file signature in body, base64 decoding to file
+    # signature, full path in error). ``"likely"`` = secondary signal (e.g.
+    # status flip + length divergence) without a clean indicator match.
+    verification_strength: str = "verified"
+
+
 __all__ = [
+    "CMDIExecutionType",
+    "CMDIMethodologyResult",
     "CharacterMap",
     "FilterBehavior",
     "InjectionPrimitives",
     "InjectionType",
+    "LFIMethodologyResult",
+    "LFIRetrievalType",
+    "LFITraversalPrimitives",
     "MethodologyResult",
     "ReflectionContext",
     "ReflectionPoint",
     "SQLDialect",
     "SQLiMethodologyResult",
+    "ShellPrimitives",
+    "ShellType",
     "SynthesizedPayload",
 ]
