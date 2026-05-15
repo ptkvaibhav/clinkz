@@ -1,0 +1,358 @@
+"""Unit tests for the adaptive open-redirect methodology phases.
+
+Each phase is exercised in isolation with mocked HTTP + LLM:
+
+    Phase 1 (injection-point mapping)   — baseline / variant probes
+    Phase 2 (redirect-handling fingerprint) — validator + bypass primitives
+    Phase 3 (bypass-type ranking)       — LLM JSON parsing + fallback table
+    Phase 4 (payload synthesis)         — LLM JSON parsing + fallback table
+    Phase 5 (verification)              — Location / body-redirect check
+    Phase 6 (finding emission)          — evidence chain on the Finding
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+
+from clinkz.agents.exploit import (
+    ExploitAgent,
+    PageAnalysis,
+    _HTTPResponse,
+)
+from clinkz.llm.base import LLMClient, LLMMessage
+from clinkz.models.methodology import (
+    OpenRedirectMethodologyResult,
+    RedirectBypassType,
+    RedirectPrimitives,
+)
+from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
+from clinkz.state import StateStore
+from clinkz.tools.resolver import ToolResolver
+
+SCOPE = EngagementScope(
+    name="methodology-open-redirect-test",
+    targets=[ScopeEntry(value="example.com", type=ScopeType.DOMAIN)],
+)
+
+
+class _ScriptedLLM(LLMClient):
+    def __init__(self, answers: list[str] | None = None) -> None:
+        self.prompts: list[str] = []
+        self.answers: list[str] = list(answers or [])
+
+    async def reason(
+        self, messages: list[LLMMessage], tools: list[dict[str, Any]] | None = None
+    ) -> Any:
+        raise NotImplementedError
+
+    async def research(self, query: str) -> str:
+        return ""
+
+    async def generate_text(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if not self.answers:
+            return ""
+        return self.answers.pop(0)
+
+
+def _make_state() -> AsyncMock:
+    state = AsyncMock(spec=StateStore)
+    state.get_findings = AsyncMock(return_value=[])
+    state.add_finding = AsyncMock(return_value="finding-001")
+    state.get_new_endpoints = AsyncMock(return_value=[])
+    state.log_action = AsyncMock()
+    return state
+
+
+def _make_agent(llm: LLMClient | None = None) -> ExploitAgent:
+    agent = ExploitAgent(
+        llm=llm or _ScriptedLLM(),
+        tools=[],
+        scope=SCOPE,
+        state=_make_state(),
+        engagement_id="methodology-open-redirect-test",
+        resolver=ToolResolver(),
+        persistent_kb=None,
+    )
+    agent._methodology_llm = agent.llm
+    return agent
+
+
+def _make_page(url: str = "http://example.com/?to=/home") -> PageAnalysis:
+    return PageAnalysis(url=url, body="", status=200, input_params=["to"])
+
+
+# ===========================================================================
+# Phase 1 — Injection-point mapping
+# ===========================================================================
+
+
+class TestPhase1InjectionPointMapping:
+    @pytest.mark.asyncio
+    async def test_no_divergence_not_a_candidate(self) -> None:
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="same body")
+        )
+        is_candidate, _probes = await agent._open_redirect_phase1_injection_point(
+            _make_page(), "to", "/home"
+        )
+        assert is_candidate is False
+
+    @pytest.mark.asyncio
+    async def test_appended_url_diverges_marks_candidate(self) -> None:
+        agent = _make_agent()
+
+        async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
+            val = params.get("to", "")
+            if "evil.example" in val:
+                return _HTTPResponse(
+                    status=302,
+                    body="",
+                    headers={"Location": "https://evil.example"},
+                )
+            return _HTTPResponse(status=200, body="welcome")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        is_candidate, _probes = await agent._open_redirect_phase1_injection_point(
+            _make_page(), "to", "/home"
+        )
+        assert is_candidate is True
+
+
+# ===========================================================================
+# Phase 2 — Redirect handling fingerprint
+# ===========================================================================
+
+
+class TestPhase2RedirectHandlingFingerprint:
+    @pytest.mark.asyncio
+    async def test_no_validator_marks_appended_at_proto_relative_working(self) -> None:
+        agent = _make_agent()
+
+        async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
+            val = params.get("to", "")
+            # Server reflects whatever the param sends.
+            return _HTTPResponse(status=302, body="", headers={"Location": val})
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        # Drive phase 1 first so phase 2 has the baseline.
+        _ok, probes = await agent._open_redirect_phase1_injection_point(_make_page(), "to", "/home")
+        primitives, _ev = await agent._open_redirect_phase2_fingerprint(
+            _make_page(), "to", "/home", probes
+        )
+        assert "appended_url" in primitives.working_bypass_primitives
+        assert "at_syntax" in primitives.working_bypass_primitives
+        assert primitives.validator_type == "none"
+
+    @pytest.mark.asyncio
+    async def test_strict_validator_rejects_everything(self) -> None:
+        agent = _make_agent()
+
+        async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
+            # Always redirect to the same trusted host.
+            return _HTTPResponse(status=302, body="", headers={"Location": "/safe-home"})
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        _ok, probes = await agent._open_redirect_phase1_injection_point(_make_page(), "to", "/home")
+        primitives, _ev = await agent._open_redirect_phase2_fingerprint(
+            _make_page(), "to", "/home", probes
+        )
+        assert primitives.validator_type == "strict_or_unknown"
+        assert primitives.working_bypass_primitives == []
+
+
+# ===========================================================================
+# Phase 3 — Bypass type ranking
+# ===========================================================================
+
+
+class TestPhase3BypassTypeRanking:
+    @pytest.mark.asyncio
+    async def test_llm_ranking_parsed(self) -> None:
+        llm = _ScriptedLLM(
+            answers=[
+                '{"ranked": ['
+                '{"type": "at_syntax", "rationale": "userinfo bypass"},'
+                '{"type": "appended_url", "rationale": "fallback"}'
+                "]}"
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+            RedirectPrimitives(working_bypass_primitives=["at_syntax", "appended_url"]),
+            {},
+        )
+        assert ranked[0] == RedirectBypassType.AT_SYNTAX
+        assert ranked[1] == RedirectBypassType.APPENDED_URL
+
+    @pytest.mark.asyncio
+    async def test_fallback_no_validator_picks_direct(self) -> None:
+        llm = _ScriptedLLM(answers=[""])
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+            RedirectPrimitives(
+                validator_type="none",
+                working_bypass_primitives=["appended_url", "at_syntax"],
+            ),
+            {},
+        )
+        assert ranked[0] == RedirectBypassType.DIRECT_REDIRECT
+
+
+# ===========================================================================
+# Phase 4 — Payload synthesis
+# ===========================================================================
+
+
+class TestPhase4PayloadSynthesis:
+    @pytest.mark.asyncio
+    async def test_llm_synthesis_parsed(self) -> None:
+        llm = _ScriptedLLM(
+            answers=[
+                '{"payload": "https://evil.example/path", '
+                '"expected_indicator": "evil.example", '
+                '"rationale": "appended path"}'
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        synth = await agent._open_redirect_phase4_synthesize(
+            RedirectBypassType.APPENDED_URL,
+            RedirectPrimitives(working_bypass_primitives=["appended_url"]),
+        )
+        assert synth is not None
+        assert "evil.example" in synth["payload"]
+
+    @pytest.mark.asyncio
+    async def test_fallback_synthesis_table(self) -> None:
+        llm = _ScriptedLLM(answers=[""])
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        synth = await agent._open_redirect_phase4_synthesize(
+            RedirectBypassType.AT_SYNTAX,
+            RedirectPrimitives(working_bypass_primitives=["at_syntax"]),
+        )
+        assert synth is not None
+        assert "@evil.example" in synth["payload"]
+
+
+# ===========================================================================
+# Phase 5 — Verification
+# ===========================================================================
+
+
+class TestPhase5Verification:
+    @pytest.mark.asyncio
+    async def test_attacker_location_verifies(self) -> None:
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=302, body="", headers={"Location": "https://evil.example"}
+            )
+        )
+        verified, observed = await agent._open_redirect_phase5_verify(
+            _make_page(), "to", "https://evil.example"
+        )
+        assert verified is True
+        assert observed is not None
+        assert "evil.example" in observed
+
+    @pytest.mark.asyncio
+    async def test_safe_location_does_not_verify(self) -> None:
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=302, body="", headers={"Location": "/safe-home"})
+        )
+        verified, _observed = await agent._open_redirect_phase5_verify(
+            _make_page(), "to", "https://evil.example"
+        )
+        assert verified is False
+
+    @pytest.mark.asyncio
+    async def test_body_meta_refresh_verifies(self) -> None:
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200,
+                body=('<meta http-equiv="refresh" content="0; url=https://evil.example/path">'),
+            )
+        )
+        verified, observed = await agent._open_redirect_phase5_verify(
+            _make_page(), "to", "https://evil.example/path"
+        )
+        assert verified is True
+        assert observed is not None
+        assert "evil.example" in observed
+
+
+# ===========================================================================
+# Phase 6 — Finding emission
+# ===========================================================================
+
+
+class TestPhase6FindingEmission:
+    def test_finding_carries_evidence_chain(self) -> None:
+        agent = _make_agent()
+        result = OpenRedirectMethodologyResult(
+            phases_completed=6,
+            primitives=RedirectPrimitives(
+                validator_type="none",
+                working_bypass_primitives=["appended_url"],
+                redirect_status_form="3xx_location",
+            ),
+            bypass_type=RedirectBypassType.APPENDED_URL,
+            synthesized_payload="https://evil.example/",
+            redirect_target_observed="https://evil.example/",
+            verified=True,
+            verification_strength="verified",
+        )
+        finding = agent._open_redirect_phase6_emit("http://example.com/redirect", "to", result)
+        joined = " ".join(finding.evidence)
+        assert "phases_completed=6" in joined
+        assert "bypass_type=appended_url" in joined
+        assert "evil.example" in joined
+        assert finding.severity.value == "medium"
+
+    def test_js_protocol_bumps_to_high_severity(self) -> None:
+        agent = _make_agent()
+        result = OpenRedirectMethodologyResult(
+            phases_completed=6,
+            primitives=RedirectPrimitives(),
+            bypass_type=RedirectBypassType.JS_PROTOCOL,
+            synthesized_payload="javascript:alert(1)",
+            redirect_target_observed="javascript:alert(1)",
+            verified=True,
+            verification_strength="verified",
+        )
+        finding = agent._open_redirect_phase6_emit("http://example.com/redirect", "to", result)
+        assert finding.severity.value == "high"
+
+
+# ===========================================================================
+# Integration — full _test_open_redirect driving all six phases
+# ===========================================================================
+
+
+class TestOpenRedirectMethodologyIntegration:
+    @pytest.mark.asyncio
+    async def test_appended_url_open_redirect_finding(self) -> None:
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 8))
+        agent._methodology_llm = agent.llm
+
+        async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
+            val = params.get("to", "")
+            return _HTTPResponse(status=302, body="", headers={"Location": val})
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page()
+        findings = await agent._test_open_redirect(page)
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "phases_completed=6" in joined
+        assert "bypass_type=" in joined
