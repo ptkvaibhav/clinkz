@@ -197,3 +197,255 @@ async def test_lfi_against_juiceshop(
     assert any("local file inclusion" in f.title.lower() for f in findings), (
         f"Findings produced but none labelled LFI at {url}: {findings}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Stored XSS — Juice Shop customer feedback / profile fields
+# ---------------------------------------------------------------------------
+
+
+async def test_xss_stored_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_xss_stored`` must find stored XSS at Juice Shop's feedback form.
+
+    Target: ``POST /api/Feedbacks`` (the customer-feedback challenge surface).
+    Juice Shop's feedback list is rendered into the DOM via Angular bindings
+    on ``GET /api/Feedbacks``, and unsanitised content survives intact for
+    several payload shapes (notably ``<iframe src=javascript:>`` against
+    the bypassSecurityTrustHtml sink).
+
+    Because Juice Shop's ``/api/Feedbacks`` is JSON-only (no HTML form
+    on the page itself), we synthesise a PageAnalysis with the form
+    shape the methodology expects and point the action at the API
+    endpoint. The methodology's phase-1 read-back probe re-fetches the
+    feedback list and looks for the canary echoed in the JSON payload.
+
+    Skip if the endpoint is missing in the running Juice Shop build.
+    """
+    import httpx
+
+    feedback_url = f"{juiceshop_url}/api/Feedbacks"
+    try:
+        head_resp = httpx.get(feedback_url, timeout=5.0, follow_redirects=False)
+    except Exception as exc:
+        pytest.skip(f"Juice Shop /api/Feedbacks probe failed ({exc}); skipping stored XSS smoke")
+    if head_resp.status_code not in (200, 304, 401, 403):
+        pytest.skip(
+            f"Juice Shop /api/Feedbacks returned {head_resp.status_code}; "
+            "endpoint may have moved in this build"
+        )
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    form = {
+        "action": feedback_url,
+        "method": "POST",
+        "fields": [
+            {"name": "comment", "type": "textarea", "value": ""},
+            {"name": "rating", "type": "hidden", "value": "3"},
+        ],
+    }
+    page = PageAnalysis(
+        url=feedback_url,
+        body="",
+        status=200,
+        forms=[form],
+    )
+    findings = await exploit_agent._test_xss_stored(page)
+    # Even when the read-back URL can't be observed in JSON form, the
+    # methodology may emit an ``unverified`` finding from phase 3.
+    # Accept either verified or unverified — both prove the methodology
+    # exercises all six phases.
+    if not findings:
+        result = await exploit_agent._run_xss_stored_methodology(page, form, "comment")
+        pytest.fail(
+            f"_test_xss_stored failed to detect stored XSS at {feedback_url}. "
+            f"phases_completed={result.phases_completed} "
+            f"read_back_url={result.read_back_url} "
+            f"verified={result.verified} "
+            f"strength={result.verification_strength}"
+        )
+    assert any("stored xss" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled stored XSS at {feedback_url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# File Upload — Juice Shop complaint attachment endpoint
+# ---------------------------------------------------------------------------
+
+
+async def test_file_upload_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_file_upload`` against Juice Shop's complaint upload endpoint.
+
+    Target: ``POST /api/Complaints`` (with file attachment) or the legacy
+    ``/file-upload`` route. Juice Shop's complaint challenge accepts a
+    ``file`` form field and is intentionally too permissive — the
+    upload-restriction probes should surface at least one validation gap.
+
+    Skip if the endpoint is missing in the running Juice Shop build.
+    """
+    import httpx
+
+    upload_path = "/file-upload"
+    try:
+        head_resp = httpx.options(
+            f"{juiceshop_url}{upload_path}", timeout=5.0, follow_redirects=False
+        )
+    except Exception as exc:
+        pytest.skip(f"Juice Shop {upload_path} probe failed ({exc}); skipping upload smoke")
+    if head_resp.status_code in (404, 405) and head_resp.status_code != 405:
+        pytest.skip(
+            f"Juice Shop {upload_path} returned {head_resp.status_code}; "
+            "endpoint may be /api/Complaints in this build"
+        )
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    upload_url = f"{juiceshop_url}{upload_path}"
+    form = {
+        "action": upload_url,
+        "method": "POST",
+        "fields": [
+            {"name": "file", "type": "file", "value": ""},
+        ],
+    }
+    page = PageAnalysis(
+        url=upload_url,
+        body="",
+        status=200,
+        forms=[form],
+    )
+    findings = await exploit_agent._test_file_upload(page)
+    if not findings:
+        # Juice Shop's upload challenges return errors for many probes;
+        # the contract is "if the vuln is present and reachable, the
+        # methodology MUST find it". Surface diagnostic state so the
+        # failure points at the right phase.
+        result = await exploit_agent._run_file_upload_methodology(page, form)
+        pytest.fail(
+            f"_test_file_upload failed at {upload_url}. "
+            f"phases_completed={result.phases_completed} "
+            f"working_exts={result.restrictions.working_extensions} "
+            f"execution_type={result.execution_type} "
+            f"verified={result.verified}"
+        )
+    assert any(
+        "file upload" in f.title.lower() or "unrestricted" in f.title.lower() for f in findings
+    ), f"Findings produced but none labelled file upload at {upload_url}: {findings}"
+
+
+# ---------------------------------------------------------------------------
+# Open Redirect — Juice Shop /redirect?to= challenge surface
+# ---------------------------------------------------------------------------
+
+
+async def test_open_redirect_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_open_redirect`` must find open redirect at Juice Shop's /redirect?to=.
+
+    Target: ``GET /redirect?to=<url>``. Juice Shop maintains an allowlist of
+    target URLs but the validator is loose enough to be defeated by
+    several primitives. Our methodology should classify the validator and
+    synthesise a payload that bypasses it.
+
+    Skip if the route is missing in the running Juice Shop build.
+    """
+    import httpx
+
+    try:
+        head_resp = httpx.get(
+            f"{juiceshop_url}/redirect?to=https://github.com/bkimminich/juice-shop",
+            timeout=5.0,
+            follow_redirects=False,
+        )
+    except Exception as exc:
+        pytest.skip(f"Juice Shop /redirect probe failed ({exc}); skipping open redirect smoke")
+    if head_resp.status_code == 404:
+        pytest.skip("Juice Shop /redirect returned 404; route may have been removed in this build")
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    redirect_url = f"{juiceshop_url}/redirect?to=https://github.com/bkimminich/juice-shop"
+    page = PageAnalysis(
+        url=redirect_url,
+        body="",
+        status=200,
+        input_params=["to"],
+    )
+    findings = await exploit_agent._test_open_redirect(page)
+    if not findings:
+        result = await exploit_agent._run_open_redirect_methodology(page, "to")
+        pytest.fail(
+            f"_test_open_redirect failed at {redirect_url}. "
+            f"phases_completed={result.phases_completed} "
+            f"working={result.primitives.working_bypass_primitives} "
+            f"bypass_type={result.bypass_type} "
+            f"verified={result.verified}"
+        )
+    assert any("redirect" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled open redirect at {redirect_url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# IDOR — Juice Shop basket / user endpoint
+# ---------------------------------------------------------------------------
+
+
+async def test_idor_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_idor`` must find IDOR at Juice Shop's basket endpoint.
+
+    Target: ``GET /rest/basket/:id``. Juice Shop authenticates the
+    requesting user but doesn't enforce that ``:id`` matches the authed
+    user's basket — a classic horizontal IDOR. The reference-mapping
+    phase should classify ``id`` as a sequential numeric reference and
+    the verification phase should see a different-resource shape under
+    a peer id.
+
+    Skip if the endpoint is missing in the running Juice Shop build.
+    """
+    import httpx
+
+    try:
+        head_resp = httpx.get(f"{juiceshop_url}/rest/basket/1", timeout=5.0, follow_redirects=False)
+    except Exception as exc:
+        pytest.skip(f"Juice Shop /rest/basket probe failed ({exc}); skipping IDOR smoke")
+    if head_resp.status_code == 404:
+        pytest.skip("Juice Shop /rest/basket returned 404; endpoint may have moved in this build")
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    basket_url = f"{juiceshop_url}/rest/basket/1"
+    # The reference lives in the path, not a query param — treat the
+    # last segment as a synthetic ``id`` param.
+    page = PageAnalysis(
+        url=basket_url,
+        body="",
+        status=200,
+        input_params=["id"],
+    )
+    findings = await exploit_agent._test_idor(page)
+    if not findings:
+        result = await exploit_agent._run_idor_methodology(page, "id")
+        pytest.fail(
+            f"_test_idor failed at {basket_url}. "
+            f"phases_completed={result.phases_completed} "
+            f"id_format={result.primitives.id_format} "
+            f"predictability={result.primitives.predictability} "
+            f"exploitation_type={result.exploitation_type} "
+            f"verified={result.verified}"
+        )
+    assert any("idor" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled IDOR at {basket_url}: {findings}"
+    )
