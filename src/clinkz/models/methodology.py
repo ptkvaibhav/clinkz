@@ -539,6 +539,139 @@ class XSSStoredMethodologyResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# DOM-XSS methodology types
+# ---------------------------------------------------------------------------
+
+
+class DOMXSSDetectionPath(StrEnum):
+    """Which of the two DOM-XSS detection paths produced the finding.
+
+    DOM-XSS cannot be verified without a real JS interpreter. The skill
+    confirms exploitability through two complementary static paths:
+
+    - ``CANARY_SCRIPT_CONTEXT``: a server-reflected canary lands inside a
+      ``<script>`` block, meaning attacker input is concatenated into JS
+      source — the same vector class as a JS-string-context reflected XSS,
+      but driven through a client-side sink.
+    - ``SOURCE_TO_SINK``: a static-analysis scan of inline ``<script>``
+      blocks shows an attacker-controlled DOM source (``location.hash``,
+      ``document.URL``, etc.) feeding a dangerous sink (``innerHTML``,
+      ``document.write``, ``eval``) in the same block.
+    - ``NONE``: neither path produced a hit. Methodology terminates with
+      ``verified=False``.
+    """
+
+    CANARY_SCRIPT_CONTEXT = "canary_script_context"
+    SOURCE_TO_SINK = "source_to_sink"
+    NONE = "none"
+
+
+class DOMSourceSinkPair(BaseModel):
+    """One source/sink co-occurrence inside a single ``<script>`` block.
+
+    Attributes:
+        source: The DOM source pattern that matched (e.g.
+            ``"location.hash"``, ``"document.URL"``).
+        sink: The dangerous sink pattern that matched (e.g.
+            ``"innerHTML"``, ``"document.write"``).
+        script_excerpt: Truncated text of the script block — kept for
+            evidence so a reviewer can audit the inference.
+    """
+
+    source: str
+    sink: str
+    script_excerpt: str
+
+
+class DOMXSSMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one DOM-XSS ``_test_*`` invocation.
+
+    Mirrors :class:`MethodologyResult` but distinguishes the two DOM-XSS
+    detection paths and persists their structured evidence. ``reflections``
+    classifies each canary occurrence by JS context (``js_dom``,
+    ``js_inline``); ``source_sink_pairs`` carries the static-analysis hits
+    when the SOURCE_TO_SINK path fires.
+
+    Verification strength is always ``"likely"`` for DOM-XSS findings —
+    confirming execution requires a headless browser, which the skill
+    deliberately does not require. The methodology produces strong static
+    evidence (canary in script context OR source→sink in the same block)
+    that justifies emitting the finding.
+    """
+
+    phases_completed: int = 0
+    detection_path: DOMXSSDetectionPath = DOMXSSDetectionPath.NONE
+    character_map: CharacterMap = Field(default_factory=CharacterMap)
+    reflections: list[ReflectionPoint] = Field(default_factory=list)
+    source_sink_pairs: list[DOMSourceSinkPair] = Field(default_factory=list)
+    synthesized_payload: SynthesizedPayload | None = None
+    bypass_attempts: list[str] = Field(default_factory=list)
+    candidate_param: str | None = None
+    verified: bool = False
+    # ``verified`` = the methodology emitted a finding. Strength is always
+    # ``"likely"`` for DOM-XSS because static analysis cannot run the JS to
+    # observe execution.
+    verification_strength: str = "likely"
+
+
+# ---------------------------------------------------------------------------
+# JS-attacks methodology types
+# ---------------------------------------------------------------------------
+
+
+class JSAttackPatternType(StrEnum):
+    """Which client-side security pattern the methodology classified.
+
+    Selected by the phase-3 LLM checkpoint given the collected JS pattern
+    set. Each value implies a different finding shape:
+
+    - ``HIDDEN_FIELD_WRITE``: a hidden form field is populated by client-
+      side JS — the DVWA "javascript" challenge pattern. Bypassable when
+      the JS write is a string literal and we can POST the form directly.
+    - ``CLIENT_VALIDATION``: equality / regex / ``checkValidity`` /
+      ``preventDefault`` gates on a form input. Weaker static signal — we
+      cannot prove the absence of server-side validation.
+    - ``TOKEN_COMPUTATION``: JS computes a token-shaped value at submit
+      time (concat / hash / encode). Subset of HIDDEN_FIELD_WRITE when the
+      destination is a token-named hidden input.
+    - ``NONE``: nothing exploitable observed.
+    """
+
+    HIDDEN_FIELD_WRITE = "hidden_field_write"
+    CLIENT_VALIDATION = "client_validation"
+    TOKEN_COMPUTATION = "token_computation"
+    NONE = "none"
+
+
+class JSAttacksMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one JS-attacks ``_test_*`` invocation.
+
+    Stored on the resulting Finding's evidence so the report has a
+    complete audit trail of form discovery, JS pattern collection, the
+    LLM-picked classification, and any attempted bypass.
+
+    Severity is ``medium`` by default (static detection) and upgrades to
+    ``high`` when ``bypass_succeeded`` is True — proven by replaying the
+    form submission with the JS-bypassed values and observing a success
+    marker in the response.
+    """
+
+    phases_completed: int = 0
+    forms_analyzed: int = 0
+    hidden_fields_set_by_js: list[str] = Field(default_factory=list)
+    validation_patterns: list[str] = Field(default_factory=list)
+    pattern_type: JSAttackPatternType = JSAttackPatternType.NONE
+    bypass_attempted: bool = False
+    bypass_succeeded: bool = False
+    bypass_payload: dict[str, str] = Field(default_factory=dict)
+    bypass_marker: str = ""
+    form_action: str = ""
+    form_method: str = "GET"
+    severity_inferred: str = "medium"
+    rationale: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Open-redirect methodology types
 # ---------------------------------------------------------------------------
 
@@ -918,6 +1051,9 @@ __all__ = [
     "CSRFMethodologyResult",
     "CSRFWeaknessType",
     "CharacterMap",
+    "DOMSourceSinkPair",
+    "DOMXSSDetectionPath",
+    "DOMXSSMethodologyResult",
     "FileUploadExecutionType",
     "FileUploadMethodologyResult",
     "FileUploadRestrictions",
@@ -928,6 +1064,8 @@ __all__ = [
     "IDORPrimitives",
     "InjectionPrimitives",
     "InjectionType",
+    "JSAttackPatternType",
+    "JSAttacksMethodologyResult",
     "LFIMethodologyResult",
     "LFIRetrievalType",
     "LFITraversalPrimitives",
