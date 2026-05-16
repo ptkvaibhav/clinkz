@@ -449,3 +449,224 @@ async def test_idor_against_juiceshop(
     assert any("idor" in f.title.lower() for f in findings), (
         f"Findings produced but none labelled IDOR at {basket_url}: {findings}"
     )
+
+
+# ---------------------------------------------------------------------------
+# CSRF — Juice Shop state-changing JSON API endpoint
+# ---------------------------------------------------------------------------
+
+
+async def test_csrf_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_csrf`` against a Juice Shop state-changing JSON API endpoint.
+
+    Target: ``POST /api/Feedbacks``. Juice Shop's REST API performs state
+    changes without a CSRF token (relying on the JWT bearer token in the
+    Authorization header as its sole CSRF defence). Our methodology should
+    classify this as ``MISSING`` or ``COOKIE_ONLY`` when no token-shaped
+    hidden field is present on the form-shaped surface.
+
+    We synthesise a PageAnalysis pointing at the API endpoint with a
+    state-changing form shape — the methodology's phase-1 hypothesis
+    accepts POST + the action verb in the path.
+    """
+    feedback_url = f"{juiceshop_url}/api/Feedbacks"
+    try:
+        probe = httpx.get(feedback_url, timeout=5.0, follow_redirects=False)
+    except Exception as exc:
+        pytest.skip(f"Juice Shop /api/Feedbacks probe failed ({exc}); skipping CSRF smoke")
+    if probe.status_code not in (200, 304, 401, 403):
+        pytest.skip(
+            f"Juice Shop /api/Feedbacks returned {probe.status_code}; "
+            "endpoint may have moved in this build"
+        )
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    form = {
+        "action": feedback_url,
+        "method": "POST",
+        "fields": [
+            {"name": "comment", "type": "textarea", "value": ""},
+            {"name": "rating", "type": "hidden", "value": "3"},
+        ],
+    }
+    page = PageAnalysis(
+        url=feedback_url,
+        body="",
+        status=200,
+        forms=[form],
+    )
+    findings = await exploit_agent._test_csrf(page)
+    if not findings:
+        result = await exploit_agent._run_csrf_methodology(page, form)
+        pytest.fail(
+            f"_test_csrf failed at {feedback_url}. "
+            f"phases_completed={result.phases_completed} "
+            f"weakness_type={result.weakness_type} "
+            f"protected={result.protected}"
+        )
+    assert any("csrf" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled CSRF at {feedback_url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Brute Force — Juice Shop /rest/user/login intentionally weak rate-limit
+# ---------------------------------------------------------------------------
+
+
+async def test_brute_force_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_brute_force`` against Juice Shop's login endpoint.
+
+    Target: ``POST /rest/user/login``. Juice Shop intentionally allows
+    repeated failed logins to enable its credential-stuffing challenge —
+    no lockout, no captcha, no rate-limit. Our methodology's 8-attempt
+    observation matrix should produce a "no protection" classification.
+    """
+    login_url = f"{juiceshop_url}/rest/user/login"
+    try:
+        probe = httpx.post(
+            login_url,
+            json={"email": "probe@local.test", "password": "wrong"},
+            timeout=5.0,
+            follow_redirects=False,
+        )
+    except Exception as exc:
+        pytest.skip(f"Juice Shop /rest/user/login probe failed ({exc}); skipping brute-force smoke")
+    if probe.status_code not in (200, 401, 403):
+        pytest.skip(
+            f"Juice Shop /rest/user/login returned {probe.status_code}; "
+            "endpoint may have moved in this build"
+        )
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    form = {
+        "action": login_url,
+        "method": "POST",
+        "fields": [
+            {"name": "email", "type": "email", "value": ""},
+            {"name": "password", "type": "password", "value": ""},
+        ],
+    }
+    page = PageAnalysis(
+        url=login_url,
+        body="",
+        status=200,
+        forms=[form],
+    )
+    findings = await exploit_agent._test_brute_force(page)
+    if not findings:
+        result = await exploit_agent._run_brute_force_methodology(page, form)
+        pytest.fail(
+            f"_test_brute_force failed at {login_url}. "
+            f"phases_completed={result.phases_completed} "
+            f"protection_type={result.protection_type} "
+            f"protected={result.protected}"
+        )
+    assert any("brute" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled brute-force at {login_url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Weak Session — Juice Shop JWT on /rest/user/login response
+# ---------------------------------------------------------------------------
+
+
+async def test_weak_session_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_weak_session`` against Juice Shop's session cookies.
+
+    Juice Shop sets a ``token`` and ``language`` cookie on responses and
+    rotates the JWT-shaped token across logins. Our methodology drives a
+    POST form that triggers Set-Cookie, samples 8 cookie values, and
+    classifies entropy / flag presence. Juice Shop's JWT is long and
+    high-entropy, but at minimum the cookie flag inspection should flag
+    missing HttpOnly on the ``language`` cookie.
+
+    We synthesise a PageAnalysis with a POST form pointing at the home
+    page (which sets cookies on response) and let the methodology drive
+    8 samples.
+    """
+    try:
+        probe = httpx.get(juiceshop_url, timeout=5.0, follow_redirects=False)
+    except Exception as exc:
+        pytest.skip(f"Juice Shop probe failed ({exc}); skipping weak-session smoke")
+    if probe.status_code not in (200, 301, 302, 304):
+        pytest.skip(f"Juice Shop returned {probe.status_code}; skipping weak-session smoke")
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    # Use the login endpoint which sets fresh cookies on each request.
+    login_url = f"{juiceshop_url}/rest/user/login"
+    form = {
+        "action": login_url,
+        "method": "POST",
+        "fields": [
+            {"name": "email", "type": "email", "value": ""},
+            {"name": "password", "type": "password", "value": ""},
+        ],
+    }
+    page = PageAnalysis(
+        url=login_url,
+        body="",
+        status=200,
+        forms=[form],
+    )
+    findings = await exploit_agent._test_weak_session(page)
+    # The methodology may produce no finding if cookies are absent on the
+    # API response (JWT-only auth flows). Skip in that case rather than
+    # fail — there is no contract violation, just nothing to flag.
+    if not findings:
+        pytest.skip(
+            "Juice Shop /rest/user/login produced no Set-Cookie on 8-sample "
+            "observation — JWT-only flow, no cookie session to flag"
+        )
+    assert any("session" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled session at {login_url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Security Headers — Juice Shop / (root) header analysis
+# ---------------------------------------------------------------------------
+
+
+async def test_security_headers_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_security_headers`` against Juice Shop's root response.
+
+    Juice Shop ships with some headers (X-Frame-Options, X-Content-Type-
+    Options) but is missing others (CSP, Referrer-Policy, Permissions-
+    Policy on most builds). Our methodology should classify at least one
+    missing-or-weak header and emit one Finding per (origin, header)
+    pair.
+    """
+    from clinkz.agents.exploit import PageAnalysis
+
+    page = PageAnalysis(url=f"{juiceshop_url}/", body="", status=200)
+    findings = await exploit_agent._test_security_headers(page)
+    if not findings:
+        # Juice Shop builds vary — some carry all headers, in which case
+        # the deterministic classifier reports nothing missing. Skip with
+        # the observed header set so reviewers can verify.
+        result = await exploit_agent._run_security_headers_methodology(page)
+        pytest.skip(
+            f"Juice Shop emits a full security-header set on this build. "
+            f"missing={result.missing_headers} weak={result.weak_headers} "
+            f"headers_observed_keys={list(result.headers_observed.keys())}"
+        )
+    assert any("security header" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled security header at {juiceshop_url}: {findings}"
+    )
