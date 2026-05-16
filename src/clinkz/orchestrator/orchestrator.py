@@ -57,6 +57,7 @@ from clinkz.observability.trace import (
     set_active_trace_writer,
 )
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
+from clinkz.orchestrator.target_resolver import resolve_target_for_docker_mode
 from clinkz.state import StateStore
 from clinkz.tools.docker_preflight import ensure_container_ready
 from clinkz.tools.resolver import ToolResolver
@@ -180,6 +181,16 @@ class OrchestratorAgent:
             trace_writer = TraceWriter(engagement_id=engagement_id)
             set_active_trace_writer(trace_writer)
             self._logger.info("TraceWriter opened: %s", trace_writer.path)
+
+            # In docker tool-exec mode, agents and tools execute inside the
+            # clinkz-tools container — so a target like http://localhost:8080
+            # would resolve to the tools container itself, not the sibling
+            # DVWA/Juice Shop container. Rewrite localhost targets to the
+            # publishing container's network alias here so every downstream
+            # agent sees a reachable address.
+            scope = await resolve_target_for_docker_mode(
+                scope, self_container=settings.docker_container
+            )
             bus = MessageBus(state=state)
             knowledge_base = KnowledgeBase()
             self._logger.info("KnowledgeBase loaded: %s", knowledge_base.stats())
