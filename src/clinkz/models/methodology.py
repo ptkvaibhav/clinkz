@@ -539,6 +539,139 @@ class XSSStoredMethodologyResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# DOM-XSS methodology types
+# ---------------------------------------------------------------------------
+
+
+class DOMXSSDetectionPath(StrEnum):
+    """Which of the two DOM-XSS detection paths produced the finding.
+
+    DOM-XSS cannot be verified without a real JS interpreter. The skill
+    confirms exploitability through two complementary static paths:
+
+    - ``CANARY_SCRIPT_CONTEXT``: a server-reflected canary lands inside a
+      ``<script>`` block, meaning attacker input is concatenated into JS
+      source — the same vector class as a JS-string-context reflected XSS,
+      but driven through a client-side sink.
+    - ``SOURCE_TO_SINK``: a static-analysis scan of inline ``<script>``
+      blocks shows an attacker-controlled DOM source (``location.hash``,
+      ``document.URL``, etc.) feeding a dangerous sink (``innerHTML``,
+      ``document.write``, ``eval``) in the same block.
+    - ``NONE``: neither path produced a hit. Methodology terminates with
+      ``verified=False``.
+    """
+
+    CANARY_SCRIPT_CONTEXT = "canary_script_context"
+    SOURCE_TO_SINK = "source_to_sink"
+    NONE = "none"
+
+
+class DOMSourceSinkPair(BaseModel):
+    """One source/sink co-occurrence inside a single ``<script>`` block.
+
+    Attributes:
+        source: The DOM source pattern that matched (e.g.
+            ``"location.hash"``, ``"document.URL"``).
+        sink: The dangerous sink pattern that matched (e.g.
+            ``"innerHTML"``, ``"document.write"``).
+        script_excerpt: Truncated text of the script block — kept for
+            evidence so a reviewer can audit the inference.
+    """
+
+    source: str
+    sink: str
+    script_excerpt: str
+
+
+class DOMXSSMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one DOM-XSS ``_test_*`` invocation.
+
+    Mirrors :class:`MethodologyResult` but distinguishes the two DOM-XSS
+    detection paths and persists their structured evidence. ``reflections``
+    classifies each canary occurrence by JS context (``js_dom``,
+    ``js_inline``); ``source_sink_pairs`` carries the static-analysis hits
+    when the SOURCE_TO_SINK path fires.
+
+    Verification strength is always ``"likely"`` for DOM-XSS findings —
+    confirming execution requires a headless browser, which the skill
+    deliberately does not require. The methodology produces strong static
+    evidence (canary in script context OR source→sink in the same block)
+    that justifies emitting the finding.
+    """
+
+    phases_completed: int = 0
+    detection_path: DOMXSSDetectionPath = DOMXSSDetectionPath.NONE
+    character_map: CharacterMap = Field(default_factory=CharacterMap)
+    reflections: list[ReflectionPoint] = Field(default_factory=list)
+    source_sink_pairs: list[DOMSourceSinkPair] = Field(default_factory=list)
+    synthesized_payload: SynthesizedPayload | None = None
+    bypass_attempts: list[str] = Field(default_factory=list)
+    candidate_param: str | None = None
+    verified: bool = False
+    # ``verified`` = the methodology emitted a finding. Strength is always
+    # ``"likely"`` for DOM-XSS because static analysis cannot run the JS to
+    # observe execution.
+    verification_strength: str = "likely"
+
+
+# ---------------------------------------------------------------------------
+# JS-attacks methodology types
+# ---------------------------------------------------------------------------
+
+
+class JSAttackPatternType(StrEnum):
+    """Which client-side security pattern the methodology classified.
+
+    Selected by the phase-3 LLM checkpoint given the collected JS pattern
+    set. Each value implies a different finding shape:
+
+    - ``HIDDEN_FIELD_WRITE``: a hidden form field is populated by client-
+      side JS — the DVWA "javascript" challenge pattern. Bypassable when
+      the JS write is a string literal and we can POST the form directly.
+    - ``CLIENT_VALIDATION``: equality / regex / ``checkValidity`` /
+      ``preventDefault`` gates on a form input. Weaker static signal — we
+      cannot prove the absence of server-side validation.
+    - ``TOKEN_COMPUTATION``: JS computes a token-shaped value at submit
+      time (concat / hash / encode). Subset of HIDDEN_FIELD_WRITE when the
+      destination is a token-named hidden input.
+    - ``NONE``: nothing exploitable observed.
+    """
+
+    HIDDEN_FIELD_WRITE = "hidden_field_write"
+    CLIENT_VALIDATION = "client_validation"
+    TOKEN_COMPUTATION = "token_computation"
+    NONE = "none"
+
+
+class JSAttacksMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one JS-attacks ``_test_*`` invocation.
+
+    Stored on the resulting Finding's evidence so the report has a
+    complete audit trail of form discovery, JS pattern collection, the
+    LLM-picked classification, and any attempted bypass.
+
+    Severity is ``medium`` by default (static detection) and upgrades to
+    ``high`` when ``bypass_succeeded`` is True — proven by replaying the
+    form submission with the JS-bypassed values and observing a success
+    marker in the response.
+    """
+
+    phases_completed: int = 0
+    forms_analyzed: int = 0
+    hidden_fields_set_by_js: list[str] = Field(default_factory=list)
+    validation_patterns: list[str] = Field(default_factory=list)
+    pattern_type: JSAttackPatternType = JSAttackPatternType.NONE
+    bypass_attempted: bool = False
+    bypass_succeeded: bool = False
+    bypass_payload: dict[str, str] = Field(default_factory=dict)
+    bypass_marker: str = ""
+    form_action: str = ""
+    form_method: str = "GET"
+    severity_inferred: str = "medium"
+    rationale: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Open-redirect methodology types
 # ---------------------------------------------------------------------------
 
@@ -709,19 +842,230 @@ class IDORMethodologyResult(BaseModel):
     verification_strength: str = "verified"
 
 
+# ---------------------------------------------------------------------------
+# CSRF methodology types
+# ---------------------------------------------------------------------------
+
+
+class CSRFWeaknessType(StrEnum):
+    """How the CSRF protection on a state-changing endpoint fails.
+
+    Selected by the phase-3 LLM checkpoint given the form set + collected
+    token-value samples. Each value implies a different finding shape:
+
+    - ``MISSING``: no token-shaped hidden input on the form.
+    - ``PREDICTABLE``: token exists but value is constant across requests
+      (no per-request randomness).
+    - ``REUSED``: token rotates per request but the server accepts an old
+      token replayed — proven by phase-2 replay probes when available.
+    - ``COOKIE_ONLY``: the form relies on session cookies alone without a
+      defence-in-depth token. Severity depends on whether SameSite /
+      Origin / Referer mitigations are also missing.
+    - ``SAMESITE_COMPENSATED``: cookie-only authentication, but the
+      session cookie has a ``SameSite=Strict|Lax`` attribute, so a
+      cross-site POST is structurally blocked. Treated as protected.
+    """
+
+    MISSING = "missing"
+    PREDICTABLE = "predictable"
+    REUSED = "reused"
+    COOKIE_ONLY = "cookie_only"
+    SAMESITE_COMPENSATED = "samesite_compensated"
+
+
+class CSRFMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one CSRF ``_test_*`` invocation.
+
+    Stored on the resulting Finding's evidence so the report has a complete
+    audit trail of the form-class hypothesis, the collected token-value
+    samples, the LLM-picked weakness type, and the verification outcome.
+    """
+
+    phases_completed: int = 0
+    form_action: str = ""
+    method: str = "POST"
+    tokens_observed: dict[str, list[str]] = Field(default_factory=dict)
+    weakness_type: CSRFWeaknessType | None = None
+    protected: bool = False
+    rationale: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Brute-force methodology types
+# ---------------------------------------------------------------------------
+
+
+class BruteForceProtectionType(StrEnum):
+    """The shape of brute-force protection a login endpoint enforces.
+
+    Selected by the phase-3 LLM checkpoint given 8 failed-auth observations.
+
+    - ``LOCKOUT``: response body / status shifts to a lockout page after
+      a small number of attempts (template / length divergence).
+    - ``DELAY``: response time grows monotonically with attempt count,
+      crossing a divergence threshold the LLM judges as deliberate.
+    - ``CAPTCHA``: response body changes to mention captcha / challenge
+      keywords at some attempt N.
+    - ``RATE_LIMIT``: explicit HTTP rate-limiting signal — ``429``,
+      ``Retry-After``, ``X-RateLimit-*``.
+    - ``NONE``: no observable protection — the absence is the finding.
+    """
+
+    LOCKOUT = "lockout"
+    DELAY = "delay"
+    CAPTCHA = "captcha"
+    RATE_LIMIT = "rate_limit"
+    NONE = "none"
+
+
+class BruteForceObservation(BaseModel):
+    """One row of the 8-attempt observation matrix.
+
+    Each attempt records the response signature so phase-3 can decide
+    whether the shape changed across attempts (lockout) or stayed
+    constant (no protection).
+    """
+
+    attempt: int
+    status: int
+    length: int
+    time_ms: float
+    retry_after: str = ""
+    rate_limit_headers: dict[str, str] = Field(default_factory=dict)
+    body_marker: str = ""
+
+
+class BruteForceMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one brute-force ``_test_*`` invocation.
+
+    Stored on the resulting Finding's evidence so the report has a complete
+    audit trail of the login-form hypothesis, the 8-attempt observation
+    matrix, and the LLM-picked protection classification.
+    """
+
+    phases_completed: int = 0
+    login_url: str = ""
+    method: str = "POST"
+    observations: list[BruteForceObservation] = Field(default_factory=list)
+    protection_type: BruteForceProtectionType = BruteForceProtectionType.NONE
+    protected: bool = False
+    observed_at_attempt: int | None = None
+    rationale: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Weak-session methodology types
+# ---------------------------------------------------------------------------
+
+
+class SessionWeaknessType(StrEnum):
+    """How a session-token generator fails entropy / safety expectations.
+
+    Multiple values may apply to one engagement — phase 4 aggregates them
+    into the rationale.
+
+    - ``SEQUENTIAL``: tokens form an arithmetic progression (numeric or
+      hex counter).
+    - ``TIME_CORRELATED``: token values track wall-clock or
+      monotonically-increasing timestamps.
+    - ``LOW_ENTROPY``: short token length AND limited character set.
+    - ``PREDICTABLE_FORMAT``: token is a hash (md5/sha1) of guessable
+      input — username, timestamp, request id, etc.
+    - ``MISSING_FLAGS``: cookie carrying the token lacks HttpOnly /
+      Secure (on HTTPS) / SameSite.
+    """
+
+    SEQUENTIAL = "sequential"
+    TIME_CORRELATED = "time_correlated"
+    LOW_ENTROPY = "low_entropy"
+    PREDICTABLE_FORMAT = "predictable_format"
+    MISSING_FLAGS = "missing_flags"
+
+
+class WeakSessionMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one weak-session ``_test_*`` invocation.
+
+    Observed-token values are stored truncated (first 16 chars) in the
+    finding evidence to avoid leaking long opaque tokens; the full list
+    stays in the trace.
+    """
+
+    phases_completed: int = 0
+    trigger_url: str = ""
+    cookie_name: str = ""
+    observations: list[str] = Field(default_factory=list)
+    cookie_flags: dict[str, bool] = Field(default_factory=dict)
+    weakness_types: list[SessionWeaknessType] = Field(default_factory=list)
+    weak: bool = False
+    rationale: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Security-headers methodology types
+# ---------------------------------------------------------------------------
+
+
+class HeaderWeaknessSeverity(StrEnum):
+    """Severity rollup for the missing-or-weak-headers methodology.
+
+    The phase-3 LLM checkpoint chooses one value based on which headers
+    are missing or weak:
+
+    - ``LOW``: minor / deprecated headers missing (``X-XSS-Protection``,
+      ``Permissions-Policy``, etc.).
+    - ``MEDIUM``: ``Content-Security-Policy`` or
+      ``Strict-Transport-Security`` (on HTTPS) is missing.
+    - ``HIGH``: CSP exists but is permissive enough to be useless
+      (``unsafe-inline`` + ``unsafe-eval`` + wildcard sources).
+    """
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class SecurityHeadersMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one security-headers invocation.
+
+    The methodology emits one Finding per (origin, missing-or-weak header).
+    Multiple URLs on the same origin produce one Finding — caller-side
+    dedup tracker shares state across pages on the same engagement.
+    """
+
+    phases_completed: int = 0
+    origin: str = ""
+    observed_url: str = ""
+    headers_observed: dict[str, str] = Field(default_factory=dict)
+    missing_headers: list[str] = Field(default_factory=list)
+    weak_headers: list[tuple[str, str]] = Field(default_factory=list)
+    severity_rollup: HeaderWeaknessSeverity = HeaderWeaknessSeverity.LOW
+    rationale: str = ""
+
+
 __all__ = [
+    "BruteForceMethodologyResult",
+    "BruteForceObservation",
+    "BruteForceProtectionType",
     "CMDIExecutionType",
     "CMDIMethodologyResult",
+    "CSRFMethodologyResult",
+    "CSRFWeaknessType",
     "CharacterMap",
+    "DOMSourceSinkPair",
+    "DOMXSSDetectionPath",
+    "DOMXSSMethodologyResult",
     "FileUploadExecutionType",
     "FileUploadMethodologyResult",
     "FileUploadRestrictions",
     "FilterBehavior",
+    "HeaderWeaknessSeverity",
     "IDORExploitationType",
     "IDORMethodologyResult",
     "IDORPrimitives",
     "InjectionPrimitives",
     "InjectionType",
+    "JSAttackPatternType",
+    "JSAttacksMethodologyResult",
     "LFIMethodologyResult",
     "LFIRetrievalType",
     "LFITraversalPrimitives",
@@ -733,8 +1077,11 @@ __all__ = [
     "ReflectionPoint",
     "SQLDialect",
     "SQLiMethodologyResult",
+    "SecurityHeadersMethodologyResult",
+    "SessionWeaknessType",
     "ShellPrimitives",
     "ShellType",
     "SynthesizedPayload",
+    "WeakSessionMethodologyResult",
     "XSSStoredMethodologyResult",
 ]
