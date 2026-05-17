@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -268,27 +269,90 @@ class TestWebAuthenticatorTool:
 
 
 # ---------------------------------------------------------------------------
-# Docker-internal IP detection
+# Execution-mode routing
 # ---------------------------------------------------------------------------
 
 
-class TestDockerInternalDetection:
-    """Test _is_docker_internal helper."""
+class TestExecutionModeRouting:
+    """WebAuthenticator routes via curl in docker mode, aiohttp otherwise.
 
-    def test_172_range(self) -> None:
-        assert WebAuthenticator._is_docker_internal("http://172.18.0.2/login")
+    Mirrors HTTPClientTool's single-flag gate. The previous hostname
+    whitelist excluded container aliases (e.g. ``clinkz-dvwa``) produced
+    by target_resolver, which silently broke default-cred testing in the
+    full /run-dvwa pipeline.
+    """
 
-    def test_10_range(self) -> None:
-        assert WebAuthenticator._is_docker_internal("http://10.0.0.5/login")
+    @pytest.fixture()
+    def auth(self) -> WebAuthenticator:
+        scope = EngagementScope(
+            name="test",
+            targets=[
+                ScopeEntry(type=ScopeType.DOMAIN, value="clinkz-dvwa"),
+                ScopeEntry(type=ScopeType.DOMAIN, value="localhost"),
+            ],
+        )
+        return WebAuthenticator(scope=scope, engagement_id="test-engagement")
 
-    def test_192_168_range(self) -> None:
-        assert WebAuthenticator._is_docker_internal("http://192.168.1.1/login")
+    @pytest.mark.asyncio
+    async def test_docker_mode_uses_curl_for_container_alias(
+        self,
+        auth: WebAuthenticator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from clinkz.config import settings
 
-    def test_host_docker_internal(self) -> None:
-        assert WebAuthenticator._is_docker_internal("http://host.docker.internal/login")
+        monkeypatch.setattr(settings, "tool_exec_mode", "docker")
+        called = {"curl": False, "aiohttp": False}
 
-    def test_public_ip(self) -> None:
-        assert not WebAuthenticator._is_docker_internal("http://93.184.216.34/login")
+        async def fake_curl(args: dict[str, Any]) -> str:
+            called["curl"] = True
+            return "{}"
 
-    def test_domain(self) -> None:
-        assert not WebAuthenticator._is_docker_internal("http://example.com/login")
+        async def fake_aiohttp(args: dict[str, Any]) -> str:
+            called["aiohttp"] = True
+            return "{}"
+
+        monkeypatch.setattr(auth, "_execute_curl", fake_curl)
+        monkeypatch.setattr(auth, "_execute_aiohttp", fake_aiohttp)
+
+        await auth.execute(
+            {
+                "login_url": "http://clinkz-dvwa:80/login.php",
+                "username": "admin",
+                "password": "password",
+            }
+        )
+        assert called["curl"] is True
+        assert called["aiohttp"] is False
+
+    @pytest.mark.asyncio
+    async def test_local_mode_uses_aiohttp(
+        self,
+        auth: WebAuthenticator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from clinkz.config import settings
+
+        monkeypatch.setattr(settings, "tool_exec_mode", "local")
+        called = {"curl": False, "aiohttp": False}
+
+        async def fake_curl(args: dict[str, Any]) -> str:
+            called["curl"] = True
+            return "{}"
+
+        async def fake_aiohttp(args: dict[str, Any]) -> str:
+            called["aiohttp"] = True
+            return "{}"
+
+        monkeypatch.setattr(auth, "_execute_curl", fake_curl)
+        monkeypatch.setattr(auth, "_execute_aiohttp", fake_aiohttp)
+
+        await auth.execute(
+            {
+                "login_url": "http://localhost:8080/login.php",
+                "username": "admin",
+                "password": "password",
+            }
+        )
+        assert called["aiohttp"] is True
+        assert called["curl"] is False
