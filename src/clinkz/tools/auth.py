@@ -222,10 +222,13 @@ class WebAuthenticator(ToolBase):
         """Execute the full login flow and return JSON result."""
         from clinkz.config import settings
 
-        login_url = args["login_url"]
-
-        # Decide execution mode: Docker-internal IPs go through curl
-        if settings.tool_exec_mode == "docker" and self._is_docker_internal(login_url):
+        # Mirror HTTPClientTool: in docker mode, every request runs via
+        # `docker exec curl` inside the tools container. The container is
+        # on the same network as sibling targets (`clinkz-dvwa`, etc.)
+        # AND can reach the public internet, so the previous hostname
+        # whitelist was both incomplete (missed container aliases) and
+        # unnecessary.
+        if settings.tool_exec_mode == "docker":
             return await self._execute_curl(args)
         return await self._execute_aiohttp(args)
 
@@ -326,7 +329,7 @@ class WebAuthenticator(ToolBase):
         from clinkz.config import settings
 
         try:
-            if settings.tool_exec_mode == "docker" and self._is_docker_internal(url):
+            if settings.tool_exec_mode == "docker":
                 return await self._verify_session_curl(url, cookies)
             return await self._verify_session_aiohttp(url, cookies)
         except Exception as exc:
@@ -676,14 +679,22 @@ class WebAuthenticator(ToolBase):
             else:
                 post_response_body = ""
 
-            # Read session cookies from jar
-            from clinkz.tools.http_client import get_session_cookies
-
-            eid = self._engagement_id or "auth"
-            session_cookies = get_session_cookies(eid) if self._engagement_id else {}
+            # Collect session cookies. Prefer parsing Set-Cookie headers from
+            # the GET+POST responses — curl writes the jar inside the
+            # clinkz-tools container in docker mode, so reading from a host
+            # path here returns nothing. The Set-Cookie path is the only one
+            # that works in both docker and local modes.
+            session_cookies: dict[str, str] = {}
+            session_cookies.update(self._parse_set_cookies(get_stdout))
+            session_cookies.update(self._parse_set_cookies(post_stdout))
             if not session_cookies:
-                # Parse cookies from jar file directly
-                session_cookies = self._read_cookie_jar(cookie_jar)
+                from clinkz.tools.http_client import get_session_cookies
+
+                eid = self._engagement_id or "auth"
+                jar_cookies = get_session_cookies(eid) if self._engagement_id else {}
+                if not jar_cookies:
+                    jar_cookies = self._read_cookie_jar(cookie_jar)
+                session_cookies = jar_cookies
 
             redirect_chain = location_matches
 
@@ -826,16 +837,34 @@ class WebAuthenticator(ToolBase):
         return False
 
     @staticmethod
-    def _is_docker_internal(url: str) -> bool:
-        """Check if a URL points to a Docker-internal IP (172.x.x.x, etc.)."""
-        parsed = urlparse(url)
-        hostname = parsed.hostname or ""
-        return (
-            hostname.startswith("172.")
-            or hostname.startswith("10.")
-            or hostname.startswith("192.168.")
-            or hostname == "host.docker.internal"
-        )
+    def _parse_set_cookies(raw_response: str) -> dict[str, str]:
+        """Extract cookies from ``Set-Cookie`` headers in a raw HTTP response dump.
+
+        Curl's ``-D -`` flag dumps headers (including ``Set-Cookie``) to
+        stdout alongside the body, separated by a blank line. We pull every
+        ``Set-Cookie`` line and parse out the leading ``name=value`` pair,
+        ignoring attributes (``Path``, ``HttpOnly``, ``Domain``, ...).
+
+        Args:
+            raw_response: The full curl stdout dump (headers + body, possibly
+                across multiple HTTP blocks from redirect chains).
+
+        Returns:
+            Dict mapping cookie name → cookie value. Empty if none found.
+        """
+        cookies: dict[str, str] = {}
+        for line in raw_response.splitlines():
+            if not line.lower().startswith("set-cookie:"):
+                continue
+            value = line.split(":", 1)[1].strip()
+            pair = value.split(";", 1)[0].strip()
+            if "=" not in pair:
+                continue
+            name, _, val = pair.partition("=")
+            name = name.strip()
+            if name:
+                cookies[name] = val.strip()
+        return cookies
 
     @staticmethod
     def _read_cookie_jar(jar_path: str) -> dict[str, str]:
