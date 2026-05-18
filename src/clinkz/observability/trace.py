@@ -8,6 +8,13 @@ four event categories that together capture WHAT the system did and WHY:
   - ``agent_step``    — start/end of each deterministic step inside an agent
   - ``data_handoff``  — every Orchestrator-mediated message between agents
 
+Each ``tool_call`` summary line carries an ``invocation_file`` field that
+points to ``outputs/<engagement_id>/tool_invocations/<seq>_<tool>.json`` —
+the full-fidelity record (entire stdout/stderr, parsed Pydantic output, the
+exact argv). Each ``agent_step`` carries a ``step_id`` linking to
+``outputs/<engagement_id>/step_inputs/<step_id>.json`` with the full input
+payload for replay.
+
 The writer is process-local: a single TraceWriter instance is set as the
 "active" writer for the engagement via :func:`set_active_trace_writer`, and
 every wired call site (ToolBase, ResilientLLMClient, BaseAgent, Orchestrator)
@@ -28,10 +35,20 @@ import json
 import logging
 import threading
 import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, TextIO
+
+from clinkz.observability.invocations import (
+    InvocationRecord,
+    StepContext,
+    StepInputRecorder,
+    ToolInvocationRecorder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +98,11 @@ class TraceWriter:
     interleave half-lines. The file is opened on construction and closed
     by :meth:`close`.
 
+    Owns two sibling recorders:
+
+      - ``invocations`` — ``tool_invocations/<seq>_<tool>.json`` per call
+      - ``step_inputs`` — ``step_inputs/<step_id>.json`` per agent step
+
     Args:
         engagement_id: Engagement UUID — used to name the output directory.
         outputs_root: Root directory for trace files. Defaults to ``outputs``.
@@ -96,14 +118,197 @@ class TraceWriter:
         path_override: Path | str | None = None,
     ) -> None:
         self.engagement_id = engagement_id
+        self.outputs_root = Path(outputs_root)
         if path_override is not None:
             self.path = Path(path_override)
         else:
-            self.path = Path(outputs_root) / engagement_id / "trace.jsonl"
+            self.path = self.outputs_root / engagement_id / "trace.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh: TextIO | None = self.path.open("a", encoding="utf-8")
         self._lock = threading.Lock()
         self._closed = False
+        self.invocations = ToolInvocationRecorder(
+            engagement_id=engagement_id,
+            outputs_root=self.outputs_root,
+        )
+        self.step_inputs = StepInputRecorder(
+            engagement_id=engagement_id,
+            outputs_root=self.outputs_root,
+        )
+        # The currently-active step. Updated by :meth:`step` so that tool
+        # invocations record their owning agent/step automatically.
+        self._current_step: StepContext | None = None
+        self._current_step_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Current step context (used by ToolBase to attribute invocations)
+    # ------------------------------------------------------------------
+
+    @property
+    def current_step(self) -> StepContext | None:
+        """The agent step currently in flight, or ``None`` if outside any step."""
+        return self._current_step
+
+    def _set_current_step(self, ctx: StepContext | None) -> None:
+        with self._current_step_lock:
+            self._current_step = ctx
+
+    @contextmanager
+    def step(
+        self,
+        *,
+        agent: str,
+        step_name: str,
+        inputs: dict[str, Any] | None = None,
+        replay_info: dict[str, Any] | None = None,
+    ) -> Iterator[str]:
+        """Begin an agent step. Returns the step_id.
+
+        On entry: generates a fresh step_id, writes the full inputs file to
+        ``step_inputs/<step_id>.json``, and sets the active step context so
+        tool invocations inside the step are attributed correctly.
+
+        On exit: emits one ``agent_step`` trace event with the step_id, the
+        elapsed duration, and any ``inputs``/``outputs`` summaries.
+
+        Args:
+            agent: Canonical agent name (``"recon"``, ``"scan"``, ...).
+            step_name: Step identifier within the agent (e.g. ``"port_scan"``).
+            inputs: Full input payload — written verbatim to the inputs file.
+            replay_info: Extra fields the replayer needs (agent_class,
+                method_name, llm_provider, ...).
+
+        Yields:
+            The freshly-generated step_id (a UUID string).
+        """
+        step_id = str(uuid.uuid4())
+        payload: dict[str, Any] = {
+            "step_id": step_id,
+            "engagement_id": self.engagement_id,
+            "agent": agent,
+            "step_name": step_name,
+            "ts": datetime.now(UTC).isoformat(),
+            "inputs": inputs if inputs is not None else {},
+        }
+        if replay_info:
+            payload["replay"] = replay_info
+        self.step_inputs.record(step_id, payload)
+
+        previous = self._current_step
+        self._set_current_step(StepContext(step_id=step_id, agent=agent, step_name=step_name))
+        sw = Stopwatch()
+        outcome = "ok"
+        try:
+            yield step_id
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            self._set_current_step(previous)
+            extra = {"step_id": step_id, "outcome": outcome}
+            if replay_info:
+                extra["replay"] = replay_info
+            self.agent_step(
+                agent=agent,
+                step_name=step_name,
+                input_summary=_summarise(inputs) if inputs is not None else "",
+                duration_ms=sw.elapsed_ms,
+                extra=extra,
+            )
+
+    # ------------------------------------------------------------------
+    # Tool invocation recording — full-fidelity sidecar file
+    # ------------------------------------------------------------------
+
+    def attach_parsed_output(
+        self,
+        seq: int,
+        *,
+        parsed_output_type: str,
+        parsed_output: dict[str, Any] | None,
+        parse_succeeded: bool,
+    ) -> None:
+        """Re-write an invocation file with parsed-output details filled in.
+
+        Called by ``BaseAgent._execute_tool`` (and any tool wrapper that
+        parses its own output before returning) after ``parse_output``
+        succeeds. The seq number was returned by
+        :meth:`record_tool_invocation` at subprocess time.
+
+        Tracing must never raise — failures here are logged and swallowed.
+        """
+        if seq < 0:
+            return
+        # The filename uses zero-padded seq + sanitized tool name. Glob to
+        # find it back; cheaper than maintaining a seq→path map in memory
+        # and equally correct because seq is unique per engagement.
+        try:
+            matches = list(self.invocations.dir.glob(f"{seq:05d}_*.json"))
+            if not matches:
+                return
+            path = matches[0]
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["parsed_output_type"] = parsed_output_type
+            data["parsed_output"] = parsed_output
+            data["parse_succeeded"] = parse_succeeded
+            path.write_text(
+                json.dumps(data, default=str, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 — tracing must never raise
+            logger.warning("attach_parsed_output failed for seq=%d: %s", seq, exc)
+
+    def record_tool_invocation(
+        self,
+        *,
+        tool_name: str,
+        exec_mode: str,
+        cwd: str,
+        command: list[str],
+        env_overrides: dict[str, str] | None = None,
+        stdin: str | None = None,
+        stdout: str = "",
+        stderr: str = "",
+        exit_code: int = 0,
+        duration_ms: float | None = None,
+        parsed_output_type: str = "",
+        parsed_output: dict[str, Any] | None = None,
+        parse_succeeded: bool = False,
+        agent: str | None = None,
+        step: str | None = None,
+        step_id: str | None = None,
+    ) -> tuple[int, Path]:
+        """Persist a full-fidelity invocation record and return (seq, path).
+
+        If ``agent`` / ``step`` / ``step_id`` are not provided, the active
+        step context (if any) is used. The path returned points to
+        ``tool_invocations/<seq>_<tool>.json`` and is suitable for embedding
+        in the matching ``trace.jsonl`` summary line via ``invocation_file``.
+        """
+        seq = self.invocations.next_seq()
+        ctx = self._current_step
+        record = InvocationRecord(
+            seq=seq,
+            ts=self.invocations.make_timestamp(),
+            tool_name=tool_name,
+            exec_mode=exec_mode,
+            cwd=cwd,
+            command=list(command),
+            env_overrides=dict(env_overrides or {}),
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            duration_ms=duration_ms,
+            agent=agent if agent is not None else (ctx.agent if ctx else ""),
+            step=step if step is not None else (ctx.step_name if ctx else ""),
+            step_id=step_id if step_id is not None else (ctx.step_id if ctx else ""),
+            parsed_output_type=parsed_output_type,
+            parsed_output=parsed_output,
+            parse_succeeded=parse_succeeded,
+        )
+        path = self.invocations.record(record)
+        return seq, path
 
     def write(
         self,
