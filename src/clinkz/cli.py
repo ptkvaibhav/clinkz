@@ -278,6 +278,205 @@ def trace_inspect(
                 typer.echo(_format_trace_record(record))
 
 
+# ---------------------------------------------------------------------------
+# tool-invoke (full-fidelity tool invocation record)
+# ---------------------------------------------------------------------------
+
+
+@app.command("tool-invoke")
+def tool_invoke(
+    engagement_id: Annotated[
+        str,
+        typer.Argument(help="Engagement UUID. Reads outputs/<id>/tool_invocations/."),
+    ],
+    seq: Annotated[
+        int,
+        typer.Argument(help="Invocation sequence number (matches <seq>_<tool>.json)."),
+    ],
+    replay: Annotated[
+        bool,
+        typer.Option(
+            "--replay",
+            help="Re-run the exact command with the recorded env/cwd and diff the output.",
+        ),
+    ] = False,
+    outputs_root: Annotated[
+        Path,
+        typer.Option(
+            "--outputs-root",
+            help="Root dir containing engagement subdirs.",
+        ),
+    ] = Path("outputs"),
+) -> None:
+    """Inspect (or replay) one tool invocation."""
+    invocations_dir = outputs_root / engagement_id / "tool_invocations"
+    if not invocations_dir.exists():
+        typer.echo(f"No tool_invocations directory at {invocations_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    matches = sorted(invocations_dir.glob(f"{seq:05d}_*.json"))
+    if not matches:
+        typer.echo(f"No invocation file for seq={seq} in {invocations_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    record = json.loads(matches[0].read_text(encoding="utf-8"))
+
+    if not replay:
+        # Print human-readable summary then full record JSON
+        typer.echo(_format_invocation_record(record))
+        typer.echo("")
+        typer.echo("--- Full record ---")
+        typer.echo(json.dumps(record, indent=2, default=str))
+        return
+
+    # --- Replay mode ---
+    import asyncio as _asyncio
+    import os as _os
+    import subprocess as _subprocess
+    import time as _time
+
+    command: list[str] = record.get("command") or []
+    if not command:
+        typer.echo("Recorded record has no command — cannot replay.", err=True)
+        raise typer.Exit(code=2)
+    cwd = record.get("cwd") or None
+    stdin_data: str | None = record.get("stdin")
+    env_overrides = record.get("env_overrides") or {}
+
+    typer.echo(f"Replaying: {' '.join(command)}")
+    started = _time.perf_counter()
+
+    async def _run() -> tuple[str, str, int]:
+        env = {**_os.environ, **env_overrides} if env_overrides else None
+        proc = await _asyncio.create_subprocess_exec(
+            *command,
+            cwd=cwd,
+            env=env,
+            stdin=_asyncio.subprocess.PIPE if stdin_data is not None else None,
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.PIPE,
+        )
+        input_bytes = stdin_data.encode() if stdin_data is not None else None
+        out, err = await proc.communicate(input=input_bytes)
+        return out.decode(errors="replace"), err.decode(errors="replace"), proc.returncode or 0
+
+    try:
+        new_stdout, new_stderr, new_rc = _asyncio.run(_run())
+    except FileNotFoundError as exc:
+        typer.echo(f"Replay failed: command not found on PATH ({exc})", err=True)
+        raise typer.Exit(code=2) from exc
+    except _subprocess.SubprocessError as exc:
+        typer.echo(f"Replay failed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    elapsed_ms = (_time.perf_counter() - started) * 1000.0
+    typer.echo("")
+    typer.echo("--- Replay result ---")
+    typer.echo(f"Original exit_code: {record.get('exit_code')}")
+    typer.echo(f"Replay exit_code:   {new_rc}")
+    typer.echo(f"Original duration:  {record.get('duration_ms')}")
+    typer.echo(f"Replay duration:    {elapsed_ms:.0f}ms")
+    typer.echo("")
+    typer.echo("--- stdout diff ---")
+    _emit_text_diff(record.get("stdout", ""), new_stdout)
+    typer.echo("")
+    typer.echo("--- stderr diff ---")
+    _emit_text_diff(record.get("stderr", ""), new_stderr)
+
+
+def _format_invocation_record(record: dict) -> str:
+    """One-line + brief summary of an invocation record."""
+    seq = record.get("seq")
+    tool = record.get("tool_name", "?")
+    rc = record.get("exit_code")
+    dur = record.get("duration_ms")
+    dur_str = f"{dur:.0f}ms" if isinstance(dur, (int, float)) else "-"
+    cmd = " ".join(record.get("command") or [])
+    agent = record.get("agent") or "?"
+    step = record.get("step") or "?"
+    parsed_type = record.get("parsed_output_type") or "-"
+    return (
+        f"seq={seq} tool={tool} agent={agent} step={step} rc={rc} dur={dur_str}\n"
+        f"  cmd: {cmd[:200]}\n"
+        f"  parsed: {parsed_type} (succeeded={record.get('parse_succeeded')})"
+    )
+
+
+def _emit_text_diff(original: str, replayed: str) -> None:
+    """Render a minimal unified diff between two text blobs."""
+    import difflib
+
+    if original == replayed:
+        typer.echo("(identical)")
+        return
+    diff = difflib.unified_diff(
+        original.splitlines(keepends=False),
+        replayed.splitlines(keepends=False),
+        fromfile="original",
+        tofile="replay",
+        lineterm="",
+        n=2,
+    )
+    for line in diff:
+        typer.echo(line)
+
+
+# ---------------------------------------------------------------------------
+# step-replay
+# ---------------------------------------------------------------------------
+
+
+@app.command("step-replay")
+def step_replay(
+    engagement_id: Annotated[
+        str,
+        typer.Argument(help="Engagement UUID. Reads outputs/<id>/step_inputs/."),
+    ],
+    step_id: Annotated[
+        str,
+        typer.Argument(help="Step UUID (filename: <step_id>.json)."),
+    ],
+    outputs_root: Annotated[
+        Path,
+        typer.Option(
+            "--outputs-root",
+            help="Root dir containing engagement subdirs.",
+        ),
+    ] = Path("outputs"),
+    provider: Annotated[
+        str | None,
+        typer.Option("--provider", "-p", help="LLM provider override."),
+    ] = None,
+) -> None:
+    """Re-run one recorded agent step in isolation and diff against the original."""
+    from clinkz.observability.replay import replay_step_sync
+
+    result = replay_step_sync(
+        engagement_id=engagement_id,
+        step_id=step_id,
+        outputs_root=outputs_root,
+        llm_provider=provider,
+    )
+    typer.echo(f"Step:    {result.step_id}")
+    typer.echo(f"Agent:   {result.agent}")
+    typer.echo(f"Method:  {result.method_name}")
+    typer.echo(f"Status:  {'ok' if result.succeeded else 'failed'}")
+    if result.error:
+        typer.echo(f"Error:   {result.error}", err=True)
+        raise typer.Exit(code=2)
+
+    if result.diff is not None:
+        typer.echo("")
+        typer.echo(f"Identical to original: {result.diff.identical}")
+        if not result.diff.identical:
+            typer.echo("")
+            typer.echo("--- output diff ---")
+            _emit_text_diff(
+                result.diff.original_summary or "",
+                result.diff.replayed_summary or "",
+            )
+
+
 def _format_trace_record(record: dict) -> str:
     """Render one JSONL trace record as a single human-readable timeline line."""
     ts = record.get("ts", "")
