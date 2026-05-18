@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
+from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Any
 
 from clinkz.comms.message import AgentMessage, MessageType
@@ -191,6 +192,39 @@ class BaseAgent(ABC):
     # ------------------------------------------------------------------
     # Iteration limit — per-agent, configurable
     # ------------------------------------------------------------------
+
+    def _record_step(
+        self,
+        step_name: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        replay_info: dict[str, Any] | None = None,
+    ) -> AbstractContextManager[str]:
+        """Wrap a deterministic agent step so it can be replayed in isolation.
+
+        Captures the full input payload to
+        ``outputs/<engagement_id>/step_inputs/<step_id>.json`` and emits a
+        matching ``agent_step`` trace event on exit. ``replay_info`` should
+        carry whatever the :class:`StepReplayer` needs — typically just
+        ``{"method_name": "_step_port_scan"}``; the agent class and LLM
+        provider are inferred at replay time.
+
+        Returns a context manager yielding the step_id (a UUID). Returns a
+        no-op context when no engagement-level TraceWriter is active, so
+        agents can call this unconditionally.
+        """
+        writer = get_active_trace_writer()
+        if writer is None:
+            return nullcontext("")
+        merged_replay = dict(replay_info or {})
+        merged_replay.setdefault("agent_class", self.__class__.__name__)
+        merged_replay.setdefault("engagement_id", self.engagement_id)
+        return writer.step(
+            agent=self.name,
+            step_name=step_name,
+            inputs=inputs,
+            replay_info=merged_replay,
+        )
 
     def _trace_step(
         self,
@@ -824,10 +858,47 @@ class BaseAgent(ABC):
             parsed = tool.parse_output(raw_output)
             output_json = parsed.model_dump_json(indent=2)
             await self.state.complete_action(action_id, output_data=parsed.model_dump())
+            self._attach_parsed_output(tool, parsed, succeeded=True)
             return output_json
         except Exception as exc:
             self._logger.error("Tool '%s' failed: %s", tool_call.name, exc, exc_info=True)
             await self.state.complete_action(
                 action_id, output_data={"error": str(exc)}, status="failed"
             )
+            self._attach_parsed_output(tool, None, succeeded=False)
             return f"Tool '{tool_call.name}' failed: {exc}"
+
+    def _attach_parsed_output(self, tool: ToolBase, parsed: Any, *, succeeded: bool) -> None:
+        """Attach the parsed-output payload to the last invocation file.
+
+        Called after :meth:`ToolBase.parse_output` so the full-fidelity
+        ``tool_invocations/<seq>_<tool>.json`` file gets the structured
+        Pydantic model alongside the raw stdout/stderr already recorded
+        at subprocess time. No-op when no engagement-level TraceWriter is
+        active or when the tool never recorded a subprocess invocation.
+        """
+        writer = get_active_trace_writer()
+        if writer is None:
+            return
+        seq = getattr(tool, "last_invocation_seq", -1)
+        if seq < 0:
+            return
+        parsed_dict: dict[str, Any] | None = None
+        parsed_type = ""
+        try:
+            if parsed is not None:
+                parsed_type = type(parsed).__name__
+                if hasattr(parsed, "model_dump"):
+                    parsed_dict = parsed.model_dump(mode="json")
+                elif isinstance(parsed, dict):
+                    parsed_dict = parsed
+                else:
+                    parsed_dict = {"value": str(parsed)}
+        except Exception as exc:  # noqa: BLE001
+            self._logger.debug("Failed to serialise parsed output: %s", exc)
+        writer.attach_parsed_output(
+            seq,
+            parsed_output_type=parsed_type,
+            parsed_output=parsed_dict,
+            parse_succeeded=succeeded,
+        )

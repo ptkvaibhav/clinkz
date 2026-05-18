@@ -30,10 +30,9 @@ import shutil
 import socket
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
-
-from typing import Any
 
 from clinkz.config import settings
 from clinkz.credentials.store import CredentialStore
