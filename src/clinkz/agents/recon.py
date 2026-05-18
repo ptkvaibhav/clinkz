@@ -137,7 +137,12 @@ class ReconAgent(BaseAgent):
 
         # Step 1: Full TCP port scan (TOOL — deterministic)
         self._logger.info("Step 1: Port scan — %s", target)
-        ports = await self._step_port_scan(url_host)
+        with self._record_step(
+            "port_scan",
+            inputs={"target": url_host},
+            replay_info={"method_name": "_step_port_scan"},
+        ):
+            ports = await self._step_port_scan(url_host)
 
         # If port scan found nothing but we have a URL, infer the port
         if not ports.open_ports and url_port is not None:
@@ -152,7 +157,12 @@ class ReconAgent(BaseAgent):
 
         # Step 3: Service + version detection on open ports (TOOL — deterministic)
         self._logger.info("Step 3: Service scan on %d ports", len(ports.open_ports))
-        services = await self._step_service_scan(url_host, ports.open_ports)
+        with self._record_step(
+            "service_scan",
+            inputs={"target": url_host, "open_ports": list(ports.open_ports)},
+            replay_info={"method_name": "_step_service_scan"},
+        ):
+            services = await self._step_service_scan(url_host, ports.open_ports)
 
         # If service scan found nothing but we have a URL, create synthetic HTTP service
         if not services.services and parsed_url:
@@ -186,7 +196,15 @@ class ReconAgent(BaseAgent):
         has_http = any(s.is_http for s in services.services)
         if has_http:
             self._logger.info("Step 5: Web recon (HTTP services detected)")
-            web_info = await self._step_web_recon(url_host, services)
+            with self._record_step(
+                "web_recon",
+                inputs={
+                    "target": url_host,
+                    "services": services.model_dump(mode="json"),
+                },
+                replay_info={"method_name": "_step_web_recon"},
+            ):
+                web_info = await self._step_web_recon(url_host, services)
             self._logger.info("Step 5 complete: web recon done")
         else:
             self._logger.info("Step 5: Skipped (no HTTP services)")
