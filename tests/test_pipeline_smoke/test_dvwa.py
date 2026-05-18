@@ -376,3 +376,144 @@ async def test_exploit_plan_non_empty_with_endpoints(dvwa_url: str, outputs_root
     )
 
     await state.close()
+
+
+async def test_katana_returns_paths_against_authenticated_dvwa(
+    dvwa_url: str, outputs_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Katana must return URLs when the scan agent points it at the docker alias.
+
+    Regression guard: katana v1.5.0's URL validator rejects single-label
+    hostnames (``http://clinkz-dvwa/``) as ``not a url`` and exits silent
+    with empty stdout. The orchestrator's docker-mode target_resolver
+    rewrites ``localhost:8080`` to ``clinkz-dvwa:80`` — so the pipeline
+    feeds katana exactly the URL it refuses to crawl, and every downstream
+    endpoint vanishes. The wrapper must resolve single-label hosts to an
+    IP before invoking katana.
+
+    Runs the actual ScanAgent crawl path with the docker-alias URL (the
+    same shape target_resolver produces) and asserts katana surfaces at
+    least one ``/vulnerabilities/*`` path.
+    """
+    pytest.importorskip("httpx")
+    import re as _re
+    import shutil
+
+    import httpx
+
+    if shutil.which("docker") is None:
+        pytest.skip("docker CLI required to verify container-alias resolution")
+
+    # The default conftest pins tool_exec_mode=local for unit tests; flip
+    # back to docker so katana actually runs inside the tools container
+    # against the docker-network alias.
+    from clinkz.config import settings as _settings
+
+    monkeypatch.setenv("TOOL_EXEC_MODE", "docker")
+    monkeypatch.setattr(_settings, "tool_exec_mode", "docker")
+
+    # Make sure the clinkz-tools + clinkz-dvwa containers are actually up,
+    # otherwise neither the docker alias nor katana resolves anything.
+    import subprocess
+
+    ps = subprocess.run(
+        ["docker", "ps", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    running = set(ps.stdout.split())
+    if not {"clinkz-tools", "clinkz-dvwa"}.issubset(running):
+        pytest.skip("clinkz-tools and clinkz-dvwa containers must both be running")
+
+    # --- Authenticate to DVWA via the host port mapping (8080) ---
+    user_token_re = _re.compile(
+        r"""name=['"]user_token['"]\s+value=['"]([a-f0-9]+)['"]""", _re.IGNORECASE
+    )
+    with httpx.Client(base_url=dvwa_url, timeout=10.0, follow_redirects=False) as client:
+        r = client.get("/login.php")
+        if r.status_code not in (200, 302):
+            pytest.skip(f"DVWA /login.php returned {r.status_code}")
+        m = user_token_re.search(r.text)
+        if not m:
+            pytest.skip("DVWA login form missing user_token")
+        client.post(
+            "/login.php",
+            data={
+                "username": "admin",
+                "password": "password",
+                "Login": "Login",
+                "user_token": m.group(1),
+            },
+        )
+        cookies: dict[str, str] = {k: v for k, v in client.cookies.items()}
+    cookies.setdefault("security", "low")
+    if "PHPSESSID" not in cookies:
+        pytest.skip(f"DVWA auth did not produce PHPSESSID (got {list(cookies)})")
+
+    # --- Drive the ScanAgent's crawl path with the docker alias URL ---
+    # That URL shape (single-label host) is what target_resolver produces
+    # for any localhost-mapped container in docker exec mode. The wrapper
+    # must normalise it to an IP before katana sees it.
+    from clinkz.agents.scan import ScanAgent
+    from clinkz.llm.fallback import ResilientLLMClient
+    from clinkz.observability.trace import TraceWriter, set_active_trace_writer
+    from clinkz.state import StateStore
+    from clinkz.tools.resolver import ToolResolver
+
+    resolver = ToolResolver()
+    katana_match = resolver.find_tool("web_crawling")
+    if katana_match is None or not katana_match.available:
+        pytest.skip(f"Katana not available via resolver: {katana_match}")
+    if katana_match.tool_class is None or katana_match.tool_class.__name__ != "KatanaTool":
+        pytest.skip(
+            f"Resolved web_crawling tool is not KatanaTool (got "
+            f"{katana_match.tool_class.__name__ if katana_match.tool_class else None})"
+        )
+
+    docker_alias_url = "http://clinkz-dvwa"
+    scope = EngagementScope(
+        name="pipeline-smoke-katana",
+        targets=[
+            ScopeEntry(value=docker_alias_url, type=ScopeType.URL),
+            ScopeEntry(value="clinkz-dvwa", type=ScopeType.DOMAIN),
+        ],
+    )
+    engagement_id = "smoke-katana-alias"
+
+    state = StateStore(":memory:")
+    await state.connect()
+    await state.create_engagement(scope.name, scope.model_dump())
+
+    writer = TraceWriter(engagement_id=engagement_id)
+    set_active_trace_writer(writer)
+    try:
+        try:
+            llm = ResilientLLMClient(agent_role="scan")
+        except Exception:
+            pytest.skip("No LLM provider configured for scan")
+
+        agent = ScanAgent(
+            llm=llm,
+            tools=[],
+            scope=scope,
+            state=state,
+            engagement_id=engagement_id,
+        )
+        agent._session_cookies = cookies
+        agent._resolver = resolver
+
+        urls = await agent._run_crawl_tool("katana", docker_alias_url)
+    finally:
+        writer.close()
+        set_active_trace_writer(None)
+        await state.close()
+
+    assert urls, (
+        "Katana returned an empty URL list — the wrapper is feeding it a URL "
+        "katana cannot parse (e.g. a single-label hostname)."
+    )
+    joined = " ".join(urls).lower()
+    assert "/vulnerabilities/" in joined, (
+        f"Katana did not surface any DVWA /vulnerabilities/* path. First URLs: {urls[:10]}"
+    )
