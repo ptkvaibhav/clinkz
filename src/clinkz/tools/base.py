@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -80,6 +81,11 @@ class ToolBase(ABC):
         self.scope = scope
         self.timeout = timeout
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+        # Sequence number of the most recent invocation this tool wrote to
+        # the tool_invocations/ directory. Used by BaseAgent._execute_tool to
+        # attach parsed output after parse_output() returns. Negative when
+        # no invocation has been recorded yet for this instance.
+        self.last_invocation_seq: int = -1
 
     # ------------------------------------------------------------------
     # Abstract interface
@@ -198,9 +204,10 @@ class ToolBase(ABC):
             asyncio.TimeoutError: If the command exceeds self.timeout seconds.
         """
         from clinkz.config import settings
-        from clinkz.observability.trace import Stopwatch, get_active_trace_writer
+        from clinkz.observability.trace import Stopwatch
 
-        if settings.tool_exec_mode == "docker":
+        exec_mode = settings.tool_exec_mode
+        if exec_mode == "docker":
             cmd = ["docker", "exec", settings.docker_container, *cmd]
 
         self._logger.debug("Executing: %s", " ".join(cmd))
@@ -219,17 +226,15 @@ class ToolBase(ABC):
         stdout = stdout_bytes.decode(errors="replace")
         stderr = stderr_bytes.decode(errors="replace")
 
-        writer = get_active_trace_writer()
-        if writer is not None:
-            writer.tool_call(
-                stage=getattr(self, "category", "utility"),
-                cmd=cmd,
-                stdout_summary=stdout,
-                stderr_summary=stderr,
-                exit_code=returncode,
-                duration_ms=stopwatch.elapsed_ms,
-                extra={"tool": self.name},
-            )
+        self._emit_trace_records(
+            cmd=cmd,
+            exec_mode=exec_mode,
+            stdin=None,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+            duration_ms=stopwatch.elapsed_ms,
+        )
         return stdout, stderr, returncode
 
     async def _run_subprocess_stdin(self, cmd: list[str], stdin_data: str) -> tuple[str, str, int]:
@@ -250,9 +255,10 @@ class ToolBase(ABC):
             asyncio.TimeoutError: If the command exceeds self.timeout seconds.
         """
         from clinkz.config import settings
-        from clinkz.observability.trace import Stopwatch, get_active_trace_writer
+        from clinkz.observability.trace import Stopwatch, get_active_trace_writer  # noqa: F401
 
-        if settings.tool_exec_mode == "docker":
+        exec_mode = settings.tool_exec_mode
+        if exec_mode == "docker":
             cmd = ["docker", "exec", "-i", settings.docker_container, *cmd]
 
         self._logger.debug("Executing (stdin): %s", " ".join(cmd))
@@ -272,15 +278,75 @@ class ToolBase(ABC):
         stdout = stdout_bytes.decode(errors="replace")
         stderr = stderr_bytes.decode(errors="replace")
 
-        writer = get_active_trace_writer()
-        if writer is not None:
-            writer.tool_call(
-                stage=getattr(self, "category", "utility"),
-                cmd=cmd,
-                stdout_summary=stdout,
-                stderr_summary=stderr,
-                exit_code=returncode,
-                duration_ms=stopwatch.elapsed_ms,
-                extra={"tool": self.name, "via_stdin": True},
-            )
+        self._emit_trace_records(
+            cmd=cmd,
+            exec_mode=exec_mode,
+            stdin=stdin_data,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+            duration_ms=stopwatch.elapsed_ms,
+            via_stdin=True,
+        )
         return stdout, stderr, returncode
+
+    def _emit_trace_records(
+        self,
+        *,
+        cmd: list[str],
+        exec_mode: str,
+        stdin: str | None,
+        stdout: str,
+        stderr: str,
+        returncode: int,
+        duration_ms: float,
+        via_stdin: bool = False,
+    ) -> None:
+        """Write the full-fidelity invocation record and the trace summary.
+
+        Centralised here so both ``_run_subprocess`` and ``_run_subprocess_stdin``
+        emit consistent records — and so a future caller (e.g. an MCP-backed
+        execute path) can reuse the same helper.
+        """
+        from clinkz.observability.trace import get_active_trace_writer
+
+        writer = get_active_trace_writer()
+        if writer is None:
+            return
+
+        try:
+            seq, path = writer.record_tool_invocation(
+                tool_name=self.name,
+                exec_mode=exec_mode,
+                cwd=os.getcwd(),
+                command=cmd,
+                env_overrides={},
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=returncode,
+                duration_ms=duration_ms,
+            )
+            self.last_invocation_seq = seq
+        except Exception as exc:  # noqa: BLE001 — tracing must never raise
+            self._logger.warning("Failed to record tool invocation: %s", exc)
+            seq, path = -1, None
+
+        extra: dict[str, Any] = {"tool": self.name, "invocation_seq": seq}
+        if path is not None:
+            try:
+                extra["invocation_file"] = str(path.relative_to(writer.outputs_root))
+            except ValueError:
+                extra["invocation_file"] = str(path)
+        if via_stdin:
+            extra["via_stdin"] = True
+
+        writer.tool_call(
+            stage=getattr(self, "category", "utility"),
+            cmd=cmd,
+            stdout_summary=stdout,
+            stderr_summary=stderr,
+            exit_code=returncode,
+            duration_ms=duration_ms,
+            extra=extra,
+        )
