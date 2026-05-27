@@ -11,6 +11,16 @@ from urllib.parse import urlparse, urlunparse
 
 from clinkz.tools.base import ToolBase, ToolOutput
 
+# URL substrings that terminate the session we crawl with. When crawling
+# authenticated (cookies present), katana follows in-app links — including
+# the logout link on every page — and DVWA-style apps destroy the
+# server-side session the moment logout.php is requested. That silently
+# de-authenticates every downstream agent that reuses the same cookie, so
+# the exploit phase analyses login pages and emits zero findings. We feed
+# these to katana's ``-crawl-out-scope`` so the crawler never *requests*
+# them; discovery of other endpoints is unaffected.
+_SESSION_DESTROYING_URL_PATTERNS = ["logout", "signout", "sign-out", "sign_out"]
+
 
 class KatanaOutput(ToolOutput):
     """Structured output from katana crawler."""
@@ -85,6 +95,12 @@ class KatanaTool(ToolBase):
             cmd.append("-jc")
         if args.get("cookies"):
             cmd.extend(["-H", f"Cookie: {args['cookies']}"])
+            # Authenticated crawl: keep the crawler away from logout/sign-out
+            # links so it cannot destroy the session it is borrowing. Only
+            # applied when cookies are present, since that is the only case
+            # where requesting these endpoints has a destructive side effect.
+            for pattern in _SESSION_DESTROYING_URL_PATTERNS:
+                cmd.extend(["-crawl-out-scope", pattern])
         stdout, stderr, _ = await self._run_subprocess(cmd)
         return stdout or stderr
 
