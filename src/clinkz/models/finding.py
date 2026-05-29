@@ -140,6 +140,10 @@ class ExploitResult(BaseModel):
         total_findings: Number of findings discovered.
         by_severity: Finding counts by severity level.
         kb_results_recorded: Number of technique results written to persistent KB.
+        stopped_early: True when the phase stopped dispatching new tasks at the
+            cooperative deadline before exhausting its plan. Findings are
+            persisted incrementally, so an early stop still yields a complete,
+            queryable result in the state store.
         timestamp: When the exploit phase completed.
     """
 
@@ -150,4 +154,5 @@ class ExploitResult(BaseModel):
     total_findings: int = 0
     by_severity: dict[str, int] = Field(default_factory=dict)
     kb_results_recorded: int = 0
+    stopped_early: bool = False
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
