@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,16 @@ logger = logging.getLogger(__name__)
 
 # How long to wait for an agent to produce a RESULT before timing out (seconds).
 _PHASE_TIMEOUT = 600
+
+# Exploit phase cooperative-stop budget (seconds). The Exploit Agent stops
+# dispatching NEW tasks _EXPLOIT_STOP_MARGIN seconds before _EXPLOIT_BUDGET
+# elapses, lets the in-flight task finish, persists its findings, and returns a
+# clean ExploitResult. The orchestrator only force-kills as a last resort if
+# that cooperative return does not arrive within _EXPLOIT_HARD_GRACE seconds
+# past the budget — so findings verified before the deadline are never lost.
+_EXPLOIT_BUDGET = 600
+_EXPLOIT_STOP_MARGIN = 30
+_EXPLOIT_HARD_GRACE = 30
 
 # Maximum cross-phase re-spins per engagement (e.g., Exploit asks for more recon).
 MAX_CROSS_PHASE_RESPINS = 3
@@ -317,21 +328,30 @@ class OrchestratorAgent:
                 summary["phases"].update(concurrent_results)
                 self._logger.info("PHASE 2 (CONCURRENT) complete")
 
-                # Persist exploit findings to the findings table so the
-                # Report Agent can query them.
+                # Reconcile exploit findings into the findings table. The
+                # Exploit Agent now persists each finding incrementally as it is
+                # verified, so this loop is an idempotent safety net: it only
+                # adds findings not already in the store (e.g. should the
+                # incremental write ever be skipped). Dedup by finding id avoids
+                # a UNIQUE-constraint crash on the re-insert and means a
+                # force-killed phase (which returns no result here) still keeps
+                # the findings it persisted mid-flight.
                 exploit_data = concurrent_results.get("exploit", {})
                 exploit_result = exploit_data.get("result", {})
-                persisted_findings = exploit_result.get("findings", [])
-                if persisted_findings:
-                    self._logger.info(
-                        "Persisting %d exploit findings to state",
-                        len(persisted_findings),
-                    )
-                    for finding in persisted_findings:
-                        if isinstance(finding, dict):
-                            await state.add_finding(engagement_id, finding)
-                else:
-                    self._logger.warning("No exploit findings to persist")
+                returned_findings = exploit_result.get("findings", [])
+                existing = await state.get_findings(engagement_id)
+                existing_ids = {f.get("id") for f in existing if isinstance(f, dict)}
+                added = 0
+                for finding in returned_findings:
+                    if isinstance(finding, dict) and finding.get("id") not in existing_ids:
+                        await state.add_finding(engagement_id, finding)
+                        existing_ids.add(finding.get("id"))
+                        added += 1
+                self._logger.info(
+                    "Findings reconciled: %d persisted incrementally, %d added by safety net",
+                    len(existing),
+                    added,
+                )
 
                 # =============================================================
                 # PHASE 3: REPORT (sequential)
@@ -531,9 +551,28 @@ class OrchestratorAgent:
                 f"Do NOT attempt to login again.\n\n" + exploit_content["task"]
             )
 
-        self._logger.info("Starting Exploit with v2 scan + research results")
+        # Cooperative deadline: the agent stops dispatching new tasks
+        # _EXPLOIT_STOP_MARGIN seconds before _EXPLOIT_BUDGET elapses and
+        # returns cleanly. We give _run_phase a hard cap of budget + grace so
+        # the cooperative return wins the race against the force-kill. The
+        # deadline is an absolute time.monotonic() timestamp — the agent runs in
+        # this same event loop and reads it with time.monotonic() too.
+        exploit_content["deadline_ts"] = time.monotonic() + _EXPLOIT_BUDGET
+        exploit_content["stop_margin_seconds"] = _EXPLOIT_STOP_MARGIN
+
+        self._logger.info(
+            "Starting Exploit with v2 scan + research results "
+            "(budget=%ds, stop_margin=%ds, hard_cap=%ds)",
+            _EXPLOIT_BUDGET,
+            _EXPLOIT_STOP_MARGIN,
+            _EXPLOIT_BUDGET + _EXPLOIT_HARD_GRACE,
+        )
         try:
-            exploit_result = await self._run_phase("exploit", exploit_content)
+            exploit_result = await self._run_phase(
+                "exploit",
+                exploit_content,
+                phase_timeout=_EXPLOIT_BUDGET + _EXPLOIT_HARD_GRACE,
+            )
             results["exploit"] = exploit_result
         except Exception as exc:
             self._logger.error("Exploit failed: %s", exc)
@@ -554,6 +593,7 @@ class OrchestratorAgent:
         self,
         agent_type: str,
         task_content: dict[str, Any],
+        phase_timeout: float | None = None,
     ) -> dict[str, Any]:
         """Run a single phase: spin up agent, wait for RESULT, handle QUERYs.
 
@@ -570,12 +610,16 @@ class OrchestratorAgent:
         Args:
             agent_type: Agent to spin up ("recon", "scan", "exploit", etc.).
             task_content: Task payload dict for the agent.
+            phase_timeout: Hard cap (seconds) before the orchestrator force-kills
+                the agent. Defaults to ``_PHASE_TIMEOUT``. The exploit phase
+                passes a larger value than its cooperative budget so the agent
+                has a grace window to stop cleanly before being cancelled.
 
         Returns:
             Result dict from the agent (or error info).
 
         Raises:
-            TimeoutError: If the agent does not respond within _PHASE_TIMEOUT.
+            TimeoutError: If the agent does not respond within the timeout.
         """
         assert self._bus is not None
         assert self._lifecycle is not None
@@ -594,7 +638,8 @@ class OrchestratorAgent:
         await self._lifecycle.spin_up(agent_type, task_msg)
 
         # Wait for phase completion
-        deadline = asyncio.get_event_loop().time() + _PHASE_TIMEOUT
+        timeout = phase_timeout if phase_timeout is not None else _PHASE_TIMEOUT
+        deadline = asyncio.get_event_loop().time() + timeout
         result: dict[str, Any] = {}
 
         while True:
