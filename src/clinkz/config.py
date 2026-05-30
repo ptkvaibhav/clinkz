@@ -71,6 +71,13 @@ class Settings(BaseModel):
     # Tool execution
     tool_timeout: int = Field(default=300, description="Max seconds per tool invocation")
 
+    # Exploit planning — caps the deterministic fallback plan so a large crawl
+    # cannot explode into thousands of tasks (the LLM plan is the normal path).
+    exploit_max_plan_tasks: int = Field(
+        default=150,
+        description="Maximum number of tasks in a deterministic exploit plan.",
+    )
+
     # Tool execution mode: "local" runs tools directly, "docker" runs via docker exec.
     # Default is "docker" because local mode is a footgun — the resolver can
     # match unrelated host binaries that share a name (e.g., the Python `httpx`
@@ -128,6 +135,7 @@ class Settings(BaseModel):
             llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
+            exploit_max_plan_tasks=int(os.getenv("EXPLOIT_MAX_PLAN_TASKS", "150")),
             tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "docker"),
             docker_container=os.getenv("DOCKER_CONTAINER", "clinkz-tools"),
             mcp_servers=json.loads(os.getenv("MCP_SERVERS", "[]")),
