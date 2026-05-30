@@ -14,6 +14,7 @@ This is the most important rule. Most failures on this project came from acting 
 - Surface inconsistencies and tradeoffs instead of resolving them unilaterally.
 - If two files or instructions conflict, flag the conflict — don't pick a side silently.
 - Never fabricate file contents, test results, or tool output. Report what is actually there.
+- Start every task with a brief plan incorporating the Operating Context standing items from CLAUDE.md. Consult `.claude/LESSONS.md` during planning only if the task resembles a past failure; append to it after an error worth not repeating.
 
 ## Architecture rules (non-negotiable — see CLAUDE.md)
 
