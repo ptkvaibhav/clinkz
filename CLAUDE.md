@@ -1,5 +1,22 @@
 # Clinkz — Agentic AI Penetration Testing System
 
+## Operating Context (read every task)
+
+**ENVIRONMENT:**
+- This is a Windows machine. Claude Code runs in PowerShell. Use PowerShell-native command syntax and Windows-aware paths.
+- The git pre-commit hook auto-runs ruff on commit. Use foreground commands only — no background scripts or polling loops.
+
+**PLAN-FIRST WORKFLOW:**
+- Every task begins with a brief implementation plan before any code.
+- The plan must incorporate the git discipline below as standing items.
+- During planning, judge whether the task resembles something where a past mistake might recur. ONLY in that case, consult `.claude/LESSONS.md` for a relevant entry. Otherwise do not open it — it is not read by default.
+- After completing a task, if you encountered an error worth not repeating, append a concise entry to `.claude/LESSONS.md` (what went wrong, the fix). This is the only time you write to it.
+
+**GIT DISCIPLINE (every push):**
+- When a push contains multiple commits, write a single aggregate push summary covering all of them — don't leave assembly to the user.
+- Before pushing, check whether the diff makes a structural change (adds/removes/renames a file, agent, tool, model, or config option, or alters architecture). If so, update ALL affected documentation (`README.md`, `CLAUDE.md`, `CLINKZ_V2_IMPLEMENTATION.md`, `docs/`, `CONTRIBUTING.md`) in the same push. Stale docs after a structural change means the task is not done.
+- Push to origin after each commit once pre-push gates pass.
+
 ## What This Is
 An autonomous, multi-agent AI system that performs end-to-end black-box penetration testing. It takes a target scope (IPs/domains) as input and produces a professional pentest report as output, with no human intervention in between. Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamically discovering and executing tools as needed.
 
@@ -299,9 +316,9 @@ clinkz/
 ## Pre-Push Verification
 Every change must pass three gates before `git push`. If a gate fails, fix the root cause — never bypass with `--no-verify`, blanket `# noqa`/`# type: ignore`, or skip/xfail added solely to keep CI green.
 
-1. **Lint** — `ruff check src/ tests/` and `ruff format --check src/ tests/`. Use `ruff format src/ tests/` to auto-format. All warnings must be resolved or explicitly justified inline.
+1. **Lint + Cleanup** — `ruff check src/ tests/` and `ruff format --check src/ tests/`. Use `ruff format src/ tests/` to auto-format. All warnings must be resolved or explicitly justified inline. Beyond ruff, clean up every file the diff touches: remove dead code, fix improper naming, strip stale or unnecessary comments, ensure no hardcoded secrets/credentials, and add `None` guards wherever a `None` can reach a dereference.
 2. **Audit (tests)** — `pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_integration` for unit/agent/tool/orchestrator tests on every change. Run the integration and DVWA skill suites (`pytest tests/test_integration/` and `pytest tests/test_skills_dvwa/ -m dvwa_smoke`) when DVWA is up and the change touches scan/exploit/orchestrator paths.
-3. **Security review** — Invoke the `security-review` skill (`/security-review`) on the diff whenever the change touches: tool execution (`src/clinkz/tools/`), scope enforcement, credential handling/storage, LLM input/output, HTTP/network/subprocess calls, deserialization, file I/O on user-controlled paths, MCP server interactions, or report rendering. Resolve every finding before pushing — never ship command/SQL injection, unsafe deserialization, secret leakage, hardcoded credentials, SSRF, path traversal, or scope-bypass code paths.
+3. **Security review** — Invoke the `security-review` skill (`/security-review`) on the diff whenever the change touches: tool execution (`src/clinkz/tools/`), scope enforcement, credential handling/storage, LLM input/output, HTTP/network/subprocess calls, deserialization, file I/O on user-controlled paths, MCP server interactions, or report rendering. The review must include semantic analysis, control-flow analysis, data-flow analysis, dependency review, and `pip-audit` (add `npm audit` only if JS dependencies exist). Resolve every finding before pushing — never ship command/SQL injection, unsafe deserialization, secret leakage, hardcoded credentials, SSRF, path traversal, or scope-bypass code paths.
 
 Doc/config-only changes (no `.py` modified) may skip gates 1–2, but gate 3 still applies if the change can affect runtime behavior (new permission, new tool entry, new hook, new payload list, etc.).
 
