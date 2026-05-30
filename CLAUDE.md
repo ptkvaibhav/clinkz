@@ -87,7 +87,7 @@ All v2 phase agents follow the **deterministic-steps-with-LLM-checkpoints** patt
 ### Exploit Agent (v2)
 - **LLM**: Anthropic (Claude Opus) — pinned by `LLM_PROVIDER_EXPLOIT=anthropic`
 - **Steps**: LLM plans exploits from scan + research data → execute deterministic `_test_*` methods by tier → LLM reasons through results → adaptive retry/bypass → record technique success/failure to persistent KB
-- **Adaptive methodologies (W2.1)**: `_test_xss_reflected` and `_test_sqli` use multi-phase reflection-mapping / dialect-fingerprinting flows with LLM-driven payload synthesis. Other `_test_*` methods (`_test_xss_stored`, `_test_xss_dom`, `_test_cmdi`, `_test_lfi`, `_test_file_upload`, `_test_csrf`, `_test_idor`, `_test_brute_force`, `_test_open_redirect`, `_test_security_headers`, `_test_weak_session`, `_test_javascript_attacks`) remain deterministic skills.
+- **Adaptive methodologies (W2.1)**: All 14 `_test_*` methods are now adaptive multi-phase methodologies, not deterministic one-shot skills. The payload-injection family (`_test_xss_reflected`, `_test_xss_stored`, `_test_xss_dom`, `_test_sqli`, `_test_cmdi`, `_test_lfi`, `_test_file_upload`, `_test_idor`, `_test_open_redirect`, `_test_javascript_attacks`) uses the six-phase reflection/fingerprint/synthesize/verify pattern with LLM-driven payload synthesis. The behavioral family (`_test_csrf`, `_test_brute_force`, `_test_weak_session`, `_test_security_headers`) uses the four-phase hypothesis/observe/analyze/emit pattern.
 - **Tier 2/3**: `_test_tier2_technique` / `_test_tier3_technique` consume Research Agent runbook entries
 
 ### Critic Agent
