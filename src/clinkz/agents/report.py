@@ -90,7 +90,8 @@ class ReportAgent(BaseAgent):
     async def run(self, input_data: dict[str, Any]) -> dict[str, Any]:
         """Generate a simple report from engagement state data.
 
-        Pulls all findings from the state store and writes:
+        Pulls all findings from the state store and writes, under
+        ``outputs/<engagement_id>/``:
         - ``report_<engagement_id>.json`` — structured finding data
         - ``report_<engagement_id>.md`` — human-readable markdown
 
@@ -182,13 +183,20 @@ class ReportAgent(BaseAgent):
 
         report_dict = report.model_dump(mode="json")
 
+        # Reports live alongside the rest of the engagement artifacts under
+        # ``outputs/<engagement_id>/`` (same convention as trace.jsonl and the
+        # tool-invocation records). Writing to the cwd would litter the repo
+        # root with per-engagement dumps.
+        output_dir = Path("outputs") / engagement_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         # Write JSON output
-        json_path = Path(f"report_{engagement_id}.json")
+        json_path = output_dir / f"report_{engagement_id}.json"
         json_path.write_text(json.dumps(report_dict, indent=2), encoding="utf-8")
         self._logger.info("JSON report written to %s", json_path)
 
         # Write Markdown output
-        md_path = Path(f"report_{engagement_id}.md")
+        md_path = output_dir / f"report_{engagement_id}.md"
         md_path.write_text(
             self._render_markdown(report, finding_models),
             encoding="utf-8",
