@@ -243,17 +243,20 @@ async def test_json_and_markdown_files_written(tmp_path: Path) -> None:
         finally:
             os.chdir(old_cwd)
 
+    # Reports are written under outputs/<engagement_id>/ relative to the cwd
+    # at run time (tmp_path here), not the repo root.
     json_path = Path(result["json_path"])
     md_path = Path(result["markdown_path"])
-    assert (tmp_path / json_path.name).exists()
-    assert (tmp_path / md_path.name).exists()
+    assert json_path.parent == Path("outputs") / eid
+    assert (tmp_path / json_path).exists()
+    assert (tmp_path / md_path).exists()
 
     # JSON is valid and contains findings
-    data = json.loads((tmp_path / json_path.name).read_text())
+    data = json.loads((tmp_path / json_path).read_text())
     assert len(data["findings"]) == 2
 
     # Markdown contains finding titles
-    md_content = (tmp_path / md_path.name).read_text()
+    md_content = (tmp_path / md_path).read_text()
     assert "SQL Injection" in md_content
     assert "Reflected XSS" in md_content
 
