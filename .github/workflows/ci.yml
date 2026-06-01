@@ -30,10 +30,20 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check src/
+        run: ruff check src/ tests/
 
       - name: Format check
         run: ruff format --check src/ tests/
 
+      # Keyless runner: no provider API keys, no live containers. The selection
+      # below mirrors CLAUDE.md gate-2 and excludes every suite that needs a
+      # real API key or a running target (DVWA :8080, Juice Shop :3000). Those
+      # suites skip via fixture guards anyway, but excluding them keeps the CI
+      # selection explicitly container-free and key-free.
       - name: Run tests
-        run: pytest tests/ -x --ignore=tests/test_integration/
+        run: >-
+          pytest tests/ -q --tb=short
+          --ignore=tests/test_integration
+          --ignore=tests/test_skills_dvwa
+          --ignore=tests/test_skills_juiceshop
+          --ignore=tests/test_pipeline_smoke

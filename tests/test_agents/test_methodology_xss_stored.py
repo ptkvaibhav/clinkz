@@ -350,3 +350,63 @@ class TestXSSStoredMethodologyIntegration:
         joined = " ".join(findings[0].evidence)
         assert "phases_completed=6" in joined
         assert "strength=verified" in joined
+
+
+# ===========================================================================
+# Verification gate — never emit when nothing actually verified
+# ===========================================================================
+
+
+class TestXSSStoredVerificationGate:
+    @pytest.mark.asyncio
+    async def test_no_reachable_reflection_emits_nothing(self) -> None:
+        """When nothing the methodology submits ever lands in the read-back
+        (canary and payload both absent), no payload can be verified — so the
+        methodology must emit NO finding, not an unverified one.
+
+        Previously a missing read-back URL produced a 'confirmed' finding with
+        strength=unverified even though verification never confirmed an
+        executable reflection — the contradiction this gate removes."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 8))
+        agent._methodology_llm = agent.llm
+
+        # Server acknowledges the post but never echoes input anywhere.
+        agent._http_post = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="Submitted. Thank you.")
+        )
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<p>No content stored.</p>")
+        )
+        page = _make_page()
+        findings = await agent._test_xss_stored(page)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_all_chars_encoded_emits_nothing(self) -> None:
+        """Read-back exists but the store HTML-encodes every special char, so
+        no payload lands unescaped — emit nothing."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 8))
+        agent._methodology_llm = agent.llm
+
+        stored: dict[str, str] = {}
+
+        async def fake_post(_url: str, data: dict[str, str]) -> _HTTPResponse:
+            stored["last"] = data.get("txtName", "")
+            return _HTTPResponse(status=200, body="Submitted")
+
+        async def fake_get(_url: str, _params: dict[str, str]) -> _HTTPResponse:
+            raw = stored.get("last", "")
+            encoded = (
+                raw.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("'", "&#39;")
+            )
+            return _HTTPResponse(status=200, body=f"<p>{encoded}</p>")
+
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page()
+        findings = await agent._test_xss_stored(page)
+        assert findings == []
