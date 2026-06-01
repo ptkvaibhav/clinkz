@@ -232,13 +232,14 @@ class TestMigrations:
 class TestPerAgentLLMConfig:
     def test_defaults(self) -> None:
         s = Settings()
-        # Fast agents → Gemini Flash (high-volume).
+        # Fast agents → Gemini (high-volume). Research runs on Gemini 3.1
+        # Flash-Lite with native Search Grounding.
         assert s.recon_llm_provider == "gemini"
         assert s.scan_llm_provider == "gemini"
         assert s.report_llm_provider == "gemini"
-        # Reasoning agents → Claude (complex, fewer calls).
+        assert s.research_llm_provider == "gemini"
+        # Exploit reasoning → Claude (complex, fewer calls; pinned).
         assert s.exploit_llm_provider == "anthropic"
-        assert s.research_llm_provider == "anthropic"
 
     def test_override_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RECON_LLM_PROVIDER", "openai")
@@ -255,3 +256,17 @@ class TestPerAgentLLMConfig:
         monkeypatch.setenv("RESEARCH_LLM_PROVIDER", "openai")  # should be ignored
         s = Settings.from_env()
         assert s.research_llm_provider == "gemini"
+
+    def test_research_model_is_flash_lite_ga(self) -> None:
+        """Research pins Gemini 3.1 Flash-Lite (GA) — never the shut-down preview."""
+        s = Settings()
+        assert s.gemini_research_model == "gemini-3.1-flash-lite"
+        assert "preview" not in s.gemini_research_model
+        # Recon/Scan/Report keep the shared gemini_model — unchanged by the switch.
+        assert s.gemini_model == "gemini-2.5-pro"
+
+    def test_research_model_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GEMINI_RESEARCH_MODEL", "gemini-3.1-flash-lite")
+        s = Settings.from_env()
+        assert s.gemini_research_model == "gemini-3.1-flash-lite"
+        assert "preview" not in s.gemini_research_model

@@ -64,7 +64,9 @@ AGENT_LLM_PROFILE: dict[str, str] = {
     "crawl": "fast",
     "report": "fast",
     "exploit": "reasoning",
-    "research": "reasoning",
+    # Research now leads with Gemini Flash-Lite (cheap, high-volume, native
+    # Search Grounding) → fast profile. Anthropic/OpenAI remain as fallbacks.
+    "research": "fast",
 }
 
 #: Environment variable that holds the API key for each provider. ``None``
@@ -137,9 +139,11 @@ class ResilientLLMClient(LLMClient):
         if provider == "anthropic":
             return self.config.anthropic_model
         if provider == "gemini":
-            # Exploit pinning may use a different gemini model
+            # Per-role gemini model: Exploit and Research pin their own.
             if self.agent_role == "exploit":
                 return self.config.gemini_exploit_model
+            if self.agent_role == "research":
+                return self.config.gemini_research_model
             return self.config.gemini_model
         if provider == "openai":
             return self.config.agent_model
@@ -309,8 +313,22 @@ class ResilientLLMClient(LLMClient):
     def _get_or_create_client(self, provider: str) -> LLMClient:
         """Cache one underlying client per provider for the life of this wrapper."""
         if provider not in self._clients:
-            self._clients[provider] = get_llm_client(provider)
+            self._clients[provider] = get_llm_client(
+                provider, model=self._client_model_override(provider)
+            )
         return self._clients[provider]
+
+    def _client_model_override(self, provider: str) -> str | None:
+        """Construction-time model override for the underlying client.
+
+        Only Research pins a distinct Gemini model (``gemini_research_model`` =
+        Flash-Lite); every other role passes ``None`` so the client keeps its
+        own default (Recon/Scan/Report → ``gemini_model``). This keeps the
+        per-agent model behaviour of the unchanged roles byte-identical.
+        """
+        if provider == "gemini" and self.agent_role == "research":
+            return self.config.gemini_research_model
+        return None
 
 
 # ---------------------------------------------------------------------------
