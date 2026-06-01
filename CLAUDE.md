@@ -16,6 +16,7 @@
 - When a push contains multiple commits, write a single aggregate push summary covering all of them — don't leave assembly to the user.
 - Before pushing, check whether the diff makes a structural change (adds/removes/renames a file, agent, tool, model, or config option, or alters architecture). If so, update ALL affected documentation (`README.md`, `CLAUDE.md`, `CLINKZ_V2_IMPLEMENTATION.md`, `docs/`, `CONTRIBUTING.md`) in the same push. Stale docs after a structural change means the task is not done.
 - Push to origin after each commit once pre-push gates pass.
+- Maintain an open pull request for the working branch against main. On each push, if a PR exists, update its description to reflect the new commits; if none exists, open one with an aggregate description covering the branch's work. The PR description is the human-readable narrative of the branch — keep it current.
 
 ## What This Is
 An autonomous, multi-agent AI system that performs end-to-end black-box penetration testing. It takes a target scope (IPs/domains) as input and produces a professional pentest report as output, with no human intervention in between. Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamically discovering and executing tools as needed.
