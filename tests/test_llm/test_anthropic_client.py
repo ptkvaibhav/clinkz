@@ -5,6 +5,7 @@ All tests mock the Anthropic SDK so no API key or network is needed.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -18,6 +19,24 @@ from clinkz.llm.base import LLMMessage, ToolCall
 # ---------------------------------------------------------------------------
 
 
+def _sync_settings_from_env() -> None:
+    """Refresh the shared ``config.settings`` object from the environment, in place.
+
+    The llm client modules bind ``settings`` at import time via
+    ``from clinkz.config import settings``. Rebinding ``config.settings`` to a
+    brand-new object would orphan those module-level references at the stale
+    pre-test object — which on a keyless runner carries no API key and makes
+    ``AnthropicClient()`` raise ``ANTHROPIC_API_KEY is not set``. Copying a
+    fresh ``Settings.from_env()`` onto the existing object keeps every
+    import-time reference live.
+    """
+    from clinkz import config
+
+    fresh = config.Settings.from_env()
+    for name in type(config.settings).model_fields:
+        setattr(config.settings, name, getattr(fresh, name))
+
+
 @pytest.fixture(autouse=True)
 def _patch_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure ANTHROPIC_API_KEY is set for all tests."""
@@ -25,11 +44,17 @@ def _patch_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def _reload_settings() -> None:
-    """Reload settings after env var changes."""
+def _reload_settings() -> Iterator[None]:
+    """Sync settings to the current env in place, restoring originals on teardown."""
     from clinkz import config
 
-    config.settings = config.Settings.from_env()
+    original = {name: getattr(config.settings, name) for name in type(config.settings).model_fields}
+    _sync_settings_from_env()
+    try:
+        yield
+    finally:
+        for name, value in original.items():
+            setattr(config.settings, name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -225,9 +250,7 @@ class TestResearch:
         monkeypatch.setenv("GEMINI_API_KEY", "")
         monkeypatch.setenv("GOOGLE_API_KEY", "")
 
-        from clinkz import config
-
-        config.settings = config.Settings.from_env()
+        _sync_settings_from_env()
 
         from clinkz.llm.anthropic_client import AnthropicClient
 

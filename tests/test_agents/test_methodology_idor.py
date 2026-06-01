@@ -440,3 +440,53 @@ class TestIDORMethodologyIntegration:
         joined = " ".join(findings[0].evidence)
         assert "phases_completed=6" in joined
         assert "exploitation_type=" in joined
+
+
+# ===========================================================================
+# Deterministic divergence gate — no LLM, no finding on identical responses
+# ===========================================================================
+
+
+class TestIDORDeterministicGate:
+    @pytest.mark.asyncio
+    async def test_identical_response_emits_nothing_and_makes_no_llm_call(self) -> None:
+        """Every reference probe byte-identical to baseline ⇒ not an IDOR.
+
+        The deterministic gate must short-circuit *before* the phase-3 LLM
+        checkpoint: emit nothing and make zero LLM calls. This is the
+        false-positive shape where IDOR claimed divergence on an identical
+        response (length 5390 → 5390)."""
+        llm = _ScriptedLLM(answers=["SHOULD-NOT-BE-USED"] * 8)
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+
+        # Param named "id" → lexical name-signal candidate, but every probe
+        # returns the same body, so there is no divergence to confirm.
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="X" * 5390)
+        )
+        page = _make_page()  # url ...?id=1, params ["id"]
+        findings = await agent._test_idor(page)
+
+        assert findings == []
+        assert llm.prompts == [], "gate must fire before any LLM checkpoint"
+
+    @pytest.mark.asyncio
+    async def test_status_change_probe_passes_gate(self) -> None:
+        """A status change on a probe is divergence — the gate lets it through
+        to the LLM checkpoints (here the scripted-empty LLM falls back)."""
+        llm = _ScriptedLLM(answers=[""] * 8)
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+
+        async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
+            if params.get("id") == "99999999":
+                return _HTTPResponse(status=403, body="forbidden")
+            return _HTTPResponse(status=200, body="user: alice role: user " * 10)
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page()
+        await agent._test_idor(page)
+        # The gate did not short-circuit: at least the phase-3 ranking prompt
+        # was issued.
+        assert llm.prompts, "diverged probe should reach the LLM checkpoint"

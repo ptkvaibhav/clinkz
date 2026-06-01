@@ -1,5 +1,23 @@
 # Clinkz — Agentic AI Penetration Testing System
 
+## Operating Context (read every task)
+
+**ENVIRONMENT:**
+- This is a Windows machine. Claude Code runs in PowerShell. Use PowerShell-native command syntax and Windows-aware paths.
+- The git pre-commit hook auto-runs ruff on commit. Use foreground commands only — no background scripts or polling loops.
+
+**PLAN-FIRST WORKFLOW:**
+- Every task begins with a brief implementation plan before any code.
+- The plan must incorporate the git discipline below as standing items.
+- During planning, judge whether the task resembles something where a past mistake might recur. ONLY in that case, consult `.claude/LESSONS.md` for a relevant entry. Otherwise do not open it — it is not read by default.
+- After completing a task, if you encountered an error worth not repeating, append a concise entry to `.claude/LESSONS.md` (what went wrong, the fix). This is the only time you write to it.
+
+**GIT DISCIPLINE (every push):**
+- When a push contains multiple commits, write a single aggregate push summary covering all of them — don't leave assembly to the user.
+- Before pushing, check whether the diff makes a structural change (adds/removes/renames a file, agent, tool, model, or config option, or alters architecture). If so, update ALL affected documentation (`README.md`, `CLAUDE.md`, `CLINKZ_V2_IMPLEMENTATION.md`, `docs/`, `CONTRIBUTING.md`) in the same push. Stale docs after a structural change means the task is not done.
+- Push to origin after each commit once pre-push gates pass.
+- Maintain an open pull request for the working branch against main. On each push, if a PR exists, update its description to reflect the new commits; if none exists, open one with an aggregate description covering the branch's work. The PR description is the human-readable narrative of the branch — keep it current.
+
 ## What This Is
 An autonomous, multi-agent AI system that performs end-to-end black-box penetration testing. It takes a target scope (IPs/domains) as input and produces a professional pentest report as output, with no human intervention in between. Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamically discovering and executing tools as needed.
 
@@ -87,7 +105,9 @@ All v2 phase agents follow the **deterministic-steps-with-LLM-checkpoints** patt
 ### Exploit Agent (v2)
 - **LLM**: Anthropic (Claude Opus) — pinned by `LLM_PROVIDER_EXPLOIT=anthropic`
 - **Steps**: LLM plans exploits from scan + research data → execute deterministic `_test_*` methods by tier → LLM reasons through results → adaptive retry/bypass → record technique success/failure to persistent KB
-- **Adaptive methodologies (W2.1)**: `_test_xss_reflected` and `_test_sqli` use multi-phase reflection-mapping / dialect-fingerprinting flows with LLM-driven payload synthesis. Other `_test_*` methods (`_test_xss_stored`, `_test_xss_dom`, `_test_cmdi`, `_test_lfi`, `_test_file_upload`, `_test_csrf`, `_test_idor`, `_test_brute_force`, `_test_open_redirect`, `_test_security_headers`, `_test_weak_session`, `_test_javascript_attacks`) remain deterministic skills.
+- **Adaptive methodologies (W2.1)**: All 14 `_test_*` methods are now adaptive multi-phase methodologies, not deterministic one-shot skills. The payload-injection family (`_test_xss_reflected`, `_test_xss_stored`, `_test_xss_dom`, `_test_sqli`, `_test_cmdi`, `_test_lfi`, `_test_file_upload`, `_test_idor`, `_test_open_redirect`, `_test_javascript_attacks`) uses the six-phase reflection/fingerprint/synthesize/verify pattern with LLM-driven payload synthesis. The behavioral family (`_test_csrf`, `_test_brute_force`, `_test_weak_session`, `_test_security_headers`) uses the four-phase hypothesis/observe/analyze/emit pattern.
+- **Dispatch (round-robin, per-category budget)**: `_step_execute_exploits` groups planned tasks by vuln-class and dispatches one per class in rotation — every category runs its first task before any category runs its second, so a high-fan-out class (e.g. IDOR over many params) can't exhaust the shared phase deadline and starve others. A category is moved to the back of the rotation once it crosses a soft cap: `exploit_category_max_findings` (default 5) findings OR `exploit_category_time_budget` (default 90s) seconds. The cooperative deadline is still honoured before every task.
+- **Verification-honest emission**: A methodology may only emit a finding when its own evidence confirms exploitability. IDOR gates the phase-3/4 LLM checkpoints behind a deterministic divergence check (a probe must differ from baseline in status, length, or normalised body fingerprint) — identical responses make no LLM call and emit nothing. Stored XSS emits only when phase-5 verification confirms the payload reflects unescaped in an executable position; a synthesized-but-unverified payload emits nothing.
 - **Tier 2/3**: `_test_tier2_technique` / `_test_tier3_technique` consume Research Agent runbook entries
 
 ### Critic Agent
@@ -299,9 +319,9 @@ clinkz/
 ## Pre-Push Verification
 Every change must pass three gates before `git push`. If a gate fails, fix the root cause — never bypass with `--no-verify`, blanket `# noqa`/`# type: ignore`, or skip/xfail added solely to keep CI green.
 
-1. **Lint** — `ruff check src/ tests/` and `ruff format --check src/ tests/`. Use `ruff format src/ tests/` to auto-format. All warnings must be resolved or explicitly justified inline.
+1. **Lint + Cleanup** — `ruff check src/ tests/` and `ruff format --check src/ tests/`. Use `ruff format src/ tests/` to auto-format. All warnings must be resolved or explicitly justified inline. Beyond ruff, clean up every file the diff touches: remove dead code, fix improper naming, strip stale or unnecessary comments, ensure no hardcoded secrets/credentials, and add `None` guards wherever a `None` can reach a dereference.
 2. **Audit (tests)** — `pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_integration` for unit/agent/tool/orchestrator tests on every change. Run the integration and DVWA skill suites (`pytest tests/test_integration/` and `pytest tests/test_skills_dvwa/ -m dvwa_smoke`) when DVWA is up and the change touches scan/exploit/orchestrator paths.
-3. **Security review** — Invoke the `security-review` skill (`/security-review`) on the diff whenever the change touches: tool execution (`src/clinkz/tools/`), scope enforcement, credential handling/storage, LLM input/output, HTTP/network/subprocess calls, deserialization, file I/O on user-controlled paths, MCP server interactions, or report rendering. Resolve every finding before pushing — never ship command/SQL injection, unsafe deserialization, secret leakage, hardcoded credentials, SSRF, path traversal, or scope-bypass code paths.
+3. **Security review** — Invoke the `security-review` skill (`/security-review`) on the diff whenever the change touches: tool execution (`src/clinkz/tools/`), scope enforcement, credential handling/storage, LLM input/output, HTTP/network/subprocess calls, deserialization, file I/O on user-controlled paths, MCP server interactions, or report rendering. The review must include semantic analysis, control-flow analysis, data-flow analysis, dependency review, and `pip-audit` (add `npm audit` only if JS dependencies exist). Resolve every finding before pushing — never ship command/SQL injection, unsafe deserialization, secret leakage, hardcoded credentials, SSRF, path traversal, or scope-bypass code paths.
 
 Doc/config-only changes (no `.py` modified) may skip gates 1–2, but gate 3 still applies if the change can affect runtime behavior (new permission, new tool entry, new hook, new payload list, etc.).
 

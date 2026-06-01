@@ -78,6 +78,20 @@ class Settings(BaseModel):
         description="Maximum number of tasks in a deterministic exploit plan.",
     )
 
+    # Exploit dispatch — per-vuln-class soft caps used by the round-robin
+    # scheduler. Once a category produces this many findings OR consumes this
+    # many seconds, its remaining tasks move to the back of the rotation so
+    # untouched categories run first (no single high-fan-out class can starve
+    # the shared phase budget).
+    exploit_category_max_findings: int = Field(
+        default=5,
+        description="Findings after which a vuln-class is deprioritised in dispatch.",
+    )
+    exploit_category_time_budget: float = Field(
+        default=90.0,
+        description="Seconds after which a vuln-class is deprioritised in dispatch.",
+    )
+
     # Tool execution mode: "local" runs tools directly, "docker" runs via docker exec.
     # Default is "docker" because local mode is a footgun — the resolver can
     # match unrelated host binaries that share a name (e.g., the Python `httpx`
@@ -136,6 +150,8 @@ class Settings(BaseModel):
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
             exploit_max_plan_tasks=int(os.getenv("EXPLOIT_MAX_PLAN_TASKS", "150")),
+            exploit_category_max_findings=int(os.getenv("EXPLOIT_CATEGORY_MAX_FINDINGS", "5")),
+            exploit_category_time_budget=float(os.getenv("EXPLOIT_CATEGORY_TIME_BUDGET", "90.0")),
             tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "docker"),
             docker_container=os.getenv("DOCKER_CONTAINER", "clinkz-tools"),
             mcp_servers=json.loads(os.getenv("MCP_SERVERS", "[]")),
