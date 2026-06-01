@@ -78,6 +78,12 @@ _EXPLOIT_BUDGET = 600
 _EXPLOIT_STOP_MARGIN = 30
 _EXPLOIT_HARD_GRACE = 30
 
+# Research phase backstop. The Research Agent self-returns within
+# settings.research_time_budget; if a single in-flight grounded call overruns,
+# the orchestrator force-stops the phase this many seconds past the budget so
+# Research can never hold the engagement open indefinitely.
+_RESEARCH_PHASE_GRACE = 150
+
 # Maximum cross-phase re-spins per engagement (e.g., Exploit asks for more recon).
 MAX_CROSS_PHASE_RESPINS = 3
 
@@ -433,14 +439,15 @@ class OrchestratorAgent:
         cookies: dict[str, str],
         authenticated_as: str,
     ) -> dict[str, dict[str, Any]]:
-        """Run Research + Scan in parallel, then Exploit sequentially.
+        """Run Research + Scan in parallel; start Exploit as soon as Scan is done.
 
         Flow:
         1. Start Research + Scan concurrently (asyncio.Tasks)
-        2. Wait for Scan to complete (Exploit needs scan results)
-        3. Wait for Research to complete (may finish before or after Scan)
-        4. Pass v2 ScanResult and ResearchResult directly to Exploit
-        5. Run Exploit with both inputs
+        2. Wait for Scan to complete (Exploit's only hard dependency)
+        3. Do NOT block on Research — if it already finished, fold its runbook
+           into Exploit's inputs; otherwise start Exploit without it
+        4. Run Exploit with the v2 ScanResult (and ResearchResult if ready)
+        5. Collect Research's result afterwards for the report
 
         Args:
             targets_str: Human-readable target list.
@@ -471,6 +478,7 @@ class OrchestratorAgent:
                         f"engagement runbook.",
                         "technologies": technologies,
                     },
+                    phase_timeout=settings.research_time_budget + _RESEARCH_PHASE_GRACE,
                 ),
                 name="clinkz-concurrent-research",
             )
@@ -504,19 +512,30 @@ class OrchestratorAgent:
             self._logger.error("Scan failed: %s", exc)
             results["scan"] = {"status": "error", "error": str(exc)}
 
-        # --- Wait for Research (may already be done) ---
+        # --- Strict decouple: Exploit depends on Scan, NOT Research. ---
+        # Research runs concurrently (it shares the Scan window and self-caps at
+        # settings.research_time_budget). If it has already finished, fold its
+        # runbook into Exploit's inputs; otherwise start Exploit immediately and
+        # collect Research's result afterwards for the report. A slow/grounded
+        # Research phase can therefore never delay Exploit's start.
         research_data: dict[str, Any] = {}
-        if research_task is not None:
+        if research_task is not None and research_task.done():
             try:
-                research_result = await research_task
+                research_result = research_task.result()
                 results["research"] = research_result
                 research_data = research_result
                 self._logger.info(
-                    "Research complete — %s", research_result.get("status", "unknown")
+                    "Research already complete — handing runbook to Exploit (%s)",
+                    research_result.get("status", "unknown"),
                 )
             except Exception as exc:
                 self._logger.error("Research failed (proceeding without): %s", exc)
                 results["research"] = {"status": "error", "error": str(exc)}
+        elif research_task is not None:
+            self._logger.info(
+                "Research still running — starting Exploit now (strict decouple); "
+                "runbook handoff skipped this engagement"
+            )
 
         # --- Run Exploit with v2 models directly ---
         exploit_content: dict[str, Any] = {
@@ -577,6 +596,21 @@ class OrchestratorAgent:
         except Exception as exc:
             self._logger.error("Exploit failed: %s", exc)
             results["exploit"] = {"status": "error", "error": str(exc)}
+
+        # --- Collect Research for the report (bounded by its wall-clock budget). ---
+        # Exploit did not wait on it; gather its result now if it wasn't already
+        # collected before Exploit started.
+        if research_task is not None and "research" not in results:
+            try:
+                research_result = await research_task
+                results["research"] = research_result
+                self._logger.info(
+                    "Research collected post-Exploit — %s",
+                    research_result.get("status", "unknown"),
+                )
+            except Exception as exc:
+                self._logger.error("Research failed (post-exploit collect): %s", exc)
+                results["research"] = {"status": "error", "error": str(exc)}
 
         # Fill in any missing results
         for name in ("research", "scan", "exploit"):
@@ -665,7 +699,7 @@ class OrchestratorAgent:
                 continue
 
             handled_own = False
-            for msg in pending:
+            for idx, msg in enumerate(pending):
                 # Messages from other agents must be re-queued so the
                 # correct _run_phase coroutine can process them.
                 # Only re-queue if the sender is still a running agent,
@@ -690,6 +724,11 @@ class OrchestratorAgent:
                 if msg.message_type in (MessageType.RESULT, "result"):
                     self._logger.info("Phase '%s' completed with result", agent_type)
                     result = msg.content
+                    # We drained the whole orchestrator queue but are about to
+                    # return; requeue messages we never examined so a concurrent
+                    # phase runner (e.g. a still-running Research) doesn't lose
+                    # its result.
+                    await self._requeue_unexamined(pending, idx + 1)
                     try:
                         await self._lifecycle.shut_down(agent_type)
                     except Exception:
@@ -707,6 +746,7 @@ class OrchestratorAgent:
                         "agent": agent_type,
                         "error": msg.content.get("error", str(msg.content)),
                     }
+                    await self._requeue_unexamined(pending, idx + 1)
                     try:
                         await self._lifecycle.shut_down(agent_type)
                     except Exception:
@@ -722,6 +762,7 @@ class OrchestratorAgent:
                     if status == "stopped":
                         self._logger.info("Agent '%s' reported stopped", msg.from_agent)
                         if msg.from_agent == agent_type:
+                            await self._requeue_unexamined(pending, idx + 1)
                             return result or {
                                 "status": "agent_stopped",
                                 "agent": agent_type,
@@ -732,6 +773,28 @@ class OrchestratorAgent:
             # the same orchestrator queue.
             if not handled_own:
                 await asyncio.sleep(_POLL_INTERVAL)
+
+    async def _requeue_unexamined(
+        self,
+        pending: list[AgentMessage],
+        start: int,
+    ) -> None:
+        """Requeue drained-but-unexamined messages before a terminal return.
+
+        ``get_pending`` drains the entire orchestrator queue, but a phase runner
+        returns the instant it sees its own terminal message — leaving any later
+        messages in the same batch drained yet unprocessed. With Scan/Research/
+        Exploit polling the same queue concurrently, those would be lost (e.g. a
+        still-running Research's RESULT). Putting them back lets the owning
+        runner pick them up on its next poll.
+
+        Args:
+            pending: The batch returned by ``get_pending``.
+            start: Index of the first message not yet examined by the loop.
+        """
+        assert self._bus is not None
+        for later in pending[start:]:
+            await self._bus.requeue(ORCHESTRATOR, later)
 
     # ------------------------------------------------------------------
     # Query handler (cross-phase data requests)
