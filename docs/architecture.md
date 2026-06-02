@@ -41,10 +41,13 @@ CriticAgent      (validates findings — CVSS, evidence completeness,
 ReportAgent      (zero LLM today — emits JSON + Markdown)
 ```
 
-A monitor loop polls every 10 seconds during the concurrent phase to decide
-when all work is done (Scan finished + Exploit tested all endpoints +
-Research finished). Cross-phase re-spins (e.g. Exploit asks for more recon)
-are capped at `MAX_CROSS_PHASE_RESPINS = 3` per engagement.
+Exploit's only hard dependency is Scan: it starts as soon as Scan completes
+and never blocks on Research. Research's runbook is folded into Exploit only if
+Research has already finished; otherwise Exploit starts immediately and Research
+is collected for the report afterwards. Research self-caps at
+`RESEARCH_TIME_BUDGET` so it can never hold the engagement open. Cross-phase
+re-spins (e.g. Exploit asks for more recon) are capped at
+`MAX_CROSS_PHASE_RESPINS = 3` per engagement.
 
 ## Deterministic agents with LLM checkpoints
 
@@ -80,14 +83,20 @@ checkpoints.
 
 ```
 1. Query persistent KB for tech        (DETERMINISTIC)
-2. Web search for new vulns            (TOOL — runtime_research)
+2. Web search for new vulns            (TOOL — runtime_research +
+                                        native Gemini Search Grounding)
 3. LLM synthesizes techniques          (REASONING checkpoint)
-4. Query related technologies          (DETERMINISTIC)
-5. LLM adapts past techniques          (REASONING checkpoint)
+4. Query related technologies          (DETERMINISTIC — skipped if budget spent)
+5. LLM adapts past techniques          (REASONING checkpoint — skipped if budget spent)
 6. Persist to engagement runbook +     (DETERMINISTIC)
    clinkz_knowledge.db
 7. Build structured ResearchResult     (CODE)
 ```
+
+A hard wall-clock deadline (`RESEARCH_TIME_BUDGET`) is armed at the start of the
+run: step 2 stops launching web research once it trips and the secondary
+related-technology adaptation (steps 4–5) is skipped, so the agent returns
+whatever it has rather than stalling on a slow/grounded provider.
 
 `research_additional()` exposes the same flow for technologies Scan
 discovers mid-engagement.
@@ -152,7 +161,13 @@ Each agent has a default provider:
 | Scan      | Gemini Flash     | `LLM_PROVIDER_SCAN`       |
 | Report    | Gemini Flash     | `LLM_PROVIDER_REPORT`     |
 | Exploit   | Anthropic Claude | `LLM_PROVIDER_EXPLOIT`    |
-| Research  | Anthropic Claude | `LLM_PROVIDER_RESEARCH`   |
+| Research  | Gemini 3.1 Flash-Lite (GA) | `LLM_PROVIDER_RESEARCH` |
+
+Research pins its own Gemini model via `GEMINI_RESEARCH_MODEL`
+(default `gemini-3.1-flash-lite`) so Recon/Scan/Report keep `GEMINI_MODEL`.
+Its `research()` calls use native Gemini Search Grounding for live CVE/writeup
+retrieval, and it is rate-limit-aware (`GEMINI_MAX_RPM`, bounded backoff +
+fallback) under a hard wall-clock budget (`RESEARCH_TIME_BUDGET`).
 
 Agent code never imports openai / anthropic / google-genai directly.
 

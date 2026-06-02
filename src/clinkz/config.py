@@ -40,6 +40,10 @@ class Settings(BaseModel):
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     gemini_model: str = Field(default="gemini-2.5-pro")
     gemini_exploit_model: str = Field(default="gemini-2.5-pro")
+    # Research runs on Gemini 3.1 Flash-Lite (GA). Pinned separately from the
+    # shared gemini_model so Recon/Scan/Report are unaffected. Never set this to
+    # the deprecated gemini-3.1-flash-lite-preview (shut down 2026-05-25).
+    gemini_research_model: str = Field(default="gemini-3.1-flash-lite")
 
     # Per-agent LLM provider overrides
     # - Fast, cheap, high-volume calls → gemini (Flash)
@@ -48,7 +52,10 @@ class Settings(BaseModel):
     scan_llm_provider: LLMProvider = Field(default="gemini")
     report_llm_provider: LLMProvider = Field(default="gemini")
     exploit_llm_provider: LLMProvider = Field(default="anthropic")
-    research_llm_provider: LLMProvider = Field(default="anthropic")
+    # Research moved from anthropic → gemini (Flash-Lite) for live Search
+    # Grounding and to avoid the slow gemini-2.5-pro retry-storm it hit via the
+    # AnthropicClient.research() fallback hop.
+    research_llm_provider: LLMProvider = Field(default="gemini")
 
     # Global default used by the resilient client when no per-agent override
     # matches and the profile chain is exhausted.
@@ -63,6 +70,14 @@ class Settings(BaseModel):
     )
     llm_retry_max_delay: float = Field(
         default=30.0, description="Cap on exponential backoff (seconds)"
+    )
+
+    # Gemini call-rate ceiling (requests/minute) enforced by GeminiClient's
+    # sliding-window limiter. Default sized for Gemini API Tier 1 (well above
+    # the free tier's 5 RPM) while staying conservative enough to avoid bursting
+    # into 429s. Tune with GEMINI_MAX_RPM.
+    gemini_max_rpm: int = Field(
+        default=30, description="Max Gemini requests per minute (per client)"
     )
 
     # State store
@@ -90,6 +105,15 @@ class Settings(BaseModel):
     exploit_category_time_budget: float = Field(
         default=90.0,
         description="Seconds after which a vuln-class is deprioritised in dispatch.",
+    )
+
+    # Research phase hard wall-clock budget (seconds). The Research Agent returns
+    # whatever techniques it has gathered once this elapses, so a slow/grounded
+    # provider can never consume the whole engagement. Exploit is decoupled from
+    # Research (it depends on Scan), so this only bounds Research's own runtime.
+    research_time_budget: float = Field(
+        default=180.0,
+        description="Max wall-clock seconds for the Research phase before partial return.",
     )
 
     # Tool execution mode: "local" runs tools directly, "docker" runs via docker exec.
@@ -138,20 +162,23 @@ class Settings(BaseModel):
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-pro"),
             gemini_exploit_model=os.getenv("GEMINI_EXPLOIT_MODEL", "gemini-2.5-pro"),
+            gemini_research_model=os.getenv("GEMINI_RESEARCH_MODEL", "gemini-3.1-flash-lite"),
             recon_llm_provider=_agent_provider("recon", "gemini"),  # type: ignore[arg-type]
             scan_llm_provider=_agent_provider("scan", "gemini"),  # type: ignore[arg-type]
             exploit_llm_provider=_agent_provider("exploit", "anthropic"),  # type: ignore[arg-type]
-            research_llm_provider=_agent_provider("research", "anthropic"),  # type: ignore[arg-type]
+            research_llm_provider=_agent_provider("research", "gemini"),  # type: ignore[arg-type]
             report_llm_provider=_agent_provider("report", "gemini"),  # type: ignore[arg-type]
             llm_provider_default=global_default,  # type: ignore[arg-type]
             llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
             llm_retry_base_delay=float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0")),
             llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),
+            gemini_max_rpm=int(os.getenv("GEMINI_MAX_RPM", "30")),
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
             exploit_max_plan_tasks=int(os.getenv("EXPLOIT_MAX_PLAN_TASKS", "150")),
             exploit_category_max_findings=int(os.getenv("EXPLOIT_CATEGORY_MAX_FINDINGS", "5")),
             exploit_category_time_budget=float(os.getenv("EXPLOIT_CATEGORY_TIME_BUDGET", "90.0")),
+            research_time_budget=float(os.getenv("RESEARCH_TIME_BUDGET", "180.0")),
             tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "docker"),
             docker_container=os.getenv("DOCKER_CONTAINER", "clinkz-tools"),
             mcp_servers=json.loads(os.getenv("MCP_SERVERS", "[]")),

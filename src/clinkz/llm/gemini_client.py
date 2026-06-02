@@ -1,11 +1,12 @@
 """Google Gemini LLM client.
 
 Uses google-genai SDK with:
-- gemini-2.5-flash for all calls
+- Configurable model (defaults to ``settings.gemini_model``); per-role pins
+  are passed in via the ``model`` argument (e.g. Research → Flash-Lite)
 - Native Google Search grounding for research() (live CVE/exploit data)
 - Function calling for reason()
-- Sliding-window rate limiting (5 req/min, free tier safe)
-- Exponential backoff on 429 / quota errors
+- Sliding-window rate limiting (``settings.gemini_max_rpm``, sized for Tier 1)
+- Exponential backoff on 429 / 503 / quota errors
 - Per-request token usage tracking
 """
 
@@ -33,7 +34,7 @@ from clinkz.llm.base import (
 
 logger = logging.getLogger(__name__)
 
-_MAX_CALLS_PER_MINUTE: int = 5
+_DEFAULT_MAX_CALLS_PER_MINUTE: int = 30
 _RATE_LIMIT_PERIOD: float = 60.0
 _REQUEST_TIMEOUT: float = 120.0  # Hard timeout for every Gemini API call
 
@@ -130,7 +131,7 @@ def _extract_retry_delay(exc: Exception) -> float | None:
 
 
 class GeminiClient(LLMClient):
-    """Google Gemini client using gemini-2.5-flash.
+    """Google Gemini client.
 
     Implements the LLMClient interface for all three methods:
 
@@ -140,9 +141,15 @@ class GeminiClient(LLMClient):
 
     Rate limiting and exponential backoff are applied transparently to every
     SDK call via ``_call_with_backoff()``.
+
+    Args:
+        model: Model name. Defaults to ``settings.gemini_model``. Callers pin
+            a per-role model here (e.g. Research → ``gemini_research_model``).
+        max_rpm: Requests-per-minute ceiling for this client's sliding-window
+            limiter. Defaults to ``settings.gemini_max_rpm`` (Tier 1 sized).
     """
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, max_rpm: int | None = None) -> None:
         api_key = settings.gemini_api_key or settings.google_api_key
         if not api_key:
             raise ValueError(
@@ -158,7 +165,8 @@ class GeminiClient(LLMClient):
             ),
         )
         self._model_name = model or settings.gemini_model
-        self._rate_limiter = _RateLimiter(_MAX_CALLS_PER_MINUTE, _RATE_LIMIT_PERIOD)
+        rpm = max_rpm if max_rpm is not None else settings.gemini_max_rpm
+        self._rate_limiter = _RateLimiter(int(rpm), _RATE_LIMIT_PERIOD)
         self._total_input_tokens: int = 0
         self._total_output_tokens: int = 0
 

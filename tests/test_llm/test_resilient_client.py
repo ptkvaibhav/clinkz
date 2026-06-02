@@ -73,7 +73,12 @@ class _FakeLLM(LLMClient):
 def _register(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, LLMClient]) -> None:
     """Patch ``get_llm_client`` so ``ResilientLLMClient`` resolves fakes."""
 
-    def fake_factory(provider: str | None = None, *, agent_role: str | None = None) -> LLMClient:
+    def fake_factory(
+        provider: str | None = None,
+        *,
+        agent_role: str | None = None,
+        model: str | None = None,
+    ) -> LLMClient:
         key = provider or "__default__"
         if key not in mapping:
             raise RuntimeError(f"No fake registered for provider {key!r}")
@@ -108,7 +113,8 @@ async def test_primary_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     secondary = _FakeLLM("gemini", ["should-not-be-called"])
     _register(monkeypatch, {"anthropic": primary, "gemini": secondary, "openai": secondary})
 
-    client = ResilientLLMClient(agent_role="research")
+    # Exploit leads with Anthropic (reasoning profile) → primary succeeds.
+    client = ResilientLLMClient(agent_role="exploit")
     result = await client.generate_text("hi")
 
     assert result == "ok-from-anthropic"
@@ -128,7 +134,8 @@ async def test_fallback_on_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     secondary = _FakeLLM("gemini", ["ok-from-gemini"])
     _register(monkeypatch, {"anthropic": primary, "gemini": secondary, "openai": secondary})
 
-    client = ResilientLLMClient(agent_role="research")
+    # Exploit leads with Anthropic → 429 falls back to Gemini.
+    client = ResilientLLMClient(agent_role="exploit")
     result = await client.generate_text("hi")
 
     assert result == "ok-from-gemini"
@@ -214,7 +221,8 @@ async def test_skips_unconfigured_providers(monkeypatch: pytest.MonkeyPatch) -> 
     openai = _FakeLLM("openai", ["never-called"])
     _register(monkeypatch, {"anthropic": anthropic, "gemini": gemini, "openai": openai})
 
-    # 'research' → reasoning chain starts with anthropic → should be skipped
+    # 'research' → fast chain leads with gemini (configured) → used directly;
+    # anthropic/openai have no key and are skipped.
     client = ResilientLLMClient(agent_role="research")
     result = await client.generate_text("hi")
 
@@ -229,12 +237,13 @@ async def test_skips_unconfigured_providers(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_agent_role_selects_correct_profile() -> None:
-    for role in ("exploit", "research"):
-        client = ResilientLLMClient(agent_role=role)
-        assert client.profile == "reasoning"
-        assert client.fallback_chain[0] == "anthropic"
+    # Exploit is the only reasoning-profile agent (Anthropic-led).
+    client = ResilientLLMClient(agent_role="exploit")
+    assert client.profile == "reasoning"
+    assert client.fallback_chain[0] == "anthropic"
 
-    for role in ("recon", "scan", "report"):
+    # Research now joins the fast (Gemini-led) profile alongside recon/scan/report.
+    for role in ("recon", "scan", "report", "research"):
         client = ResilientLLMClient(agent_role=role)
         assert client.profile == "fast"
         assert client.fallback_chain[0] == "gemini"
@@ -253,28 +262,29 @@ def test_profile_tables_match_chains() -> None:
 @pytest.mark.asyncio
 async def test_per_agent_config_override(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_all_keys(monkeypatch)
-    # Research defaults to anthropic-first. Flip to gemini-first via override.
-    monkeypatch.setenv("LLM_PROVIDER_RESEARCH", "gemini")
+    # Research now defaults to gemini-first. Flip to anthropic-first via override
+    # to prove the env var bumps a non-default provider to the front of the chain.
+    monkeypatch.setenv("LLM_PROVIDER_RESEARCH", "anthropic")
 
     # Reload settings so the new env var is picked up.
     from clinkz import config as config_mod
 
     fresh = config_mod.Settings.from_env()
-    assert fresh.research_llm_provider == "gemini"
+    assert fresh.research_llm_provider == "anthropic"
 
-    anthropic = _FakeLLM("anthropic", ["never-called"])
-    gemini = _FakeLLM("gemini", ["ok-from-gemini"])
-    _register(monkeypatch, {"gemini": gemini, "anthropic": anthropic, "openai": anthropic})
+    anthropic = _FakeLLM("anthropic", ["ok-from-anthropic"])
+    gemini = _FakeLLM("gemini", ["never-called"])
+    _register(monkeypatch, {"gemini": gemini, "anthropic": anthropic, "openai": gemini})
 
     client = ResilientLLMClient(agent_role="research", config=fresh)
 
-    # Gemini should now be first in the chain, Anthropic still present as fallback.
-    assert client.fallback_chain[0] == "gemini"
-    assert "anthropic" in client.fallback_chain
+    # Anthropic should now be first in the chain, Gemini still present as fallback.
+    assert client.fallback_chain[0] == "anthropic"
+    assert "gemini" in client.fallback_chain
 
     result = await client.generate_text("hi")
-    assert result == "ok-from-gemini"
-    assert anthropic.calls == 0
+    assert result == "ok-from-anthropic"
+    assert gemini.calls == 0
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +296,42 @@ def test_ollama_not_in_fallback_chains() -> None:
     """Ollama client is a stub — it must not appear in any production chain."""
     for profile, chain in LLM_FALLBACK_CHAINS.items():
         assert "ollama" not in chain, f"ollama leaked into '{profile}' chain: {chain}"
+
+
+# ---------------------------------------------------------------------------
+# 9b. Per-role Gemini model: only Research pins Flash-Lite
+# ---------------------------------------------------------------------------
+
+
+def test_research_builds_gemini_client_with_flash_lite_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Research constructs its Gemini client with gemini_research_model
+    (Flash-Lite, GA — never the preview); other roles keep the client default."""
+    _set_all_keys(monkeypatch)
+    captured: list[tuple[str | None, str | None]] = []
+
+    def fake_factory(
+        provider: str | None = None,
+        *,
+        agent_role: str | None = None,
+        model: str | None = None,
+    ) -> LLMClient:
+        captured.append((provider, model))
+        return _FakeLLM(provider or "x", ["ok"])
+
+    monkeypatch.setattr(fallback_mod, "get_llm_client", fake_factory)
+
+    research = ResilientLLMClient(agent_role="research")
+    research._get_or_create_client("gemini")
+    assert captured[-1][0] == "gemini"
+    assert captured[-1][1] == "gemini-3.1-flash-lite"
+    assert "preview" not in (captured[-1][1] or "")
+
+    # Scan (also Gemini-led) must NOT get a model override — keeps gemini_model.
+    scan = ResilientLLMClient(agent_role="scan")
+    scan._get_or_create_client("gemini")
+    assert captured[-1] == ("gemini", None)
 
 
 # ---------------------------------------------------------------------------

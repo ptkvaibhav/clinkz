@@ -24,6 +24,7 @@ def _make_settings(api_key: str = "fake-key", model: str = "gemini-2.5-flash") -
     s.gemini_api_key = api_key
     s.google_api_key = None
     s.gemini_model = model
+    s.gemini_max_rpm = 30
     return s
 
 
@@ -408,3 +409,100 @@ class TestToGeminiContents:
         system, contents = client._to_gemini_contents(messages)
         assert system is None
         assert len(contents) == 1
+
+
+# ---------------------------------------------------------------------------
+# 7. 503 is bounded — no retry storm
+# ---------------------------------------------------------------------------
+
+
+class TestServiceUnavailableBounded:
+    @pytest.mark.asyncio
+    async def test_persistent_503_retries_are_bounded_then_raises(self) -> None:
+        """A persistent 503 retries exactly llm_max_retries times, then raises
+        ServiceUnavailableError — never an unbounded loop (the storm we fixed)."""
+        from clinkz.llm import gemini_client as gemini_mod
+        from clinkz.llm.base import ServiceUnavailableError
+
+        client = _make_client()
+        call_count = 0
+
+        async def always_503() -> Any:
+            nonlocal call_count
+            call_count += 1
+            raise Exception("503 Service Unavailable: model is overloaded")
+
+        client._rate_limiter.acquire = AsyncMock()
+
+        fake_settings = MagicMock()
+        fake_settings.llm_max_retries = 3
+        fake_settings.llm_retry_base_delay = 2.0
+        fake_settings.llm_retry_max_delay = 30.0
+
+        with (
+            patch("clinkz.llm.gemini_client.asyncio.sleep", new_callable=AsyncMock),
+            patch.object(gemini_mod, "settings", fake_settings),
+            pytest.raises(ServiceUnavailableError),
+        ):
+            await client._call_with_backoff(lambda: always_503())
+
+        # Bounded by llm_max_retries — the attempt count cannot run away.
+        assert call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# 8. research() wires native Google Search grounding
+# ---------------------------------------------------------------------------
+
+
+class TestSearchGrounding:
+    @pytest.mark.asyncio
+    async def test_research_passes_google_search_tool(self) -> None:
+        """research() must attach a Google Search grounding Tool and use the
+        client's configured model (Research pins Flash-Lite)."""
+        client = _make_client(_make_settings(model="gemini-3.1-flash-lite"))
+
+        mock_response = MagicMock(text="CVE findings", usage_metadata=None)
+        gen = AsyncMock(return_value=mock_response)
+        client._client.aio.models.generate_content = gen
+        client._rate_limiter.acquire = AsyncMock()
+
+        result = await client.research("CVE-2024-1 exploit for Apache")
+        assert result == "CVE findings"
+
+        kwargs = gen.call_args.kwargs
+        assert kwargs["model"] == "gemini-3.1-flash-lite"
+        cfg = kwargs["config"]
+        assert cfg.tools, "research() must pass at least one Tool"
+        assert any(getattr(t, "google_search", None) is not None for t in cfg.tools), (
+            "research() must enable Google Search grounding"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. Configurable rate-limit ceiling (Tier 1 aware)
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimitConfig:
+    def test_rpm_defaults_to_settings(self) -> None:
+        settings_mock = _make_settings()  # gemini_max_rpm = 30
+        with (
+            patch("clinkz.llm.gemini_client.settings", settings_mock),
+            patch("clinkz.llm.gemini_client.genai.Client"),
+        ):
+            from clinkz.llm.gemini_client import GeminiClient
+
+            client = GeminiClient()
+        assert client._rate_limiter._max_calls == 30
+
+    def test_explicit_rpm_overrides_settings(self) -> None:
+        settings_mock = _make_settings()
+        with (
+            patch("clinkz.llm.gemini_client.settings", settings_mock),
+            patch("clinkz.llm.gemini_client.genai.Client"),
+        ):
+            from clinkz.llm.gemini_client import GeminiClient
+
+            client = GeminiClient(max_rpm=7)
+        assert client._rate_limiter._max_calls == 7
