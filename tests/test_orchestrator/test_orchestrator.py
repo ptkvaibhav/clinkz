@@ -430,9 +430,10 @@ def test_build_agent_llms() -> None:
         assert isinstance(agent_llms[role], ResilientLLMClient)
         assert agent_llms[role].agent_role == role
 
-    # Reasoning-profile agents lead with Claude; fast-profile lead with Gemini.
+    # Exploit leads with Claude (reasoning); fast-profile agents lead with Gemini.
+    # Research moved to Gemini Flash-Lite, so it now leads with Gemini too.
     assert agent_llms["exploit"].fallback_chain[0] == "anthropic"
-    assert agent_llms["research"].fallback_chain[0] == "anthropic"
+    assert agent_llms["research"].fallback_chain[0] == "gemini"
     assert agent_llms["recon"].fallback_chain[0] == "gemini"
     assert agent_llms["scan"].fallback_chain[0] == "gemini"
     assert agent_llms["report"].fallback_chain[0] == "gemini"
@@ -481,3 +482,82 @@ async def test_research_skipped_no_technologies() -> None:
     # But it should appear in results as skipped
     assert result["phases"]["research"]["status"] == "skipped"
     assert result["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Test 13: Exploit is decoupled from Research (strict decouple)
+# ---------------------------------------------------------------------------
+
+
+async def test_exploit_starts_without_waiting_for_slow_research() -> None:
+    """Strict decouple: Exploit spins up even while Research is still running.
+
+    Research's only hard sibling is Scan; a slow/grounded Research phase must not
+    gate Exploit's start. Research is still collected for the report afterwards.
+    """
+    import asyncio
+
+    phase_results = {"recon": {"tech": ["nginx", "php"], "hosts": [{"ip": "10.10.10.1"}]}}
+
+    bus_holder: list[MessageBus] = []
+    running_agents: list[str] = []
+    research_release = asyncio.Event()
+    research_running_when_exploit_started: dict[str, bool] = {}
+
+    mock_lifecycle = MagicMock()
+    mock_lifecycle.get_status.return_value = {}
+    mock_lifecycle.get_running_agents.side_effect = lambda: list(running_agents)
+    mock_lifecycle.shut_down = AsyncMock()
+
+    async def _spin_up(agent_type: str, task_msg: AgentMessage) -> MagicMock:
+        running_agents.append(agent_type)
+        if agent_type == "research":
+            # Simulate a slow/grounded Research phase that has NOT finished by the
+            # time Scan completes. It stays in running_agents (it's only released
+            # after Exploit starts) so its RESULT is delivered cleanly.
+            await research_release.wait()
+            await bus_holder[0].send(
+                _result_msg(agent_type, task_msg.engagement_id, {"status": "complete"})
+            )
+            return MagicMock()
+
+        if agent_type == "exploit":
+            # Record that Research is still in-flight at Exploit's start, then
+            # release Research so the engagement can finish.
+            research_running_when_exploit_started["v"] = (
+                "research" in running_agents and not research_release.is_set()
+            )
+            research_release.set()
+
+        content = phase_results.get(agent_type, {"status": "complete", "agent": agent_type})
+        await bus_holder[0].send(_result_msg(agent_type, task_msg.engagement_id, content))
+        if agent_type in running_agents:
+            running_agents.remove(agent_type)
+        return MagicMock()
+
+    mock_lifecycle.spin_up = AsyncMock(side_effect=_spin_up)
+
+    def _lifecycle_constructor(**kwargs: Any) -> MagicMock:
+        if "bus" in kwargs:
+            bus_holder.append(kwargs["bus"])
+        running_agents.clear()
+        return mock_lifecycle
+
+    orchestrator = OrchestratorAgent(llm=_MockLLM(), db_path=":memory:")
+
+    with (
+        patch(
+            "clinkz.orchestrator.orchestrator.AgentLifecycleManager",
+            side_effect=_lifecycle_constructor,
+        ),
+        patch.object(orchestrator, "_probe_url", new=AsyncMock(return_value=None)),
+        patch.object(orchestrator, "_attempt_login", new=AsyncMock(return_value=False)),
+        patch.object(orchestrator, "_build_agent_llms", return_value={}),
+    ):
+        result = await orchestrator.run(SCOPE)
+
+    assert result["status"] == "completed"
+    # The whole point: Exploit started while Research was still running.
+    assert research_running_when_exploit_started.get("v") is True
+    # Research is still collected for the report after Exploit.
+    assert result["phases"]["research"]["status"] == "complete"

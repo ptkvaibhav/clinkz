@@ -696,3 +696,56 @@ async def test_no_persistent_kb_still_works(tmp_path: Path) -> None:
 
     assert result["status"] == "complete"
     assert result["result"]["existing_knowledge"]["playbook_entries"] == []
+
+
+# ---------------------------------------------------------------------------
+# Wall-clock budget + rate-limit resilience
+# ---------------------------------------------------------------------------
+
+
+async def test_research_respects_wall_clock_budget(tmp_path: Path) -> None:
+    """A zero budget trips the deadline before step 2, so no web research runs
+    and the agent returns a complete (partial) result instead of looping."""
+    llm = MockResearchLLM()
+    kb = _make_mock_kb()
+    researcher = MockRuntimeResearcher()
+
+    agent, state, _ = await _make_agent(
+        tmp_path / "budget.db", llm=llm, kb=kb, researcher=researcher
+    )
+    # Force an immediately-expired deadline.
+    agent._research_time_budget = 0.0
+
+    result = await agent.run({"technologies": ["Apache 2.4.25", "PHP 7.2", "nginx 1.24"]})
+    await state.close()
+
+    assert result["status"] == "complete"
+    # Budget tripped before any grounded web research call was launched.
+    assert researcher.research_calls == []
+
+
+class _Failing503Researcher:
+    """RuntimeResearcher that always raises 503 (provider overloaded)."""
+
+    def __init__(self) -> None:
+        self.research_calls: list[str] = []
+
+    async def research_technology(self, technology: str, version: str = "") -> str:
+        self.research_calls.append(technology)
+        from clinkz.llm.base import ServiceUnavailableError
+
+        raise ServiceUnavailableError("503 model overloaded")
+
+
+async def test_research_returns_partial_on_persistent_503(tmp_path: Path) -> None:
+    """When web research raises 503 for every technology, the agent still
+    returns a complete (partial) result rather than propagating the error."""
+    researcher = _Failing503Researcher()
+    agent, state, _ = await _make_agent(tmp_path / "five03.db", researcher=researcher)
+
+    result = await agent.run({"technologies": ["Apache 2.4.25"]})
+    await state.close()
+
+    assert result["status"] == "complete"
+    assert researcher.research_calls == ["Apache 2.4.25"]  # it tried once (no fan-out)
+    assert "runbook" in result["result"]

@@ -38,6 +38,7 @@ def get_llm_client(
     provider: str | None = None,
     *,
     agent_role: str | None = None,
+    model: str | None = None,
 ) -> LLMClient:
     """Instantiate and return the correct LLMClient.
 
@@ -47,6 +48,11 @@ def get_llm_client(
         agent_role: Agent role name (e.g., ``"recon"``, ``"exploit"``).
             When set and ``provider`` is None, resolves to the provider
             configured for that role in settings.
+        model: Optional model-name override. Forwarded to the Gemini and
+            Anthropic clients (which accept a single ``model`` kwarg) so a
+            caller can pin a per-role model — e.g. Research uses
+            ``gemini_research_model`` while Recon/Scan keep ``gemini_model``.
+            Ignored by providers that take no single model kwarg (OpenAI).
 
     Returns:
         An initialized LLMClient instance.
@@ -72,12 +78,12 @@ def get_llm_client(
     if resolved == "anthropic":
         from clinkz.llm.anthropic_client import AnthropicClient
 
-        return AnthropicClient()
+        return AnthropicClient(model=model)
 
     if resolved == "gemini":
         from clinkz.llm.gemini_client import GeminiClient
 
-        return GeminiClient()
+        return GeminiClient(model=model)
 
     if resolved == "ollama":
         from clinkz.llm.ollama_client import OllamaClient

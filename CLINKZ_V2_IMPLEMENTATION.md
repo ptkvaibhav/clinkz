@@ -141,8 +141,11 @@ REPORT                                                           [partial]
 - Deterministic Scan Agent (service-specific methods + fallback chains) — done
 - HTTP / FTP / SSH / SMB / DB scan methods — done
 - Research Agent with persistent KB integration — done
+- Research on Gemini 3.1 Flash-Lite (GA) with native Search Grounding,
+  configurable RPM, bounded backoff, and a hard wall-clock budget — done
 - Cross-technology adaptation — done
-- Concurrent execution wiring (Scan + Research + Exploit) — done
+- Concurrent execution wiring (Scan + Research + Exploit); Exploit decoupled
+  from Research (depends on Scan only) — done
 
 ### Phase 3: Exploit + Integration — **mostly DONE**
 - Deterministic Exploit Agent (LLM plans, `_test_*` execute) — done

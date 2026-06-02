@@ -82,7 +82,7 @@ All v2 phase agents follow the **deterministic-steps-with-LLM-checkpoints** patt
 ### Orchestrator Agent
 - **Role**: Central coordinator and message router
 - **Default LLM**: Anthropic (Claude) for strategic reasoning, with a resilient fallback to Gemini and OpenAI
-- **Phase shape**: Recon (sequential) → **Scan + Research + Exploit run concurrently** sharing SQLite state → Report (sequential)
+- **Phase shape**: Recon (sequential) → **Scan + Research + Exploit run concurrently** sharing SQLite state → Report (sequential). Exploit's only hard dependency is Scan — it starts as soon as Scan completes and never blocks on Research (whose runbook is a best-effort handoff, folded in only if already done).
 - **Cross-phase re-spins**: Capped at `MAX_CROSS_PHASE_RESPINS = 3` per engagement
 - **Does NOT**: Execute tools directly — delegates all tool work to phase agents.
 
@@ -97,8 +97,10 @@ All v2 phase agents follow the **deterministic-steps-with-LLM-checkpoints** patt
 - **Fallback chains**: `katana → gospider → hakrawler` for crawling; `ffuf → gobuster → feroxbuster` for fuzzing (declared in `tools/resolver.py::TOOL_CHAINS`)
 
 ### Research Agent (v2)
-- **LLM**: Anthropic (Claude Opus)
-- **Runs concurrently** with Scan and Exploit
+- **LLM**: Gemini 3.1 Flash-Lite (GA) — `LLM_PROVIDER_RESEARCH=gemini`, model pinned via `GEMINI_RESEARCH_MODEL` (default `gemini-3.1-flash-lite`; never the shut-down `-preview` variant). Fast profile with Anthropic/OpenAI fallback.
+- **Live web research via native Gemini Search Grounding**: `GeminiClient.research()` attaches a Google Search tool, so `RuntimeResearcher` retrieves live CVEs/writeups natively. `runtime_research.py` is retained because it *complements* grounding (it adds NVD structured CVE data, then delegates to the grounded `research()`) — it is not a separate/duplicate search path.
+- **Runs concurrently** with Scan and Exploit. **Exploit does NOT wait for Research** (Exploit depends on Scan): Research's runbook is folded into Exploit only if Research has already finished; otherwise Exploit starts immediately and Research is collected for the report afterwards.
+- **Rate-limit aware**: bounded retries + exponential backoff capped at `LLM_RETRY_MAX_DELAY` then provider fallback (no 503 storm); a configurable RPM ceiling (`GEMINI_MAX_RPM`, default 30, Tier-1 sized); and a hard wall-clock budget (`RESEARCH_TIME_BUDGET`, default 180s) after which it returns whatever techniques it has gathered.
 - **Steps**: Query persistent KB for tech → web-search new vulns (CVEs, writeups) → LLM synthesizes techniques → query related techs → LLM adapts past techniques → persist to engagement runbook AND `clinkz_knowledge.db`
 - **Mid-engagement hook**: `research_additional()` for techs Scan discovers later
 
@@ -147,8 +149,8 @@ The existing ToolBase parsers (nmap, subfinder, httpx, etc.) serve as the local 
 - Python 3.12+ with asyncio for concurrency
 - **LLM-agnostic design** — all LLM calls go through `src/clinkz/llm/base.py`
 - Supported LLM backends:
-  1. Anthropic API (Claude Sonnet / Opus) — primary for Exploit + Research agents
-  2. Google Gemini API (Flash / Pro) — primary for Recon / Scan / Report agents
+  1. Anthropic API (Claude Sonnet / Opus) — primary for the Exploit agent (pinned)
+  2. Google Gemini API — primary for Recon / Scan / Report (`gemini_model`, default `gemini-2.5-pro`) and Research (`gemini_research_model`, default `gemini-3.1-flash-lite` GA, with native Search Grounding). Per-client RPM ceiling via `GEMINI_MAX_RPM`.
   3. OpenAI API (GPT-4o / GPT-4o-mini) — third in the resilient fallback chain
   4. Ollama (local models) — stub, not yet wired into the fallback chain
 - LLM provider is set via config: `LLM_PROVIDER=openai` / `anthropic` / `gemini` / `ollama`

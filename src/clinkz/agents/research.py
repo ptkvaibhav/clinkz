@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clinkz.agents.base import BaseAgent
+from clinkz.config import settings
 from clinkz.llm.base import LLMClient
 from clinkz.models.research import (
     AdaptedTechnique,
@@ -96,6 +98,11 @@ class ResearchAgent(BaseAgent):
         # Accumulated runbook for the engagement (grows with research_additional)
         self._runbook: list[Technique | AdaptedTechnique] = []
         self._new_kb_entries_added: int = 0
+        # Hard wall-clock deadline for run(), set when run() starts. Optional
+        # per-instance budget override (seconds) lets tests force an immediate
+        # deadline; production reads settings.research_time_budget.
+        self._deadline: float | None = None
+        self._research_time_budget: float | None = None
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -126,6 +133,18 @@ class ResearchAgent(BaseAgent):
         return self._runtime_researcher
 
     # ------------------------------------------------------------------
+    # Wall-clock budget
+    # ------------------------------------------------------------------
+
+    def _budget_exceeded(self) -> bool:
+        """True once the run()-armed wall-clock deadline has passed.
+
+        Returns False when no deadline is set (e.g. ``research_additional`` or
+        direct unit calls that never armed one).
+        """
+        return self._deadline is not None and time.monotonic() >= self._deadline
+
+    # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
 
@@ -149,10 +168,21 @@ class ResearchAgent(BaseAgent):
                 "status": "complete",
             }
 
+        # Arm the hard wall-clock budget. Once it elapses the pipeline returns
+        # whatever it has gathered so a slow/grounded provider can never consume
+        # the engagement (Exploit is decoupled and only depends on Scan).
+        budget = (
+            self._research_time_budget
+            if self._research_time_budget is not None
+            else settings.research_time_budget
+        )
+        self._deadline = time.monotonic() + budget
+
         self._logger.info(
-            "ResearchAgent v2 starting — %d technologies: %s",
+            "ResearchAgent v2 starting — %d technologies: %s (budget=%.0fs)",
             len(technologies),
             technologies,
+            budget,
         )
 
         # Step 1: Query persistent KB for existing knowledge (DETERMINISTIC)
@@ -178,18 +208,28 @@ class ResearchAgent(BaseAgent):
         techniques = await self._llm_synthesize_techniques(technologies, existing, new_research)
         self._logger.info("Step 3 complete: %d techniques synthesized", len(techniques))
 
-        # Step 4: Query related technologies from persistent KB (DETERMINISTIC)
-        self._logger.info("Step 4: Query related technologies")
-        related = await self._step_query_related_technologies(technologies)
-        self._logger.info(
-            "Step 4 complete: %d related technique sets",
-            len(related),
-        )
+        # Steps 4-5: related-technology adaptation (secondary). Skipped when the
+        # wall-clock budget is spent so we don't burn extra LLM calls past the
+        # deadline — we return the techniques synthesized so far instead.
+        adapted: list[AdaptedTechnique] = []
+        if self._budget_exceeded():
+            self._logger.warning(
+                "Steps 4-5 skipped — research budget reached; returning %d techniques",
+                len(techniques),
+            )
+        else:
+            # Step 4: Query related technologies from persistent KB (DETERMINISTIC)
+            self._logger.info("Step 4: Query related technologies")
+            related = await self._step_query_related_technologies(technologies)
+            self._logger.info(
+                "Step 4 complete: %d related technique sets",
+                len(related),
+            )
 
-        # Step 5: LLM adapts past techniques for current target (REASONING)
-        self._logger.info("Step 5: LLM adapt related techniques")
-        adapted = await self._llm_adapt_techniques(technologies, related, techniques)
-        self._logger.info("Step 5 complete: %d adapted techniques", len(adapted))
+            # Step 5: LLM adapts past techniques for current target (REASONING)
+            self._logger.info("Step 5: LLM adapt related techniques")
+            adapted = await self._llm_adapt_techniques(technologies, related, techniques)
+            self._logger.info("Step 5 complete: %d adapted techniques", len(adapted))
 
         # Step 6: Persist results (DETERMINISTIC)
         self._logger.info("Step 6: Persist results to KB")
@@ -330,7 +370,18 @@ class ResearchAgent(BaseAgent):
         researched: list[str] = []
         researcher = self._get_researcher()
 
+        import re
+
         for tech in technologies:
+            # Stop launching new web research once the wall-clock budget is spent.
+            if self._budget_exceeded():
+                self._logger.warning(
+                    "Step 2 budget reached — stopping web research (%d/%d technologies done)",
+                    len(researched),
+                    len(technologies),
+                )
+                break
+
             # Check if KB already has comprehensive coverage
             if self._has_comprehensive_coverage(tech, existing):
                 self._logger.info(
@@ -340,28 +391,28 @@ class ResearchAgent(BaseAgent):
 
             researched.append(tech)
 
-            # Use LLM to generate search queries
+            # Generate focused search angles (logged). The grounded research
+            # call below covers the technology comprehensively in one request.
             queries = await self._llm_generate_search_queries(tech)
+            self._logger.info("Web research for '%s' (angles: %s)", tech, queries)
 
-            for query in queries:
-                self._logger.info("Web research query: %s", query)
-                try:
-                    result_text = await researcher.research_technology(tech)
-                    # Parse CVE IDs from the result
-                    import re
-
-                    cve_matches = re.findall(r"CVE-\d{4}-\d{4,}", result_text)
-                    cves_found.extend(cve_matches)
-
-                    findings.append(
-                        WebSearchResult(
-                            query=query,
-                            results=[{"text": result_text}],
-                            source_urls=[],
-                        )
+            # One grounded research call per technology. Native Gemini Search
+            # Grounding already searches broadly, so we no longer fan out an
+            # identical call per generated query — that tripled request volume
+            # and fed the 503 storm.
+            try:
+                result_text = await researcher.research_technology(tech)
+                cve_matches = re.findall(r"CVE-\d{4}-\d{4,}", result_text)
+                cves_found.extend(cve_matches)
+                findings.append(
+                    WebSearchResult(
+                        query="; ".join(queries) if queries else tech,
+                        results=[{"text": result_text}],
+                        source_urls=[],
                     )
-                except Exception as exc:
-                    self._logger.warning("Web research failed for '%s': %s", query, exc)
+                )
+            except Exception as exc:
+                self._logger.warning("Web research failed for '%s': %s", tech, exc)
 
         # Deduplicate CVEs
         cves_found = sorted(set(cves_found))

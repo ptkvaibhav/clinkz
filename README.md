@@ -42,10 +42,10 @@ Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamicall
 **How it works:**
 
 1. The **Orchestrator** validates scope and runs **Recon** sequentially
-2. **Scan**, **Research**, and **Exploit** then run **concurrently**, sharing SQLite state — Scan writes endpoints, Research writes runbook entries, Exploit reads both and writes findings
+2. **Scan**, **Research**, and **Exploit** then run **concurrently**, sharing SQLite state. Exploit's only hard dependency is Scan — it starts as soon as Scan completes and never waits for Research (Research's runbook is folded in only if it has already finished)
 3. **Recon** discovers subdomains, ports, services, and tech stack
 4. **Scan** crawls + fuzzes every HTTP service and enumerates non-HTTP services (FTP/SSH/SMB/DB)
-5. **Research** queries the persistent KB for known techniques and live-searches the web for new CVEs/writeups, persisting results back to the KB
+5. **Research** queries the persistent KB for known techniques and live-searches the web for new CVEs/writeups (Gemini 3.1 Flash-Lite with native Search Grounding), under a hard wall-clock budget, persisting results back to the KB
 6. **Exploit** plans tests with an LLM and executes deterministic `_test_*` skills (with adaptive multi-phase methodologies for XSS-reflected and SQLi)
 7. **Critic** validates findings; **Report** emits JSON + Markdown
 
@@ -135,12 +135,15 @@ All configuration is via environment variables in `.env`. The defaults below are
 | `LLM_PROVIDER_SCAN` | Scan agent provider | `gemini` |
 | `LLM_PROVIDER_REPORT` | Report agent provider | `gemini` |
 | `LLM_PROVIDER_EXPLOIT` | Exploit agent provider | `anthropic` |
-| `LLM_PROVIDER_RESEARCH` | Research agent provider | `anthropic` |
+| `LLM_PROVIDER_RESEARCH` | Research agent provider | `gemini` |
 | `ORCHESTRATOR_MODEL` | Model for the Orchestrator agent | `gpt-4o` |
 | `AGENT_MODEL` | Model for phase agents (when provider is OpenAI) | `gpt-4o-mini` |
 | `ANTHROPIC_MODEL` | Claude model name | `claude-sonnet-4-6` |
-| `GEMINI_MODEL` | Gemini model name | `gemini-2.5-pro` |
+| `GEMINI_MODEL` | Gemini model for Recon / Scan / Report | `gemini-2.5-pro` |
 | `GEMINI_EXPLOIT_MODEL` | Gemini model used when Exploit falls back to Gemini | `gemini-2.5-pro` |
+| `GEMINI_RESEARCH_MODEL` | Gemini model for Research (GA; never the `-preview` variant) | `gemini-3.1-flash-lite` |
+| `GEMINI_MAX_RPM` | Per-client Gemini requests/minute ceiling (Tier-1 sized) | `30` |
+| `RESEARCH_TIME_BUDGET` | Hard wall-clock budget (seconds) for the Research phase | `180` |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | Provider API keys | — |
 | `GOOGLE_API_KEY` | Legacy alias for `GEMINI_API_KEY` | — |
 | `OLLAMA_BASE_URL` | Ollama server URL (Ollama client is currently a stub) | `http://localhost:11434` |
@@ -187,7 +190,7 @@ Tools are discovered dynamically at runtime via `ToolResolver.find_tool(capabili
 | **Orchestrator** | Anthropic (resilient fallback) | Central coordinator — Recon → concurrent (Scan + Research + Exploit) → Report |
 | **Recon** | Gemini Flash | Port scan → service/version → web recon → tech stack |
 | **Scan** | Gemini Flash | Crawl + fuzz HTTP, enumerate FTP/SSH/SMB/DB; coverage checkpoint via fallback chains |
-| **Research** | Anthropic Claude | Cross-engagement KB lookup + live web search; persists techniques back to `clinkz_knowledge.db` |
+| **Research** | Gemini 3.1 Flash-Lite (Search Grounding) | Cross-engagement KB lookup + live web search; rate-limit-aware with a wall-clock budget; persists techniques back to `clinkz_knowledge.db` |
 | **Exploit** | Anthropic Claude | LLM plans tests; deterministic `_test_*` skills execute; adaptive XSS-reflected and SQLi methodologies |
 | **Critic** | (LLM-only) | Validates findings, checks CVSS, eliminates false positives |
 | **Report** | (no LLM today) | Pulls findings from state store, emits JSON + Markdown |
