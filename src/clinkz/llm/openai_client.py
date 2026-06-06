@@ -6,6 +6,7 @@ All others follow the same pattern.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -34,6 +35,10 @@ def _translate_openai_error(exc: Exception) -> Exception:
         return RateLimitError(f"OpenAI rate-limited: {exc}")
     if code == 503 or "503" in msg or "overloaded" in msg or "unavailable" in msg:
         return ServiceUnavailableError(f"OpenAI 503: {exc}")
+    # A per-call timeout (our asyncio.wait_for ceiling or the SDK's own) is a
+    # transient condition — surface it as 503 so the resilient client falls back.
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in msg:
+        return ServiceUnavailableError(f"OpenAI timed out: {exc}")
     return exc
 
 
@@ -98,6 +103,23 @@ class OpenAIClient(LLMClient):
             )
 
     # ------------------------------------------------------------------
+    # Core API call with a hard per-call timeout
+    # ------------------------------------------------------------------
+
+    async def _create(self, **kwargs: Any) -> ChatCompletion:
+        """Call chat.completions.create with a hard per-call ceiling.
+
+        Wrapping in asyncio.wait_for bounds a single logical call (including any
+        retries the SDK performs internally) so one hung request cannot stall the
+        engagement — the safety valve that matters now that the exploit phase has
+        no wall-clock deadline.
+        """
+        return await asyncio.wait_for(
+            self._client.chat.completions.create(**kwargs),
+            timeout=settings.llm_request_timeout,
+        )
+
+    # ------------------------------------------------------------------
     # LLMClient interface
     # ------------------------------------------------------------------
 
@@ -124,7 +146,7 @@ class OpenAIClient(LLMClient):
             kwargs["tool_choice"] = "auto"
 
         try:
-            response: ChatCompletion = await self._client.chat.completions.create(**kwargs)
+            response: ChatCompletion = await self._create(**kwargs)
         except Exception as exc:
             raise _translate_openai_error(exc) from exc
         self._track_usage(response)
@@ -177,7 +199,7 @@ class OpenAIClient(LLMClient):
             Generated text content.
         """
         try:
-            response: ChatCompletion = await self._client.chat.completions.create(
+            response: ChatCompletion = await self._create(
                 model=self._agent_model,
                 messages=[{"role": "user", "content": prompt}],
             )
