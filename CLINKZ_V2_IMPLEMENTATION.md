@@ -140,6 +140,8 @@ REPORT                                                           [partial]
 ### Phase 2: Scan + Research — **DONE**
 - Deterministic Scan Agent (service-specific methods + fallback chains) — done
 - HTTP / FTP / SSH / SMB / DB scan methods — done
+- Crawl-safety: skip state-changing links (`_url_safety.is_state_changing_url`)
+  so crawl/enrichment never poisons the shared session (e.g. DVWA PHPIDS) — done
 - Research Agent with persistent KB integration — done
 - Research on Gemini 3.1 Flash-Lite (GA) with native Search Grounding,
   configurable RPM, bounded backoff, and a hard wall-clock budget — done
@@ -152,6 +154,12 @@ REPORT                                                           [partial]
 - Runbook consumption (Tier 2 / Tier 3 from Research) — done
 - Endpoint polling from shared SQLite state — done
 - Full pipeline integration against DVWA — done
+- Clean-session guard: planner (`_dedupe_and_rank_endpoints`) drops
+  state-changing links so the exploit phase never re-poisons the session — done
+- CMDi phase-1 echo-canary candidacy (reflection-guarded) so injection surfaces
+  even when the base command writes only to stderr — done
+- LLM JSON parse resilience extended from the plan parse to the Step-3 analysis
+  parse (`_repair_and_load` + one re-prompt, graceful fallback) — done
 - Adaptive methodologies (W2.1):
   - XSS-reflected — done
   - SQLi — done
