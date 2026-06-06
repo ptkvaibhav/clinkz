@@ -72,8 +72,17 @@ def _is_service_unavailable_error(exc: Exception) -> bool:
     return code in (503, 529) or "503" in msg or "529" in msg or "overloaded" in msg
 
 
+def _is_timeout_error(exc: Exception) -> bool:
+    """Return True if the exception is a hard per-call timeout.
+
+    Covers both the asyncio.wait_for ceiling we enforce locally and the SDK's
+    own httpx timeout, so a single slow call is retried rather than aborting.
+    """
+    return isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in str(exc).lower()
+
+
 def _is_retriable_error(exc: Exception) -> bool:
-    return _is_rate_limit_error(exc) or _is_service_unavailable_error(exc)
+    return _is_rate_limit_error(exc) or _is_service_unavailable_error(exc) or _is_timeout_error(exc)
 
 
 class AnthropicClient(LLMClient):
@@ -213,7 +222,13 @@ class AnthropicClient(LLMClient):
         for attempt in range(max_retries):
             try:
                 await self._rate_limiter.acquire()
-                return await self._client.messages.create(**kwargs)
+                # Hard per-call ceiling so a single hung request cannot stall the
+                # engagement (the exploit phase no longer has a wall-clock
+                # deadline; op-level timeouts are the safety valve).
+                return await asyncio.wait_for(
+                    self._client.messages.create(**kwargs),
+                    timeout=settings.llm_request_timeout,
+                )
             except Exception as exc:
                 last_exc = exc
                 if _is_retriable_error(exc) and attempt < max_retries - 1:
