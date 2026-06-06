@@ -447,6 +447,93 @@ async def test_scan_http_service(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test: crawl-safety — state-changing links are never persisted
+# ---------------------------------------------------------------------------
+
+
+class _PoisonCrawlTool(_MockCrawlTool):
+    """Crawler whose output includes WAF/security toggles and a logout link.
+
+    Reproduces the 76a9ead5 regression at the scan layer: katana discovers
+    ``security.php?phpids=on`` and the enrichment step GET-visits it, enabling
+    PHPIDS for the whole shared session. Scan must drop such links so they are
+    neither visited nor persisted as endpoints.
+    """
+
+    def parse_output(self, raw_output: str) -> _MockCrawlOutput:
+        return _MockCrawlOutput(
+            tool_name=self.name,
+            success=True,
+            raw_output=raw_output,
+            endpoints=[
+                "http://10.0.0.1/index.php",
+                "http://10.0.0.1/vulnerabilities/sqli/?id=1&Submit=Submit",
+                "http://10.0.0.1/security.php?phpids=on",
+                "http://10.0.0.1/security.php?phpids=off",
+                "http://10.0.0.1/logout.php",
+            ],
+        )
+
+
+def _make_poison_resolver() -> ToolResolver:
+    """Resolver whose crawler returns state-changing links among legit ones."""
+    resolver = MagicMock(spec=ToolResolver)
+    _cap_map: dict[str, tuple[type[ToolBase], str]] = {
+        "web_crawling": (_PoisonCrawlTool, "katana"),
+        "directory_fuzzing": (_MockFuzzTool, "ffuf"),
+        "port_scanning": (_MockNmapTool, "nmap"),
+        "service_detection": (_MockNmapTool, "nmap"),
+    }
+
+    def _find_tool(cap: str) -> ToolMatch | None:
+        entry = _cap_map.get(cap)
+        if entry is None:
+            return None
+        cls, name = entry
+        return ToolMatch(name=name, source="local", available=True, tool_class=cls)
+
+    resolver.find_tool.side_effect = _find_tool
+    resolver.find_tools_ranked.return_value = ["katana"]
+
+    async def _try_until_sufficient(
+        capability: str, min_results: int, run_fn: Any, *args: Any
+    ) -> tuple[str, Any]:
+        entry = _cap_map.get(capability)
+        if entry is None:
+            raise ValueError(f"No tools for {capability}")
+        _cls, name = entry
+        result = await run_fn(name, *args)
+        return name, result
+
+    resolver.try_until_sufficient = AsyncMock(side_effect=_try_until_sufficient)
+    return resolver
+
+
+async def test_scan_excludes_state_changing_links(tmp_path: Path) -> None:
+    """Scan must not persist WAF/security toggles or logout links as endpoints.
+
+    Without the crawl-safety filter, ``security.php?phpids=on`` would be
+    enriched (GET-visited) and persisted, poisoning the shared session's WAF
+    state for the Exploit phase. The filter keeps the legit vulnerable surface
+    while dropping every state-changing link.
+    """
+    agent, state, _ = await _make_agent(tmp_path / "poison.db", resolver=_make_poison_resolver())
+    recon = _make_recon_result(
+        services=[ReconService(port=80, service_name="http", version="nginx/1.24")],
+    )
+    result = await agent.run({"recon_result": recon})
+    await state.close()
+
+    http_scan = result["result"]["service_scans"][0]
+    urls = [ep["url"] for ep in http_scan["result"]["endpoints"]]
+
+    assert not any("phpids=" in u for u in urls), f"WAF toggle leaked into endpoints: {urls}"
+    assert not any("logout" in u.lower() for u in urls), f"logout leaked into endpoints: {urls}"
+    # The legit vulnerable surface must survive the filter.
+    assert any("vulnerabilities/sqli" in u for u in urls), f"legit endpoint dropped: {urls}"
+
+
+# ---------------------------------------------------------------------------
 # Test: dispatches by service type
 # ---------------------------------------------------------------------------
 
