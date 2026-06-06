@@ -13,6 +13,7 @@ Plus an end-to-end run that drives all six phases through one ``page``.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 from unittest.mock import AsyncMock
@@ -115,8 +116,47 @@ class TestPhase1InjectionPointMapping:
         page = _make_page()
         is_candidate, baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
         assert is_candidate is False
-        # 6 baselines: original + 5 separator variants.
-        assert len(baselines) == 6
+        # 6 separator baselines + 4 echo-canary confirmation probes (run only
+        # because no bare separator diverged, and none reflect the canary here).
+        assert len(baselines) == 10
+
+    @pytest.mark.asyncio
+    async def test_canary_echo_marks_candidate_when_base_is_inert(self) -> None:
+        """DVWA-exec case: bare separators don't change the output (``ping <bad>``
+        fails to stderr, which ``shell_exec`` drops), but an injected
+        ``;echo <canary>`` reflects — so the echo-canary probe must still mark
+        the param a candidate. This is the 76a9ead5 cmdi miss."""
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            m = re.search(r"echo (\w+)", value)
+            if m:  # the injected echo executes — only the canary surfaces
+                return _HTTPResponse(status=200, body=f"<pre>{m.group(1)}</pre>")
+            return _HTTPResponse(status=200, body="<html>same</html>")  # inert base command
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page()
+        is_candidate, _baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        assert is_candidate is True
+
+    @pytest.mark.asyncio
+    async def test_pure_reflection_does_not_false_positive(self) -> None:
+        """A param that echoes its whole value verbatim (a search box) must NOT
+        be flagged by the canary probe: the literal ``echo <canary>`` is present,
+        so no command actually ran. Bare separators are collapsed so the canary
+        path is the one under test."""
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            # Strip separators (no divergence) but reflect the rest verbatim, so
+            # an `echo <canary>` payload shows up literally in the body.
+            collapsed = re.sub(r"[;&|`$()]", "", value)
+            return _HTTPResponse(status=200, body=f"<p>you said: {collapsed}</p>")
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page()
+        is_candidate, _baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        assert is_candidate is False
 
     @pytest.mark.asyncio
     async def test_separator_changes_response_marks_candidate(self) -> None:
