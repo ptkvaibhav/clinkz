@@ -16,6 +16,8 @@ import httpx
 import pytest
 
 from clinkz.agents.exploit import ExploitAgent
+from clinkz.models.finding import ExploitPlan
+from clinkz.models.scan import Endpoint
 
 pytestmark = [pytest.mark.dvwa_smoke, pytest.mark.asyncio]
 
@@ -307,3 +309,58 @@ async def test_csp_bypass_against_dvwa(
     page = await exploit_agent._fetch_page(url)
     findings = await exploit_agent._test_security_headers(page)
     assert len(findings) >= 1, f"_test_security_headers failed to flag missing headers at {url}"
+
+
+# ---------------------------------------------------------------------------
+# 16. LFI through the planner → dispatch path (not just the isolated skill)
+# ---------------------------------------------------------------------------
+
+
+async def test_lfi_through_planner_dispatch_against_dvwa(
+    dvwa_url: str,
+    dvwa_session: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """LFI is routed to /vulnerabilities/fi/ by the planner AND confirmed on dispatch.
+
+    Reproduces the d328200c failure end-to-end: the FI endpoint is buried among
+    low-value crawl artifacts (instructions.php, view_source.php) that the old
+    planner tested instead. The fix must (1) queue ``_test_lfi`` against the real
+    FI endpoint via the deterministic coverage union, and (2) with no phase
+    deadline, dispatch it and confirm the finding against the live target — the
+    routing the isolated ``_test_lfi`` smoke test cannot exercise.
+    """
+    fi_path = "/vulnerabilities/fi/"
+    if not _endpoint_exists(dvwa_url, fi_path, dvwa_session):
+        pytest.xfail(f"DVWA version does not have {fi_path} (404)")
+
+    fi_url = f"{dvwa_url}{fi_path}?page=include.php"
+    # FI buried behind the low-value endpoints the old planner wasted time on.
+    endpoints = [
+        Endpoint(url=f"{dvwa_url}/instructions.php?doc=PDF", method="GET", params=["doc"]),
+        Endpoint(
+            url=f"{dvwa_url}/vulnerabilities/view_source.php?id=fi&security=low",
+            method="GET",
+            params=["id", "security"],
+        ),
+        Endpoint(url=fi_url, method="GET", params=["page"]),
+    ]
+    ranked = exploit_agent._dedupe_and_rank_endpoints(endpoints)
+
+    # The coverage union must queue _test_lfi against the real FI endpoint even
+    # when the LLM plan is empty (the planner-coverage half of the fix).
+    plan = exploit_agent._merge_coverage(ExploitPlan(tasks=[]), ranked, [], [])
+    assert any(
+        t.test_method == "_test_lfi" and fi_path in t.endpoint_url for t in plan.tasks
+    ), "planner did not queue _test_lfi against the FI endpoint"
+
+    # Dispatch only the LFI tasks (keeps the live run fast) with no deadline, and
+    # confirm the finding lands against the FI endpoint.
+    plan.tasks = [t for t in plan.tasks if t.test_method == "_test_lfi"]
+    exploit_agent._deadline_ts = None
+    findings = await exploit_agent._step_execute_exploits(plan, None)
+
+    assert any(fi_path in (f.target or "") for f in findings), (
+        f"LFI not confirmed via dispatch against {fi_url}; "
+        f"findings={[(f.title, f.target) for f in findings]}"
+    )
