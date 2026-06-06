@@ -68,13 +68,16 @@ logger = logging.getLogger(__name__)
 # How long to wait for an agent to produce a RESULT before timing out (seconds).
 _PHASE_TIMEOUT = 600
 
-# Exploit phase cooperative-stop budget (seconds). The Exploit Agent stops
-# dispatching NEW tasks _EXPLOIT_STOP_MARGIN seconds before _EXPLOIT_BUDGET
-# elapses, lets the in-flight task finish, persists its findings, and returns a
-# clean ExploitResult. The orchestrator only force-kills as a last resort if
-# that cooperative return does not arrive within _EXPLOIT_HARD_GRACE seconds
-# past the budget — so findings verified before the deadline are never lost.
-_EXPLOIT_BUDGET = 600
+# Exploit phase cooperative-stop margins (seconds), used ONLY when an explicit
+# wall-clock budget is configured (``settings.exploit_phase_budget > 0``). By
+# default there is NO phase budget: the full exploit task queue runs to
+# completion and no category is starved by a phase-level clock — operation-level
+# timeouts (per HTTP request, per tool subprocess, per LLM call) are the safety
+# valve against a genuine hang. When a budget IS set, the Exploit Agent stops
+# dispatching NEW tasks _EXPLOIT_STOP_MARGIN seconds before it elapses, lets the
+# in-flight task finish, persists its findings, and returns cleanly; the
+# orchestrator only force-kills if that return does not arrive within
+# _EXPLOIT_HARD_GRACE seconds past the budget.
 _EXPLOIT_STOP_MARGIN = 30
 _EXPLOIT_HARD_GRACE = 30
 
@@ -570,27 +573,38 @@ class OrchestratorAgent:
                 f"Do NOT attempt to login again.\n\n" + exploit_content["task"]
             )
 
-        # Cooperative deadline: the agent stops dispatching new tasks
-        # _EXPLOIT_STOP_MARGIN seconds before _EXPLOIT_BUDGET elapses and
-        # returns cleanly. We give _run_phase a hard cap of budget + grace so
-        # the cooperative return wins the race against the force-kill. The
-        # deadline is an absolute time.monotonic() timestamp — the agent runs in
-        # this same event loop and reads it with time.monotonic() too.
-        exploit_content["deadline_ts"] = time.monotonic() + _EXPLOIT_BUDGET
-        exploit_content["stop_margin_seconds"] = _EXPLOIT_STOP_MARGIN
-
-        self._logger.info(
-            "Starting Exploit with v2 scan + research results "
-            "(budget=%ds, stop_margin=%ds, hard_cap=%ds)",
-            _EXPLOIT_BUDGET,
-            _EXPLOIT_STOP_MARGIN,
-            _EXPLOIT_BUDGET + _EXPLOIT_HARD_GRACE,
-        )
+        # Exploit phase budget. Default (settings.exploit_phase_budget == 0) is
+        # UNBOUNDED: no cooperative deadline is passed (the agent runs the full
+        # task queue to completion) and _run_phase gets no hard cap — a genuine
+        # hang is caught by operation-level timeouts, not a phase clock. When a
+        # budget IS configured, we pass an absolute time.monotonic() deadline
+        # plus a stop margin (the agent reads it on the same event loop) and give
+        # _run_phase a hard cap of budget + grace so the cooperative return wins
+        # the race against the force-kill.
+        budget = float(settings.exploit_phase_budget)
+        if budget > 0:
+            exploit_content["deadline_ts"] = time.monotonic() + budget
+            exploit_content["stop_margin_seconds"] = _EXPLOIT_STOP_MARGIN
+            exploit_phase_timeout: float = budget + _EXPLOIT_HARD_GRACE
+            self._logger.info(
+                "Starting Exploit with v2 scan + research results "
+                "(budget=%.0fs, stop_margin=%ds, hard_cap=%.0fs)",
+                budget,
+                _EXPLOIT_STOP_MARGIN,
+                exploit_phase_timeout,
+            )
+        else:
+            exploit_phase_timeout = float("inf")
+            self._logger.info(
+                "Starting Exploit with v2 scan + research results "
+                "(no phase budget — full task queue runs to completion; "
+                "operation-level timeouts are the safety valve)"
+            )
         try:
             exploit_result = await self._run_phase(
                 "exploit",
                 exploit_content,
-                phase_timeout=_EXPLOIT_BUDGET + _EXPLOIT_HARD_GRACE,
+                phase_timeout=exploit_phase_timeout,
             )
             results["exploit"] = exploit_result
         except Exception as exc:

@@ -5,6 +5,8 @@ All tests mock the Anthropic SDK so no API key or network is needed.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -387,3 +389,48 @@ class TestModelId:
 
         reloaded = config.Settings.from_env()
         assert reloaded.anthropic_model == "claude-opus-4-7"
+
+
+# ---------------------------------------------------------------------------
+# Tests: per-call request timeout (operation-level safety valve)
+# ---------------------------------------------------------------------------
+
+
+class TestRequestTimeout:
+    """A single hung messages.create call is bounded by llm_request_timeout.
+
+    This is the operation-level safety valve that matters now that the exploit
+    phase has no wall-clock deadline: a stuck call is cancelled after the
+    configured timeout instead of stalling the engagement indefinitely.
+    """
+
+    @pytest.mark.asyncio
+    async def test_hung_call_is_bounded_by_request_timeout(self, _reload_settings: None) -> None:
+        from clinkz import config
+        from clinkz.llm.anthropic_client import AnthropicClient
+
+        config.settings.llm_request_timeout = 0.05
+        config.settings.llm_max_retries = 1
+
+        client = AnthropicClient()
+
+        async def _hang(**_kwargs: Any) -> Any:
+            await asyncio.sleep(30)  # would stall forever without the valve
+
+        # Replace the SDK client + rate limiter so no key/network/delay is hit.
+        client._client = SimpleNamespace(messages=SimpleNamespace(create=_hang))
+        client._rate_limiter = SimpleNamespace(acquire=AsyncMock())
+
+        start = time.monotonic()
+        with pytest.raises(TimeoutError):
+            await client._call_with_backoff(model="m", messages=[], max_tokens=8)
+        elapsed = time.monotonic() - start
+
+        # Bounded by the timeout (×1 retry), nowhere near the 30s sleep.
+        assert elapsed < 5.0
+
+    def test_timeout_is_retriable(self) -> None:
+        from clinkz.llm.anthropic_client import _is_retriable_error
+
+        # asyncio.TimeoutError is an alias of the builtin on Python 3.11+.
+        assert _is_retriable_error(TimeoutError())
