@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
+from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
 from clinkz.models.recon import (
@@ -366,14 +367,26 @@ class ScanAgent(BaseAgent):
                 url,
             )
             if crawl_result:
-                for ep_url in crawl_result:
-                    endpoints.append(Endpoint(url=str(ep_url)))
+                # Crawl-safety: never visit or persist links that mutate the
+                # target's security posture (WAF/security-level toggles, logout).
+                # The enrichment step below GET-visits each URL, so an unfiltered
+                # toggle link (e.g. security.php?phpids=on) would poison the
+                # shared engagement session for every later phase.
+                safe_crawl = [str(u) for u in crawl_result if not is_state_changing_url(str(u))]
+                skipped = len(crawl_result) - len(safe_crawl)
+                if skipped:
+                    self._logger.info(
+                        "Crawl-safety: skipped %d state-changing link(s) from crawl output",
+                        skipped,
+                    )
+                for ep_url in safe_crawl:
+                    endpoints.append(Endpoint(url=ep_url))
                 # Tools like katana return URL strings only — they don't extract
                 # form fields or query-string parameters. Without that, every
                 # Endpoint downstream has params=[] and the Exploit Agent can't
                 # build a single _test_* probe. Visit each discovered URL and
                 # extract forms + query params so the data contract holds.
-                enriched = await self._enrich_endpoints_with_params([str(u) for u in crawl_result])
+                enriched = await self._enrich_endpoints_with_params(safe_crawl)
                 if enriched:
                     self._merge_into_crawl_endpoints(enriched)
         except ValueError:
@@ -381,6 +394,8 @@ class ScanAgent(BaseAgent):
             crawl_tool = "http_client_crawl"
             fallback_urls = await self._http_crawl_fallback(url, max_depth=2, max_pages=50)
             for ep_url in fallback_urls:
+                if is_state_changing_url(ep_url):
+                    continue
                 endpoints.append(Endpoint(url=ep_url))
 
         # Fuzz using fallback chain
@@ -524,6 +539,8 @@ class ScanAgent(BaseAgent):
         visited: set[str] = set()
         ordered_urls: list[str] = []
         for u in urls:
+            if is_state_changing_url(u):
+                continue
             norm = u.split("#", 1)[0].rstrip("/")
             if norm and norm not in visited:
                 visited.add(norm)
@@ -554,7 +571,7 @@ class ScanAgent(BaseAgent):
 
                 # Extract forms — Endpoint per form action.
                 for action_url, method, param_names in self._extract_forms(body, current_url):
-                    if not param_names:
+                    if not param_names or is_state_changing_url(action_url):
                         continue
                     key = (action_url, method, tuple(param_names))
                     if key not in seen_keys:
@@ -564,6 +581,8 @@ class ScanAgent(BaseAgent):
                 # Extract query-param links — Endpoint per parameterized link.
                 base_origin = f"{urlparse(current_url).scheme}://{urlparse(current_url).netloc}"
                 for link in self._extract_links(body, current_url, base_origin):
+                    if is_state_changing_url(link):
+                        continue
                     link_parsed = urlparse(link)
                     if not link_parsed.query:
                         continue
@@ -623,6 +642,11 @@ class ScanAgent(BaseAgent):
                 continue
             visited.add(normalized)
 
+            # Crawl-safety: don't fetch links that toggle a WAF / security level
+            # or log out — they poison the shared engagement session.
+            if is_state_changing_url(current_url):
+                continue
+
             try:
                 tool = http_match.tool_class(scope=self.scope, engagement_id=self.engagement_id)
                 req_input: dict[str, Any] = {
@@ -646,6 +670,8 @@ class ScanAgent(BaseAgent):
                 # Extract forms and their parameters
                 forms = self._extract_forms(body, current_url)
                 for action_url, method, param_names in forms:
+                    if is_state_changing_url(action_url):
+                        continue
                     self._crawl_endpoints.append(
                         Endpoint(url=action_url, method=method, params=param_names)
                     )
@@ -653,6 +679,8 @@ class ScanAgent(BaseAgent):
                 # Extract query parameters from links
                 links = self._extract_links(body, current_url, base_origin)
                 for link in links:
+                    if is_state_changing_url(link):
+                        continue
                     link_parsed = urlparse(link)
                     if link_parsed.query:
                         param_names = [
@@ -666,6 +694,8 @@ class ScanAgent(BaseAgent):
                 # Follow links
                 if depth < max_depth:
                     for link in links:
+                        if is_state_changing_url(link):
+                            continue
                         link_norm = link.split("#")[0].split("?")[0].rstrip("/")
                         if link_norm not in visited:
                             queue.append((link, depth + 1))
