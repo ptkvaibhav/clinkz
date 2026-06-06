@@ -61,6 +61,17 @@ class Settings(BaseModel):
     # matches and the profile chain is exhausted.
     llm_provider_default: LLMProvider = Field(default="gemini")
 
+    # Hard per-call timeout (seconds) for a single LLM request. This is an
+    # operation-level safety valve: a single hung generate/messages.create call
+    # is cancelled after this many seconds so it can never stall the engagement
+    # (the Gemini client already enforces its own 120s ceiling; Anthropic and
+    # OpenAI wrap each call in asyncio.wait_for with this value). Bounding a
+    # single LLM call matters more now that the exploit phase has no wall-clock
+    # deadline — op-level timeouts are the only safety valve.
+    llm_request_timeout: float = Field(
+        default=120.0, description="Hard timeout (seconds) for a single LLM call"
+    )
+
     # Per-provider retry budget (used by each LLMClient's backoff loop).
     # With fallback chains we keep each provider's budget low so we move to
     # the next provider quickly instead of burning minutes on a single one.
@@ -93,11 +104,36 @@ class Settings(BaseModel):
         description="Maximum number of tasks in a deterministic exploit plan.",
     )
 
+    # Exploit phase wall-clock budget (seconds). 0 (the default) means NO phase
+    # cap — the full exploit task queue runs to completion and no category is
+    # starved by a phase-level clock. Operation-level timeouts (per HTTP request,
+    # per tool subprocess, per LLM call) are the safety valve against a genuine
+    # hang. Set EXPLOIT_PHASE_BUDGET>0 to restore the old cooperative-stop
+    # behaviour (the agent stops dispatching new tasks shortly before the budget
+    # elapses and returns cleanly). Kept configurable rather than hardcoding
+    # "unbounded" so the bound is trivially reversible.
+    exploit_phase_budget: float = Field(
+        default=0.0,
+        description="Wall-clock seconds for the exploit phase; 0 = unbounded (no phase cap).",
+    )
+
+    # How many ranked endpoints to show the LLM exploit planner. The full
+    # endpoint list (often hundreds, polluted with crawler artifacts) is
+    # structurally deduped and ranked first; this caps how many of the
+    # highest-value ones are placed in the planning prompt. Raised from the old
+    # hardcoded 50, which let canonical vulnerable endpoints fall outside the
+    # window on large crawls.
+    exploit_plan_prompt_endpoints: int = Field(
+        default=120,
+        description="Max ranked endpoints placed in the LLM exploit-planning prompt.",
+    )
+
     # Exploit dispatch — per-vuln-class soft caps used by the round-robin
     # scheduler. Once a category produces this many findings OR consumes this
     # many seconds, its remaining tasks move to the back of the rotation so
-    # untouched categories run first (no single high-fan-out class can starve
-    # the shared phase budget).
+    # untouched categories run first. With no phase budget these only affect
+    # ordering/fairness — every task still runs to completion (a deprioritised
+    # category is moved to the back of the rotation, never dropped).
     exploit_category_max_findings: int = Field(
         default=5,
         description="Findings after which a vuln-class is deprioritised in dispatch.",
@@ -169,6 +205,7 @@ class Settings(BaseModel):
             research_llm_provider=_agent_provider("research", "gemini"),  # type: ignore[arg-type]
             report_llm_provider=_agent_provider("report", "gemini"),  # type: ignore[arg-type]
             llm_provider_default=global_default,  # type: ignore[arg-type]
+            llm_request_timeout=float(os.getenv("LLM_REQUEST_TIMEOUT", "120.0")),
             llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
             llm_retry_base_delay=float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0")),
             llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),
@@ -176,6 +213,8 @@ class Settings(BaseModel):
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
             exploit_max_plan_tasks=int(os.getenv("EXPLOIT_MAX_PLAN_TASKS", "150")),
+            exploit_phase_budget=float(os.getenv("EXPLOIT_PHASE_BUDGET", "0.0")),
+            exploit_plan_prompt_endpoints=int(os.getenv("EXPLOIT_PLAN_PROMPT_ENDPOINTS", "120")),
             exploit_category_max_findings=int(os.getenv("EXPLOIT_CATEGORY_MAX_FINDINGS", "5")),
             exploit_category_time_budget=float(os.getenv("EXPLOIT_CATEGORY_TIME_BUDGET", "90.0")),
             research_time_budget=float(os.getenv("RESEARCH_TIME_BUDGET", "180.0")),

@@ -128,7 +128,7 @@ The engagement ends when one of these fires:
 |---|---|---|
 | All three macro-phases return RESULT | orchestrator.py:147–356 | `summary["status"]="completed"`, status row marked completed |
 | Any phase raises | orchestrator.py:340 try/except | `summary["status"]="failed"`, engagement marked failed, KB & trace closed in `finally` |
-| `_PHASE_TIMEOUT` (600s) for any single phase | orchestrator.py:586–597 | Phase returns `{"status":"timeout"}`, agent shut down, but the engagement continues to the next phase. The next phase consumes the (empty) result. |
+| `_PHASE_TIMEOUT` (600s) for a single phase (recon/scan/report; research uses its own budget+grace) | `_run_phase` | Phase returns `{"status":"timeout"}`, agent shut down, but the engagement continues to the next phase. The next phase consumes the (empty) result. **The exploit phase is exempt by default** — it passes `phase_timeout=inf` (no hard cap) and no cooperative deadline, so its full task queue runs to completion. Operation-level timeouts (per HTTP request, per tool subprocess, per LLM call via `LLM_REQUEST_TIMEOUT`) are the safety valve. Set `EXPLOIT_PHASE_BUDGET>0` to re-arm the old cooperative-stop + `budget+grace` hard cap. |
 | Recon returns error | orchestrator.py:246 | `_build_fallback_recon` synthesises a minimal `ReconResult` from the scope target so downstream phases can still run |
 | Exploit Agent stops without RESULT | orchestrator.py:606 | Returns `{"status":"agent_stopped"}` |
 | `MAX_CROSS_PHASE_RESPINS` (3) hit | orchestrator.py:747 | `_handle_query` falls through to "answer from state"; no more re-spins this engagement |
