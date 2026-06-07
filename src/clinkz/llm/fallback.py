@@ -104,6 +104,10 @@ class ResilientLLMClient(LLMClient):
             to the process-wide ``settings`` singleton.
         override_chain: Optional explicit chain that bypasses the profile.
             Tests use this to inject a deterministic order.
+        exclude_providers: Providers to drop from this client's chain for the
+            whole engagement (e.g. a Gemini key the credit pre-flight found
+            depleted). The drop is skipped if it would empty the chain, so a
+            misconfigured exclusion can never strand the agent.
     """
 
     def __init__(
@@ -112,6 +116,7 @@ class ResilientLLMClient(LLMClient):
         config: Settings | None = None,
         *,
         override_chain: list[str] | None = None,
+        exclude_providers: set[str] | None = None,
     ) -> None:
         self.agent_role = agent_role
         self.config = config or global_settings
@@ -121,6 +126,18 @@ class ResilientLLMClient(LLMClient):
             self.fallback_chain = list(override_chain)
         else:
             self.fallback_chain = self._build_chain(agent_role, self.profile)
+
+        if exclude_providers:
+            filtered = [p for p in self.fallback_chain if p not in exclude_providers]
+            if filtered:
+                self.fallback_chain = filtered
+            else:
+                logger.warning(
+                    "Excluding %s would empty %s's chain %s — keeping it to avoid stranding",
+                    exclude_providers,
+                    agent_role,
+                    self.fallback_chain,
+                )
 
         self._clients: dict[str, LLMClient] = {}
         self._last_used_provider: str | None = None
@@ -334,6 +351,60 @@ class ResilientLLMClient(LLMClient):
 # ---------------------------------------------------------------------------
 # Engagement-start validation
 # ---------------------------------------------------------------------------
+
+
+async def preflight_provider_available(
+    provider: str,
+    config: Settings | None = None,
+) -> bool:
+    """One cheap probe to detect a depleted/unavailable provider at engagement start.
+
+    Run alongside ``ensure_container_ready`` so depletion is caught up front —
+    not mid-pipeline after every agent has stormed 429s. The single probe is
+    bounded by the underlying client's own retry budget
+    (``settings.llm_max_retries`` capped at ``llm_retry_max_delay``), so a
+    depleted key fails fast here instead of N times across the engagement.
+
+    Args:
+        provider: Provider name to probe (e.g. ``"gemini"``).
+        config: Optional Settings override. Defaults to the process-wide settings.
+
+    Returns:
+        ``False`` if the probe hit a rate-limit (429 / RESOURCE_EXHAUSTED),
+        service-unavailable, timeout, or unavailable error — the signal to
+        route the engagement to a fallback provider. ``True`` on success, and
+        conservatively ``True`` on any unexpected error so a transient quirk
+        never needlessly abandons the cheaper primary provider.
+    """
+    cfg = config or global_settings
+    model = cfg.gemini_model if provider == "gemini" else None
+    try:
+        client = get_llm_client(provider, model=model)
+    except Exception as exc:
+        logger.warning(
+            "Pre-flight could not instantiate %s (%s) — treating as unavailable",
+            provider,
+            exc,
+        )
+        return False
+
+    try:
+        await client.generate_text("ping")
+        return True
+    except (RateLimitError, ServiceUnavailableError, LLMTimeoutError, LLMUnavailableError) as exc:
+        logger.warning(
+            "Pre-flight probe for %s failed (%s) — provider unavailable for this engagement",
+            provider,
+            type(exc).__name__,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 — be conservative on unknown errors
+        logger.warning(
+            "Pre-flight probe for %s raised unexpected %s — assuming available",
+            provider,
+            type(exc).__name__,
+        )
+        return True
 
 
 def validate_agent_chains(
