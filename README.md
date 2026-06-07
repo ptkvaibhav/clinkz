@@ -140,8 +140,8 @@ All configuration is via environment variables in `.env`. The defaults below are
 | `ORCHESTRATOR_MODEL` | Model for the Orchestrator agent | `gpt-4o` |
 | `AGENT_MODEL` | Model for phase agents (when provider is OpenAI) | `gpt-4o-mini` |
 | `ANTHROPIC_MODEL` | Claude model name | `claude-sonnet-4-6` |
-| `GEMINI_MODEL` | Gemini model for Recon / Scan / Report | `gemini-2.5-pro` |
-| `GEMINI_EXPLOIT_MODEL` | Gemini model used when Exploit falls back to Gemini | `gemini-2.5-pro` |
+| `GEMINI_MODEL` | Gemini model for Recon / Scan / Report (GA; never the `-preview` variant) | `gemini-3.1-flash-lite` |
+| `GEMINI_EXPLOIT_MODEL` | Gemini model used when Exploit falls back to Gemini | `gemini-3.1-flash-lite` |
 | `GEMINI_RESEARCH_MODEL` | Gemini model for Research (GA; never the `-preview` variant) | `gemini-3.1-flash-lite` |
 | `GEMINI_MAX_RPM` | Per-client Gemini requests/minute ceiling (Tier-1 sized) | `30` |
 | `RESEARCH_TIME_BUDGET` | Hard wall-clock budget (seconds) for the Research phase | `180` |
