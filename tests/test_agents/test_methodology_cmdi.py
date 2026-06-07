@@ -678,3 +678,89 @@ class TestCMDIMethodologyIntegration:
         page = _make_page("http://example.com/exec?cmd=ls", params=["cmd"])
         findings = await agent._test_cmdi(page)
         assert findings == []
+
+
+# ===========================================================================
+# Regression — phase-5 must accept the LIVE LLM's indicator_type vocabulary,
+# not just the deterministic fallback's canonical labels.
+#
+# Pipeline trace 77031b28: the Anthropic LLM emitted indicator_type
+# "output_string" (direct_exec) and "time_delay" (blind_time), neither of which
+# the old exact-match normaliser recognised — so verify returned "unknown
+# indicator_type" WITHOUT checking the response, even though `test;id` returned
+# `uid=33(www-data)` on DVWA-low. The smoke suite passed because its silent LLM
+# forces the canonical-label fallback path. These gates exercise the LLM path.
+# ===========================================================================
+
+
+def _baseline() -> Any:
+    from clinkz.agents._methodology_helpers import BaselineProbe
+
+    return BaselineProbe(
+        variant="original",
+        value="test",
+        status=200,
+        length=100,
+        body_hash="aaaaaaaaaaaaaaaa",
+        time_ms=10.0,
+    )
+
+
+class TestPhase5LLMVocabulary:
+    def test_keyword_classifier_maps_llm_vocabulary(self) -> None:
+        assert ExploitAgent._classify_cmdi_indicator("output_string") == "stdout_reflection"
+        assert ExploitAgent._classify_cmdi_indicator("time_delay") == "time_delta"
+        assert ExploitAgent._classify_cmdi_indicator("error_output_or_response") == "error_string"
+        assert ExploitAgent._classify_cmdi_indicator("dns_callback") == "oob_callback"
+        assert ExploitAgent._classify_cmdi_indicator(None) == "stdout_reflection"
+
+    @pytest.mark.asyncio
+    async def test_output_string_label_verifies_against_id_output(self) -> None:
+        """``indicator_type='output_string'`` must verify when the body carries
+        genuine ``id`` output (the exact 77031b28 direct_exec miss)."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="<pre>uid=33(www-data) gid=33(www-data) groups=33(www-data)</pre>"
+            )
+        )
+        synth = {
+            "payload": "test;id",
+            "expected_indicator": "uid=",
+            "indicator_type": "output_string",
+        }
+        verified, observed = await agent._cmdi_phase5_verify(_make_page(), "ip", synth, _baseline())
+        assert verified is True
+        assert "uid=" in observed
+
+    @pytest.mark.asyncio
+    async def test_no_false_positive_on_reflective_non_vuln(self) -> None:
+        """A param that merely echoes the payload back (no execution) must NOT
+        verify, even though the canary substring is reflected verbatim."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="you searched for: test;echo CLINKZ123 — 0 results"
+            )
+        )
+        synth = {
+            "payload": "test;echo CLINKZ123",
+            "expected_indicator": "CLINKZ123",
+            "indicator_type": "output_string",
+        }
+        verified, _ = await agent._cmdi_phase5_verify(_make_page(), "q", synth, _baseline())
+        assert verified is False
+
+    @pytest.mark.asyncio
+    async def test_no_false_positive_on_generic_non_vuln(self) -> None:
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<html>nothing to see here</html>")
+        )
+        synth = {
+            "payload": "test;id",
+            "expected_indicator": "uid=",
+            "indicator_type": "output_string",
+        }
+        verified, _ = await agent._cmdi_phase5_verify(_make_page(), "ip", synth, _baseline())
+        assert verified is False
