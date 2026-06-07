@@ -605,14 +605,27 @@ class TestFragmentURLPreservation:
         frag_part = out.split("#")[1]
         assert "q=X" in frag_part
 
-    def test_url_without_fragment_appends_to_server_query(self) -> None:
-        # Preserves the original DVWA-style behaviour: parameters append
-        # to the existing server-side query.
+    def test_url_param_replaces_existing_same_named_server_query(self) -> None:
+        # A probe for a param already present in the server query REPLACES its
+        # value in place — never appends a duplicate key (``?name=test&name=``),
+        # whose effective value is server-dependent and which surfaced as phantom
+        # IDOR findings (probe compared against an ambiguously-keyed baseline).
         agent = _make_agent()
         url = "http://example.com/vuln/?name=test"
         out = agent._build_request_url(url, {"name": "<probe>"})
-        assert out.startswith("http://example.com/vuln/?name=test")
+        assert out.startswith("http://example.com/vuln/?name=")
+        assert "name=test" not in out  # original value replaced, not duplicated
+        assert out.count("name=") == 1  # exactly one key, no doubled query string
         assert "name=%3Cprobe%3E" in out or "name=<probe>" in out
+
+    def test_other_server_query_params_preserved_on_replace(self) -> None:
+        # Replacing the probed key must leave sibling query params intact.
+        agent = _make_agent()
+        url = "http://example.com/vuln/?id=1&Submit=Submit"
+        out = agent._build_request_url(url, {"id": "2"})
+        assert "Submit=Submit" in out
+        assert out.count("id=") == 1
+        assert "id=2" in out
 
     async def test_fragment_url_reaches_http_client_intact(self) -> None:
         """End-to-end: passing a fragment URL through ``_http_get`` keeps it."""
