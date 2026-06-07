@@ -15,8 +15,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.agents.exploit import ExploitAgent
-from clinkz.models.finding import ExploitPlan
+from clinkz.models.finding import ExploitPlan, Finding
 from clinkz.models.scan import Endpoint
 
 pytestmark = [pytest.mark.dvwa_smoke, pytest.mark.asyncio]
@@ -350,9 +351,9 @@ async def test_lfi_through_planner_dispatch_against_dvwa(
     # The coverage union must queue _test_lfi against the real FI endpoint even
     # when the LLM plan is empty (the planner-coverage half of the fix).
     plan = exploit_agent._merge_coverage(ExploitPlan(tasks=[]), ranked, [], [])
-    assert any(
-        t.test_method == "_test_lfi" and fi_path in t.endpoint_url for t in plan.tasks
-    ), "planner did not queue _test_lfi against the FI endpoint"
+    assert any(t.test_method == "_test_lfi" and fi_path in t.endpoint_url for t in plan.tasks), (
+        "planner did not queue _test_lfi against the FI endpoint"
+    )
 
     # Dispatch only the LFI tasks (keeps the live run fast) with no deadline, and
     # confirm the finding lands against the FI endpoint.
@@ -363,4 +364,126 @@ async def test_lfi_through_planner_dispatch_against_dvwa(
     assert any(fi_path in (f.target or "") for f in findings), (
         f"LFI not confirmed via dispatch against {fi_url}; "
         f"findings={[(f.title, f.target) for f in findings]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pipeline gates: SQLi / Reflected XSS / CMDi confirmed THROUGH the full
+# planner -> coverage-union -> dispatch -> methodology path (not the isolated
+# _test_* smoke call). These are the gates that would have caught the 76a9ead5
+# misses: the isolated smoke tests passed while the pipeline confirmed nothing.
+# ---------------------------------------------------------------------------
+
+
+async def _confirm_through_planner(
+    exploit_agent: ExploitAgent,
+    dvwa_url: str,
+    dvwa_session: dict[str, str],
+    *,
+    path: str,
+    endpoint: Endpoint,
+    decoys: list[Endpoint],
+    test_method: str,
+) -> list[Finding]:
+    """Queue ``test_method`` against ``endpoint`` via the coverage union, then
+    dispatch only that method and return the findings. Skips if the DVWA module
+    is absent. Shared by the SQLi / XSS / CMDi pipeline gates below.
+    """
+    if not _endpoint_exists(dvwa_url, path, dvwa_session):
+        pytest.xfail(f"DVWA version does not have {path} (404)")
+
+    ranked = exploit_agent._dedupe_and_rank_endpoints([*decoys, endpoint])
+    plan = exploit_agent._merge_coverage(ExploitPlan(tasks=[]), ranked, [], [])
+
+    # Clean-session guard (76a9ead5 root cause): a PHPIDS/security toggle is in
+    # the decoys, mimicking what the crawler discovers. The planner MUST drop it
+    # so dispatch never GET-visits it and enables the WAF for the shared session
+    # — which is exactly what made SQLi/XSS confirm nothing in the pipeline.
+    leaked = [t.endpoint_url for t in plan.tasks if is_state_changing_url(t.endpoint_url)]
+    assert not leaked, f"planner queued state-changing endpoint(s): {leaked}"
+
+    assert any(t.test_method == test_method and path in t.endpoint_url for t in plan.tasks), (
+        f"planner did not queue {test_method} against {path}"
+    )
+
+    plan.tasks = [t for t in plan.tasks if t.test_method == test_method]
+    exploit_agent._deadline_ts = None
+    return await exploit_agent._step_execute_exploits(plan, None)
+
+
+async def test_sqli_through_planner_dispatch_against_dvwa(
+    dvwa_url: str,
+    dvwa_session: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """SQLi confirmed via planner->dispatch against /vulnerabilities/sqli/."""
+    path = "/vulnerabilities/sqli/"
+    findings = await _confirm_through_planner(
+        exploit_agent,
+        dvwa_url,
+        dvwa_session,
+        path=path,
+        endpoint=Endpoint(
+            url=f"{dvwa_url}{path}?id=1&Submit=Submit", method="GET", params=["id", "Submit"]
+        ),
+        decoys=[
+            Endpoint(url=f"{dvwa_url}/instructions.php?doc=PDF", method="GET", params=["doc"]),
+            # The PHPIDS WAF toggle the crawler discovers — must be dropped.
+            Endpoint(url=f"{dvwa_url}/security.php?phpids=on", method="GET", params=["phpids"]),
+        ],
+        test_method="_test_sqli",
+    )
+    assert any(path in (f.target or "") for f in findings), (
+        f"SQLi not confirmed via dispatch; findings={[(f.title, f.target) for f in findings]}"
+    )
+
+
+async def test_xss_reflected_through_planner_dispatch_against_dvwa(
+    dvwa_url: str,
+    dvwa_session: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """Reflected XSS confirmed via planner->dispatch against /vulnerabilities/xss_r/."""
+    path = "/vulnerabilities/xss_r/"
+    findings = await _confirm_through_planner(
+        exploit_agent,
+        dvwa_url,
+        dvwa_session,
+        path=path,
+        endpoint=Endpoint(url=f"{dvwa_url}{path}?name=test", method="GET", params=["name"]),
+        decoys=[
+            Endpoint(url=f"{dvwa_url}/instructions.php?doc=PDF", method="GET", params=["doc"]),
+            # The PHPIDS WAF toggle the crawler discovers — must be dropped.
+            Endpoint(url=f"{dvwa_url}/security.php?phpids=on", method="GET", params=["phpids"]),
+        ],
+        test_method="_test_xss_reflected",
+    )
+    assert any(path in (f.target or "") for f in findings), (
+        f"Reflected XSS not confirmed via dispatch; "
+        f"findings={[(f.title, f.target) for f in findings]}"
+    )
+
+
+async def test_cmdi_through_planner_dispatch_against_dvwa(
+    dvwa_url: str,
+    dvwa_session: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """CMDi confirmed via planner->dispatch against /vulnerabilities/exec/ (POST form)."""
+    path = "/vulnerabilities/exec/"
+    findings = await _confirm_through_planner(
+        exploit_agent,
+        dvwa_url,
+        dvwa_session,
+        path=path,
+        endpoint=Endpoint(url=f"{dvwa_url}{path}", method="POST", params=["ip", "Submit"]),
+        decoys=[
+            Endpoint(url=f"{dvwa_url}/instructions.php?doc=PDF", method="GET", params=["doc"]),
+            # The PHPIDS WAF toggle the crawler discovers — must be dropped.
+            Endpoint(url=f"{dvwa_url}/security.php?phpids=on", method="GET", params=["phpids"]),
+        ],
+        test_method="_test_cmdi",
+    )
+    assert any(path in (f.target or "") for f in findings), (
+        f"CMDi not confirmed via dispatch; findings={[(f.title, f.target) for f in findings]}"
     )

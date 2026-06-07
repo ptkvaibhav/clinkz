@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -118,12 +119,15 @@ class ExploitAnalysis(BaseModel):
         false_positive_suspects: Finding IDs the LLM thinks may be false positives.
         retry_targets: Tasks to retry with adapted payloads.
         chaining_opportunities: Descriptions of how findings can be chained.
+            Each entry is heterogeneous — e.g. a ``description`` string plus a
+            ``finding_ids`` list — so values are typed ``Any`` rather than
+            ``str`` (the LLM legitimately emits a list for ``finding_ids``).
         coverage_summary: Human-readable summary of test coverage.
     """
 
     false_positive_suspects: list[str] = Field(default_factory=list)
     retry_targets: list[ExploitTask] = Field(default_factory=list)
-    chaining_opportunities: list[dict[str, str]] = Field(default_factory=list)
+    chaining_opportunities: list[dict[str, Any]] = Field(default_factory=list)
     coverage_summary: str = ""
 
 

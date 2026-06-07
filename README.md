@@ -44,7 +44,7 @@ Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamicall
 1. The **Orchestrator** validates scope and runs **Recon** sequentially
 2. **Scan**, **Research**, and **Exploit** then run **concurrently**, sharing SQLite state. Exploit's only hard dependency is Scan — it starts as soon as Scan completes and never waits for Research (Research's runbook is folded in only if it has already finished)
 3. **Recon** discovers subdomains, ports, services, and tech stack
-4. **Scan** crawls + fuzzes every HTTP service and enumerates non-HTTP services (FTP/SSH/SMB/DB)
+4. **Scan** crawls + fuzzes every HTTP service and enumerates non-HTTP services (FTP/SSH/SMB/DB). Crawl-safety skips links that mutate the target (WAF/security toggles, logout) so the shared session is never poisoned for later phases
 5. **Research** queries the persistent KB for known techniques and live-searches the web for new CVEs/writeups (Gemini 3.1 Flash-Lite with native Search Grounding), under a hard wall-clock budget, persisting results back to the KB
 6. **Exploit** plans tests with an LLM and executes deterministic `_test_*` skills (with adaptive multi-phase methodologies for XSS-reflected and SQLi)
 7. **Critic** validates findings; **Report** emits JSON + Markdown
@@ -55,7 +55,8 @@ Phase agents follow **deterministic step sequences with LLM checkpoints** (no fr
 
 - **Concurrent multi-agent execution** — Scan, Research, and Exploit run in parallel through an LLM-mediated orchestrator
 - **Deterministic skills + LLM checkpoints** — Each `_test_*` is a contract: if the vuln is present it MUST be found; LLMs only step in at named planning/synthesis points
-- **Adaptive methodologies** — XSS-reflected and SQLi use multi-phase reflection-mapping / dialect-fingerprinting flows with LLM-driven payload synthesis and bypass
+- **Adaptive methodologies** — XSS-reflected and SQLi use multi-phase reflection-mapping / dialect-fingerprinting flows with LLM-driven payload synthesis and bypass; CMDi candidacy uses a reflection-guarded echo-canary probe so injection surfaces even when the base command writes only to stderr
+- **Session hygiene** — recon/scan map the target without changing it; WAF/security toggles and logout links are never followed, so injection payloads aren't silently WAF-blocked in the exploit phase
 - **Cross-engagement learning** — Persistent knowledge base (`clinkz_knowledge.db`) records every technique success/failure; future engagements adapt
 - **Dynamic tool discovery + fallback chains** — Agents request capabilities (`web_crawling`, `directory_fuzzing`, ...); the resolver walks declared `TOOL_CHAINS` until output meets threshold
 - **Runtime CVE research** — Research Agent live-searches CVEs, bug-bounty writeups, and PoCs per identified technology
