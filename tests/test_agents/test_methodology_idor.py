@@ -490,3 +490,93 @@ class TestIDORDeterministicGate:
         # The gate did not short-circuit: at least the phase-3 ranking prompt
         # was issued.
         assert llm.prompts, "diverged probe should reach the LLM checkpoint"
+
+    @pytest.mark.asyncio
+    async def test_csrf_token_churn_same_length_emits_nothing(self) -> None:
+        """A per-request CSRF token at identical length is NOT divergence.
+
+        The exact login.php phantom: every GET returns the same length (1524)
+        but a freshly regenerated 32-char hex ``user_token``. The bytes differ,
+        yet nothing meaningful diverged — the IDOR fingerprint folds long hex
+        runs, so the gate must short-circuit before any LLM checkpoint and emit
+        no finding."""
+        llm = _ScriptedLLM(answers=["SHOULD-NOT-BE-USED"] * 8)
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+
+        counter = {"n": 0}
+
+        async def fake_get(_url: str, _params: dict[str, str]) -> _HTTPResponse:
+            # 32-char hex token, regenerated each call; body length is constant.
+            counter["n"] += 1
+            token = f"{counter['n']:032x}"
+            body = f"<form><input name='user_token' value='{token}'><p>login form</p></form>"
+            return _HTTPResponse(status=200, body=body)
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        # Param "id" is a lexical candidate, so candidacy passes — the gate (not
+        # the param guard) is what must suppress this case.
+        page = _make_page()
+        findings = await agent._test_idor(page)
+
+        assert findings == []
+        assert llm.prompts == [], "token-churn must not reach any LLM checkpoint"
+
+
+# ===========================================================================
+# Auth-form / credential / token params are never IDOR candidates
+# ===========================================================================
+
+
+class TestIDORAuthFormParamExclusion:
+    @pytest.mark.parametrize("param", ["username", "password", "Login", "user_token"])
+    @pytest.mark.asyncio
+    async def test_login_form_param_excluded_before_any_probe(self, param: str) -> None:
+        """login.php fields (username/password/Login/user_token) are not object
+        references — phase 1 rejects them with zero HTTP probes."""
+        agent = _make_agent()
+        # Even a resource-shaped response must not rescue an excluded param.
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<table><tr><td>x</td></tr></table>" * 5)
+        )
+        page = PageAnalysis(
+            url="http://example.com/login.php",
+            body="",
+            status=200,
+            input_params=["username", "password", "Login", "user_token"],
+        )
+        is_candidate, ev = await agent._idor_phase1_reference_point(page, param, "1")
+        assert is_candidate is False
+        assert ev.get("excluded") is True
+        assert agent._http_get.await_count == 0, "excluded param must skip all probes"
+
+    @pytest.mark.asyncio
+    async def test_full_test_idor_emits_nothing_on_login_form(self) -> None:
+        """End-to-end: a login form's params produce no IDOR findings and make
+        no LLM calls."""
+        llm = _ScriptedLLM(answers=["SHOULD-NOT-BE-USED"] * 8)
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<form>login</form>")
+        )
+        page = PageAnalysis(
+            url="http://example.com/login.php",
+            body="",
+            status=200,
+            input_params=["username", "password", "Login", "user_token"],
+        )
+        findings = await agent._test_idor(page)
+        assert findings == []
+        assert llm.prompts == []
+
+    @pytest.mark.asyncio
+    async def test_genuine_id_param_still_a_candidate(self) -> None:
+        """The exclusion must not suppress a real object-reference param."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="user: alice role: user")
+        )
+        is_candidate, ev = await agent._idor_phase1_reference_point(_make_page(), "id", "1")
+        assert is_candidate is True
+        assert ev.get("excluded") is None
