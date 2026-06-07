@@ -440,6 +440,79 @@ class TestPhase5Verification:
 
 
 # ===========================================================================
+# Regression — phase-5 must accept the LIVE LLM's indicator_type vocabulary
+# AND extract a base64 blob embedded in the page HTML.
+#
+# Pipeline trace 77031b28: the Anthropic LLM synthesised a php://filter payload
+# with indicator_type "base64_encoded_string" (unmapped → "unknown
+# indicator_type"); and even mapped, the old base64_blob branch decoded the
+# WHOLE HTML body (which is not pure base64) and the expected indicator
+# (base64 of "root:x:0:0:") does not align to the blob's chunk boundaries. The
+# real response embedded `cm9vdDp4OjA6MDpy...` inside the page, decoding to
+# `root:x:0:0:root:...`. Smoke passed because its silent LLM forces the
+# canonical-label / plain-traversal fallback. These gates exercise the LLM path.
+# ===========================================================================
+
+
+def _passwd_filter_page() -> str:
+    """A DVWA-style fi page with the php://filter base64 blob embedded in HTML."""
+    passwd = (
+        b"root:x:0:0:root:/root:/bin/bash\n"
+        b"daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n"
+        b"bin:x:2:2:bin:/bin:/usr/sbin/nologin\n"
+        b"sys:x:3:3:sys:/dev:/usr/sbin/nologin\n"
+    )
+    blob = base64.b64encode(passwd).decode("ascii")
+    return f"<html><body><div class='vulnerable_code_area'>{blob}</div></body></html>"
+
+
+class TestPhase5LLMVocabulary:
+    def test_keyword_classifier_maps_llm_vocabulary(self) -> None:
+        assert ExploitAgent._classify_lfi_indicator("base64_encoded_string") == "base64_blob"
+        assert ExploitAgent._classify_lfi_indicator("wrapper_blob") == "base64_blob"
+        assert ExploitAgent._classify_lfi_indicator("path_disclosure") == "error_path"
+        assert ExploitAgent._classify_lfi_indicator("file_content") == "file_signature"
+        assert ExploitAgent._classify_lfi_indicator(None) == "file_signature"
+
+    @pytest.mark.asyncio
+    async def test_base64_encoded_string_label_verifies_embedded_blob(self) -> None:
+        """``indicator_type='base64_encoded_string'`` with a misaligned expected
+        indicator must still verify by decoding the embedded blob (the exact
+        77031b28 direct_read miss)."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=_passwd_filter_page())
+        )
+        synth = {
+            "payload": "php://filter/convert.base64-encode/resource=../../../../../../../etc/passwd",
+            "indicator_type": "base64_encoded_string",
+            # base64 of "root:x:0:0:" — does NOT byte-align inside the file blob.
+            "expected_indicator": "cm9vdDp4OjA6MDo",
+        }
+        verified, observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        assert verified is True
+        assert "passwd" in observed.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_false_positive_on_non_vuln_page(self) -> None:
+        """A page with no decodable file blob must not verify, even when the LLM
+        declared a base64 indicator."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="<html><body>Sorry, that file was not found.</body></html>"
+            )
+        )
+        synth = {
+            "payload": "php://filter/convert.base64-encode/resource=../../../../etc/passwd",
+            "indicator_type": "base64_encoded_string",
+            "expected_indicator": "cm9vdDp4OjA6MDo",
+        }
+        verified, _ = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        assert verified is False
+
+
+# ===========================================================================
 # Phase 6 — Finding emission
 # ===========================================================================
 

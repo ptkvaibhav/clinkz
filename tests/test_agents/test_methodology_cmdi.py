@@ -13,6 +13,7 @@ Plus an end-to-end run that drives all six phases through one ``page``.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 from unittest.mock import AsyncMock
@@ -115,8 +116,47 @@ class TestPhase1InjectionPointMapping:
         page = _make_page()
         is_candidate, baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
         assert is_candidate is False
-        # 6 baselines: original + 5 separator variants.
-        assert len(baselines) == 6
+        # 6 separator baselines + 4 echo-canary confirmation probes (run only
+        # because no bare separator diverged, and none reflect the canary here).
+        assert len(baselines) == 10
+
+    @pytest.mark.asyncio
+    async def test_canary_echo_marks_candidate_when_base_is_inert(self) -> None:
+        """DVWA-exec case: bare separators don't change the output (``ping <bad>``
+        fails to stderr, which ``shell_exec`` drops), but an injected
+        ``;echo <canary>`` reflects — so the echo-canary probe must still mark
+        the param a candidate. This is the 76a9ead5 cmdi miss."""
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            m = re.search(r"echo (\w+)", value)
+            if m:  # the injected echo executes — only the canary surfaces
+                return _HTTPResponse(status=200, body=f"<pre>{m.group(1)}</pre>")
+            return _HTTPResponse(status=200, body="<html>same</html>")  # inert base command
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page()
+        is_candidate, _baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        assert is_candidate is True
+
+    @pytest.mark.asyncio
+    async def test_pure_reflection_does_not_false_positive(self) -> None:
+        """A param that echoes its whole value verbatim (a search box) must NOT
+        be flagged by the canary probe: the literal ``echo <canary>`` is present,
+        so no command actually ran. Bare separators are collapsed so the canary
+        path is the one under test."""
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            # Strip separators (no divergence) but reflect the rest verbatim, so
+            # an `echo <canary>` payload shows up literally in the body.
+            collapsed = re.sub(r"[;&|`$()]", "", value)
+            return _HTTPResponse(status=200, body=f"<p>you said: {collapsed}</p>")
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page()
+        is_candidate, _baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        assert is_candidate is False
 
     @pytest.mark.asyncio
     async def test_separator_changes_response_marks_candidate(self) -> None:
@@ -638,3 +678,89 @@ class TestCMDIMethodologyIntegration:
         page = _make_page("http://example.com/exec?cmd=ls", params=["cmd"])
         findings = await agent._test_cmdi(page)
         assert findings == []
+
+
+# ===========================================================================
+# Regression — phase-5 must accept the LIVE LLM's indicator_type vocabulary,
+# not just the deterministic fallback's canonical labels.
+#
+# Pipeline trace 77031b28: the Anthropic LLM emitted indicator_type
+# "output_string" (direct_exec) and "time_delay" (blind_time), neither of which
+# the old exact-match normaliser recognised — so verify returned "unknown
+# indicator_type" WITHOUT checking the response, even though `test;id` returned
+# `uid=33(www-data)` on DVWA-low. The smoke suite passed because its silent LLM
+# forces the canonical-label fallback path. These gates exercise the LLM path.
+# ===========================================================================
+
+
+def _baseline() -> Any:
+    from clinkz.agents._methodology_helpers import BaselineProbe
+
+    return BaselineProbe(
+        variant="original",
+        value="test",
+        status=200,
+        length=100,
+        body_hash="aaaaaaaaaaaaaaaa",
+        time_ms=10.0,
+    )
+
+
+class TestPhase5LLMVocabulary:
+    def test_keyword_classifier_maps_llm_vocabulary(self) -> None:
+        assert ExploitAgent._classify_cmdi_indicator("output_string") == "stdout_reflection"
+        assert ExploitAgent._classify_cmdi_indicator("time_delay") == "time_delta"
+        assert ExploitAgent._classify_cmdi_indicator("error_output_or_response") == "error_string"
+        assert ExploitAgent._classify_cmdi_indicator("dns_callback") == "oob_callback"
+        assert ExploitAgent._classify_cmdi_indicator(None) == "stdout_reflection"
+
+    @pytest.mark.asyncio
+    async def test_output_string_label_verifies_against_id_output(self) -> None:
+        """``indicator_type='output_string'`` must verify when the body carries
+        genuine ``id`` output (the exact 77031b28 direct_exec miss)."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="<pre>uid=33(www-data) gid=33(www-data) groups=33(www-data)</pre>"
+            )
+        )
+        synth = {
+            "payload": "test;id",
+            "expected_indicator": "uid=",
+            "indicator_type": "output_string",
+        }
+        verified, observed = await agent._cmdi_phase5_verify(_make_page(), "ip", synth, _baseline())
+        assert verified is True
+        assert "uid=" in observed
+
+    @pytest.mark.asyncio
+    async def test_no_false_positive_on_reflective_non_vuln(self) -> None:
+        """A param that merely echoes the payload back (no execution) must NOT
+        verify, even though the canary substring is reflected verbatim."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="you searched for: test;echo CLINKZ123 — 0 results"
+            )
+        )
+        synth = {
+            "payload": "test;echo CLINKZ123",
+            "expected_indicator": "CLINKZ123",
+            "indicator_type": "output_string",
+        }
+        verified, _ = await agent._cmdi_phase5_verify(_make_page(), "q", synth, _baseline())
+        assert verified is False
+
+    @pytest.mark.asyncio
+    async def test_no_false_positive_on_generic_non_vuln(self) -> None:
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<html>nothing to see here</html>")
+        )
+        synth = {
+            "payload": "test;id",
+            "expected_indicator": "uid=",
+            "indicator_type": "output_string",
+        }
+        verified, _ = await agent._cmdi_phase5_verify(_make_page(), "ip", synth, _baseline())
+        assert verified is False
