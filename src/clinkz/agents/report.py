@@ -21,7 +21,7 @@ from clinkz.agents.base import BaseAgent
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
 from clinkz.llm.base import LLMClient
-from clinkz.models.finding import Finding, Severity
+from clinkz.models.finding import Finding, FindingStatus, Severity
 from clinkz.models.report import ExecutiveSummary, PentestReport
 from clinkz.models.scope import EngagementScope
 from clinkz.models.target import Host
@@ -250,9 +250,12 @@ class ReportAgent(BaseAgent):
 
         for i, f in enumerate(findings, 1):
             cvss_str = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "N/A"
+            fp_flag = (
+                " [SUSPECTED FALSE POSITIVE]" if f.status == FindingStatus.FALSE_POSITIVE else ""
+            )
             lines.extend(
                 [
-                    f"## {i}. {f.title}",
+                    f"## {i}. {f.title}{fp_flag}",
                     "",
                     f"- **Severity:** {f.severity.value.upper()}",
                     f"- **CVSS:** {cvss_str}",

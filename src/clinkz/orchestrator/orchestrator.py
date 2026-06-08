@@ -43,7 +43,11 @@ from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
 from clinkz.llm.base import LLMClient
 from clinkz.llm.factory import get_llm_client
-from clinkz.llm.fallback import ResilientLLMClient, validate_agent_chains
+from clinkz.llm.fallback import (
+    ResilientLLMClient,
+    preflight_provider_available,
+    validate_agent_chains,
+)
 from clinkz.models.recon import (
     PortScanResult,
     ReconResult,
@@ -225,8 +229,36 @@ class OrchestratorAgent:
             self._persistent_kb = persistent_kb
             self._logger.info("PersistentKB initialised and Tier 1 tests seeded")
 
+            # Credit pre-flight: detect a depleted/unavailable Gemini key ONCE
+            # up front instead of letting every agent's first call storm 429s
+            # before falling back. When Gemini is down and Anthropic can carry
+            # the engagement, exclude Gemini from every agent's chain so the
+            # whole run completes transparently on Anthropic — including the
+            # recon tech-stack extraction the deterministic auth flow depends on
+            # (auth itself makes no LLM calls; it silently degraded last run
+            # only because depleted-Gemini recon starved it of technologies).
+            exclude_providers: set[str] = set()
+            gemini_keyed = bool(
+                settings.gemini_api_key
+                or settings.google_api_key
+                or os.getenv("GEMINI_API_KEY")
+                or os.getenv("GOOGLE_API_KEY")
+            )
+            anthropic_keyed = bool(settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY"))
+            gemini_ok = (
+                await preflight_provider_available("gemini")
+                if (gemini_keyed and anthropic_keyed)
+                else True
+            )
+            if not gemini_ok:
+                exclude_providers.add("gemini")
+                self._logger.warning(
+                    "Gemini unavailable (credit pre-flight failed) — running "
+                    "engagement on Anthropic fallback for all agents"
+                )
+
             # Build per-agent LLM clients from env-var config
-            agent_llms = self._build_agent_llms()
+            agent_llms = self._build_agent_llms(exclude_providers=exclude_providers)
 
             lifecycle = AgentLifecycleManager(
                 bus=bus,
@@ -402,12 +434,18 @@ class OrchestratorAgent:
     # Per-agent LLM factory
     # ------------------------------------------------------------------
 
-    def _build_agent_llms(self) -> dict[str, LLMClient]:
+    def _build_agent_llms(self, exclude_providers: set[str] | None = None) -> dict[str, LLMClient]:
         """Create a ResilientLLMClient per agent role.
 
         Each agent gets a wrapper tied to its profile (``fast`` or
         ``reasoning``) so a 429/503 from the primary provider silently
         falls back to the next one in the chain.
+
+        Args:
+            exclude_providers: Providers to drop from every agent's chain for
+                this engagement (e.g. ``{"gemini"}`` when the credit pre-flight
+                found the Gemini key depleted). Each agent then leads with its
+                next available provider — Anthropic for the ``fast`` roles.
 
         Returns:
             Dict mapping agent type strings to LLMClient instances.
@@ -417,7 +455,9 @@ class OrchestratorAgent:
         llms: dict[str, LLMClient] = {}
         for agent_type in agent_roles:
             try:
-                llms[agent_type] = ResilientLLMClient(agent_role=agent_type)
+                llms[agent_type] = ResilientLLMClient(
+                    agent_role=agent_type, exclude_providers=exclude_providers
+                )
                 self._logger.debug("Agent '%s' LLM: ResilientLLMClient", agent_type)
             except Exception as exc:
                 self._logger.warning(

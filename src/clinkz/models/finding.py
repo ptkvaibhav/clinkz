@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Severity(StrEnum):
@@ -116,7 +116,13 @@ class ExploitAnalysis(BaseModel):
     """LLM analysis of exploit results — identifies retries and chaining.
 
     Attributes:
-        false_positive_suspects: Finding IDs the LLM thinks may be false positives.
+        false_positive_suspects: Findings the LLM thinks may be false positives.
+            Each entry is a ``{"id": <finding-id>, "reason": <why>}`` dict. The
+            live LLM emits these as structured objects (not bare id strings), so
+            the field is typed ``list[dict]`` — the same str-vs-dict drift that
+            previously broke ``chaining_opportunities`` / ``finding_ids``. A
+            ``before`` validator coerces a legacy ``list[str]`` (bare ids) into
+            this shape so both variants parse.
         retry_targets: Tasks to retry with adapted payloads.
         chaining_opportunities: Descriptions of how findings can be chained.
             Each entry is heterogeneous — e.g. a ``description`` string plus a
@@ -125,10 +131,38 @@ class ExploitAnalysis(BaseModel):
         coverage_summary: Human-readable summary of test coverage.
     """
 
-    false_positive_suspects: list[str] = Field(default_factory=list)
+    false_positive_suspects: list[dict[str, Any]] = Field(default_factory=list)
     retry_targets: list[ExploitTask] = Field(default_factory=list)
     chaining_opportunities: list[dict[str, Any]] = Field(default_factory=list)
     coverage_summary: str = ""
+
+    @field_validator("false_positive_suspects", mode="before")
+    @classmethod
+    def _coerce_fp_suspects(cls, value: Any) -> list[dict[str, Any]]:
+        """Normalise false-positive suspects to ``[{"id", "reason"}, ...]``.
+
+        Accepts the two shapes the LLM produces in the wild:
+
+          * ``["id1", "id2"]``           — bare finding-id strings (legacy)
+          * ``[{"id": ..., "reason": ...}]`` — structured objects (current)
+
+        Both are mapped to ``{"id": str, "reason": str}`` dicts. ``finding_id``
+        is accepted as an alias for ``id``. Entries without a usable id are
+        dropped rather than raising, so a single malformed element can never
+        void the whole post-run analysis.
+        """
+        if not isinstance(value, list):
+            return []
+        coerced: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, str):
+                if item:
+                    coerced.append({"id": item, "reason": ""})
+            elif isinstance(item, dict):
+                fid = item.get("id") or item.get("finding_id") or item.get("finding")
+                if fid:
+                    coerced.append({"id": str(fid), "reason": str(item.get("reason") or "")})
+        return coerced
 
 
 class ExploitResult(BaseModel):

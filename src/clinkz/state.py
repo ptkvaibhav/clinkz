@@ -384,6 +384,26 @@ class StateStore:
         await self._conn.execute("UPDATE findings SET validated=1 WHERE id=?", (finding_id,))
         await self._conn.commit()
 
+    async def update_finding(self, finding_id: str, finding_data: dict[str, Any]) -> None:
+        """Overwrite a persisted finding's JSON blob.
+
+        Used to persist post-hoc mutations of an already-stored finding — e.g.
+        flagging it as a suspected false positive (status change + annotation).
+        A no-op when the row does not exist; the orchestrator's reconciliation
+        safety net re-inserts any finding that was never persisted, carrying the
+        in-memory mutation with it.
+
+        Args:
+            finding_id: Finding UUID.
+            finding_data: Full serialized Finding dict to store.
+        """
+        data = {**finding_data, "id": finding_id}
+        await self._conn.execute(
+            "UPDATE findings SET finding_json=? WHERE id=?",
+            (json.dumps(data), finding_id),
+        )
+        await self._conn.commit()
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------

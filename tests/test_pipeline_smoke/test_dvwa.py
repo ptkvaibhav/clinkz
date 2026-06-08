@@ -30,6 +30,82 @@ def _build_scope(url: str) -> EngagementScope:
     )
 
 
+def _ensure_authenticated_dvwa(dvwa_url: str) -> dict[str, str]:
+    """Return cookies for a *genuinely* authenticated DVWA admin session.
+
+    Logs in as ``admin/password`` and proves the session is authenticated by
+    checking that ``/index.php`` is served rather than redirected back to
+    ``/login.php``. A failed login is the classic symptom of an uninitialised
+    DVWA ``users`` table, so this resets the database via ``setup.php``'s
+    ``create_db`` and retries once. Only if the target *still* cannot be
+    authenticated does it ``pytest.skip`` — so a crawl/coverage assertion never
+    fails for the unrelated reason that the target's DB was never created
+    (which previously masqueraded as "katana surfaced only login.php").
+
+    Returns a cookie dict containing the authenticated ``PHPSESSID`` plus
+    ``security=low``.
+    """
+    pytest.importorskip("httpx")
+    import re
+
+    import httpx
+
+    token_re = re.compile(
+        r"""name=['"]user_token['"]\s+value=['"]([a-f0-9]{32})['"]""", re.IGNORECASE
+    )
+
+    with httpx.Client(base_url=dvwa_url, timeout=15.0, follow_redirects=False) as client:
+
+        def _login_and_verify() -> bool:
+            r = client.get("/login.php")
+            if r.status_code not in (200, 302):
+                return False
+            m = token_re.search(r.text)
+            if not m:
+                return False
+            client.post(
+                "/login.php",
+                data={
+                    "username": "admin",
+                    "password": "password",
+                    "Login": "Login",
+                    "user_token": m.group(1),
+                },
+            )
+            # Authenticated iff index.php is served (not redirected to login).
+            idx = client.get("/index.php")
+            return idx.status_code == 200 and "login.php" not in idx.headers.get("location", "")
+
+        if not _login_and_verify():
+            # Uninitialised DB — reset it (CSRF check is disabled in the image)
+            # and retry the login once.
+            data = {"create_db": "Create / Reset Database"}
+            m = token_re.search(client.get("/setup.php").text)
+            if m:
+                data["user_token"] = m.group(1)
+            client.post("/setup.php", data=data)
+            if not _login_and_verify():
+                pytest.skip(
+                    "DVWA could not be authenticated even after a setup.php DB "
+                    "reset — check the container is healthy and initialised."
+                )
+
+        # Pin the security level to low via the proper form POST.
+        m = token_re.search(client.get("/security.php").text)
+        if m:
+            client.post(
+                "/security.php",
+                data={"security": "low", "seclev_submit": "Submit", "user_token": m.group(1)},
+            )
+
+        cookies: dict[str, str] = {k: v for k, v in client.cookies.items()}
+
+    cookies.setdefault("security", "low")
+    if "PHPSESSID" not in cookies:
+        pytest.skip(f"DVWA auth did not produce PHPSESSID (got {list(cookies)})")
+    return cookies
+
+
 def _read_trace_lines(outputs_root: Path, engagement_id: str) -> list[dict]:
     trace = outputs_root / engagement_id / "trace.jsonl"
     if not trace.exists():
@@ -146,52 +222,8 @@ async def test_scan_discovers_dvwa_vuln_pages_authenticated(
     classic DVWA vuln pages (sqli, exec, xss_r). A regression that breaks
     cookie propagation or crawl scoping shows up here as a missing endpoint.
     """
-    pytest.importorskip("httpx")
-    import re as _re
-
-    import httpx
-
-    user_token_re = _re.compile(
-        r"""name=['"]user_token['"]\s+value=['"]([a-f0-9]+)['"]""", _re.IGNORECASE
-    )
-
-    # --- Authenticate to DVWA ---
-    with httpx.Client(base_url=dvwa_url, timeout=10.0, follow_redirects=False) as client:
-        r = client.get("/login.php")
-        if r.status_code not in (200, 302):
-            pytest.skip(f"DVWA /login.php returned {r.status_code}")
-        m = user_token_re.search(r.text)
-        if not m:
-            pytest.skip("DVWA login form missing user_token")
-        token = m.group(1)
-        r = client.post(
-            "/login.php",
-            data={
-                "username": "admin",
-                "password": "password",
-                "Login": "Login",
-                "user_token": token,
-            },
-        )
-        if "login.php" in r.headers.get("location", ""):
-            pytest.skip("DVWA login failed — wrong credentials or fresh install needed")
-
-        r = client.get("/security.php", follow_redirects=True)
-        m = user_token_re.search(r.text)
-        if m:
-            client.post(
-                "/security.php",
-                data={
-                    "security": "low",
-                    "seclev_submit": "Submit",
-                    "user_token": m.group(1),
-                },
-            )
-
-        cookies: dict[str, str] = {k: v for k, v in client.cookies.items()}
-    cookies.setdefault("security", "low")
-    if "PHPSESSID" not in cookies:
-        pytest.skip(f"DVWA auth did not produce PHPSESSID (got {list(cookies)})")
+    # --- Authenticate to DVWA (verified session, self-heals an uninit DB) ---
+    cookies = _ensure_authenticated_dvwa(dvwa_url)
 
     # --- Run the scan agent against DVWA with the authenticated cookies ---
     from clinkz.agents.scan import ScanAgent
@@ -392,14 +424,13 @@ async def test_katana_returns_paths_against_authenticated_dvwa(
     IP before invoking katana.
 
     Runs the actual ScanAgent crawl path with the docker-alias URL (the
-    same shape target_resolver produces) and asserts katana surfaces at
-    least one ``/vulnerabilities/*`` path.
+    same shape target_resolver produces) and asserts katana surfaces the
+    DVWA ``/vulnerabilities/*`` module set against a *verified* authenticated
+    session — not a count, and not a session that silently fell back to the
+    login page because the DB was never initialised.
     """
-    pytest.importorskip("httpx")
-    import re as _re
+    import re
     import shutil
-
-    import httpx
 
     if shutil.which("docker") is None:
         pytest.skip("docker CLI required to verify container-alias resolution")
@@ -426,30 +457,10 @@ async def test_katana_returns_paths_against_authenticated_dvwa(
     if not {"clinkz-tools", "clinkz-dvwa"}.issubset(running):
         pytest.skip("clinkz-tools and clinkz-dvwa containers must both be running")
 
-    # --- Authenticate to DVWA via the host port mapping (8080) ---
-    user_token_re = _re.compile(
-        r"""name=['"]user_token['"]\s+value=['"]([a-f0-9]+)['"]""", _re.IGNORECASE
-    )
-    with httpx.Client(base_url=dvwa_url, timeout=10.0, follow_redirects=False) as client:
-        r = client.get("/login.php")
-        if r.status_code not in (200, 302):
-            pytest.skip(f"DVWA /login.php returned {r.status_code}")
-        m = user_token_re.search(r.text)
-        if not m:
-            pytest.skip("DVWA login form missing user_token")
-        client.post(
-            "/login.php",
-            data={
-                "username": "admin",
-                "password": "password",
-                "Login": "Login",
-                "user_token": m.group(1),
-            },
-        )
-        cookies: dict[str, str] = {k: v for k, v in client.cookies.items()}
-    cookies.setdefault("security", "low")
-    if "PHPSESSID" not in cookies:
-        pytest.skip(f"DVWA auth did not produce PHPSESSID (got {list(cookies)})")
+    # --- Authenticate to DVWA via the host port mapping (verified session) ---
+    # The session is server-side, so a cookie minted against localhost:8080 is
+    # equally valid for the in-network ``clinkz-dvwa`` alias katana crawls.
+    cookies = _ensure_authenticated_dvwa(dvwa_url)
 
     # --- Drive the ScanAgent's crawl path with the docker alias URL ---
     # That URL shape (single-label host) is what target_resolver produces
@@ -514,6 +525,28 @@ async def test_katana_returns_paths_against_authenticated_dvwa(
         "katana cannot parse (e.g. a single-label hostname)."
     )
     joined = " ".join(urls).lower()
-    assert "/vulnerabilities/" in joined, (
-        f"Katana did not surface any DVWA /vulnerabilities/* path. First URLs: {urls[:10]}"
+
+    # Assert the behind-login module *set*, not a bare substring/count: an
+    # unauthenticated crawl only ever sees login.php, so requiring the core
+    # modules proves the session was genuinely authenticated end to end.
+    found_modules = set(re.findall(r"/vulnerabilities/([a-z_]+)", joined))
+    assert {"sqli", "exec", "xss_r"} <= found_modules, (
+        "Katana did not surface the core DVWA modules — likely an "
+        f"unauthenticated crawl. found={sorted(found_modules)}; urls={urls[:10]}"
     )
+    assert len(found_modules) >= 5, (
+        f"Katana surfaced only {sorted(found_modules)} — too few behind-login "
+        "modules for an authenticated DVWA crawl."
+    )
+
+    # Crawl-safety contract: the module URLs must survive is_state_changing_url
+    # (the guard must never drop them), while genuine session-changers do not.
+    from clinkz.agents._url_safety import is_state_changing_url
+
+    module_urls = [u for u in urls if "/vulnerabilities/" in u.lower()]
+    assert module_urls and all(not is_state_changing_url(u) for u in module_urls), (
+        "Crawl-safety guard wrongly classified DVWA module URLs as "
+        f"state-changing: {[u for u in module_urls if is_state_changing_url(u)][:5]}"
+    )
+    assert is_state_changing_url(f"{docker_alias_url}/logout.php")
+    assert is_state_changing_url(f"{docker_alias_url}/security.php?phpids=on")

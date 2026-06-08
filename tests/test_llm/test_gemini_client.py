@@ -19,7 +19,7 @@ from clinkz.llm.base import LLMMessage, ToolCall
 # ---------------------------------------------------------------------------
 
 
-def _make_settings(api_key: str = "fake-key", model: str = "gemini-2.5-flash") -> MagicMock:
+def _make_settings(api_key: str = "fake-key", model: str = "gemini-3.1-flash-lite") -> MagicMock:
     s = MagicMock()
     s.gemini_api_key = api_key
     s.google_api_key = None
@@ -308,7 +308,7 @@ class TestFactory:
         bad_settings = MagicMock()
         bad_settings.gemini_api_key = None
         bad_settings.google_api_key = None
-        bad_settings.gemini_model = "gemini-2.5-flash"
+        bad_settings.gemini_model = "gemini-3.1-flash-lite"
 
         with (
             patch("clinkz.llm.gemini_client.settings", bad_settings),

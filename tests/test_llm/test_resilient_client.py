@@ -31,6 +31,7 @@ from clinkz.llm.fallback import (
     AGENT_LLM_PROFILE,
     LLM_FALLBACK_CHAINS,
     ResilientLLMClient,
+    preflight_provider_available,
     validate_agent_chains,
 )
 
@@ -497,3 +498,83 @@ async def test_exploit_methodology_swallows_anthropic_failure(
     assert result == ""
     assert anthropic.calls == 1
     assert gemini.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# 12. Credit pre-flight + engagement-wide provider exclusion
+# ---------------------------------------------------------------------------
+
+
+def test_exclude_providers_drops_gemini_from_every_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the pre-flight finds Gemini depleted, excluding it leaves each
+    role led by its next provider — Anthropic for the fast roles."""
+    _set_all_keys(monkeypatch)
+    for role in ("recon", "scan", "report", "research"):
+        client = ResilientLLMClient(agent_role=role, exclude_providers={"gemini"})
+        assert "gemini" not in client.fallback_chain
+        assert client.fallback_chain[0] == "anthropic", role
+
+
+@pytest.mark.asyncio
+async def test_excluded_gemini_dispatches_to_anthropic_without_touching_gemini(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fast-profile agent with Gemini excluded must run on Anthropic and
+    never instantiate/call the Gemini client (no per-call 429 storm)."""
+    _set_all_keys(monkeypatch)
+    anthropic = _FakeLLM("anthropic", ["ok-from-anthropic"])
+    gemini = _FakeLLM("gemini", [RateLimitError("RESOURCE_EXHAUSTED 429")])
+    _register(monkeypatch, {"anthropic": anthropic, "gemini": gemini, "openai": gemini})
+
+    client = ResilientLLMClient(agent_role="recon", exclude_providers={"gemini"})
+    result = await client.generate_text("hi")
+
+    assert result == "ok-from-anthropic"
+    assert anthropic.calls == 1
+    assert gemini.calls == 0, "excluded provider must never be invoked"
+
+
+def test_exclude_providers_never_empties_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Excluding every provider in the chain is ignored — never strand an agent."""
+    _set_all_keys(monkeypatch)
+    client = ResilientLLMClient(
+        agent_role="recon", exclude_providers={"gemini", "anthropic", "openai"}
+    )
+    assert client.fallback_chain, "chain must not be emptied by an over-broad exclusion"
+
+
+@pytest.mark.asyncio
+async def test_preflight_returns_false_on_resource_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A depleted Gemini key (429 RESOURCE_EXHAUSTED) → pre-flight reports
+    unavailable so the orchestrator routes the engagement to Anthropic."""
+    _set_all_keys(monkeypatch)
+    gemini = _FakeLLM("gemini", [RateLimitError("429 RESOURCE_EXHAUSTED")])
+    _register(monkeypatch, {"gemini": gemini})
+
+    assert await preflight_provider_available("gemini") is False
+    assert gemini.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_preflight_returns_true_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A healthy key answers the probe → provider stays primary."""
+    _set_all_keys(monkeypatch)
+    gemini = _FakeLLM("gemini", ["pong"])
+    _register(monkeypatch, {"gemini": gemini})
+
+    assert await preflight_provider_available("gemini") is True
+
+
+@pytest.mark.asyncio
+async def test_preflight_assumes_available_on_unexpected_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-rate-limit error is treated conservatively as available so a
+    transient quirk never needlessly abandons the cheaper provider."""
+    _set_all_keys(monkeypatch)
+    gemini = _FakeLLM("gemini", [ValueError("weird transient parse error")])
+    _register(monkeypatch, {"gemini": gemini})
+
+    assert await preflight_provider_available("gemini") is True
