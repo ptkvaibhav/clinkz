@@ -89,6 +89,9 @@ class ScanAgent(BaseAgent):
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
         self._session_cookies: dict[str, str] = {}
+        # Auth headers for JWT/bearer sessions (e.g. Juice Shop), sent on
+        # authenticated HTTP crawl/enrichment requests alongside cookies.
+        self._session_headers: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -136,11 +139,18 @@ class ScanAgent(BaseAgent):
 
         target = recon_result.target
         # Capture session cookies from orchestrator for authenticated crawling
-        self._session_cookies: dict[str, str] = input_data.get("session_cookies", {})
+        self._session_cookies = input_data.get("session_cookies", {})
         if self._session_cookies:
             self._logger.info(
                 "ScanAgent received session cookies: %s",
                 list(self._session_cookies.keys()),
+            )
+        # Capture JWT/bearer auth headers for authenticated crawling (Juice Shop).
+        self._session_headers = input_data.get("session_headers", {})
+        if self._session_headers:
+            self._logger.info(
+                "ScanAgent received auth headers: %s",
+                list(self._session_headers.keys()),
             )
         self._logger.info("ScanAgent v2 starting — target: %s", target)
 
@@ -560,6 +570,8 @@ class ScanAgent(BaseAgent):
                 }
                 if self._session_cookies:
                     req_input["cookies"] = self._session_cookies
+                if self._session_headers:
+                    req_input["headers"] = dict(self._session_headers)
                 args = tool.validate_input(req_input)
                 raw = await tool.execute(args)
                 parsed = tool.parse_output(raw)
@@ -656,6 +668,8 @@ class ScanAgent(BaseAgent):
                 }
                 if self._session_cookies:
                     req_input["cookies"] = self._session_cookies
+                if self._session_headers:
+                    req_input["headers"] = dict(self._session_headers)
                 args = tool.validate_input(req_input)
                 raw = await tool.execute(args)
                 parsed = tool.parse_output(raw)

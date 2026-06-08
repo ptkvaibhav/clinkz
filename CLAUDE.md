@@ -243,7 +243,7 @@ clinkz/
 │   │   │   ├── binary_identity.py  # Verifies host binary identity (catches namesake imposters)
 │   │   │   ├── docker_preflight.py # Ensures clinkz-tools container is up before tool execution
 │   │   │   ├── http_client.py      # Built-in HTTP client tool
-│   │   │   ├── auth.py             # WebAuthenticator — default-credential testing
+│   │   │   ├── auth.py             # WebAuthenticator — default-cred testing (cookie/form + JSON/bearer API auth)
 │   │   │   ├── nmap.py / subfinder.py / httpx_tool.py / whatweb.py / wafw00f.py
 │   │   │   ├── katana.py / ffuf.py / nuclei.py / nikto.py / sqlmap.py
 │   │   │
