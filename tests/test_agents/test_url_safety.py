@@ -38,11 +38,23 @@ def test_state_changing_urls_flagged(url: str) -> None:
 @pytest.mark.parametrize(
     "url",
     [
-        # The canonical DVWA vulnerable surfaces must NOT be excluded.
+        # The canonical DVWA vulnerable surfaces must NOT be excluded — the
+        # full behind-login module set a katana crawl surfaces. A guard that
+        # dropped any of these would make the authenticated crawl look empty.
         "http://t/vulnerabilities/sqli/?id=1&Submit=Submit",
+        "http://t/vulnerabilities/sqli_blind/?id=1&Submit=Submit",
         "http://t/vulnerabilities/xss_r/?name=test",
+        "http://t/vulnerabilities/xss_s/",
+        "http://t/vulnerabilities/xss_d/?default=English",
         "http://t/vulnerabilities/exec/",
         "http://t/vulnerabilities/fi/?page=include.php",
+        "http://t/vulnerabilities/upload/",
+        "http://t/vulnerabilities/csrf/",
+        "http://t/vulnerabilities/brute/",
+        "http://t/vulnerabilities/captcha/",
+        "http://t/vulnerabilities/csp/",
+        "http://t/vulnerabilities/javascript/",
+        "http://t/vulnerabilities/weak_id/",
         # A legit content endpoint that merely carries a security= value — the
         # predicate keys on toggles (phpids / seclev_submit / seclev), not on a
         # bare ``security`` param, so this stays in scope.

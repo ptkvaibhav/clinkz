@@ -490,3 +490,284 @@ class TestIDORDeterministicGate:
         # The gate did not short-circuit: at least the phase-3 ranking prompt
         # was issued.
         assert llm.prompts, "diverged probe should reach the LLM checkpoint"
+
+    @pytest.mark.asyncio
+    async def test_csrf_token_churn_same_length_emits_nothing(self) -> None:
+        """A per-request CSRF token at identical length is NOT divergence.
+
+        The exact login.php phantom: every GET returns the same length (1524)
+        but a freshly regenerated 32-char hex ``user_token``. The bytes differ,
+        yet nothing meaningful diverged — the IDOR fingerprint folds long hex
+        runs, so the gate must short-circuit before any LLM checkpoint and emit
+        no finding."""
+        llm = _ScriptedLLM(answers=["SHOULD-NOT-BE-USED"] * 8)
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+
+        counter = {"n": 0}
+
+        async def fake_get(_url: str, _params: dict[str, str]) -> _HTTPResponse:
+            # 32-char hex token, regenerated each call; body length is constant.
+            counter["n"] += 1
+            token = f"{counter['n']:032x}"
+            body = f"<form><input name='user_token' value='{token}'><p>login form</p></form>"
+            return _HTTPResponse(status=200, body=body)
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        # Param "id" is a lexical candidate, so candidacy passes — the gate (not
+        # the param guard) is what must suppress this case.
+        page = _make_page()
+        findings = await agent._test_idor(page)
+
+        assert findings == []
+        assert llm.prompts == [], "token-churn must not reach any LLM checkpoint"
+
+
+# ===========================================================================
+# Auth-form / credential / token params are never IDOR candidates
+# ===========================================================================
+
+
+class TestIDORAuthFormParamExclusion:
+    @pytest.mark.parametrize("param", ["username", "password", "Login", "user_token"])
+    @pytest.mark.asyncio
+    async def test_login_form_param_excluded_before_any_probe(self, param: str) -> None:
+        """login.php fields (username/password/Login/user_token) are not object
+        references — phase 1 rejects them with zero HTTP probes."""
+        agent = _make_agent()
+        # Even a resource-shaped response must not rescue an excluded param.
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<table><tr><td>x</td></tr></table>" * 5)
+        )
+        page = PageAnalysis(
+            url="http://example.com/login.php",
+            body="",
+            status=200,
+            input_params=["username", "password", "Login", "user_token"],
+        )
+        is_candidate, ev = await agent._idor_phase1_reference_point(page, param, "1")
+        assert is_candidate is False
+        assert ev.get("excluded") is True
+        assert agent._http_get.await_count == 0, "excluded param must skip all probes"
+
+    @pytest.mark.asyncio
+    async def test_full_test_idor_emits_nothing_on_login_form(self) -> None:
+        """End-to-end: a login form's params produce no IDOR findings and make
+        no LLM calls."""
+        llm = _ScriptedLLM(answers=["SHOULD-NOT-BE-USED"] * 8)
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<form>login</form>")
+        )
+        page = PageAnalysis(
+            url="http://example.com/login.php",
+            body="",
+            status=200,
+            input_params=["username", "password", "Login", "user_token"],
+        )
+        findings = await agent._test_idor(page)
+        assert findings == []
+        assert llm.prompts == []
+
+    @pytest.mark.asyncio
+    async def test_genuine_id_param_still_a_candidate(self) -> None:
+        """The exclusion must not suppress a real object-reference param."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="user: alice role: user")
+        )
+        is_candidate, ev = await agent._idor_phase1_reference_point(_make_page(), "id", "1")
+        assert is_candidate is True
+        assert ev.get("excluded") is None
+
+
+# ===========================================================================
+# Reflection-sink params are never IDOR candidates / findings
+# ===========================================================================
+
+
+class TestIDORReflectionSink:
+    @pytest.mark.asyncio
+    async def test_reflection_sink_excluded_in_phase1(self) -> None:
+        """A param echoed verbatim into an otherwise-unchanged page (DVWA xss_r's
+        ``name`` → "Hello <value>") is a reflection sink, not an object
+        reference — phase 1 excludes it."""
+        agent = _make_agent()
+
+        async def reflect(_url: str, params: dict[str, str]) -> _HTTPResponse:
+            val = next(iter(params.values()), "")
+            return _HTTPResponse(
+                status=200,
+                body=f"<html><body><h1>Hello {val}</h1><p>welcome back</p></body></html>",
+            )
+
+        agent._http_get = reflect  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://example.com/vulnerabilities/xss_r/",
+            body="",
+            status=200,
+            input_params=["name"],
+        )
+        is_candidate, ev = await agent._idor_phase1_reference_point(page, "name", "1")
+        assert is_candidate is False
+        assert ev.get("reflection_sink") is True
+        assert ev.get("excluded") is True
+
+    @pytest.mark.asyncio
+    async def test_reflection_sink_full_test_idor_emits_nothing(self) -> None:
+        """End-to-end: a pure reflection sink yields no IDOR finding and makes no
+        LLM call (phantom 1: IDOR via xss_r's ``name`` echoing the synthesized
+        value)."""
+        llm = _ScriptedLLM(answers=["SHOULD-NOT-BE-USED"] * 8)
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+
+        async def reflect(_url: str, params: dict[str, str]) -> _HTTPResponse:
+            val = next(iter(params.values()), "")
+            return _HTTPResponse(
+                status=200,
+                body=f"<html><body><h1>Hello {val}</h1><p>welcome back home</p></body></html>",
+            )
+
+        agent._http_get = reflect  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://example.com/vulnerabilities/xss_r/",
+            body="",
+            status=200,
+            input_params=["name"],
+        )
+        findings = await agent._test_idor(page)
+        assert findings == []
+        assert llm.prompts == [], "reflection sink must not reach any LLM checkpoint"
+
+
+# ===========================================================================
+# Phase 5 verification honesty — reflection / error-page / collapse guards
+# ===========================================================================
+
+
+class TestPhase5Honesty:
+    @pytest.mark.asyncio
+    async def test_reflected_reference_does_not_verify(self) -> None:
+        """Divergence explained purely by the echoed reference is reflection,
+        not unauthorized access — must not verify."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200,
+                body="Welcome longreference123 to your dashboard. Account overview follows.",
+            )
+        )
+        phase1_ev = {
+            "baseline_status": 200,
+            "baseline_body": "Welcome x to your dashboard. Account overview follows.",
+        }
+        verified, observed = await agent._idor_phase5_verify(
+            _make_page(),
+            "id",
+            {"reference": "longreference123", "rationale": "synthesized"},
+            phase1_ev,
+            "x",
+        )
+        assert verified is False
+        assert observed is not None and "reflection" in observed
+
+    @pytest.mark.asyncio
+    async def test_error_page_does_not_verify(self) -> None:
+        """An error / not-found page is not another principal's resource."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200,
+                body="Error: the requested source does not exist. No such id was found.",
+            )
+        )
+        phase1_ev = {
+            "baseline_status": 200,
+            "baseline_body": "Account details: name=alice email=alice@x role=user balance=100.",
+        }
+        verified, observed = await agent._idor_phase5_verify(
+            _make_page(), "id", {"reference": "2", "rationale": "peer"}, phase1_ev, "1"
+        )
+        assert verified is False
+        assert observed is not None and "error" in observed
+
+    @pytest.mark.asyncio
+    async def test_collapsed_response_does_not_verify(self) -> None:
+        """A response collapsing to a fraction of a substantial baseline is a
+        'no such resource' page, not a peer record (the 33484 → 1730 phantom)."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="x" * 1730)
+        )
+        phase1_ev = {
+            "baseline_status": 200,
+            "baseline_body": "<table>" + ("y" * 33484) + "</table>",
+        }
+        verified, observed = await agent._idor_phase5_verify(
+            _make_page(),
+            "id",
+            {"reference": "a3f8c2d1e9b74056", "rationale": "synthesized"},
+            phase1_ev,
+            "xss_s",
+        )
+        assert verified is False
+        assert observed is not None and "collapsed" in observed
+
+    @pytest.mark.asyncio
+    async def test_genuine_peer_resource_still_verifies(self) -> None:
+        """A comparable-size, different-content peer resource (the genuine
+        view_source_all.php?id horizontal IDOR) must still verify — the honesty
+        guards must not suppress true positives."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200,
+                body="module beta source listing: " + ("beta line of code; " * 1200),
+            )
+        )
+        phase1_ev = {
+            "baseline_status": 200,
+            "baseline_body": "module alpha source listing: " + ("alpha line of code; " * 1200),
+        }
+        verified, observed = await agent._idor_phase5_verify(
+            _make_page(),
+            "id",
+            {"reference": "beta_module", "rationale": "peer module"},
+            phase1_ev,
+            "alpha_module",
+        )
+        assert verified is True
+        assert observed is not None
+
+
+# ===========================================================================
+# Phase 6 evidence — well-formed request URL (no doubled query string)
+# ===========================================================================
+
+
+class TestPhase6Evidence:
+    def test_evidence_request_has_no_doubled_query_string(self) -> None:
+        """When the endpoint already carries the param, the evidence request URL
+        REPLACES it rather than producing ``?id=xss_s?id=...`` (phantom 2)."""
+        agent = _make_agent()
+        result = IDORMethodologyResult(
+            phases_completed=6,
+            primitives=IDORPrimitives(id_format="opaque", predictability="opaque"),
+            exploitation_type=IDORExploitationType.HORIZONTAL,
+            synthesized_reference="a3f8c2d1e9b74056",
+            verified=True,
+            verification_strength="verified",
+            indicator_observed="content diverges",
+        )
+        finding = agent._idor_phase6_emit(
+            "http://172.20.0.2/vulnerabilities/view_source_all.php?id=xss_s",
+            "id",
+            result,
+        )
+        request_line = next(e for e in finding.evidence if e.startswith("Request:"))
+        assert "?id=xss_s?id=" not in request_line  # no doubled query string
+        assert request_line.count("?") == 1
+        assert request_line.count("id=") == 1
+        assert "id=a3f8c2d1e9b74056" in request_line

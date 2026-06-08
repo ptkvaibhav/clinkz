@@ -262,8 +262,21 @@ class TestPerAgentLLMConfig:
         s = Settings()
         assert s.gemini_research_model == "gemini-3.1-flash-lite"
         assert "preview" not in s.gemini_research_model
-        # Recon/Scan/Report keep the shared gemini_model — unchanged by the switch.
-        assert s.gemini_model == "gemini-2.5-pro"
+
+    def test_all_gemini_models_pinned_to_flash_lite_ga(self) -> None:
+        """Every Gemini model value is the GA Flash-Lite ID — no 2.5 / preview.
+
+        Regression guard for the credit-depletion run: the only sanctioned
+        Gemini model is gemini-3.1-flash-lite (GA). The deprecated
+        gemini-3.1-flash-lite-preview was shut down 2026-05-25 and must never
+        appear as a model value, nor may any gemini-2.x string survive.
+        """
+        s = Settings()
+        for model in (s.gemini_model, s.gemini_exploit_model, s.gemini_research_model):
+            assert model == "gemini-3.1-flash-lite"
+            assert "2.5" not in model
+            assert "gemini-2" not in model
+            assert "preview" not in model
 
     def test_research_model_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GEMINI_RESEARCH_MODEL", "gemini-3.1-flash-lite")

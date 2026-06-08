@@ -38,8 +38,11 @@ class Settings(BaseModel):
     orchestrator_model: str = Field(default="gpt-4o")
     agent_model: str = Field(default="gpt-4o-mini")
     anthropic_model: str = Field(default="claude-sonnet-4-6")
-    gemini_model: str = Field(default="gemini-2.5-pro")
-    gemini_exploit_model: str = Field(default="gemini-2.5-pro")
+    # All Gemini-backed agents (Recon / Scan / Report, and Exploit's Gemini
+    # fallback) run on Gemini 3.1 Flash-Lite (GA). Never set this to the
+    # deprecated gemini-3.1-flash-lite-preview (shut down 2026-05-25).
+    gemini_model: str = Field(default="gemini-3.1-flash-lite")
+    gemini_exploit_model: str = Field(default="gemini-3.1-flash-lite")
     # Research runs on Gemini 3.1 Flash-Lite (GA). Pinned separately from the
     # shared gemini_model so Recon/Scan/Report are unaffected. Never set this to
     # the deprecated gemini-3.1-flash-lite-preview (shut down 2026-05-25).
@@ -53,8 +56,8 @@ class Settings(BaseModel):
     report_llm_provider: LLMProvider = Field(default="gemini")
     exploit_llm_provider: LLMProvider = Field(default="anthropic")
     # Research moved from anthropic → gemini (Flash-Lite) for live Search
-    # Grounding and to avoid the slow gemini-2.5-pro retry-storm it hit via the
-    # AnthropicClient.research() fallback hop.
+    # Grounding and to avoid the slow retry-storm it previously hit on the
+    # heavier Gemini Pro model via the AnthropicClient.research() fallback hop.
     research_llm_provider: LLMProvider = Field(default="gemini")
 
     # Global default used by the resilient client when no per-agent override
@@ -196,8 +199,8 @@ class Settings(BaseModel):
             orchestrator_model=os.getenv("ORCHESTRATOR_MODEL", "gpt-4o"),
             agent_model=os.getenv("AGENT_MODEL", "gpt-4o-mini"),
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-pro"),
-            gemini_exploit_model=os.getenv("GEMINI_EXPLOIT_MODEL", "gemini-2.5-pro"),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+            gemini_exploit_model=os.getenv("GEMINI_EXPLOIT_MODEL", "gemini-3.1-flash-lite"),
             gemini_research_model=os.getenv("GEMINI_RESEARCH_MODEL", "gemini-3.1-flash-lite"),
             recon_llm_provider=_agent_provider("recon", "gemini"),  # type: ignore[arg-type]
             scan_llm_provider=_agent_provider("scan", "gemini"),  # type: ignore[arg-type]
