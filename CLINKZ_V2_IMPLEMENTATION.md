@@ -77,6 +77,9 @@ Repository ships with:
 
 - `.claude/skills/run-dvwa/SKILL.md` — runs the full DVWA pipeline and
   reports coverage across the 14 categories
+- `.claude/skills/run-juiceshop/SKILL.md` — same shape against OWASP Juice
+  Shop (Node/Angular SPA, JWT auth); reports coverage as X/13-applicable
+  (Command Injection is N/A on the Node stack)
 - `.claude/skills/phase-work/SKILL.md` — loads v2 rules of engagement for
   any phase-implementation or fix task
 - `.githooks/pre-commit` — runs the lint + test gates before every commit
@@ -172,8 +175,8 @@ REPORT                                                           [partial]
 - Skill smoke tests in CI for DVWA Tier-1 vulns — done
 - Skill smoke tests for Juice Shop SPA-style targets — done
 - 5-consecutive-engagement consistency drill — pending
-- Claude Code commands + hooks — done (`run-dvwa`, `phase-work`,
-  `pre-commit`, `ci.yml`)
+- Claude Code commands + hooks — done (`run-dvwa`, `run-juiceshop`,
+  `phase-work`, `pre-commit`, `ci.yml`)
 - CLAUDE.md / README / docs alignment with v2 — done (this pass)
 
 ### Phase 5: Expansion — **partial**
