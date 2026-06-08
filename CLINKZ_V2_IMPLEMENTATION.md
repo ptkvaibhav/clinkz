@@ -91,7 +91,8 @@ Repository ships with:
 ORCHESTRATOR
   1. Parse scope, enforce boundaries                              [DONE]
   2. Recon (sequential)                                           [DONE]
-  3. Default credential testing (WebAuthenticator, deterministic) [DONE]
+  3. Default credential testing (WebAuthenticator, deterministic; [DONE]
+     cookie/form + JSON/bearer API auth → session_headers handoff)
   4. Concurrent: Scan + Research + Exploit                        [DONE]
   5. Monitor completion                                           [DONE]
   6. Report (sequential)                                          [DONE]

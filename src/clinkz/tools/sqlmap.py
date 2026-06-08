@@ -75,6 +75,15 @@ class SqlmapTool(ToolBase):
                         "description": "Cookie string for authenticated testing.",
                         "default": "",
                     },
+                    "header": {
+                        "type": "string",
+                        "description": (
+                            "Extra HTTP header for authenticated testing, e.g. "
+                            "'Authorization: Bearer <jwt>'. Multiple headers may "
+                            "be newline-separated."
+                        ),
+                        "default": "",
+                    },
                     "forms": {
                         "type": "boolean",
                         "description": "Automatically detect and test forms on the target page.",
@@ -103,12 +112,21 @@ class SqlmapTool(ToolBase):
         else:
             cookie = str(cookie_raw)
 
+        # Header(s) — a dict ({"Authorization": "Bearer x"}) becomes
+        # newline-separated "Key: value" lines for sqlmap's --headers flag.
+        header_raw = args.get("header", "")
+        if isinstance(header_raw, dict):
+            header = "\n".join(f"{k}: {v}" for k, v in header_raw.items())
+        else:
+            header = str(header_raw)
+
         return {
             "url": url,
             "data": str(args.get("data", "")),
             "level": level,
             "risk": risk,
             "cookie": cookie,
+            "header": header,
             "forms": bool(args.get("forms", False)),
         }
 
@@ -132,6 +150,14 @@ class SqlmapTool(ToolBase):
                 cmd.extend(["--data", args["data"]])
             if args.get("cookie"):
                 cmd.extend(["--cookie", args["cookie"]])
+            if args.get("header"):
+                header = args["header"]
+                # --header takes a single header; --headers takes multiple
+                # (newline-separated). Pick by content.
+                if "\n" in header:
+                    cmd.extend(["--headers", header])
+                else:
+                    cmd.extend(["--header", header])
             if args.get("forms"):
                 cmd.append("--forms")
             stdout, stderr, _ = await self._run_subprocess(cmd)
