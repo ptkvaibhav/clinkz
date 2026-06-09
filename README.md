@@ -44,7 +44,7 @@ Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamicall
 1. The **Orchestrator** validates scope and runs **Recon** sequentially
 2. **Scan**, **Research**, and **Exploit** then run **concurrently**, sharing SQLite state. Exploit's only hard dependency is Scan — it starts as soon as Scan completes and never waits for Research (Research's runbook is folded in only if it has already finished)
 3. **Recon** discovers subdomains, ports, services, and tech stack
-4. **Scan** crawls + fuzzes every HTTP service and enumerates non-HTTP services (FTP/SSH/SMB/DB). Crawl-safety skips links that mutate the target (WAF/security toggles, logout) so the shared session is never poisoned for later phases
+4. **Scan** crawls + fuzzes every HTTP service and enumerates non-HTTP services (FTP/SSH/SMB/DB). For single-page apps it adds **SPA/API route discovery** (`agents/_route_discovery.py`: static JS-bundle parsing + OpenAPI probing behind a pluggable discoverer seam) to recover `/api`+`/rest` routes — with their param structure — that an HTML/JS crawl can't see. Crawl-safety skips links that mutate the target (WAF/security toggles, logout) so the shared session is never poisoned for later phases
 5. **Research** queries the persistent KB for known techniques and live-searches the web for new CVEs/writeups (Gemini 3.1 Flash-Lite with native Search Grounding), under a hard wall-clock budget, persisting results back to the KB
 6. **Exploit** plans tests with an LLM and executes deterministic `_test_*` skills (with adaptive multi-phase methodologies for XSS-reflected and SQLi)
 7. **Critic** validates findings; **Report** emits JSON + Markdown

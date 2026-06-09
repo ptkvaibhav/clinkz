@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
+from clinkz.agents._route_discovery import (
+    FetchResult,
+    default_discoverers,
+    run_route_discovery,
+)
 from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
@@ -408,6 +413,33 @@ class ScanAgent(BaseAgent):
                     continue
                 endpoints.append(Endpoint(url=ep_url))
 
+        # SPA/API route discovery — recover JS-runtime routes (/api, /rest,
+        # path-param and concat-built search routes) that an HTML/JS crawl
+        # under-reports on modern single-page apps. Carries the engagement
+        # session via _discovery_http_get and is purely additive: discovered
+        # endpoints union into the crawl set, deduped by (url, method).
+        try:
+            discovered = await run_route_discovery(
+                url, self._discovery_http_get, default_discoverers(), log=self._logger
+            )
+        except Exception as exc:  # discovery must never abort the scan phase
+            self._logger.warning("Route discovery failed: %s", exc)
+            discovered = []
+        if discovered:
+            seen_disc = {(ep.url, ep.method) for ep in endpoints}
+            added = 0
+            for ep in discovered:
+                key = (ep.url, ep.method)
+                if key not in seen_disc:
+                    endpoints.append(ep)
+                    seen_disc.add(key)
+                    added += 1
+            self._logger.info(
+                "Route discovery: added %d new endpoint(s) (%d discovered)",
+                added,
+                len(discovered),
+            )
+
         # Fuzz using fallback chain
         try:
             fuzz_tool, fuzz_result = await self._resolver.try_until_sufficient(
@@ -520,6 +552,42 @@ class ScanAgent(BaseAgent):
                 existing.append(ep)
                 seen.add(key)
 
+    async def _discovery_http_get(self, url: str) -> FetchResult | None:
+        """Session-carrying GET for route discovery and endpoint enrichment.
+
+        Instantiates the ``http_request`` tool with the engagement session
+        (cookies + JWT/bearer headers) and returns a :class:`FetchResult`.
+        Returns ``None`` on any failure — no client available, out-of-scope URL
+        (the tool's scope check raises), or network error — so a discoverer
+        never raises on a single bad fetch.
+        """
+        http_match = self._resolver.find_tool("http_request")
+        if not http_match or not http_match.available or not http_match.tool_class:
+            return None
+        try:
+            tool = http_match.tool_class(scope=self.scope, engagement_id=self.engagement_id)
+            req_input: dict[str, Any] = {
+                "url": url,
+                "method": "GET",
+                "follow_redirects": True,
+            }
+            if self._session_cookies:
+                req_input["cookies"] = self._session_cookies
+            if self._session_headers:
+                req_input["headers"] = dict(self._session_headers)
+            args = tool.validate_input(req_input)
+            raw = await tool.execute(args)
+            parsed = tool.parse_output(raw)
+        except Exception as exc:
+            self._logger.debug("Discovery fetch failed for %s: %s", url, exc)
+            return None
+        raw_headers = getattr(parsed, "response_headers", {}) or {}
+        return FetchResult(
+            status=getattr(parsed, "status_code", 0),
+            body=getattr(parsed, "response_body", "") or "",
+            headers={str(k).lower(): str(v) for k, v in raw_headers.items()},
+        )
+
     async def _enrich_endpoints_with_params(self, urls: list[str]) -> list[Endpoint]:
         """Fetch each URL and extract forms / query-param links as Endpoints.
 
@@ -537,10 +605,6 @@ class ScanAgent(BaseAgent):
             each parameterized link found on the visited pages.
         """
         if not urls:
-            return []
-        http_match = self._resolver.find_tool("http_request")
-        if not http_match or not http_match.available or not http_match.tool_class:
-            self._logger.debug("No HTTP client available for endpoint enrichment")
             return []
 
         # De-duplicate URLs (strip fragment + trailing slash) before visiting.
@@ -562,22 +626,10 @@ class ScanAgent(BaseAgent):
         seen_keys: set[tuple[str, str, tuple[str, ...]]] = set()
         for current_url in ordered_urls:
             try:
-                tool = http_match.tool_class(scope=self.scope, engagement_id=self.engagement_id)
-                req_input: dict[str, Any] = {
-                    "url": current_url,
-                    "method": "GET",
-                    "follow_redirects": True,
-                }
-                if self._session_cookies:
-                    req_input["cookies"] = self._session_cookies
-                if self._session_headers:
-                    req_input["headers"] = dict(self._session_headers)
-                args = tool.validate_input(req_input)
-                raw = await tool.execute(args)
-                parsed = tool.parse_output(raw)
-
-                status = getattr(parsed, "status_code", 0)
-                body = getattr(parsed, "response_body", "")
+                res = await self._discovery_http_get(current_url)
+                if res is None:
+                    continue
+                status, body = res.status, res.body
                 if status < 200 or status >= 400 or not body:
                     continue
 

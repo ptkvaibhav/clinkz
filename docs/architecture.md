@@ -72,12 +72,27 @@ checkpoints.
 ```
 1. LLM plans scan strategy             (PLANNING checkpoint)
 2. Per-service methods (HTTP, FTP,     (TOOL — deterministic per service,
-   SSH, SMB, DB)                        with TOOL_CHAINS fallback)
+   SSH, SMB, DB); HTTP adds SPA/API     with TOOL_CHAINS fallback +
+   route discovery                      _route_discovery.py discoverers)
 3. LLM reviews each tool output        (REASONING checkpoint)
 4. LLM checks coverage sufficiency     (REASONING checkpoint)
 5. Expand coverage if insufficient     (TOOL — conditional)
 6. Build structured ScanResult         (CODE)
 ```
+
+For HTTP services the crawl/fuzz fallback chains are augmented by **SPA/API
+route discovery** (`agents/_route_discovery.py`): a set of pluggable
+`RouteDiscoverer`s — `StaticBundleDiscoverer` (parse the SPA shell's JS bundles
+and webpack chunks for `/api`+`/rest` route literals, including interpolated and
+path-param forms) and `OpenAPIDiscoverer` (parse a served OpenAPI/Swagger spec,
+else probe a tight set of conventional JSON roots). Results union into
+`HTTPScanResult.endpoints` (additive, deduped) and flow to Exploit with their
+param structure. The seam is intentional: a future browser-driven
+`HeadlessDiscoverer` slots in as another implementation. Discovery fetches carry
+the engagement session (cookies + JWT/bearer) and are bounded and same-origin
+(safety against SSRF / hostile bundles). Path-param routes (`/rest/basket/:id`)
+are emitted as `:id` templates and resolved at probe time by the Exploit URL
+builder's `_resolve_path_params`.
 
 ### Research (`agents/research.py`) — runs concurrently
 
