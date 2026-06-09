@@ -31,6 +31,7 @@ from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.models.target import Host, Service
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase, ToolOutput
+from clinkz.tools.nmap import NmapTool
 from clinkz.tools.resolver import ToolMatch, ToolResolver
 
 # ---------------------------------------------------------------------------
@@ -273,6 +274,46 @@ class _MockWafw00fTool(ToolBase):
 # ---------------------------------------------------------------------------
 # Resolver factories
 # ---------------------------------------------------------------------------
+
+
+# Real Juice Shop service-scan nmap output: port 3000 is a live web app, but
+# nmap labels it ``ppp`` (its /etc/services default when -sV can't fingerprint).
+# Used by the recon-side mirror test below.
+_JUICESHOP_PPP_XML = (
+    Path(__file__).parent.parent / "fixtures" / "nmap_juiceshop_ppp.xml"
+).read_text(encoding="utf-8")
+
+
+class _MockNmapPppTool(ToolBase):
+    """Service-detection tool returning the REAL Juice Shop nmap output.
+
+    ``parse_output`` delegates to the real :class:`NmapTool` parser so recon's
+    assembly runs over genuine tool output where the web port (3000) carries a
+    mislabeled ``ppp`` service name.
+    """
+
+    capabilities = ["port_scanning", "service_detection"]
+    category = "recon"
+
+    @property
+    def name(self) -> str:
+        return "nmap"
+
+    @property
+    def description(self) -> str:
+        return "Mock nmap returning real Juice Shop ppp output"
+
+    def get_schema(self) -> dict[str, Any]:
+        return {"name": self.name, "description": self.description, "parameters": {}}
+
+    def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
+        return args
+
+    async def execute(self, args: dict[str, Any]) -> str:
+        return _JUICESHOP_PPP_XML
+
+    def parse_output(self, raw_output: str) -> Any:
+        return NmapTool(scope=SCOPE).parse_output(raw_output)
 
 
 def _make_resolver(
@@ -577,6 +618,35 @@ async def test_recon_result_structure(tmp_path: Path) -> None:
     assert r["web_info"] is not None
     assert "waf_detected" in r["web_info"]
     assert "headers" in r["web_info"]
+
+
+# ---------------------------------------------------------------------------
+# Test: recon assembly emits an HTTP service for a mislabeled known web port
+# ---------------------------------------------------------------------------
+
+
+async def test_recon_emits_http_service_for_mislabeled_web_port(tmp_path: Path) -> None:
+    """Recon's result-assembly emits an HTTP-capable service for a known web
+    port even when nmap mislabels the name (Juice Shop port 3000 -> 'ppp').
+
+    This is the recon-side mirror of the is_http model fix and the regression
+    guard for the recon->scan empty-services blocker: the service that scan
+    must receive to fire its crawl branch is built here, from real nmap output,
+    by ``_step_service_scan``. If recon drops the mislabeled web service, scan
+    sees no HTTP service and ``service_scans`` comes back empty.
+    """
+    resolver = _make_resolver(nmap_cls=_MockNmapPppTool, include_web=False)
+    agent, state, _ = await _make_agent(tmp_path / "ppp.db", resolver=resolver)
+    services = await agent._step_service_scan("clinkz-juiceshop", [3000])
+    await state.close()
+
+    assert services.services, "recon dropped the mislabeled port-3000 web service"
+    svc = next((s for s in services.services if s.port == 3000), None)
+    assert svc is not None, "port-3000 service missing from recon assembly"
+    assert svc.service_name == "ppp"  # nmap's mislabel is preserved verbatim...
+    assert svc.is_http is True  # ...but recon still classifies it HTTP-capable
+    # has_http gate (recon Step-5 web recon, and scan's crawl branch) must fire.
+    assert any(s.is_http for s in services.services)
 
 
 # ---------------------------------------------------------------------------
