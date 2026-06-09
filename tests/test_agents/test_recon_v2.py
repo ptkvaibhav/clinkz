@@ -608,6 +608,18 @@ class TestReconModels:
         unknown_80 = ReconService(port=80, service_name="")
         assert unknown_80.is_http is True
 
+        # Known web port mislabeled by nmap (3000/tcp → "ppp" from /etc/services,
+        # which is what happened to Juice Shop) → still is_http True. This is the
+        # regression: a non-empty, non-http name on a known web port must not
+        # bypass the web-port fallback.
+        ppp_3000 = ReconService(port=3000, service_name="ppp")
+        assert ppp_3000.is_http is True
+
+        # Other known web ports with non-http names also qualify.
+        for web_port in (8080, 8000, 5000, 8443):
+            svc = ReconService(port=web_port, service_name="unknown")
+            assert svc.is_http is True, f"port {web_port} should be HTTP-capable"
+
         # Unknown service on non-HTTP port → is_http False
         unknown_9999 = ReconService(port=9999, service_name="")
         assert unknown_9999.is_http is False

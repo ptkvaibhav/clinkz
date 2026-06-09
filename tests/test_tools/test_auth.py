@@ -356,3 +356,172 @@ class TestExecutionModeRouting:
         )
         assert called["aiohttp"] is True
         assert called["curl"] is False
+
+
+# ---------------------------------------------------------------------------
+# JSON / API (JWT bearer) authentication
+# ---------------------------------------------------------------------------
+
+
+class TestTokenExtraction:
+    """``_extract_token`` pulls a token from common JSON login-response shapes."""
+
+    def test_juice_shop_shape(self) -> None:
+        body = json.dumps({"authentication": {"token": "JWT123", "umail": "a@b.c"}})
+        assert WebAuthenticator._extract_token(body) == "JWT123"
+
+    def test_flat_token(self) -> None:
+        assert WebAuthenticator._extract_token(json.dumps({"token": "abc"})) == "abc"
+
+    def test_access_token(self) -> None:
+        assert WebAuthenticator._extract_token(json.dumps({"access_token": "xyz"})) == "xyz"
+
+    def test_nested_data_token(self) -> None:
+        assert WebAuthenticator._extract_token(json.dumps({"data": {"token": "ddd"}})) == "ddd"
+
+    def test_absent_token(self) -> None:
+        assert WebAuthenticator._extract_token(json.dumps({"foo": "bar"})) == ""
+
+    def test_empty_token_ignored(self) -> None:
+        assert WebAuthenticator._extract_token(json.dumps({"token": "   "})) == ""
+
+    def test_non_json_body(self) -> None:
+        assert WebAuthenticator._extract_token("<html>not json</html>") == ""
+
+    def test_non_object_json(self) -> None:
+        assert WebAuthenticator._extract_token(json.dumps(["a", "b"])) == ""
+
+
+class TestJsonApiAuth:
+    """``authenticate()`` falls back to JSON/API auth when the form flow fails."""
+
+    @pytest.fixture()
+    def auth(self) -> WebAuthenticator:
+        scope = EngagementScope(
+            name="test",
+            targets=[ScopeEntry(type=ScopeType.DOMAIN, value="localhost")],
+        )
+        return WebAuthenticator(scope=scope, engagement_id="test-engagement")
+
+    @staticmethod
+    def _form_failure(args: dict[str, Any]) -> str:
+        return json.dumps(
+            {
+                "success": False,
+                "session_cookies": {},
+                "login_url": args.get("login_url", ""),
+                "username": args.get("username", ""),
+                "status_code": 200,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_api_on_form_failure(
+        self, auth: WebAuthenticator, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Form auth fails → JSON auth against /rest/user/login returns a JWT."""
+
+        async def fake_execute(args: dict[str, Any]) -> str:
+            return self._form_failure(args)
+
+        calls: list[tuple[str, dict[str, str]]] = []
+
+        async def fake_api_post(url: str, payload: dict[str, str]) -> tuple[int, str]:
+            calls.append((url, payload))
+            if url.endswith("/rest/user/login"):
+                return 200, json.dumps({"authentication": {"token": "JWT-OK"}})
+            return 404, ""
+
+        monkeypatch.setattr(auth, "execute", fake_execute)
+        monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
+
+        result = await auth.authenticate("http://localhost:3000/", "admin@juice-sh.op", "admin123")
+
+        assert result.success is True
+        assert result.bearer_token == "JWT-OK"
+        assert result.session_cookies == {}
+        # The Juice Shop route was actually exercised, against the right origin.
+        assert any(u == "http://localhost:3000/rest/user/login" for u, _ in calls)
+        # Email identifier → only the email-keyed body is sent.
+        assert all("email" in p for _, p in calls)
+
+    @pytest.mark.asyncio
+    async def test_form_success_skips_api(
+        self, auth: WebAuthenticator, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DVWA no-regression: a successful form login never triggers API auth."""
+
+        async def fake_execute(args: dict[str, Any]) -> str:
+            return json.dumps(
+                {
+                    "success": True,
+                    "session_cookies": {"PHPSESSID": "abc"},
+                    "login_url": args.get("login_url", ""),
+                    "username": args.get("username", ""),
+                    "status_code": 200,
+                }
+            )
+
+        api_called = {"v": False}
+
+        async def fake_api_post(url: str, payload: dict[str, str]) -> tuple[int, str]:
+            api_called["v"] = True
+            return 200, json.dumps({"token": "should-not-be-used"})
+
+        monkeypatch.setattr(auth, "execute", fake_execute)
+        monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
+
+        result = await auth.authenticate("http://localhost:8080/login.php", "admin", "password")
+
+        assert result.success is True
+        assert result.session_cookies == {"PHPSESSID": "abc"}
+        assert result.bearer_token == ""
+        assert api_called["v"] is False
+
+    @pytest.mark.asyncio
+    async def test_username_body_tried_for_non_email(
+        self, auth: WebAuthenticator, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-email identifier also gets a username-keyed body shape."""
+        seen: list[dict[str, str]] = []
+
+        async def fake_api_post(url: str, payload: dict[str, str]) -> tuple[int, str]:
+            seen.append(payload)
+            if "username" in payload:
+                return 200, json.dumps({"token": "T"})
+            return 401, ""
+
+        monkeypatch.setattr(auth, "execute", self._form_failure_async())
+        monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
+
+        result = await auth.authenticate("http://localhost:3000/", "admin", "pass")
+
+        assert result.success is True
+        assert result.bearer_token == "T"
+        assert any("username" in p for p in seen)
+
+    @pytest.mark.asyncio
+    async def test_returns_form_failure_when_both_fail(
+        self, auth: WebAuthenticator, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both paths fail → the (richer) form-auth failure is surfaced."""
+
+        async def fake_execute(args: dict[str, Any]) -> str:
+            return self._form_failure(args)
+
+        async def fake_api_post(url: str, payload: dict[str, str]) -> tuple[int, str]:
+            return 404, ""
+
+        monkeypatch.setattr(auth, "execute", fake_execute)
+        monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
+
+        result = await auth.authenticate("http://localhost:3000/", "admin", "pass")
+
+        assert result.success is False
+        assert result.bearer_token == ""
+
+    def _form_failure_async(self) -> Any:
+        async def _inner(args: dict[str, Any]) -> str:
+            return self._form_failure(args)
+
+        return _inner
