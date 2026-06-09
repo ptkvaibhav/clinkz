@@ -61,7 +61,10 @@ _DEFAULT_CREDENTIALS: list[dict[str, str]] = [
     {"username": "admin", "password": "admin", "technology": "wordpress"},
     # phpMyAdmin
     {"username": "root", "password": "", "technology": "phpmyadmin"},
-    # Juice Shop
+    # Juice Shop — login is email-based via POST /rest/user/login, so the
+    # canonical admin account uses the seeded email. The bare "admin" entry is
+    # retained for non-email login flows / completeness.
+    {"username": "admin@juice-sh.op", "password": "admin123", "technology": "juice_shop"},
     {"username": "admin", "password": "admin123", "technology": "juice_shop"},
     # Generic common defaults
     {"username": "admin", "password": "admin", "technology": "generic"},
@@ -191,12 +194,16 @@ class CredentialStore:
         cookie_jar_path: str = "",
         engagement_id: str = "",
         agent: str = "",
+        bearer_token: str = "",
     ) -> None:
         """Mark a credential as confirmed valid and optionally store the session.
 
-        When ``session_cookies`` or ``cookie_jar_path`` are provided, the
-        session is persisted to the state store so later agents can reuse
-        the authenticated session without re-authenticating.
+        When ``session_cookies``, ``cookie_jar_path``, or ``bearer_token`` are
+        provided, the session is persisted to the state store so later agents
+        can reuse the authenticated session without re-authenticating. A
+        ``bearer_token`` (JSON/API auth, e.g. Juice Shop's JWT) is stored in the
+        session metadata and later re-attached as an ``Authorization: Bearer``
+        header by the orchestrator.
 
         Args:
             credential_id: Credential UUID.
@@ -204,6 +211,7 @@ class CredentialStore:
             cookie_jar_path: Path to the curl cookie jar file.
             engagement_id: Engagement UUID (required when storing session).
             agent: Agent that performed the authentication (e.g., "scan").
+            bearer_token: JWT/opaque token from JSON/API auth (no cookies).
         """
         await self._state._conn.execute(
             "UPDATE credentials SET valid=1 WHERE id=?", (credential_id,)
@@ -211,13 +219,16 @@ class CredentialStore:
         await self._state._conn.commit()
 
         # Persist the session for cross-agent handoff
-        if (session_cookies or cookie_jar_path) and engagement_id:
+        if (session_cookies or cookie_jar_path or bearer_token) and engagement_id:
+            metadata: dict[str, Any] = {"credential_id": credential_id}
+            if bearer_token:
+                metadata["bearer_token"] = bearer_token
             await self._state.save_session(
                 engagement_id=engagement_id,
                 agent=agent or "unknown",
                 cookies=session_cookies or {},
                 cookie_jar_path=cookie_jar_path,
-                metadata={"credential_id": credential_id},
+                metadata=metadata,
             )
 
     async def mark_invalid(self, credential_id: str) -> None:

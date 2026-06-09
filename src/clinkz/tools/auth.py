@@ -10,6 +10,16 @@ Handles the full CSRF-aware login flow as CODE, not LLM reasoning:
 This eliminates the failure mode where the LLM forgets to chain cookies
 between GET and POST or misses CSRF tokens.
 
+In addition to the cookie/form flow above, ``authenticate()`` falls back to a
+**JSON/API auth** path when the form flow fails: it POSTs the credentials as
+JSON to common API login routes (``/rest/user/login``, ``/api/login``, ...)
+and extracts a token from the JSON response. This handles SPA targets such as
+OWASP Juice Shop, which has no HTML login form and authenticates via
+``POST /rest/user/login`` returning ``{authentication: {token}}``, used on
+later requests as ``Authorization: Bearer <token>``. The two paths are
+additive — the cookie/form flow is tried first and DVWA's behaviour is
+unchanged.
+
 When TOOL_EXEC_MODE=docker, requests to Docker-internal IPs are executed
 via ``curl`` inside the container (same pattern as HTTPClientTool).
 Otherwise uses aiohttp on the host.
@@ -30,6 +40,31 @@ from clinkz.tools.base import ToolBase, ToolOutput
 
 logger = logging.getLogger(__name__)
 
+# Common JSON/API login routes tried (in order) when the cookie/form flow
+# fails. Derived against the target's own origin only — never cross-origin.
+_API_LOGIN_ROUTES: tuple[str, ...] = (
+    "/rest/user/login",  # OWASP Juice Shop
+    "/api/login",
+    "/api/auth/login",
+    "/api/v1/auth/login",
+    "/auth/login",
+    "/login",
+)
+
+# JSON paths searched (in order) for an auth token in an API login response.
+# Each tuple is a nested-key path walked into the parsed JSON object.
+_TOKEN_JSON_PATHS: tuple[tuple[str, ...], ...] = (
+    ("authentication", "token"),  # Juice Shop
+    ("data", "authentication", "token"),
+    ("data", "token"),
+    ("token",),
+    ("access_token",),
+    ("accessToken",),
+    ("jwt",),
+    ("id_token",),
+    ("idToken",),
+)
+
 
 # ---------------------------------------------------------------------------
 # Output models
@@ -37,10 +72,19 @@ logger = logging.getLogger(__name__)
 
 
 class AuthResult(BaseModel):
-    """Result of a web authentication attempt."""
+    """Result of a web authentication attempt.
+
+    Two authentication shapes are represented:
+
+    - **Cookie/form auth** (DVWA-style): success carries ``session_cookies``.
+    - **JSON/API auth** (Juice Shop-style): success carries ``bearer_token``,
+      a JWT/opaque token sent on subsequent requests as
+      ``Authorization: Bearer <token>``. ``session_cookies`` may be empty.
+    """
 
     success: bool = False
     session_cookies: dict[str, str] = {}
+    bearer_token: str = ""
     redirect_url: str = ""
     login_url: str = ""
     username: str = ""
@@ -255,6 +299,7 @@ class WebAuthenticator(ToolBase):
         auth = AuthResult(
             success=data.get("success", False),
             session_cookies=data.get("session_cookies", {}),
+            bearer_token=data.get("bearer_token", ""),
             redirect_url=data.get("redirect_url", ""),
             login_url=data.get("login_url", ""),
             username=data.get("username", ""),
@@ -282,15 +327,22 @@ class WebAuthenticator(ToolBase):
         """Perform a full login and return structured AuthResult.
 
         This is the primary API for other components. Handles validation,
-        execution, and parsing in one call.
+        execution, and parsing in one call. Two auth shapes are attempted:
+
+        1. **Cookie/form auth** (``execute()``) — the CSRF-aware GET→POST flow.
+           DVWA and other form-based apps succeed here; behaviour unchanged.
+        2. **JSON/API auth** (``_try_api_login()``) — only when (1) fails: POST
+           the credentials as JSON to common API login routes and read a token
+           from the response (Juice Shop and other SPA/JSON APIs).
 
         Args:
             login_url: URL of the login page.
-            username: Username credential.
+            username: Username (or email) credential.
             password: Password credential.
 
         Returns:
-            AuthResult with success status and session cookies.
+            AuthResult — on success, carries ``session_cookies`` (cookie/form
+            auth) or ``bearer_token`` (JSON/API auth).
         """
         try:
             validated = self.validate_input(
@@ -301,16 +353,160 @@ class WebAuthenticator(ToolBase):
                 }
             )
             raw = await self.execute(validated)
-            parsed = self.parse_output(raw)
-            return parsed.auth_result
+            form_result = self.parse_output(raw).auth_result
         except Exception as exc:
-            self._logger.error("authenticate() failed: %s", exc, exc_info=True)
+            self._logger.error("authenticate() form flow failed: %s", exc, exc_info=True)
             return AuthResult(
                 success=False,
                 login_url=login_url,
                 username=username,
                 error=str(exc),
             )
+
+        if form_result.success:
+            return form_result
+
+        # Form/cookie auth produced no session — try JSON/API auth (SPA targets
+        # like Juice Shop have no HTML form and return a token in a JSON body).
+        self._logger.info(
+            "Cookie/form auth did not establish a session for %s — trying JSON/API auth",
+            login_url,
+        )
+        api_result = await self._try_api_login(login_url, username, password)
+        if api_result.success:
+            return api_result
+
+        # Both paths failed — surface the original form-auth failure (richer
+        # context: status, redirect, etc.).
+        return form_result
+
+    async def _try_api_login(
+        self,
+        login_url: str,
+        username: str,
+        password: str,
+    ) -> AuthResult:
+        """Attempt JSON/API authentication against the target's own origin.
+
+        POSTs the credentials as JSON to each route in ``_API_LOGIN_ROUTES``
+        (resolved against the origin of ``login_url``) and returns the first
+        response that yields an auth token. Both ``{email, password}`` and
+        ``{username, password}`` body shapes are tried per route, since APIs
+        differ on the identifier key.
+
+        Args:
+            login_url: Any URL on the target — only its scheme/host/port is used.
+            username: Username or email credential.
+            password: Password credential.
+
+        Returns:
+            AuthResult with ``bearer_token`` set on success, else a failure.
+        """
+        parsed = urlparse(login_url)
+        if not parsed.scheme or not parsed.netloc:
+            return AuthResult(
+                success=False,
+                login_url=login_url,
+                username=username,
+                error=f"Cannot derive origin from login URL: {login_url}",
+            )
+        base = f"{parsed.scheme}://{parsed.netloc}"
+
+        # Body shapes: email-keyed first (most JSON APIs, incl. Juice Shop),
+        # then username-keyed when the identifier is not already an email.
+        bodies: list[dict[str, str]] = [{"email": username, "password": password}]
+        if "@" not in username:
+            bodies.append({"username": username, "password": password})
+
+        last_status = 0
+        for route in _API_LOGIN_ROUTES:
+            url = f"{base}{route}"
+            for body in bodies:
+                try:
+                    status, resp_body = await self._api_post_json(url, body)
+                except Exception as exc:
+                    self._logger.debug("API login POST %s failed: %s", url, exc)
+                    continue
+                last_status = status or last_status
+                if status < 200 or status >= 300:
+                    continue
+                token = self._extract_token(resp_body)
+                if token:
+                    self._logger.info("JSON/API auth succeeded via %s", url)
+                    return AuthResult(
+                        success=True,
+                        bearer_token=token,
+                        redirect_url=url,
+                        login_url=url,
+                        username=username,
+                        status_code=status,
+                    )
+
+        return AuthResult(
+            success=False,
+            login_url=login_url,
+            username=username,
+            status_code=last_status,
+            error="No API login route returned an auth token",
+        )
+
+    async def _api_post_json(self, url: str, payload: dict[str, str]) -> tuple[int, str]:
+        """POST ``payload`` as JSON to ``url`` and return ``(status, body)``.
+
+        Reuses :class:`HTTPClientTool` so the request honours the same
+        docker/host execution routing, per-engagement cookie jar, and scope
+        enforcement as every other HTTP call in the engagement.
+        """
+        from clinkz.tools.http_client import HTTPClientTool
+
+        http = HTTPClientTool(scope=self.scope, engagement_id=self._engagement_id)
+        args = http.validate_input(
+            {
+                "method": "POST",
+                "url": url,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                "body": json.dumps(payload),
+                "follow_redirects": True,
+            }
+        )
+        raw = await http.execute(args)
+        parsed = http.parse_output(raw)
+        return parsed.status_code, parsed.response_body
+
+    @staticmethod
+    def _extract_token(response_body: str) -> str:
+        """Extract an auth token from a JSON login response body.
+
+        Walks each path in ``_TOKEN_JSON_PATHS`` into the parsed JSON object
+        and returns the first non-empty string value found.
+
+        Args:
+            response_body: Raw response body (expected to be JSON).
+
+        Returns:
+            The token string, or "" if none of the known shapes matched.
+        """
+        try:
+            data = json.loads(response_body)
+        except (json.JSONDecodeError, TypeError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+
+        for path in _TOKEN_JSON_PATHS:
+            cursor: Any = data
+            for key in path:
+                if isinstance(cursor, dict) and key in cursor:
+                    cursor = cursor[key]
+                else:
+                    cursor = None
+                    break
+            if isinstance(cursor, str) and cursor.strip():
+                return cursor.strip()
+        return ""
 
     async def verify_session(
         self,

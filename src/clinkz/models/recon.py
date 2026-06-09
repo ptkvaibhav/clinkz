@@ -12,6 +12,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field, computed_field
 
+# Canonical web ports. A service on one of these is treated as HTTP-capable
+# even when nmap mislabels the service name (see ``ReconService.is_http``).
+# Kept deliberately tight to web-serving defaults so non-web services are not
+# probed as HTTP.
+_KNOWN_WEB_PORTS: frozenset[int] = frozenset({80, 443, 8080, 8443, 8000, 8888, 8008, 5000, 3000})
+
 
 class PortScanResult(BaseModel):
     """Structured output from a full TCP port scan."""
@@ -38,14 +44,22 @@ class ReconService(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def is_http(self) -> bool:
-        """True if this service appears to be HTTP/HTTPS."""
+        """True if this service appears to be HTTP/HTTPS.
+
+        A known web port qualifies as HTTP-capable *regardless* of the name
+        nmap assigned it. nmap labels a port from its ``/etc/services`` default
+        when ``-sV`` cannot fingerprint the protocol (e.g. 3000/tcp → ``ppp``),
+        which previously bypassed the empty-name fallback and silently skipped
+        web recon on a live web app. Since Clinkz is web-focused, attempting
+        HTTP against a known web port is always correct — the probe simply
+        fails fast if the service is genuinely non-HTTP. The set is kept tight
+        (canonical web ports only) so genuinely non-web ports (e.g. 22/ssh)
+        are never probed as HTTP.
+        """
         http_names = {"http", "https", "http-alt", "http-proxy", "ssl/http", "https-alt"}
         if self.service_name.lower() in http_names:
             return True
-        # Common HTTP ports as fallback when service name is unknown
-        if self.service_name == "" and self.port in {80, 443, 8080, 8443, 8000, 8888, 3000}:
-            return True
-        return False
+        return self.port in _KNOWN_WEB_PORTS
 
 
 class ServiceScanResult(BaseModel):

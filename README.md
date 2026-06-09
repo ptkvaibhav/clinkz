@@ -179,7 +179,7 @@ The cross-engagement persistent KB lives at `clinkz_knowledge.db` (path is fixed
 | Nikto | Web server scanning | Local CLI / Docker |
 | sqlmap | SQL injection testing | Local CLI / Docker |
 | HTTP Client | Custom HTTP requests | Built-in (aiohttp) |
-| WebAuthenticator | Default-credential testing | Built-in |
+| WebAuthenticator | Default-credential testing (cookie/form + JSON/bearer API auth) | Built-in |
 | MCP Servers | Any MCP-compatible tool | MCP Protocol (stdio / HTTP / SSE) |
 
 Tools are discovered dynamically at runtime via `ToolResolver.find_tool(capability=...)` — agents never hardcode tool names. Each capability (e.g. `web_crawling`, `directory_fuzzing`, `port_scanning`) declares a ranked fallback chain in `tools/resolver.py::TOOL_CHAINS`; the resolver walks the chain until a tool is available. Host binary identity is verified at startup (`tools/binary_identity.py`) so a namesake on `$PATH` cannot impersonate a real tool.

@@ -57,6 +57,9 @@ class TestDefaults:
         defaults = cs.get_defaults_for_technology("juice_shop")
         pairs = [(d["username"], d["password"]) for d in defaults]
         assert ("admin", "admin123") in pairs
+        # Juice Shop login is email-based — the canonical admin account uses the
+        # seeded email so JSON/API auth can actually authenticate.
+        assert ("admin@juice-sh.op", "admin123") in pairs
 
     def test_generic_defaults_included(self) -> None:
         cs = CredentialStore.__new__(CredentialStore)

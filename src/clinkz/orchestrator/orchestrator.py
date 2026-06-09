@@ -331,9 +331,11 @@ class OrchestratorAgent:
                 # Query persistent KB for playbook entries matching tech stack
                 await self._log_playbook_matches(persistent_kb, technologies)
 
-                # Prepare session cookies for authenticated agents
+                # Prepare session for authenticated agents (cookies and/or a
+                # JWT bearer header, depending on the auth shape).
                 cookies: dict[str, str] = {}
                 authenticated_as = ""
+                auth_headers: dict[str, str] = {}
                 if sessions:
                     login_url = await self._find_login_url(recon_result, "", scan_result=None)
                     if not login_url:
@@ -345,7 +347,11 @@ class OrchestratorAgent:
                             )
                             login_url = f"{base.rstrip('/')}/login"
                             break
-                    cookies, authenticated_as = await self._verify_and_refresh_session(
+                    (
+                        cookies,
+                        authenticated_as,
+                        auth_headers,
+                    ) = await self._verify_and_refresh_session(
                         login_url or "", sessions, valid_creds
                     )
 
@@ -365,6 +371,7 @@ class OrchestratorAgent:
                     session_data=session_data,
                     cookies=cookies,
                     authenticated_as=authenticated_as,
+                    auth_headers=auth_headers,
                 )
                 summary["phases"].update(concurrent_results)
                 self._logger.info("PHASE 2 (CONCURRENT) complete")
@@ -481,6 +488,7 @@ class OrchestratorAgent:
         session_data: list[dict[str, Any]],
         cookies: dict[str, str],
         authenticated_as: str,
+        auth_headers: dict[str, str] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Run Research + Scan in parallel; start Exploit as soon as Scan is done.
 
@@ -500,12 +508,15 @@ class OrchestratorAgent:
             session_data: Session dicts from state store.
             cookies: Verified session cookies.
             authenticated_as: Username for authenticated session.
+            auth_headers: Auth headers for JWT/bearer sessions (e.g.
+                ``{"Authorization": "Bearer <token>"}``). Empty for cookie auth.
 
         Returns:
             Dict with keys "research", "scan", "exploit" → result dicts.
         """
         assert self._engagement_id is not None
 
+        auth_headers = auth_headers or {}
         results: dict[str, dict[str, Any]] = {}
 
         # --- Start Research Agent as asyncio.Task ---
@@ -540,6 +551,8 @@ class OrchestratorAgent:
         }
         if cookies:
             scan_content["session_cookies"] = cookies
+        if auth_headers:
+            scan_content["session_headers"] = auth_headers
         scan_task = asyncio.create_task(
             self._run_phase("scan", scan_content),
             name="clinkz-concurrent-scan",
@@ -606,10 +619,14 @@ class OrchestratorAgent:
             # by design (subsequent curl calls reuse the jar); UUID prefix keeps
             # engagements isolated and the container is single-tenant.
             exploit_content["cookie_jar_path"] = f"/tmp/clinkz_{self._engagement_id}_cookies.txt"  # nosec B108
+        if auth_headers:
+            exploit_content["session_headers"] = auth_headers
+        if cookies or auth_headers:
             exploit_content["authenticated_as"] = authenticated_as
+            credential_kind = "session cookies" if cookies else "Authorization bearer token"
             exploit_content["task"] = (
                 f"You are already authenticated as '{authenticated_as}'. "
-                f"Use the provided session cookies for ALL requests. "
+                f"Use the provided {credential_kind} for ALL requests. "
                 f"Do NOT attempt to login again.\n\n" + exploit_content["task"]
             )
 
@@ -1375,6 +1392,7 @@ class OrchestratorAgent:
                     cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",  # nosec B108
                     engagement_id=self._engagement_id,
                     agent="orchestrator",
+                    bearer_token=result.bearer_token,
                 )
                 return True
 
@@ -1394,11 +1412,18 @@ class OrchestratorAgent:
         login_url: str,
         sessions: list[dict[str, Any]],
         valid_creds: list[Any],
-    ) -> tuple[dict[str, str], str]:
+    ) -> tuple[dict[str, str], str, dict[str, str]]:
         """Verify a session is still valid; re-authenticate if not.
 
-        Called before handing off to the Exploit Agent to ensure the
-        session cookies will actually work.
+        Called before handing off to the Scan/Exploit Agents to ensure the
+        session will actually work. Handles both auth shapes:
+
+        - **Cookie/form** sessions are verified with a protected-page GET and
+          re-authenticated on expiry.
+        - **JWT/bearer** sessions (cookies empty, ``bearer_token`` in metadata)
+          are trusted for the engagement window — the token rides the
+          ``Authorization`` header, so the cookie-based protected-page check
+          does not apply.
 
         Args:
             login_url: Login URL for re-authentication.
@@ -1406,20 +1431,24 @@ class OrchestratorAgent:
             valid_creds: Valid Credential objects.
 
         Returns:
-            Tuple of (cookies_dict, authenticated_as_username).
+            Tuple of (cookies_dict, authenticated_as_username, auth_headers).
+            ``auth_headers`` carries ``{"Authorization": "Bearer <token>"}``
+            for JWT sessions, else an empty dict.
         """
         assert self._engagement_id is not None
 
         if not sessions:
-            return {}, ""
+            return {}, "", {}
 
         latest = sessions[-1]
         cookies = latest.get("cookies", {})
-        if not cookies:
-            return {}, ""
+        metadata = latest.get("metadata", {})
+        bearer = metadata.get("bearer_token", "") if isinstance(metadata, dict) else ""
+        if not cookies and not bearer:
+            return {}, "", {}
 
         # Find who we authenticated as
-        cred_id = latest.get("metadata", {}).get("credential_id", "")
+        cred_id = metadata.get("credential_id", "") if isinstance(metadata, dict) else ""
         authenticated_as = "unknown"
         matched_cred = None
         for c in valid_creds:
@@ -1428,7 +1457,14 @@ class OrchestratorAgent:
                 matched_cred = c
                 break
 
-        # Verify the session
+        # JWT/bearer session — no cookie-based protected-page check applies.
+        # Trust the token for the engagement window (re-auth on expiry is a
+        # cookie-flow concern; JWTs outlive a single engagement).
+        if bearer:
+            self._logger.info("Bearer session active for '%s'", authenticated_as)
+            return cookies, authenticated_as, {"Authorization": f"Bearer {bearer}"}
+
+        # Verify the cookie session
         from clinkz.tools.auth import WebAuthenticator
 
         authenticator = WebAuthenticator(
@@ -1446,7 +1482,7 @@ class OrchestratorAgent:
 
         if session_valid:
             self._logger.info("Session still valid for '%s'", authenticated_as)
-            return cookies, authenticated_as
+            return cookies, authenticated_as, {}
 
         # Session expired — re-authenticate if we have credentials
         self._logger.warning("Session expired — attempting re-authentication")
@@ -1466,11 +1502,17 @@ class OrchestratorAgent:
                         cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",  # nosec B108
                         engagement_id=self._engagement_id,
                         agent="orchestrator",
+                        bearer_token=result.bearer_token,
                     )
-                return result.session_cookies, matched_cred.username
+                auth_headers = (
+                    {"Authorization": f"Bearer {result.bearer_token}"}
+                    if result.bearer_token
+                    else {}
+                )
+                return result.session_cookies, matched_cred.username, auth_headers
 
         self._logger.warning("Re-authentication failed — proceeding without session")
-        return {}, ""
+        return {}, "", {}
 
     # ------------------------------------------------------------------
     # Fallback recon from scope targets
