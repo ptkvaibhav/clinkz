@@ -146,6 +146,11 @@ REPORT                                                           [partial]
 - HTTP / FTP / SSH / SMB / DB scan methods — done
 - Crawl-safety: skip state-changing links (`_url_safety.is_state_changing_url`)
   so crawl/enrichment never poisons the shared session (e.g. DVWA PHPIDS) — done
+- SPA/API route discovery (`_route_discovery.py`): pluggable `RouteDiscoverer`
+  seam — static JS-bundle parsing (shell + webpack chunks; concat + interpolated
+  route literals, path/query param structure) and OpenAPI/known-routes probing
+  (SPA-200 guarded) — union into `HTTPScanResult.endpoints`; session-carrying,
+  same-origin, bounded. Headless discoverer is a documented future slot-in — done
 - Research Agent with persistent KB integration — done
 - Research on Gemini 3.1 Flash-Lite (GA) with native Search Grounding,
   configurable RPM, bounded backoff, and a hard wall-clock budget — done

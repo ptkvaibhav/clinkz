@@ -564,6 +564,39 @@ async def test_scan_dispatches_by_service_type(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test: a mislabeled known web port still reaches the HTTP crawl branch
+# ---------------------------------------------------------------------------
+
+
+async def test_scan_dispatches_mislabeled_web_port(tmp_path: Path) -> None:
+    """A known web port nmap mislabeled (Juice Shop 3000 -> 'ppp') still reaches
+    scan's HTTP crawl branch.
+
+    This is the scan side of the recon->scan empty-services guard. The blocker
+    was the port-3000 'ppp' service being routed to the 'unsupported service'
+    skip (is_http False before the known-web-ports fix), leaving
+    ``service_scans`` empty so neither katana nor the route discoverers ever
+    dispatched. Port 80 'http' (DVWA) is the no-regression control.
+    """
+    recon = _make_recon_result(
+        services=[
+            ReconService(port=80, service_name="http"),  # DVWA control
+            ReconService(port=3000, service_name="ppp"),  # Juice Shop, mislabeled
+        ],
+    )
+
+    agent, state, _ = await _make_agent(tmp_path / "test.db")
+    result = await agent.run({"recon_result": recon})
+    await state.close()
+
+    r = result["result"]
+    assert r["service_scans"], "scan dropped the web service (service_scans empty)"
+    http_ports = {s["port"] for s in r["service_scans"] if s["service_type"] == "http"}
+    assert 3000 in http_ports, "port-3000 'ppp' service did not reach scan's crawl branch"
+    assert 80 in http_ports, "DVWA regression: port-80 'http' no longer dispatches"
+
+
+# ---------------------------------------------------------------------------
 # Test: fallback on insufficient crawl results
 # ---------------------------------------------------------------------------
 
