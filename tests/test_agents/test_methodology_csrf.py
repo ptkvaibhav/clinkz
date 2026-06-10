@@ -21,6 +21,7 @@ from clinkz.models.methodology import (
     CSRFMethodologyResult,
     CSRFWeaknessType,
 )
+from clinkz.models.scan import ParamLocation
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
@@ -356,4 +357,57 @@ class TestCSRFMethodologyIntegration:
             ],
         )
         findings = await agent._test_csrf(page)
+        assert findings == []
+
+
+# ===========================================================================
+# fix #4 — JSON-body state-changing API (no HTML form)
+# ===========================================================================
+
+
+def _json_api_page() -> PageAnalysis:
+    """A state-changing JSON API endpoint with no HTML <form>."""
+    return PageAnalysis(
+        url="http://example.com/api/Feedbacks",
+        body="",
+        status=200,
+        input_params=["comment", "rating"],
+        request_method="POST",
+        content_type="application/json",
+        param_locations={
+            "comment": ParamLocation.JSON_BODY,
+            "rating": ParamLocation.JSON_BODY,
+        },
+    )
+
+
+class TestCSRFJsonBody:
+    @pytest.mark.asyncio
+    async def test_cookie_session_flags_missing_token(self) -> None:
+        """A cookie-authenticated state-changing JSON API with no anti-CSRF
+        token is CSRF-able — the synthesized JSON pseudo-form is evaluated and
+        a finding is emitted (deterministic fallback, silent LLM)."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 4))
+        agent._methodology_llm = agent.llm
+        agent._session_cookies = {"session": "abc"}  # ambient cookie
+        # No token field, no SameSite directive on any response.
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="{}", headers={})
+        )
+        findings = await agent._test_csrf(_json_api_page())
+        assert len(findings) == 1
+        assert "CSRF" in findings[0].title
+
+    @pytest.mark.asyncio
+    async def test_bearer_only_session_is_justified_non_finding(self) -> None:
+        """A JSON API authenticated purely by a bearer header (no ambient
+        cookie) is NOT CSRF-able — the honesty guard suppresses the finding."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 4))
+        agent._methodology_llm = agent.llm
+        agent._session_headers = {"Authorization": "Bearer JWT"}
+        agent._session_cookies = {}
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="{}", headers={})
+        )
+        findings = await agent._test_csrf(_json_api_page())
         assert findings == []

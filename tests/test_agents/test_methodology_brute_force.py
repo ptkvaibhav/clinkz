@@ -22,6 +22,7 @@ from clinkz.models.methodology import (
     BruteForceObservation,
     BruteForceProtectionType,
 )
+from clinkz.models.scan import ParamLocation
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
@@ -134,7 +135,6 @@ class TestPhase2Observation:
         )
         observations, evidence = await agent._brute_force_phase2_observation(
             "http://example.com/login",
-            "POST",
             _login_form(),
             {},
         )
@@ -163,7 +163,6 @@ class TestPhase2Observation:
         agent._http_post = fake_post  # type: ignore[method-assign]
         observations, _ev = await agent._brute_force_phase2_observation(
             "http://example.com/login",
-            "POST",
             _login_form(),
             {},
         )
@@ -184,7 +183,6 @@ class TestPhase2Observation:
         )
         observations, _ev = await agent._brute_force_phase2_observation(
             "http://example.com/login",
-            "POST",
             form,
             {},
         )
@@ -357,3 +355,40 @@ class TestBruteForceMethodologyIntegration:
         )
         findings = await agent._test_brute_force(page)
         assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_json_login_no_rate_limit_emits_finding(self) -> None:
+        """fix #4: a JSON login API (POST /rest/user/login {email,password}) —
+        no HTML <form> — is reached via the synthesized JSON pseudo-form, its
+        credentials submitted as a JSON body, and 'no rate-limit' detected."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 4))
+        agent._methodology_llm = agent.llm
+
+        posted: list[dict[str, Any]] = []
+
+        async def fake_post_json(
+            _url: str, obj: dict[str, Any], method: str = "POST"
+        ) -> _HTTPResponse:
+            posted.append(obj)
+            return _HTTPResponse(status=401, body="Invalid email or password.")
+
+        agent._http_post_json = fake_post_json  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://example.com/rest/user/login",
+            body="",
+            status=200,
+            input_params=["email", "password"],
+            request_method="POST",
+            content_type="application/json",
+            param_locations={
+                "email": ParamLocation.JSON_BODY,
+                "password": ParamLocation.JSON_BODY,
+            },
+        )
+        findings = await agent._test_brute_force(page)
+        assert len(findings) == 1, "brute-force did not reach the JSON login API"
+        joined = " ".join(findings[0].evidence)
+        assert "protection_type=none" in joined
+        # Credentials really were submitted as a JSON body, 8 times.
+        assert len(posted) == 8
+        assert posted[0]["email"] and posted[0]["password"]
