@@ -13,6 +13,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from clinkz.models.scan import ParamLocation
+
 
 class Severity(StrEnum):
     """CVSS-aligned severity levels."""
@@ -79,6 +81,14 @@ class ExploitTask(BaseModel):
         test_method: Name of the _test_* method to call (e.g. "_test_sqli").
         endpoint_url: URL of the endpoint to test.
         endpoint_params: Parameter names on the endpoint.
+        endpoint_method: HTTP method the endpoint expects (GET/POST/PUT/...).
+        endpoint_content_type: Request content-type for body-bearing
+            endpoints (e.g. ``application/json``), or None.
+        param_locations: Per-param injection location (query/json_body/
+            form_body/path). A name absent from this map defaults to
+            ``query`` (or ``path`` when the URL templates it). Sourced from
+            the discovered :class:`~clinkz.models.scan.Endpoint`, never from
+            LLM JSON, so it cannot drift.
         tier: 1 (universal), 2 (tech-matched), 3 (experimental/research).
         playbook_entry_id: FK to persistent KB playbook_entries (tier 2/3).
         technique_name: Human-readable technique name.
@@ -89,6 +99,9 @@ class ExploitTask(BaseModel):
     test_method: str
     endpoint_url: str
     endpoint_params: list[str] = Field(default_factory=list)
+    endpoint_method: str = "GET"
+    endpoint_content_type: str | None = None
+    param_locations: dict[str, ParamLocation] = Field(default_factory=dict)
     tier: int = Field(ge=1, le=3)
     playbook_entry_id: int | None = None
     technique_name: str = ""

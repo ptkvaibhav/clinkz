@@ -8,6 +8,7 @@ database probing, and the final scan synthesis.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -17,14 +18,46 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 
+class ParamLocation(StrEnum):
+    """Where an endpoint parameter is injected in an HTTP request.
+
+    The Exploit-side request builder uses this to decide *how* to carry a
+    probe value: a query-string pair, a JSON request-body field, a
+    form-urlencoded body field, or a URL path-segment substitution.
+
+    ``QUERY`` is the default (and the only value DVWA-style query/form
+    endpoints ever need): an :class:`Endpoint` with an empty
+    ``param_locations`` map behaves exactly as before this enum existed, so
+    the addition is fully backward-compatible.
+    """
+
+    QUERY = "query"
+    JSON_BODY = "json_body"
+    FORM_BODY = "form_body"
+    PATH = "path"
+
+
 class Endpoint(BaseModel):
-    """A single HTTP endpoint discovered during scanning."""
+    """A single HTTP endpoint discovered during scanning.
+
+    ``params`` is the union of *all* parameter names on the endpoint
+    (query + body + path), kept as a flat name list for backward
+    compatibility with every consumer that counts/iterates parameter names.
+    ``param_locations`` annotates *where* each named param lives; a name
+    absent from the map defaults to :attr:`ParamLocation.QUERY` (or
+    ``PATH`` when the URL carries a ``:name`` / ``{name}`` placeholder for
+    it). ``content_type`` records the request content-type a body-bearing
+    endpoint expects (e.g. ``application/json``) so the builder serializes
+    the body correctly.
+    """
 
     url: str
     method: str = "GET"
     params: list[str] = Field(default_factory=list)
     headers: dict[str, str] = Field(default_factory=dict)
     status_code: int = 0
+    content_type: str | None = None
+    param_locations: dict[str, ParamLocation] = Field(default_factory=dict)
 
 
 class FormField(BaseModel):
