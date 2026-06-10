@@ -272,6 +272,51 @@ async def test_openapi_discoverer_extracts_json_body_params() -> None:
     assert feedbacks_get[0].content_type is None
 
 
+async def test_known_post_bodies_emitted_when_no_spec() -> None:
+    """fix #4 fallback: with no parseable spec, curated JSON-POST endpoints are
+    emitted with json_body params, gated on the route existing (non-404).
+
+    This is the path Juice Shop actually takes — it serves Swagger-UI HTML, not
+    a parseable JSON spec, so OpenAPI parsing finds nothing and this fallback is
+    the only source of body params for POST /rest/user/login and /api/Feedbacks.
+    """
+
+    async def fetch(url: str) -> FetchResult | None:
+        # Every spec path answers the SPA shell (no parseable spec).
+        if any(url.endswith(p) for p in ("/openapi.json", "/swagger.json", "/v3/api-docs")):
+            return FetchResult(
+                200, "<!DOCTYPE html><app-root></app-root>", {"content-type": "text/html"}
+            )
+        if url.endswith("/rest/user/login"):
+            return FetchResult(500, "<html>method error</html>", {"content-type": "text/html"})
+        if url.endswith("/api/Feedbacks"):
+            return FetchResult(
+                200, '{"status":"success","data":[]}', {"content-type": "application/json"}
+            )
+        if url.endswith("/api/Users"):
+            return FetchResult(404, "not found", {"content-type": "text/html"})
+        # Other spec paths + known GET roots: SPA shell (rejected by _looks_like_json).
+        return FetchResult(
+            200, "<!DOCTYPE html><app-root></app-root>", {"content-type": "text/html"}
+        )
+
+    endpoints = await OpenAPIDiscoverer().discover(BASE, fetch)
+    posts = {ep.url: ep for ep in endpoints if ep.method == "POST"}
+
+    login = posts.get(f"{BASE}rest/user/login")
+    assert login is not None, "POST /rest/user/login not emitted by the body fallback"
+    assert set(login.params) == {"email", "password"}
+    assert login.content_type == "application/json"
+    assert all(login.param_locations[p] is ParamLocation.JSON_BODY for p in ("email", "password"))
+
+    feedback = posts.get(f"{BASE}api/Feedbacks")
+    assert feedback is not None
+    assert set(feedback.params) == {"comment", "rating"}
+
+    # /api/Users 404s the existence probe → no phantom POST endpoint emitted.
+    assert f"{BASE}api/Users" not in posts
+
+
 async def test_openapi_discoverer_ignores_remote_ref_ssrf() -> None:
     """A remote ``$ref`` (URL) is never followed — SSRF guard on hostile specs."""
     spec = (

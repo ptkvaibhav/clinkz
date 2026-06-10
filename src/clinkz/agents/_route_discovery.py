@@ -114,6 +114,21 @@ _KNOWN_API_ROOTS = (
     "/api/Challenges",
 )
 
+# Conventional JSON-POST mutation endpoints and their body field names, probed
+# ONLY when no OpenAPI spec is served (OpenAPI is the richer source). This is
+# the PART-2 fallback: many SPAs (notably Juice Shop, whose served spec is just
+# Swagger-UI HTML + a partial /b2b/v2 doc) expose no parseable spec, so the
+# body shape a state-changing methodology needs cannot be harvested from one.
+# Each entry is gated on a cheap GET that proves the route exists (status !=
+# 404) before a POST endpoint is emitted, so it never invents a phantom route
+# on a target that lacks these conventional paths. Kept deliberately tight —
+# a complement to OpenAPI, not a fuzz list.
+_KNOWN_JSON_POST_BODIES: dict[str, tuple[str, ...]] = {
+    "/rest/user/login": ("email", "password"),
+    "/api/Feedbacks": ("comment", "rating"),
+    "/api/Users": ("email", "password"),  # self-registration
+}
+
 
 @dataclass(frozen=True)
 class FetchResult:
@@ -368,7 +383,12 @@ class OpenAPIDiscoverer:
             endpoints = self._endpoints_from_spec(spec, base_url)
             if endpoints:
                 return endpoints
-        return await self._probe_known_roots(base_url, fetch)
+        # No parseable spec: fall back to conventional GET roots plus the
+        # curated JSON-POST body probe (the only source of body params when no
+        # spec is served — e.g. on Juice Shop).
+        roots = await self._probe_known_roots(base_url, fetch)
+        post_bodies = await self._probe_known_post_bodies(base_url, fetch)
+        return roots + post_bodies
 
     @staticmethod
     def _parse_spec(res: FetchResult) -> dict | None:
@@ -607,6 +627,49 @@ class OpenAPIDiscoverer:
             ep = _route_to_endpoint(root, base_url)
             if ep is None:
                 continue
+            key = _structural_key(ep)
+            if key in seen:
+                continue
+            seen.add(key)
+            endpoints.append(ep)
+        return endpoints
+
+    @staticmethod
+    async def _probe_known_post_bodies(base_url: str, fetch: FetchFn) -> list[Endpoint]:
+        """Emit curated JSON-POST endpoints with body params, gated on existence.
+
+        For each conventional mutation endpoint in :data:`_KNOWN_JSON_POST_BODIES`,
+        a cheap GET confirms the route exists on this target before a POST
+        :class:`Endpoint` is emitted with its body fields marked ``json_body``
+        and ``content_type=application/json``, so the state-changing
+        methodologies (brute-force, CSRF, stored-XSS) can reach the body
+        injection point even with no served spec.
+
+        Existence test (SPA-200 safe): a SPA shell answers ``200 + text/html``
+        to *any* path, so a bare 200 is not proof a route exists. A route is
+        accepted only when the GET returns JSON (``_looks_like_json``) *or* a
+        non-200, non-404 status (401/403/405/500 — the route exists but rejects
+        the GET method/auth). A 200 that is not JSON is treated as the SPA
+        catch-all and skipped, so no phantom endpoint is invented on a SPA or a
+        target lacking these conventional paths.
+        """
+        endpoints: list[Endpoint] = []
+        seen: set[str] = set()
+        for path, fields in _KNOWN_JSON_POST_BODIES.items():
+            res = await fetch(urljoin(base_url, path.lstrip("/")))
+            if res is None or res.status == 404:
+                continue  # route absent / unreachable — do not emit a phantom
+            if res.status == 200 and not _looks_like_json(res):
+                continue  # SPA-200 catch-all, not a real API route
+            parsed = urlsplit(urljoin(base_url, path.lstrip("/")))
+            url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+            ep = Endpoint(
+                url=url,
+                method="POST",
+                params=list(fields),
+                content_type="application/json",
+                param_locations=dict.fromkeys(fields, ParamLocation.JSON_BODY),
+            )
             key = _structural_key(ep)
             if key in seen:
                 continue
