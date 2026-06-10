@@ -764,3 +764,89 @@ class TestPhase5LLMVocabulary:
         }
         verified, _ = await agent._cmdi_phase5_verify(_make_page(), "ip", synth, _baseline())
         assert verified is False
+
+
+class TestPhase5ReflectionInErrorPage:
+    """Phase 5 must not confirm an echo canary reflected in an error response.
+
+    The a07df54b Juice Shop run emitted three "high" RCE findings because the
+    ``;echo <canary>`` payload string was reflected verbatim in a 500 error body
+    (Node, no shell sink). A canary echoed in an error page is input reflection,
+    not command output — genuine stdout comes back in a normal (2xx) response in
+    command-output position. The error-page gate and the encoding-robust scaffold
+    guard close that phantom while preserving genuine command-output confirmation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_canary_in_500_error_rejected(self) -> None:
+        """The exact a07df54b phantom: a 500 body reflects the payload string."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=500,
+                body='{"error":"Internal Server Error","message":"bad id test;echo PWNED"}',
+            )
+        )
+        synth = {
+            "payload": "test;echo PWNED",
+            "expected_indicator": "PWNED",
+            "indicator_type": "stdout_reflection",
+        }
+        verified, observed = await agent._cmdi_phase5_verify(_make_page(), "id", synth, _baseline())
+        assert verified is False
+        assert "error response" in observed
+
+    @pytest.mark.asyncio
+    async def test_canary_url_encoded_reflection_in_200_rejected(self) -> None:
+        """A 200 that reflects the payload with the space percent-encoded
+        (``echo%20PWNED``) is still reflection — the decode guard must catch it."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="you searched for: test;echo%20PWNED — 0 results"
+            )
+        )
+        synth = {
+            "payload": "test;echo PWNED",
+            "expected_indicator": "PWNED",
+            "indicator_type": "stdout_reflection",
+        }
+        verified, _ = await agent._cmdi_phase5_verify(_make_page(), "q", synth, _baseline())
+        assert verified is False
+
+    @pytest.mark.asyncio
+    async def test_canary_in_200_command_output_still_confirms(self) -> None:
+        """Regression: genuine echo output (canary alone, normal 200 response)
+        must still confirm — the error-page gate must not suppress true positives."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<pre>PWNED</pre>")
+        )
+        synth = {
+            "payload": "test;echo PWNED",
+            "expected_indicator": "PWNED",
+            "indicator_type": "stdout_reflection",
+        }
+        verified, observed = await agent._cmdi_phase5_verify(_make_page(), "id", synth, _baseline())
+        assert verified is True
+        assert "PWNED" in observed
+
+    @pytest.mark.asyncio
+    async def test_dvwa_id_output_in_200_still_confirms(self) -> None:
+        """Regression for the DVWA /exec/ contract: ``;id`` returning
+        ``uid=33(www-data)`` in a normal 200 response must still confirm."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200,
+                body="<pre>uid=33(www-data) gid=33(www-data) groups=33(www-data)</pre>",
+            )
+        )
+        synth = {
+            "payload": "1;id",
+            "expected_indicator": "uid=",
+            "indicator_type": "stdout_reflection",
+        }
+        verified, observed = await agent._cmdi_phase5_verify(_make_page(), "ip", synth, _baseline())
+        assert verified is True
+        assert "uid=" in observed
