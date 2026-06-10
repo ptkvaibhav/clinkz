@@ -20,7 +20,7 @@ from clinkz.agents._route_discovery import (
     run_route_discovery,
 )
 from clinkz.agents.exploit import ExploitAgent
-from clinkz.models.scan import Endpoint
+from clinkz.models.scan import Endpoint, ParamLocation
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 _BUNDLE_JS = (_FIXTURES / "juiceshop_main.js").read_text(encoding="utf-8")
@@ -227,6 +227,72 @@ async def test_known_roots_probe_keeps_only_json_responders() -> None:
     assert any(u.endswith("/rest/products") for u in paths)
     # The SPA-shell roots are not emitted.
     assert not any(u.endswith("/api/Users") for u in paths)
+
+
+async def test_openapi_discoverer_extracts_json_body_params() -> None:
+    """fix #4: requestBody schemas populate json_body params + content-type.
+
+    This is the primary win that lets stored-XSS / CSRF / brute-force reach a
+    JSON API's body injection points (they previously only saw HTML forms).
+    """
+
+    async def fetch(url: str) -> FetchResult | None:
+        if url.endswith("/openapi.json"):
+            return FetchResult(200, _OPENAPI_SPEC, {"content-type": "application/json"})
+        return FetchResult(404, "not found", {"content-type": "text/plain"})
+
+    endpoints = await OpenAPIDiscoverer().discover(BASE, fetch)
+
+    # POST /api/Feedbacks: inline requestBody schema → comment/rating/captchaId.
+    feedbacks_post = [
+        ep for ep in endpoints if ep.url.endswith("/api/Feedbacks") and ep.method == "POST"
+    ]
+    assert feedbacks_post, "POST /api/Feedbacks not discovered"
+    fb = feedbacks_post[0]
+    assert fb.content_type == "application/json"
+    assert fb.param_locations.get("comment") is ParamLocation.JSON_BODY
+    assert fb.param_locations.get("rating") is ParamLocation.JSON_BODY
+    assert {"comment", "rating", "captchaId"} <= set(fb.params)
+
+    # POST /rest/user/login: $ref'd schema resolves to email/password.
+    login = [ep for ep in endpoints if ep.url.endswith("/rest/user/login")]
+    assert login, "POST /rest/user/login not discovered"
+    assert login[0].method == "POST"
+    assert login[0].content_type == "application/json"
+    assert set(login[0].params) == {"email", "password"}
+    assert all(
+        login[0].param_locations[p] is ParamLocation.JSON_BODY for p in ("email", "password")
+    )
+
+    # GET /api/Feedbacks stays body-less — no false body params/content-type.
+    feedbacks_get = [
+        ep for ep in endpoints if ep.url.endswith("/api/Feedbacks") and ep.method == "GET"
+    ]
+    assert feedbacks_get and feedbacks_get[0].param_locations == {}
+    assert feedbacks_get[0].content_type is None
+
+
+async def test_openapi_discoverer_ignores_remote_ref_ssrf() -> None:
+    """A remote ``$ref`` (URL) is never followed — SSRF guard on hostile specs."""
+    spec = (
+        '{"openapi":"3.0.1","info":{"title":"x","version":"1"},"paths":{'
+        '"/api/Pwn":{"post":{"requestBody":{"content":{"application/json":'
+        '{"schema":{"$ref":"https://evil.example/secret.json"}}}}}}}}'
+    )
+
+    async def fetch(url: str) -> FetchResult | None:
+        if url.endswith("/openapi.json"):
+            return FetchResult(200, spec, {"content-type": "application/json"})
+        if "evil.example" in url:
+            raise AssertionError("SSRF: remote $ref was fetched")
+        return FetchResult(404, "not found", {"content-type": "text/plain"})
+
+    endpoints = await OpenAPIDiscoverer().discover(BASE, fetch)
+    pwn = [ep for ep in endpoints if ep.url.endswith("/api/Pwn")]
+    # Endpoint still emitted (method/content-type known), but no body params
+    # were harvested from the unresolved remote ref.
+    assert pwn and pwn[0].method == "POST"
+    assert pwn[0].params == []
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,47 @@
     },
     "/api/Feedbacks": {
       "get": {},
-      "post": {}
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "comment": { "type": "string" },
+                  "rating": { "type": "integer" },
+                  "captchaId": { "type": "integer" }
+                },
+                "required": ["comment", "rating"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rest/user/login": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Credentials" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Credentials": {
+        "type": "object",
+        "properties": {
+          "email": { "type": "string" },
+          "password": { "type": "string" }
+        },
+        "required": ["email", "password"]
+      }
     }
   }
 }
