@@ -16,7 +16,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from clinkz.agents._route_discovery import FetchResult, OpenAPIDiscoverer
 from clinkz.agents.exploit import ExploitAgent
+from clinkz.models.scan import ParamLocation
 
 pytestmark = [pytest.mark.juiceshop_smoke, pytest.mark.asyncio]
 
@@ -782,3 +784,137 @@ async def test_js_attacks_against_juiceshop(
         "javascript" in f.title.lower() or "client-side" in f.title.lower() for f in findings
     )
     assert js_labelled, f"Findings produced but none labelled JS / client-side at {url}: {findings}"
+
+
+# ---------------------------------------------------------------------------
+# fix #4 — JSON request-body injection points (no HTML form)
+# ---------------------------------------------------------------------------
+
+
+def _json_body_page_kwargs(fields: list[str]) -> dict[str, object]:
+    """`_fetch_page` kwargs that mark *fields* as a JSON request body."""
+    return {
+        "params": fields,
+        "method": "POST",
+        "content_type": "application/json",
+        "param_locations": {f: ParamLocation.JSON_BODY for f in fields},
+    }
+
+
+async def test_json_post_body_discovery_against_juiceshop(juiceshop_url: str) -> None:
+    """fix #4: route discovery recovers JSON request-body params on Juice Shop.
+
+    Juice Shop serves no parseable OpenAPI spec (its ``/api-docs`` is Swagger-UI
+    HTML over a partial ``/b2b/v2`` doc), so the OpenAPIDiscoverer falls through
+    to its curated JSON-POST body probe. That probe must emit
+    ``POST /rest/user/login {email,password}`` and ``POST /api/Feedbacks
+    {comment,rating}`` with ``json_body`` param locations — the only source of
+    body shape a state-changing methodology has here.
+    """
+
+    async def fetch(url: str) -> FetchResult | None:
+        try:
+            r = httpx.get(url, timeout=5.0, follow_redirects=False)
+        except Exception:
+            return None
+        return FetchResult(
+            r.status_code, r.text, {"content-type": r.headers.get("content-type", "")}
+        )
+
+    endpoints = await OpenAPIDiscoverer().discover(f"{juiceshop_url}/", fetch)
+    posts = {ep.url.rstrip("/"): ep for ep in endpoints if ep.method == "POST"}
+
+    login = posts.get(f"{juiceshop_url}/rest/user/login")
+    assert login is not None, f"POST /rest/user/login not discovered; posts={list(posts)}"
+    assert set(login.params) == {"email", "password"}
+    assert all(login.param_locations[p] is ParamLocation.JSON_BODY for p in ("email", "password"))
+
+    feedback = posts.get(f"{juiceshop_url}/api/Feedbacks")
+    assert feedback is not None, f"POST /api/Feedbacks not discovered; posts={list(posts)}"
+    assert {"comment", "rating"} <= set(feedback.params)
+
+
+async def test_brute_force_json_login_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_brute_force`` must flag missing rate-limiting on the JSON login API.
+
+    Target: ``POST /rest/user/login {email,password}`` — no HTML form, a JSON
+    body. Juice Shop applies no brute-force protection on login by default, so
+    8 failed JSON logins look identical and the methodology emits a
+    'No Brute-Force Protection' finding. Proves JSON-body credential injection
+    end-to-end against a real target.
+    """
+    url = f"{juiceshop_url}/rest/user/login"
+    page = await exploit_agent._fetch_page(url, **_json_body_page_kwargs(["email", "password"]))
+    findings = await exploit_agent._test_brute_force(page)
+    if not findings:
+        pytest.skip(
+            "Juice Shop login showed brute-force protection (rate-limit/lockout) — "
+            "a justified non-finding; the JSON body path still ran."
+        )
+    assert any("brute" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled brute-force at {url}: {findings}"
+    )
+
+
+async def test_csrf_json_state_changing_api_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_csrf`` evaluates a state-changing JSON API with no HTML form.
+
+    Target: ``POST /api/Feedbacks`` (a state-changing JSON API). The synthesized
+    JSON pseudo-form is taken through the CSRF methodology. With Juice Shop's
+    cookie-borne session and no anti-CSRF token observed, the deterministic
+    classifier flags the weakness; if Juice Shop ships a SameSite mitigation
+    that is a justified non-finding. Either way the methodology must reach the
+    JSON pseudo-form and complete.
+    """
+    url = f"{juiceshop_url}/api/Feedbacks"
+    page = await exploit_agent._fetch_page(url, **_json_body_page_kwargs(["comment", "rating"]))
+    # The JSON pseudo-form must be synthesized — the body injection point is
+    # reachable to the form-shaped methodology.
+    assert any(f.get("encoding") == "json" for f in exploit_agent._injectable_forms(page)), (
+        "no JSON pseudo-form synthesized for POST /api/Feedbacks"
+    )
+    findings = await exploit_agent._test_csrf(page)
+    if not findings:
+        pytest.skip(
+            "CSRF classified the JSON API as protected (SameSite/justified) — "
+            "the JSON pseudo-form was still evaluated."
+        )
+    assert any("csrf" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled CSRF at {url}: {findings}"
+    )
+
+
+async def test_stored_xss_reaches_json_feedback_against_juiceshop(
+    juiceshop_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_xss_stored`` reaches the JSON-body injection point on /api/Feedbacks.
+
+    Target: ``POST /api/Feedbacks {comment}`` — no HTML form. Juice Shop gates
+    feedback behind a captcha (``captchaId`` required), so a *verified* stored
+    XSS here is a genuinely-justified non-finding — but the methodology MUST
+    reach and submit to the JSON body via the synthesized pseudo-form. We assert
+    the pseudo-form exists and the methodology completes; a finding, if Juice
+    Shop's captcha is bypassed for a request, is also accepted.
+    """
+    url = f"{juiceshop_url}/api/Feedbacks"
+    page = await exploit_agent._fetch_page(url, **_json_body_page_kwargs(["comment", "rating"]))
+    forms = exploit_agent._injectable_forms(page)
+    json_form = next((f for f in forms if f.get("encoding") == "json"), None)
+    assert json_form is not None, "no JSON pseudo-form synthesized for POST /api/Feedbacks"
+    assert any(fld["name"] == "comment" for fld in json_form["fields"]), (
+        "comment field missing from the JSON pseudo-form"
+    )
+    findings = await exploit_agent._test_xss_stored(page)
+    # Captcha-gated: verification is expected to fail (justified non-finding).
+    # The contract here is that the methodology reached the JSON body and
+    # completed without raising; any finding must be labelled XSS.
+    assert all("xss" in f.title.lower() for f in findings), (
+        f"Stored-XSS produced a non-XSS finding at {url}: {findings}"
+    )

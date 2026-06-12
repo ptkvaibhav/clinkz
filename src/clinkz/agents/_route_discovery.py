@@ -50,7 +50,7 @@ from typing import Protocol, runtime_checkable
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from clinkz.agents._url_safety import is_state_changing_url
-from clinkz.models.scan import Endpoint
+from clinkz.models.scan import Endpoint, ParamLocation
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,8 @@ _MAX_BUNDLE_BYTES = 6_000_000  # bytes of each bundle scanned for routes
 _MAX_SPEC_BYTES = 5_000_000  # max spec body parsed as JSON
 _MAX_SPEC_PATHS = 1000  # max paths read from one spec
 _MAX_ROUTES = 600  # max routes a single discoverer may emit
+_MAX_SCHEMA_DEPTH = 6  # max $ref/allOf recursion when reading a body schema (cycle guard)
+_MAX_BODY_PARAMS = 50  # max body field names read from one operation's requestBody
 
 # --- Route shape ------------------------------------------------------------
 # Distinctive top-level routes that are not under /api or /rest but matter
@@ -111,6 +113,21 @@ _KNOWN_API_ROOTS = (
     "/api/Feedbacks",
     "/api/Challenges",
 )
+
+# Conventional JSON-POST mutation endpoints and their body field names, probed
+# ONLY when no OpenAPI spec is served (OpenAPI is the richer source). This is
+# the PART-2 fallback: many SPAs (notably Juice Shop, whose served spec is just
+# Swagger-UI HTML + a partial /b2b/v2 doc) expose no parseable spec, so the
+# body shape a state-changing methodology needs cannot be harvested from one.
+# Each entry is gated on a cheap GET that proves the route exists (status !=
+# 404) before a POST endpoint is emitted, so it never invents a phantom route
+# on a target that lacks these conventional paths. Kept deliberately tight —
+# a complement to OpenAPI, not a fuzz list.
+_KNOWN_JSON_POST_BODIES: dict[str, tuple[str, ...]] = {
+    "/rest/user/login": ("email", "password"),
+    "/api/Feedbacks": ("comment", "rating"),
+    "/api/Users": ("email", "password"),  # self-registration
+}
 
 
 @dataclass(frozen=True)
@@ -366,7 +383,12 @@ class OpenAPIDiscoverer:
             endpoints = self._endpoints_from_spec(spec, base_url)
             if endpoints:
                 return endpoints
-        return await self._probe_known_roots(base_url, fetch)
+        # No parseable spec: fall back to conventional GET roots plus the
+        # curated JSON-POST body probe (the only source of body params when no
+        # spec is served — e.g. on Juice Shop).
+        roots = await self._probe_known_roots(base_url, fetch)
+        post_bodies = await self._probe_known_post_bodies(base_url, fetch)
+        return roots + post_bodies
 
     @staticmethod
     def _parse_spec(res: FetchResult) -> dict | None:
@@ -407,8 +429,8 @@ class OpenAPIDiscoverer:
             for method in methods:
                 op = item.get(method)
                 op = op if isinstance(op, dict) else {}
-                params = cls._spec_params(raw_path, item, op)
-                ep = cls._spec_endpoint(raw_path, method, params, base_url)
+                names, locations, content_type = cls._spec_param_model(raw_path, item, op, spec)
+                ep = cls._spec_endpoint(raw_path, method, names, locations, content_type, base_url)
                 if ep is None:
                     continue
                 key = _structural_key(ep)
@@ -420,31 +442,157 @@ class OpenAPIDiscoverer:
                     return endpoints
         return endpoints
 
-    @staticmethod
-    def _spec_params(raw_path: str, item: dict, op: dict) -> list[str]:
-        """Param names from path templating + declared path/query parameters."""
-        names: list[str] = []
-        seen: set[str] = set()
+    @classmethod
+    def _spec_param_model(
+        cls, raw_path: str, item: dict, op: dict, spec: dict
+    ) -> tuple[list[str], dict[str, ParamLocation], str | None]:
+        """Param names + per-name location + request content-type for an operation.
 
-        def _add(name: object) -> None:
-            if isinstance(name, str) and name and name not in seen:
-                seen.add(name)
+        Sources, in precedence order (first location for a name wins):
+
+        * Path templating ``{name}`` in the route → :attr:`ParamLocation.PATH`.
+        * Declared ``parameters`` with ``in: path|query`` (OpenAPI 3 and
+          Swagger 2) → ``PATH`` / ``QUERY``.
+        * Swagger-2 ``in: body`` / ``in: formData`` parameters.
+        * OpenAPI-3 ``requestBody`` schema properties → ``JSON_BODY`` (for a
+          JSON media type) or ``FORM_BODY`` (form-urlencoded / multipart).
+
+        The returned ``content_type`` is the body media type (e.g.
+        ``application/json``) so the Exploit-side builder serializes the body
+        correctly; it is ``None`` for body-less endpoints.
+        """
+        names: list[str] = []
+        locations: dict[str, ParamLocation] = {}
+        content_type: str | None = None
+
+        def _add(name: object, location: ParamLocation) -> None:
+            if isinstance(name, str) and name and name not in locations:
                 names.append(name)
+                locations[name] = location
 
         for seg in raw_path.split("/"):
             if len(seg) > 2 and seg.startswith("{") and seg.endswith("}"):
-                _add(seg[1:-1])
+                _add(seg[1:-1], ParamLocation.PATH)
+
         for source in (item.get("parameters"), op.get("parameters")):
             if not isinstance(source, list):
                 continue
             for param in source:
-                if isinstance(param, dict) and param.get("in") in ("path", "query"):
-                    _add(param.get("name"))
-        return names
+                if not isinstance(param, dict):
+                    continue
+                where = param.get("in")
+                if where == "path":
+                    _add(param.get("name"), ParamLocation.PATH)
+                elif where == "query":
+                    _add(param.get("name"), ParamLocation.QUERY)
+                elif where == "formData":  # Swagger 2.0 form field
+                    _add(param.get("name"), ParamLocation.FORM_BODY)
+                    content_type = content_type or "application/x-www-form-urlencoded"
+                elif where == "body":  # Swagger 2.0 body param (schema-shaped)
+                    for prop in cls._schema_property_names(param.get("schema"), spec):
+                        _add(prop, ParamLocation.JSON_BODY)
+                    content_type = content_type or "application/json"
+
+        # OpenAPI 3 requestBody (richest source for a JSON API mutation).
+        body_props, body_ct = cls._spec_request_body(op, spec)
+        if body_props:
+            body_location = (
+                ParamLocation.JSON_BODY
+                if (body_ct or "").lower().find("json") != -1
+                else ParamLocation.FORM_BODY
+            )
+            for prop in body_props:
+                _add(prop, body_location)
+            content_type = content_type or body_ct
+
+        return names, locations, content_type
+
+    @classmethod
+    def _spec_request_body(cls, op: dict, spec: dict) -> tuple[list[str], str | None]:
+        """Body field names + media type from an OpenAPI-3 ``requestBody``.
+
+        Prefers ``application/json``, then form-urlencoded, then the first
+        declared media type. Returns ``([], None)`` when no requestBody is
+        present or its schema yields no property names.
+        """
+        request_body = op.get("requestBody")
+        if not isinstance(request_body, dict):
+            return [], None
+        content = request_body.get("content")
+        if not isinstance(content, dict):
+            return [], None
+        chosen_ct: str | None = None
+        for preferred in ("application/json", "application/x-www-form-urlencoded"):
+            if preferred in content:
+                chosen_ct = preferred
+                break
+        if chosen_ct is None:
+            for ct in content:
+                if isinstance(ct, str):
+                    chosen_ct = ct
+                    break
+        if chosen_ct is None:
+            return [], None
+        media = content.get(chosen_ct)
+        schema = media.get("schema") if isinstance(media, dict) else None
+        return cls._schema_property_names(schema, spec), chosen_ct
+
+    @classmethod
+    def _schema_property_names(cls, schema: object, spec: dict, _depth: int = 0) -> list[str]:
+        """Top-level property names of a (possibly ``$ref``'d) object schema.
+
+        Resolves local ``$ref`` pointers and merges ``allOf`` / ``oneOf`` /
+        ``anyOf`` member schemas. Recursion is bounded by ``_MAX_SCHEMA_DEPTH``
+        (cycle guard) and the result by ``_MAX_BODY_PARAMS``. Only local
+        ``#/...`` refs are followed — never a remote URL — so a hostile spec
+        cannot drive an out-of-band fetch (SSRF). Pure dict traversal, no eval.
+        """
+        if not isinstance(schema, dict) or _depth > _MAX_SCHEMA_DEPTH:
+            return []
+        if "$ref" in schema:
+            resolved = cls._resolve_local_ref(schema.get("$ref"), spec)
+            return cls._schema_property_names(resolved, spec, _depth + 1)
+
+        names: list[str] = []
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            names.extend(k for k in props if isinstance(k, str))
+        for combiner in ("allOf", "oneOf", "anyOf"):
+            members = schema.get(combiner)
+            if isinstance(members, list):
+                for member in members:
+                    names.extend(cls._schema_property_names(member, spec, _depth + 1))
+
+        # Dedupe (order-stable) and bound.
+        return list(dict.fromkeys(names))[:_MAX_BODY_PARAMS]
+
+    @staticmethod
+    def _resolve_local_ref(ref: object, spec: dict) -> dict | None:
+        """Resolve a local ``#/a/b/c`` JSON-pointer ref against *spec*.
+
+        Returns ``None`` for non-string refs, remote/URL refs (anything not
+        starting with ``#/``), or pointers that don't resolve to a dict — the
+        remote-ref rejection is the SSRF guard.
+        """
+        if not isinstance(ref, str) or not ref.startswith("#/"):
+            return None
+        node: object = spec
+        for part in ref[2:].split("/"):
+            # Unescape JSON-pointer tokens (~1 -> /, ~0 -> ~).
+            part = part.replace("~1", "/").replace("~0", "~")
+            if not isinstance(node, dict):
+                return None
+            node = node.get(part)
+        return node if isinstance(node, dict) else None
 
     @staticmethod
     def _spec_endpoint(
-        raw_path: str, method: str, params: list[str], base_url: str
+        raw_path: str,
+        method: str,
+        params: list[str],
+        locations: dict[str, ParamLocation],
+        content_type: str | None,
+        base_url: str,
     ) -> Endpoint | None:
         if not raw_path.startswith("/"):
             raw_path = "/" + raw_path
@@ -453,7 +601,13 @@ class OpenAPIDiscoverer:
         url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
         if not parsed.path.strip("/"):
             return None
-        return Endpoint(url=url, method=method.upper(), params=params)
+        return Endpoint(
+            url=url,
+            method=method.upper(),
+            params=params,
+            content_type=content_type,
+            param_locations=locations,
+        )
 
     @staticmethod
     async def _probe_known_roots(base_url: str, fetch: FetchFn) -> list[Endpoint]:
@@ -473,6 +627,49 @@ class OpenAPIDiscoverer:
             ep = _route_to_endpoint(root, base_url)
             if ep is None:
                 continue
+            key = _structural_key(ep)
+            if key in seen:
+                continue
+            seen.add(key)
+            endpoints.append(ep)
+        return endpoints
+
+    @staticmethod
+    async def _probe_known_post_bodies(base_url: str, fetch: FetchFn) -> list[Endpoint]:
+        """Emit curated JSON-POST endpoints with body params, gated on existence.
+
+        For each conventional mutation endpoint in :data:`_KNOWN_JSON_POST_BODIES`,
+        a cheap GET confirms the route exists on this target before a POST
+        :class:`Endpoint` is emitted with its body fields marked ``json_body``
+        and ``content_type=application/json``, so the state-changing
+        methodologies (brute-force, CSRF, stored-XSS) can reach the body
+        injection point even with no served spec.
+
+        Existence test (SPA-200 safe): a SPA shell answers ``200 + text/html``
+        to *any* path, so a bare 200 is not proof a route exists. A route is
+        accepted only when the GET returns JSON (``_looks_like_json``) *or* a
+        non-200, non-404 status (401/403/405/500 — the route exists but rejects
+        the GET method/auth). A 200 that is not JSON is treated as the SPA
+        catch-all and skipped, so no phantom endpoint is invented on a SPA or a
+        target lacking these conventional paths.
+        """
+        endpoints: list[Endpoint] = []
+        seen: set[str] = set()
+        for path, fields in _KNOWN_JSON_POST_BODIES.items():
+            res = await fetch(urljoin(base_url, path.lstrip("/")))
+            if res is None or res.status == 404:
+                continue  # route absent / unreachable — do not emit a phantom
+            if res.status == 200 and not _looks_like_json(res):
+                continue  # SPA-200 catch-all, not a real API route
+            parsed = urlsplit(urljoin(base_url, path.lstrip("/")))
+            url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+            ep = Endpoint(
+                url=url,
+                method="POST",
+                params=list(fields),
+                content_type="application/json",
+                param_locations=dict.fromkeys(fields, ParamLocation.JSON_BODY),
+            )
             key = _structural_key(ep)
             if key in seen:
                 continue

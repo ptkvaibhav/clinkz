@@ -32,6 +32,7 @@ from clinkz.models.methodology import (
     SynthesizedPayload,
     XSSStoredMethodologyResult,
 )
+from clinkz.models.scan import ParamLocation
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
@@ -350,6 +351,49 @@ class TestXSSStoredMethodologyIntegration:
         joined = " ".join(findings[0].evidence)
         assert "phases_completed=6" in joined
         assert "strength=verified" in joined
+
+    @pytest.mark.asyncio
+    async def test_json_body_stored_xss(self) -> None:
+        """fix #4: a JSON API store (POST /api/Feedbacks {comment}) — no HTML
+        <form> — is reached via the synthesized JSON pseudo-form, submitted as
+        a JSON body, and verified on read-back."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 8))
+        agent._methodology_llm = agent.llm
+
+        stored: dict[str, str] = {}
+
+        async def fake_post_json(
+            _url: str, obj: dict[str, Any], method: str = "POST"
+        ) -> _HTTPResponse:
+            stored["last"] = str(obj.get("comment", ""))
+            return _HTTPResponse(status=201, body="ok")
+
+        async def fake_get(_url: str, _params: dict[str, str]) -> _HTTPResponse:
+            # Read-back surface renders the stored comment unescaped.
+            return _HTTPResponse(status=200, body=f"<div>{stored.get('last', '')}</div>")
+
+        agent._http_post_json = fake_post_json  # type: ignore[method-assign]
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        # No HTML form — purely a JSON-body endpoint.
+        page = PageAnalysis(
+            url="http://example.com/api/Feedbacks",
+            body="",
+            status=200,
+            input_params=["comment", "rating"],
+            request_method="POST",
+            content_type="application/json",
+            param_locations={
+                "comment": ParamLocation.JSON_BODY,
+                "rating": ParamLocation.JSON_BODY,
+            },
+        )
+        findings = await agent._test_xss_stored(page)
+        assert len(findings) == 1, "stored XSS did not reach the JSON-body injection point"
+        joined = " ".join(findings[0].evidence)
+        assert "phases_completed=6" in joined
+        assert "strength=verified" in joined
+        # The injection point really was the JSON body (a comment was stored).
+        assert stored["last"]
 
 
 # ===========================================================================
