@@ -84,15 +84,27 @@ For HTTP services the crawl/fuzz fallback chains are augmented by **SPA/API
 route discovery** (`agents/_route_discovery.py`): a set of pluggable
 `RouteDiscoverer`s — `StaticBundleDiscoverer` (parse the SPA shell's JS bundles
 and webpack chunks for `/api`+`/rest` route literals, including interpolated and
-path-param forms) and `OpenAPIDiscoverer` (parse a served OpenAPI/Swagger spec,
-else probe a tight set of conventional JSON roots). Results union into
-`HTTPScanResult.endpoints` (additive, deduped) and flow to Exploit with their
-param structure. The seam is intentional: a future browser-driven
-`HeadlessDiscoverer` slots in as another implementation. Discovery fetches carry
-the engagement session (cookies + JWT/bearer) and are bounded and same-origin
-(safety against SSRF / hostile bundles). Path-param routes (`/rest/basket/:id`)
-are emitted as `:id` templates and resolved at probe time by the Exploit URL
-builder's `_resolve_path_params`.
+path-param forms) and `OpenAPIDiscoverer` (parse a served OpenAPI/Swagger spec —
+including `requestBody` schemas into JSON-body params, with local-`$ref`
+resolution and remote-ref rejection as an SSRF guard — else probe a tight set of
+conventional JSON roots plus a curated JSON-POST body fallback). Results union
+into `HTTPScanResult.endpoints` (additive, deduped) and flow to Exploit with
+their **param structure and location** (`ParamLocation`: query / json_body /
+form_body / path, on `Endpoint.param_locations` + `content_type`). The seam is
+intentional: a future browser-driven `HeadlessDiscoverer` slots in as another
+implementation. Discovery fetches carry the engagement session (cookies +
+JWT/bearer) and are bounded and same-origin (safety against SSRF / hostile
+bundles). Path-param routes (`/rest/basket/:id`) are emitted as `:id` templates
+and resolved at probe time by the Exploit URL builder's `_resolve_path_params`.
+
+The Exploit phase threads each param's `ParamLocation` (`Endpoint` →
+`ExploitTask` → `PageAnalysis`) into a **shared request builder**: `_send_probe`
+injects a payload into the correct place — query string, JSON request body
+(`_http_post_json`), form body, or path segment — and the form-shaped
+methodologies (stored-XSS / CSRF / brute-force) iterate `_injectable_forms`,
+which synthesizes a JSON pseudo-form for body-only endpoints (e.g. `POST
+/api/Feedbacks {comment}`) that have no HTML `<form>`. JSON requests carry the
+same cookie + JWT-bearer session as form posts.
 
 ### Research (`agents/research.py`) — runs concurrently
 
