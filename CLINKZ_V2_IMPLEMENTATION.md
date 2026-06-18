@@ -208,6 +208,10 @@ REPORT                                                           [partial]
 
 ## On the horizon
 
+> **Capability expansion** (new vuln-class primitives — NoSQL/SSTI/XXE, then JWT/SSRF, then a
+> real Tier-2/3, then chaining) is tracked as a durable plan-of-record in
+> [`docs/ROADMAP.md`](docs/ROADMAP.md). Current position: Tier-1 primitives, starting NoSQL.
+
 In rough priority order:
 
 1. **Adaptive methodologies for the rest of the `_test_*` family.** XSS-reflected
