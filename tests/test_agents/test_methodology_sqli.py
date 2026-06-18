@@ -741,3 +741,241 @@ class TestSQLiMethodologyIntegration:
         page = _make_page("http://example.com/q?id=1", params=["id"])
         findings = await agent._test_sqli(page)
         assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_juiceshop_product_search_breakout_and_columns(self) -> None:
+        """Parenthesised context (``((name LIKE '%<v>%' ...))``) on SQLite.
+
+        A bare ``'`` errors; only the ``'))`` closer balances. Phase 2 must
+        discover that closer + the 9-column count, and the methodology must
+        confirm (the real Juice Shop product-search miss). The mock mirrors
+        Juice Shop: ``q=1'`` → 500 SQLITE_ERROR, ``q=1')) ...`` parses.
+        """
+        agent = _make_agent(_ScriptedLLM(answers=[""]))  # silent → deterministic
+        agent._methodology_llm = agent.llm
+
+        products = '{"status":"success","data":[' + '{"id":1},' * 18 + "]}"
+        empty = '{"status":"success","data":[]}'
+        err = '<html>OWASP Juice Shop<br>SQLITE_ERROR: near "UNION": syntax error</html>'
+        marker_body = '{"status":"success","data":[{"id":"CLINKZUNIONMARKER42"}]}'
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            balanced = "'))" in value
+            if value == "1":
+                return _HTTPResponse(status=200, body=products)
+            if balanced and "CLINKZUNIONMARKER42" in value:
+                return _HTTPResponse(status=200, body=marker_body)
+            if balanced and "OR 1=1" in value:
+                return _HTTPResponse(status=200, body=products)
+            if balanced and "AND 1=2" in value:
+                return _HTTPResponse(status=200, body=empty)
+            if balanced and "UNION SELECT" in value:
+                # Only the true (9) column count balances; others error.
+                return (
+                    _HTTPResponse(status=200, body=products)
+                    if value.count("NULL") == 9
+                    else _HTTPResponse(status=500, body=err)
+                )
+            if "'" in value:  # any other single-quote-bearing payload → unbalanced
+                return _HTTPResponse(status=500, body=err)
+            return _HTTPResponse(status=200, body=empty)  # neutral / no-quote probes
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page("http://example.com/rest/products/search?q=1", params=["q"])
+        findings = await agent._test_sqli(page)
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "dialect=sqlite" in joined
+        # Breakout context + column count were discovered and recorded.
+        assert "'))" in joined
+        assert "union_columns" in joined
+
+
+# ===========================================================================
+# FIX 1 — breakout-context discovery, column-count, dialect/reflection guards
+# ===========================================================================
+
+
+class TestSQLiBreakoutDiscovery:
+    """Phase-2 breakout-context discovery (`break_prefix`)."""
+
+    @pytest.mark.asyncio
+    async def test_single_quote_breakout(self) -> None:
+        """DVWA-style ``WHERE x='<v>'`` → closer ``'`` balances."""
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            if value.startswith("1'") and "OR 1=1" in value:
+                return _HTTPResponse(status=200, body="ALL ROWS " * 50)
+            if value.startswith("1'") and "AND 1=2" in value:
+                return _HTTPResponse(status=200, body="")
+            return _HTTPResponse(status=200, body="neutral")  # closer "" → same body
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        bp = await agent._sqli_discover_break_prefix(
+            _make_page(), "id", "1", InjectionPrimitives(quote_chars=["'"], comment_syntax=["--"])
+        )
+        assert bp == "'"
+
+    @pytest.mark.asyncio
+    async def test_parenthesised_breakout(self) -> None:
+        """Juice-Shop-style ``((name LIKE '%<v>%'))`` → only ``'))`` balances."""
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            if "')) OR 1=1" in value:
+                return _HTTPResponse(status=200, body="ALL PRODUCTS " * 50)
+            if "')) AND 1=2" in value:
+                return _HTTPResponse(status=200, body="")
+            if value.startswith("1 "):  # closer "" (no quote) → neutral, no diff
+                return _HTTPResponse(status=200, body="neutral")
+            return _HTTPResponse(status=500, body='SQLITE_ERROR: near "OR": syntax error')
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        bp = await agent._sqli_discover_break_prefix(
+            _make_page(), "id", "1", InjectionPrimitives(quote_chars=["'"])
+        )
+        assert bp == "'))"
+
+    @pytest.mark.asyncio
+    async def test_reflected_error_page_is_not_a_breakout(self) -> None:
+        """All closers 4xx (reflection in error page) → no breakout (None).
+
+        The /redirect?to= class: every probe is 406'd and reflects the value,
+        so bodies differ — but an error response is never a balanced query.
+        """
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            return _HTTPResponse(status=406, body=f"Unrecognized target URL: {value}")
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        bp = await agent._sqli_discover_break_prefix(
+            _make_page(), "to", "/", InjectionPrimitives(quote_chars=["'"])
+        )
+        assert bp is None
+
+    @pytest.mark.asyncio
+    async def test_column_count_enumeration(self) -> None:
+        """First NULL-column count that parses cleanly is returned."""
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            if value.count("NULL") == 9:
+                return _HTTPResponse(status=200, body="data")
+            return _HTTPResponse(
+                status=500, body="SQLITE_ERROR: different number of result columns"
+            )
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        n = await agent._sqli_count_union_columns(_make_page(), "q", "1", "'))")
+        assert n == 9
+
+
+class TestSQLiDialectConditionedSynthesis:
+    """Phase-4 deterministic build from confirmed breakout + column count."""
+
+    @pytest.mark.asyncio
+    async def test_union_uses_break_prefix_and_column_count(self) -> None:
+        """A known breakout makes synthesis deterministic, ignoring the LLM."""
+        # LLM would return a wrong (3-col, bare-quote) payload — must be ignored.
+        llm = _ScriptedLLM(answers=['{"payload": "1\' UNION SELECT 1,2,3-- -"}'])
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        synth = await agent._sqli_phase4_synthesize_payload(
+            InjectionType.UNION_BASED,
+            SQLDialect.SQLITE,
+            InjectionPrimitives(quote_chars=["'"], break_prefix="'))", union_columns=9),
+            {"value": "1", "length": 100},
+        )
+        assert synth is not None
+        assert synth["payload"].startswith("1')) UNION SELECT")
+        assert "CLINKZUNIONMARKER42" in synth["payload"]
+        assert synth["payload"].count("NULL") == 8  # 9 columns: marker + 8 NULL
+        assert synth["indicator_type"] == "union_data"
+        # The LLM's wrong payload was not consumed.
+        assert "1,2,3" not in synth["payload"]
+
+    @pytest.mark.asyncio
+    async def test_boolean_uses_break_prefix(self) -> None:
+        agent = _make_agent()
+        synth = await agent._sqli_phase4_synthesize_payload(
+            InjectionType.BOOLEAN_BLIND,
+            SQLDialect.SQLITE,
+            InjectionPrimitives(quote_chars=["'"], break_prefix="'))"),
+            {"value": "1", "length": 100},
+        )
+        assert synth is not None
+        assert synth["payload"] == "1')) AND 1=1-- -"
+        assert synth["control_payload"] == "1')) AND 1=2-- -"
+
+
+class TestSQLiPhase5ReflectionGuard:
+    """Phase-5 must reject markers / indicators echoed in error responses."""
+
+    @pytest.mark.asyncio
+    async def test_union_marker_in_error_response_rejected(self) -> None:
+        """Union marker echoed in a 406 is reflection, not data."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=406, body="Unrecognized target URL: 1' UNION SELECT CLINKZUNIONMARKER42"
+            )
+        )
+        synth = {
+            "payload": "1' UNION SELECT 'CLINKZUNIONMARKER42',NULL-- -",
+            "indicator_type": "union_data",
+            "expected_indicator": "CLINKZUNIONMARKER42",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            _make_page(), "to", synth, {"length": 100}
+        )
+        assert verified is False
+        assert "error response" in observed
+        assert "status=406" in observed
+
+    @pytest.mark.asyncio
+    async def test_reflected_indicator_without_db_error_rejected(self) -> None:
+        """An LLM indicator that is just our echoed payload (no DB error) → reject."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=406, body="Unrecognized target URL: 1' UNION SELECT marker"
+            )
+        )
+        synth = {
+            "payload": "1' UNION SELECT marker",
+            "indicator_type": "error_string",
+            "expected_indicator": "UNION SELECT",
+        }
+        verified, _observed = await agent._sqli_phase5_verify(
+            _make_page(), "to", synth, {"length": 100}
+        )
+        assert verified is False
+
+    @pytest.mark.asyncio
+    async def test_real_sqlite_error_500_still_confirms(self) -> None:
+        """Juice Shop's real 500 SQLITE_ERROR is a genuine error-based hit."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=500, body='SQLITE_ERROR: near "\'": syntax error')
+        )
+        synth = {
+            "payload": "1'",
+            "indicator_type": "error_string",
+            "expected_indicator": "anything",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            _make_page(), "q", synth, {"length": 100}
+        )
+        assert verified is True
+        assert "SQLITE_ERROR" in observed
+        assert "status=500" in observed
+
+    def test_has_db_error_catches_sqlite(self) -> None:
+        """`_extract_errors` misses SQLITE_ERROR; the combined check catches it."""
+        agent = _make_agent()
+        assert agent._extract_errors('SQLITE_ERROR: near "x"') == []
+        assert agent._sqli_has_db_error('SQLITE_ERROR: near "x"') is True
+        assert agent._sqli_has_db_error("You have an error in your SQL syntax ... MySQL") is True
+        assert agent._sqli_has_db_error("a perfectly ordinary page") is False
