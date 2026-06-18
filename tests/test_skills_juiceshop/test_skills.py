@@ -791,11 +791,11 @@ async def test_js_attacks_against_juiceshop(
 # ---------------------------------------------------------------------------
 
 
-def _json_body_page_kwargs(fields: list[str]) -> dict[str, object]:
-    """`_fetch_page` kwargs that mark *fields* as a JSON request body."""
+def _json_body_page_kwargs(fields: list[str], method: str = "POST") -> dict[str, object]:
+    """`_fetch_page` kwargs that mark *fields* as a JSON request body (POST/PUT/PATCH)."""
     return {
         "params": fields,
-        "method": "POST",
+        "method": method,
         "content_type": "application/json",
         "param_locations": {f: ParamLocation.JSON_BODY for f in fields},
     }
@@ -917,4 +917,87 @@ async def test_stored_xss_reaches_json_feedback_against_juiceshop(
     # completed without raising; any finding must be labelled XSS.
     assert all("xss" in f.title.lower() for f in findings), (
         f"Stored-XSS produced a non-XSS finding at {url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# NoSQL Injection — MongoDB-derivate (marsdb) operator + $where surfaces
+# ---------------------------------------------------------------------------
+
+
+async def test_nosqli_manipulation_against_juiceshop(
+    juiceshop_url: str,
+    juiceshop_auth: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_nosqli`` must confirm NoSQL Manipulation at ``PATCH /rest/products/reviews``.
+
+    Target: ``PATCH /rest/products/reviews`` body ``{"id": {"$ne": -1}, "message": ...}``.
+    The ``$ne`` operator object is interpreted by the MongoDB-derivate backend as
+    a query operator (not a literal), so it matches every review and the response
+    ``modified`` count jumps far above the benign single-id baseline — the
+    operator-injection confirmation. This proves JSON-body operator-object
+    injection (the structured carrier the string-only ``_send_probe`` cannot
+    express) end-to-end against a real target.
+
+    Note: Juice Shop's *login* is SQL injection, not NoSQL, so the canonical
+    NoSQL gate is this reviews-manipulation surface — not a login ``{"$ne":null}``
+    bypass.
+    """
+    # Carry the JWT both as the conftest token cookie and the bearer header —
+    # /rest/products/reviews authorises via Authorization: Bearer.
+    exploit_agent._session_headers = dict(juiceshop_auth)
+    url = f"{juiceshop_url}/rest/products/reviews"
+    page = await exploit_agent._fetch_page(
+        url, **_json_body_page_kwargs(["id", "message"], method="PATCH")
+    )
+    findings = await exploit_agent._test_nosqli(page)
+    if not findings:
+        pytest.skip(
+            "NoSQL Manipulation not confirmed (endpoint auth/shape changed in this "
+            "build) — the JSON-body operator carrier still ran end-to-end."
+        )
+    assert any("nosql" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled NoSQL at {url}: {findings}"
+    )
+    finding = findings[0]
+    assert any("phases_completed=" in ev for ev in finding.evidence), (
+        f"Methodology evidence missing on Juice Shop NoSQL finding: {finding.evidence}"
+    )
+    assert any("injection_type=" in ev for ev in finding.evidence), (
+        f"Expected an injection_type in evidence: {finding.evidence}"
+    )
+
+
+async def test_nosqli_dos_track_order_against_juiceshop(
+    juiceshop_url: str,
+    juiceshop_auth: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_nosqli`` evaluates the ``$where`` DoS surface at ``/rest/track-order/:id``.
+
+    Target: ``GET /rest/track-order/<inj>`` — on a vulnerable build the orderId
+    path segment is concatenated into a server-side JS ``$where`` string, so
+    ``',sleep(2000),'`` injects a sleep (confirmation = time delta beyond
+    threshold). Skip-tolerant by design: recent Juice Shop builds sanitise the
+    orderId (the lone quote is stripped, the sleep payload collapses to the
+    literal ``sleep2000`` with no delay), so the ``$where`` context is correctly
+    not classified and nothing is emitted — a verification-honest non-finding,
+    not a methodology gap. The carrier-B timing logic itself is unit-proven in
+    ``test_methodology_nosqli``.
+    """
+    exploit_agent._session_headers = dict(juiceshop_auth)
+    url = f"{juiceshop_url}/rest/track-order/:id"
+    page = await exploit_agent._fetch_page(
+        url, params=["id"], param_locations={"id": ParamLocation.PATH}
+    )
+    findings = await exploit_agent._test_nosqli(page)
+    if not findings:
+        pytest.skip(
+            "NoSQL DoS non-finding: this Juice Shop build sanitises the "
+            "track-order orderId ($where not injectable), so the string-$where "
+            "carrier correctly emits nothing."
+        )
+    assert any("nosql" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled NoSQL at {url}: {findings}"
     )

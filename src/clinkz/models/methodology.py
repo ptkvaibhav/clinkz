@@ -246,6 +246,125 @@ class SQLiMethodologyResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# NoSQL-injection methodology types
+# ---------------------------------------------------------------------------
+
+
+class NoSQLContext(StrEnum):
+    """The injection carrier classified during phase-2 fingerprinting.
+
+    NoSQL injection reaches the backend through three structurally different
+    carriers, and payload synthesis must know which one it is:
+
+    - ``JSON_OPERATOR``: the value sits in a JSON request-body field that the
+      backend feeds straight into a query document, so a nested operator
+      object (``{"$ne": null}``, ``{"$gt": ""}``) is interpreted as a query
+      operator rather than a literal string. Juice Shop's ``PATCH
+      /rest/products/reviews`` "NoSQL Manipulation" case.
+    - ``QUERY_BRACKET``: a query-string parameter the server parses into a
+      nested object (Express ``qs``: ``p[$ne]=`` becomes ``{p: {$ne: ""}}``),
+      so operator injection rides bracket notation.
+    - ``STRING_WHERE``: the value is string-concatenated into a server-side
+      JavaScript ``$where`` clause (``$where: "this.x === '<v>'"``), so a
+      quote-break injects JS — the track-order / ``sleep(N)`` DoS surface.
+    - ``UNKNOWN``: no NoSQL-specific behaviour distinguished from baseline
+      (e.g. a SQL/PHP stack like DVWA — synthesis declines, nothing emits).
+    """
+
+    JSON_OPERATOR = "json_operator"
+    QUERY_BRACKET = "query_bracket"
+    STRING_WHERE = "string_where"
+    UNKNOWN = "unknown"
+
+
+class NoSQLInjectionType(StrEnum):
+    """The shape of the NoSQL injection that the synthesis phase will target.
+
+    Selected by the phase-3 LLM checkpoint given context + confirmed
+    operators. Each value implies a different verification rule:
+
+    - ``AUTH_BYPASS``: operator objects in both credential fields
+      (``{"$ne": null}``) authenticate without a valid password — confirmed
+      by an authenticated / different-principal response. (N/A on a
+      SQL-backed login such as Juice Shop's — correctly a non-finding.)
+    - ``OPERATOR_INJECTION``: an operator object widens the query's match set
+      (data manipulation / over-broad read) — confirmed when the affected or
+      returned record count exceeds the benign baseline (the ``$ne:-1``
+      multi-review update).
+    - ``BOOLEAN_BLIND``: an anchored ``$regex`` probe yields a true/false
+      response differential — confirmed extraction channel.
+    - ``WHERE_JS_INJECTION``: a string-context ``$where`` break injects
+      JavaScript that alters the result set.
+    - ``NOSQL_DOS``: a ``$where`` / ``sleep(N)`` injection produces a
+      measurable server delay — confirmed by a time delta beyond threshold.
+    """
+
+    AUTH_BYPASS = "auth_bypass"
+    OPERATOR_INJECTION = "operator_injection"
+    BOOLEAN_BLIND = "boolean_blind"
+    WHERE_JS_INJECTION = "where_js_injection"
+    NOSQL_DOS = "nosql_dos"
+
+
+class NoSQLPrimitives(BaseModel):
+    """Operators and context confirmed available during phase-2 fingerprinting.
+
+    Phase-4 synthesis constrains itself to these — synthesizing a ``$regex``
+    extraction when only ``$ne`` was interpreted produces a payload the
+    backend ignores.
+
+    Attributes:
+        operators: MongoDB query operators whose injection produced a response
+            distinguishable from the benign baseline (``$ne``, ``$gt``,
+            ``$regex``, ``$where``, ...).
+        context: The carrier classified for this parameter.
+        where_string_injectable: ``True`` when a quote-break in a string
+            ``$where`` context parsed cleanly (JS injection reachable) —
+            drives the DoS / JS-injection types.
+        error_signatures: NoSQL-specific error strings observed (MongoError,
+            CastError, marsdb, ``$where`` SyntaxError). Evidence, and a hint
+            that input reached the query engine.
+    """
+
+    operators: list[str] = Field(default_factory=list)
+    context: NoSQLContext = NoSQLContext.UNKNOWN
+    where_string_injectable: bool = False
+    error_signatures: list[str] = Field(default_factory=list)
+
+
+class NoSQLMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one NoSQL ``_test_*`` invocation.
+
+    Mirrors :class:`SQLiMethodologyResult` with NoSQL-specific fields. Stored
+    on the resulting Finding's evidence so the report has a complete audit
+    trail of context classification, operator enumeration, the LLM-picked
+    injection type, the synthesized payload, and the verification outcome.
+
+    ``synthesized_payload`` is stored as a string (JSON-serialised for an
+    operator-object carrier) so the evidence/trace is human-readable; the
+    structured value used to send the probe lives inside the phase.
+    """
+
+    phases_completed: int = 0
+    context: NoSQLContext = NoSQLContext.UNKNOWN
+    primitives: NoSQLPrimitives = Field(default_factory=NoSQLPrimitives)
+    injection_type: NoSQLInjectionType | None = None
+    synthesized_payload: str | None = None
+    expected_indicator: str | None = None
+    indicator_type: str | None = None
+    indicator_observed: str | None = None
+    candidate_param: str | None = None
+    verified: bool = False
+    # ``verified`` means the methodology emitted a finding.
+    # ``verification_strength`` qualifies it: ``"verified"`` = the indicator
+    # for the chosen injection type was directly observed (match-set widened,
+    # authenticated response, regex differential, or time delta beyond
+    # threshold); ``"likely"`` = divergence was clear but no clean indicator
+    # surfaced.
+    verification_strength: str = "verified"
+
+
+# ---------------------------------------------------------------------------
 # Command-injection methodology types
 # ---------------------------------------------------------------------------
 
@@ -1089,6 +1208,10 @@ __all__ = [
     "LFIRetrievalType",
     "LFITraversalPrimitives",
     "MethodologyResult",
+    "NoSQLContext",
+    "NoSQLInjectionType",
+    "NoSQLMethodologyResult",
+    "NoSQLPrimitives",
     "OpenRedirectMethodologyResult",
     "RedirectBypassType",
     "RedirectPrimitives",
