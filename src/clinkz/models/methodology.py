@@ -193,11 +193,24 @@ class InjectionPrimitives(BaseModel):
         concat_op: First string-concatenation operator that was observed to
             work — ``"||"`` (PG/Oracle/SQLite), ``"+"`` (MSSQL), or
             ``"CONCAT"`` (MySQL function form). ``None`` if none worked.
+        break_prefix: The closing context that balances the surrounding query
+            so an injected clause parses — e.g. ``"'"`` for ``WHERE x='<v>'``
+            or ``"'))"`` for ``WHERE ((name LIKE '%<v>%' ...))``. Empty string
+            means the value is already in statement position (no quoting).
+            ``None`` when no breakout was confirmed. Discovered in phase 2 via a
+            paired boolean tautology and used by every phase-4 payload so the
+            clause isn't left inside unbalanced parentheses.
+        union_columns: Number of columns the front query selects, discovered by
+            ``UNION SELECT NULL,...`` enumeration. ``None`` when not determined.
+            A UNION payload whose column count differs from this triggers a
+            "different number of result columns" error and never confirms.
     """
 
     quote_chars: list[str] = Field(default_factory=list)
     comment_syntax: list[str] = Field(default_factory=list)
     concat_op: str | None = None
+    break_prefix: str | None = None
+    union_columns: int | None = None
 
 
 class SQLiMethodologyResult(BaseModel):
@@ -697,6 +710,11 @@ class RedirectBypassType(StrEnum):
       body-level ``window.location`` write or meta-refresh dispatches it.
     - ``DATA_PROTOCOL``: validator allows ``data:text/html`` — body-level
       redirect renders attacker-controlled content.
+    - ``ALLOWLIST_BYPASS``: a substring/contains allowlist accepts any target
+      that merely *contains* an allowlisted token, so an attacker URL carrying
+      that token as a query/path/fragment/userinfo component is accepted while
+      the browser still navigates to the attacker host (Juice Shop's outdated
+      allowlist class).
     """
 
     DIRECT_REDIRECT = "direct_redirect"
@@ -706,6 +724,7 @@ class RedirectBypassType(StrEnum):
     UNICODE_LOOKALIKE = "unicode_lookalike"
     JS_PROTOCOL = "js_protocol"
     DATA_PROTOCOL = "data_protocol"
+    ALLOWLIST_BYPASS = "allowlist_bypass"
 
 
 class RedirectPrimitives(BaseModel):
