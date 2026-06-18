@@ -123,7 +123,10 @@ EXPLOIT (LLM plans, deterministic skills execute)                [DONE]
       LLM-driven payload synthesis + bypass                      [DONE]
     - _test_sqli: dialect fingerprint + primitive enumeration +
       LLM-driven injection-type selection + synthesis            [DONE]
-    - Other _test_* skills remain deterministic                  [DONE]
+    - _test_nosqli: NoSQL carrier fingerprint + operator
+      enumeration + LLM injection-type selection + synthesis     [DONE]
+      (first new Tier-1 primitive — see docs/ROADMAP.md)
+    - Other _test_* skills are also adaptive methodologies       [DONE]
 
 REPORT                                                           [partial]
   - Pulls findings from state store                              [DONE]

@@ -13,5 +13,6 @@ Apply phase-work skill.
 4. Report coverage as X/14 with a breakdown table across: SQL Injection, XSS Reflected, XSS Stored, Command Injection, File Inclusion, File Upload, CSRF, Brute Force, Weak Session IDs, DOM XSS, JavaScript Attacks, Authorization Bypass, Open HTTP Redirect, CSP Bypass.
 5. Include: total findings, by severity, engagement ID, runtime.
 6. If coverage < target, briefly note which categories were missed and why (single-line each).
+7. NoSQL Injection (`_test_nosqli`, a Tier-1 primitive beyond the 14 categories — see `docs/ROADMAP.md`) is **N/A on DVWA** (PHP/MySQL, no NoSQL backend): expect **zero** nosqli findings. The methodology emits only on a real NoSQL signal (operator match-set widening or a `$where` channel) and rejects SQL errors, so a nosqli finding here is a regression, not a catch.
 
 Do NOT fix issues found during the run. Measurement only unless the user asks for fixes.

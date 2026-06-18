@@ -80,6 +80,31 @@ async def test_sqli_blind_against_dvwa(
 
 
 # ---------------------------------------------------------------------------
+# 2b. NoSQL Injection — N/A on DVWA (PHP/MySQL stack)
+# ---------------------------------------------------------------------------
+
+
+async def test_nosqli_not_applicable_on_dvwa(
+    dvwa_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_nosqli`` is N/A on DVWA's PHP/MySQL stack — no false emission.
+
+    DVWA has no NoSQL backend, so operator-object probes produce no count
+    widening and the lone-quote break surfaces a *SQL* error (not a NoSQL
+    signal). Phase 3 therefore returns no candidate injection type and the
+    methodology emits nothing. The contract here is no false positive and no
+    crash — not a finding.
+    """
+    url = f"{dvwa_url}/vulnerabilities/sqli/?id=1&Submit=Submit"
+    page = await exploit_agent._fetch_page(url, params=["id"])
+    findings = await exploit_agent._test_nosqli(page)
+    assert findings == [], (
+        f"_test_nosqli falsely emitted on DVWA's SQL/PHP stack at {url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 3. Reflected XSS
 # ---------------------------------------------------------------------------
 

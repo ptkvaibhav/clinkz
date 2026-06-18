@@ -68,6 +68,17 @@ _TIER1_ENTRIES: list[dict] = [
         "applicable_vuln_classes": ["sqli"],
     },
     {
+        "technique_name": "nosqli_detection",
+        "technique_description": "Test JSON-body and query/path params for NoSQL injection",
+        "steps": [
+            "Identify JSON-body and query/path parameters",
+            "Probe operator injection ($ne/$gt/$regex) and string $where breaks",
+            "Confirm via match-set widening, auth bypass, regex differential, or $where delay",
+        ],
+        "severity": "high",
+        "applicable_vuln_classes": ["nosqli"],
+    },
+    {
         "technique_name": "xss_detection",
         "technique_description": "Test all reflected parameters for XSS",
         "steps": [
