@@ -26,6 +26,7 @@ from clinkz.agents.exploit import (
     ExploitAgent,
     PageAnalysis,
     _HTTPResponse,
+    _is_file_server_path,
 )
 from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.models.methodology import (
@@ -192,6 +193,7 @@ class TestPhase2PathHandlingFingerprint:
     @pytest.mark.asyncio
     async def test_php_filter_wrapper_detected(self) -> None:
         agent = _make_agent()
+        agent._technologies = ["php", "mysql"]  # PHP stack → wrappers are probed
         # A realistic-length PHP source so the b64 blob clears the 100-char
         # threshold the impl uses to decide a wrapper response is data.
         php_source = b"<?php\n" + (b"$config = 'top secret value';\n" * 10) + b"?>"
@@ -209,6 +211,31 @@ class TestPhase2PathHandlingFingerprint:
         _candidate, baselines = await agent._lfi_phase1_injection_point(page, "page")
         primitives, _evidence = await agent._lfi_phase2_fingerprint(page, "page", baselines)
         assert "php://filter" in primitives.wrapper_support
+
+    @pytest.mark.asyncio
+    async def test_wrappers_skipped_on_non_php_stack(self) -> None:
+        """On a Node/other stack, PHP wrappers are never probed or confirmed.
+
+        Every odd value on a Node route 500s as "Unexpected path"; that
+        divergence must NOT read as wrapper support (the Juice Shop false
+        confirm). With no PHP in the stack, the wrapper loop is skipped.
+        """
+        agent = _make_agent()
+        agent._technologies = ["node.js", "express"]  # non-PHP
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            # Any wrapper-shaped value diverges from baseline (Node 500), which
+            # the old code mistook for wrapper support.
+            if "://" in value:
+                return _HTTPResponse(status=500, body="Error: Unexpected path: " + value)
+            return _HTTPResponse(status=200, body="ok")
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page(url="http://example.com/rest/x/:id", params=["id"])
+        _candidate, baselines = await agent._lfi_phase1_injection_point(page, "id")
+        primitives, evidence = await agent._lfi_phase2_fingerprint(page, "id", baselines)
+        assert primitives.wrapper_support == []
+        assert evidence.get("wrappers_skipped_non_php") is True
 
 
 # ===========================================================================
@@ -403,7 +430,14 @@ class TestPhase5Verification:
         assert "decode" in observed.lower()
 
     @pytest.mark.asyncio
-    async def test_error_path_disclosure_matched(self) -> None:
+    async def test_path_disclosure_alone_does_not_confirm(self) -> None:
+        """LFI requires reading file content, not merely disclosing a path.
+
+        A filesystem path in a stack trace (PHP warning here, or Juice Shop's
+        Node "Unexpected path" 500 on an invalid :id) is information
+        disclosure — confirming on it invented LFI findings. The disclosed
+        path is recorded only as a weak hint.
+        """
         agent = _make_agent()
         agent._send_probe = AsyncMock(  # type: ignore[method-assign]
             return_value=_HTTPResponse(
@@ -421,8 +455,27 @@ class TestPhase5Verification:
             "expected_indicator": "filesystem path",
         }
         verified, observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        assert verified is False
+        assert "no file content read" in observed
+        assert "/var/www" in observed  # disclosed path recorded as a hint
+
+    @pytest.mark.asyncio
+    async def test_error_path_confirms_when_file_content_present(self) -> None:
+        """If the forced error actually leaks file content, that DOES confirm."""
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="root:x:0:0:root:/root:/bin/bash\nbin:x:1:1:bin:/bin"
+            )
+        )
+        synth = {
+            "payload": "../../../etc/passwd",
+            "indicator_type": "error_path",
+            "expected_indicator": "filesystem path",
+        }
+        verified, observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
         assert verified is True
-        assert "/var/www" in observed or "/home" in observed
+        assert "passwd" in observed
 
     @pytest.mark.asyncio
     async def test_no_signature_means_not_verified(self) -> None:
@@ -580,3 +633,132 @@ class TestLFIMethodologyIntegration:
         page = _make_page("http://example.com/?page=hello", params=["page"])
         findings = await agent._test_lfi(page)
         assert findings == []
+
+
+# ===========================================================================
+# FIX 2b — static file-server poison-null-byte bypass (/ftp)
+# ===========================================================================
+
+
+class TestFileServerPathDetection:
+    def test_recognises_file_server_dirs(self) -> None:
+        assert _is_file_server_path("/ftp/legal.md") is True
+        assert _is_file_server_path("/ftp") is True
+        assert _is_file_server_path("/files/docs/x.pdf") is True
+        assert _is_file_server_path("/rest/products/search") is False
+        assert _is_file_server_path("/") is False
+
+    def test_file_server_base_strips_trailing_file(self) -> None:
+        assert ExploitAgent._file_server_base("http://h:3000/ftp/legal.md") == "http://h:3000/ftp"
+        assert ExploitAgent._file_server_base("http://h:3000/ftp") == "http://h:3000/ftp"
+
+    def test_applicable_methods_queues_lfi_for_paramless_file_server(self) -> None:
+        """A param-less /ftp/<file> endpoint must still get _test_lfi queued."""
+        from clinkz.models.scan import Endpoint
+
+        agent = _make_agent()
+        ep = Endpoint(url="http://example.com/ftp/legal.md", method="GET", params=[])
+        methods = agent._applicable_methods_for_endpoint(ep)
+        assert "_test_lfi" in methods
+        # A param-less non-file-server path does NOT get LFI.
+        ep2 = Endpoint(url="http://example.com/about", method="GET", params=[])
+        assert "_test_lfi" not in agent._applicable_methods_for_endpoint(ep2)
+
+
+class TestFileServerNullByteBypass:
+    @pytest.mark.asyncio
+    async def test_blocked_file_read_via_null_byte_confirms(self) -> None:
+        """Direct GET blocked (403) but null-byte read returns content → finding."""
+        agent = _make_agent()
+        pkg = '{"name":"juice-shop","version":"1.0.0","dependencies":{"express":"4"}}'
+
+        async def fake_get(url: str, _params: dict[str, str]) -> _HTTPResponse:
+            if url.endswith("/ftp"):
+                return _HTTPResponse(status=200, body='<a href="legal.md">legal.md</a>')
+            if "%2500.md" in url or "%00.md" in url:
+                return _HTTPResponse(status=200, body=pkg)
+            # direct GET of a .bak → extension allowlist rejection
+            if url.endswith(".bak"):
+                return _HTTPResponse(status=403, body="Error: only .md and .pdf files are allowed!")
+            return _HTTPResponse(status=404, body="not found")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page("http://example.com/ftp/legal.md", params=[])
+        findings = await agent._test_lfi_file_server(page)
+        assert len(findings) >= 1
+        joined = " ".join(findings[0].evidence)
+        assert "bypass_suffix=%2500.md" in joined
+        assert findings[0].severity.value == "high"
+
+    @pytest.mark.asyncio
+    async def test_public_file_is_not_flagged(self) -> None:
+        """A directly-readable file (200) is public, not a bypass — no finding."""
+        agent = _make_agent()
+
+        async def fake_get(url: str, _params: dict[str, str]) -> _HTTPResponse:
+            if url.endswith("/ftp"):
+                return _HTTPResponse(status=200, body="<html>no links</html>")
+            # everything is directly readable → no allowlist to bypass
+            return _HTTPResponse(status=200, body="public content " * 5)
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page("http://example.com/ftp/legal.md", params=[])
+        findings = await agent._test_lfi_file_server(page)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_spa_catch_all_not_treated_as_file_read(self) -> None:
+        """A 200 SPA shell on the null-byte request is not a file read."""
+        agent = _make_agent()
+        spa = (
+            "<html><head><title>JuiceShop</title></head><body><app-root></app-root>"
+            '<script src="main.a1b2c3.js"></script></body></html>'
+        )
+
+        async def fake_get(url: str, _params: dict[str, str]) -> _HTTPResponse:
+            if url.endswith("/ftp"):
+                return _HTTPResponse(status=200, body="<html></html>")
+            if "%2500.md" in url or "%00.md" in url:
+                return _HTTPResponse(status=200, body=spa)  # SPA catch-all
+            if url.endswith(".bak"):
+                return _HTTPResponse(status=403, body="only .md and .pdf files are allowed!")
+            return _HTTPResponse(status=404, body="nope")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page("http://example.com/ftp/legal.md", params=[])
+        findings = await agent._test_lfi_file_server(page)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_non_file_server_path_skipped(self) -> None:
+        agent = _make_agent()
+        called = False
+
+        async def fake_get(url: str, _params: dict[str, str]) -> _HTTPResponse:
+            nonlocal called
+            called = True
+            return _HTTPResponse(status=200, body="x")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page("http://example.com/rest/products/search?q=1", params=["q"])
+        findings = await agent._test_lfi_file_server(page)
+        assert findings == []
+        assert called is False  # never probed a non-file-server path
+
+    @pytest.mark.asyncio
+    async def test_base_probed_once_per_engagement(self) -> None:
+        """A second /ftp/<file> endpoint reuses the dedup guard (no re-probe)."""
+        agent = _make_agent()
+        calls = {"n": 0}
+
+        async def fake_get(url: str, _params: dict[str, str]) -> _HTTPResponse:
+            calls["n"] += 1
+            return _HTTPResponse(status=404, body="nope")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page1 = _make_page("http://example.com/ftp/legal.md", params=[])
+        page2 = _make_page("http://example.com/ftp/order_1.pdf", params=[])
+        await agent._test_lfi_file_server(page1)
+        first = calls["n"]
+        await agent._test_lfi_file_server(page2)
+        assert calls["n"] == first  # second call short-circuited on the dedup set
