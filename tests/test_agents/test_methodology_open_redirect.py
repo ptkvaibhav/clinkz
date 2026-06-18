@@ -356,3 +356,93 @@ class TestOpenRedirectMethodologyIntegration:
         joined = " ".join(findings[0].evidence)
         assert "phases_completed=6" in joined
         assert "bypass_type=" in joined
+
+
+# ===========================================================================
+# FIX 3 — allowlist bypass (token harvested from the app)
+# ===========================================================================
+
+
+class TestOpenRedirectAllowlistBypass:
+    def test_redirect_param_recognition(self) -> None:
+        assert ExploitAgent._is_redirect_param("to") is True
+        assert ExploitAgent._is_redirect_param("redirect") is True
+        assert ExploitAgent._is_redirect_param("returnUrl") is True
+        assert ExploitAgent._is_redirect_param("q") is False
+
+    def test_bypass_payloads_embed_token_and_target_attacker(self) -> None:
+        token = "https://github.com/juice-shop/juice-shop"
+        payloads = ExploitAgent._allowlist_bypass_payloads(token)
+        # Every payload carries the allowlisted token AND points at the attacker.
+        assert all("evil.example" in p for p in payloads)
+        assert any(p == f"https://evil.example/?x={token}" for p in payloads)
+        # The @-userinfo form strips the scheme from the token's host portion.
+        assert any(p.endswith("@evil.example") for p in payloads)
+
+    @pytest.mark.asyncio
+    async def test_harvest_tokens_from_redirect_links(self) -> None:
+        """Absolute URLs the app wraps in its own redirect param are harvested."""
+        agent = _make_agent()
+        bundle = (
+            'a.href="redirect?to=https://github.com/juice-shop/juice-shop";'
+            'b="redirect?to=https://blockchain.info/address/1AbKfg"'
+        )
+
+        async def fake_get(url: str, _params: dict[str, str]) -> _HTTPResponse:
+            if url.endswith("/"):
+                return _HTTPResponse(status=200, body='<script src="/main.js"></script>')
+            if url.endswith("main.js"):
+                return _HTTPResponse(status=200, body=bundle)
+            return _HTTPResponse(status=404, body="")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        tokens = await agent._harvest_allowlist_tokens(_make_page())
+        assert "https://github.com/juice-shop/juice-shop" in tokens
+
+    @pytest.mark.asyncio
+    async def test_allowlist_bypass_confirms_via_redirect(self) -> None:
+        """Blocked generic probes, but a token-bearing payload redirects to attacker.
+
+        Mirrors Juice Shop /redirect?to=: a substring allowlist 406s a naive
+        payload but accepts one containing an allowlisted token, while the
+        Location still points at the attacker host.
+        """
+        agent = _make_agent()
+        allowlisted = "https://github.com/juice-shop/juice-shop"
+        bundle = f'x.href="redirect?to={allowlisted}"'
+
+        async def fake_get(url: str, params: dict[str, str]) -> _HTTPResponse:
+            # Harvest fetches: root shell + bundle.
+            if params == {} and url.endswith("/"):
+                return _HTTPResponse(status=200, body='<script src="/m.js"></script>')
+            if params == {} and url.endswith("m.js"):
+                return _HTTPResponse(status=200, body=bundle)
+            # Redirect probes: only a target containing the allowlisted token is
+            # accepted (302 to the attacker); everything else is blocked (406).
+            to = params.get("to", "")
+            if allowlisted in to:
+                return _HTTPResponse(status=302, body="", headers={"Location": to})
+            return _HTTPResponse(status=406, body="Unrecognized target URL for redirect")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page("http://example.com/redirect?to=/home")
+        findings = await agent._test_open_redirect(page)
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "allowlist_bypass" in joined
+        assert "evil.example" in joined
+
+    @pytest.mark.asyncio
+    async def test_no_tokens_means_no_finding(self) -> None:
+        """If no allowlisted token can be harvested, the bypass yields nothing."""
+        agent = _make_agent()
+
+        async def fake_get(url: str, params: dict[str, str]) -> _HTTPResponse:
+            if params == {}:
+                return _HTTPResponse(status=200, body="<html>no links</html>")
+            return _HTTPResponse(status=406, body="blocked")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page("http://example.com/redirect?to=/home")
+        findings = await agent._test_open_redirect(page)
+        assert findings == []

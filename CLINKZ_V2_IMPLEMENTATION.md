@@ -169,6 +169,21 @@ REPORT                                                           [partial]
   even when the base command writes only to stderr — done
 - LLM JSON parse resilience extended from the plan parse to the Step-3 analysis
   parse (`_repair_and_load` + one re-prompt, graceful fallback) — done
+- Methodology correctness — real-attacker confirmation (Juice Shop 8df94e28) — done
+  - SQLi: phase-2 breakout-context discovery (`break_prefix`) + UNION column-count
+    enumeration (`union_columns`); phase-4 conditions on dialect + breakout +
+    columns and prefers the deterministic build when a breakout is known; phase-5
+    rejects union/error markers reflected in 4xx/5xx (the `/redirect?to=` 406
+    phantom); `_sqli_has_db_error` recognises `SQLITE_ERROR` so error-based still
+    confirms; `(status=…)` threaded into evidence for the Step-3b backstop.
+  - LFI: PHP wrappers gated on `_is_php_stack` (stack harvested in `run`);
+    file-content-only verification (a path in a stack trace no longer confirms);
+    static file-server poison-null-byte sub-methodology (`_test_lfi_file_server`,
+    `%2500.md` allowlist bypass on `/ftp`), planner-gated for param-less
+    file-server routes.
+  - Open redirect: allowlist bypass (`RedirectBypassType.ALLOWLIST_BYPASS`) —
+    harvest allowlisted tokens from the app's own pages/bundles, embed in attacker
+    URLs, confirm a redirect to the attacker host despite a substring allowlist.
 - Adaptive methodologies (W2.1):
   - XSS-reflected — done
   - SQLi — done
