@@ -105,6 +105,31 @@ async def test_nosqli_not_applicable_on_dvwa(
 
 
 # ---------------------------------------------------------------------------
+# 2c. SSTI — N/A on DVWA (no server-side template engine reflects user input)
+# ---------------------------------------------------------------------------
+
+
+async def test_ssti_not_applicable_on_dvwa(
+    dvwa_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_ssti`` is N/A on DVWA — no template engine evaluates the param.
+
+    DVWA echoes ``id`` straight back into the HTML, so the polyglot arithmetic
+    probes (``{{a*b}}`` etc.) come back as literal reflection — never the
+    evaluated product. Phase 1 therefore flags no candidate, phase 3 returns no
+    exploitation type, and the methodology emits nothing. The contract here is
+    no false positive and no crash — not a finding.
+    """
+    url = f"{dvwa_url}/vulnerabilities/sqli/?id=1&Submit=Submit"
+    page = await exploit_agent._fetch_page(url, params=["id"])
+    findings = await exploit_agent._test_ssti(page)
+    assert findings == [], (
+        f"_test_ssti falsely emitted on DVWA (no template engine) at {url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 3. Reflected XSS
 # ---------------------------------------------------------------------------
 

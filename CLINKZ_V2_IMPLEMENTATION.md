@@ -126,6 +126,10 @@ EXPLOIT (LLM plans, deterministic skills execute)                [DONE]
     - _test_nosqli: NoSQL carrier fingerprint + operator
       enumeration + LLM injection-type selection + synthesis     [DONE]
       (first new Tier-1 primitive — see docs/ROADMAP.md)
+    - _test_ssti: polyglot arithmetic eval + template-engine
+      fingerprint + engine-conditioned synthesis + RCE canary    [DONE]
+      (second new Tier-1 primitive; read-back aware for
+      second-order Pug — see docs/ROADMAP.md)
     - Other _test_* skills are also adaptive methodologies       [DONE]
 
 REPORT                                                           [partial]
@@ -213,7 +217,7 @@ REPORT                                                           [partial]
 
 > **Capability expansion** (new vuln-class primitives — NoSQL/SSTI/XXE, then JWT/SSRF, then a
 > real Tier-2/3, then chaining) is tracked as a durable plan-of-record in
-> [`docs/ROADMAP.md`](docs/ROADMAP.md). Current position: Tier-1 primitives, starting NoSQL.
+> [`docs/ROADMAP.md`](docs/ROADMAP.md). Current position: Tier-1 primitives — NoSQL + SSTI shipped, starting XXE.
 
 In rough priority order:
 

@@ -1001,3 +1001,93 @@ async def test_nosqli_dos_track_order_against_juiceshop(
     assert any("nosql" in f.title.lower() for f in findings), (
         f"Findings produced but none labelled NoSQL at {url}: {findings}"
     )
+
+
+# ---------------------------------------------------------------------------
+# SSTI — Juice Shop Pug template injection on the /profile username
+# ---------------------------------------------------------------------------
+
+
+async def test_ssti_against_juiceshop(
+    juiceshop_url: str,
+    juiceshop_auth: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_ssti`` must confirm Pug SSTI at Juice Shop's ``/profile`` username.
+
+    Target: the server-rendered ``/profile`` page (``views/userProfile.pug``).
+    The username is compiled into the Pug template, so a ``#{a*b}`` payload set
+    via ``POST /profile`` renders the product on the subsequent ``GET /profile``
+    (second-order — the POST 302-redirects), and the Pug RCE gadget
+    ``#{global.process.mainModule.require('child_process').execSync('echo <c>')}``
+    runs a command. The methodology's read-back fingerprints Pug and confirms
+    via the echo canary (critical) or arithmetic eval (high).
+
+    Skip-tolerant by design — and the **default Docker deployment is expected to
+    skip**: Juice Shop gates the username-eval behind
+    ``isChallengeEnabled(usernameXssChallenge)``, and with ``challenges.safetyMode
+    = auto`` (the image default) the challenge's ``disabledEnv: [Docker]`` makes
+    that false, so the ``eval`` branch is skipped and ``#{a*b}`` renders
+    literally. Phase 1 then flags no candidate and nothing emits — a
+    verification-honest non-finding, not a methodology gap. (The methodology was
+    confirmed end-to-end against an eval-enabled instance — Juice Shop started
+    with ``challenges.safetyMode=disabled`` — where it reports a high-severity
+    Pug ``expression_eval`` finding; that path plus the engine-conditioned
+    synthesis and the literal-reflection-coexistence detection are unit-proven in
+    ``test_methodology_ssti``.)
+    """
+    # ``/profile`` is cookie-authenticated; carry the JWT both ways.
+    exploit_agent._session_headers = dict(juiceshop_auth)
+    token = juiceshop_auth["Authorization"].removeprefix("Bearer ").strip()
+    profile_url = f"{juiceshop_url}/profile"
+    try:
+        probe = httpx.get(
+            profile_url,
+            cookies={"token": token},
+            timeout=5.0,
+            follow_redirects=False,
+        )
+    except Exception as exc:
+        pytest.skip(f"Juice Shop /profile probe failed ({exc}); skipping SSTI smoke")
+    if probe.status_code not in (200, 302, 304):
+        pytest.skip(
+            f"Juice Shop /profile returned {probe.status_code}; the server-rendered "
+            "profile page may have moved in this build"
+        )
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    # The username is set via a urlencoded form POST to /profile; model it as a
+    # single-field form so _send_probe submits it and the methodology reads back.
+    form = {
+        "action": profile_url,
+        "method": "POST",
+        "fields": [{"name": "username", "type": "text", "value": ""}],
+    }
+    page = PageAnalysis(
+        url=profile_url,
+        body="",
+        status=200,
+        input_params=["username"],
+        forms=[form],
+    )
+    findings = await exploit_agent._test_ssti(page)
+    if not findings:
+        result = await exploit_agent._run_ssti_methodology(page, "username")
+        pytest.skip(
+            "SSTI non-finding (expected on default Docker): Juice Shop disables the "
+            "username-eval (usernameXssChallenge disabledEnv=[Docker], safetyMode=auto), "
+            "so #{a*b} renders literally and the methodology correctly emits nothing. "
+            f"phases_completed={result.phases_completed} engine={result.engine.value} "
+            f"evaluating={result.primitives.evaluating_syntaxes} verified={result.verified}"
+        )
+    assert any("template injection" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled SSTI at {profile_url}: {findings}"
+    )
+    finding = findings[0]
+    assert any("engine=pug" in ev for ev in finding.evidence), (
+        f"Expected engine=pug in evidence: {finding.evidence}"
+    )
+    assert any("phases_completed=" in ev for ev in finding.evidence), (
+        f"Methodology evidence missing on Juice Shop SSTI finding: {finding.evidence}"
+    )
