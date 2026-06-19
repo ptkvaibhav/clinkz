@@ -79,6 +79,17 @@ _TIER1_ENTRIES: list[dict] = [
         "applicable_vuln_classes": ["nosqli"],
     },
     {
+        "technique_name": "ssti_detection",
+        "technique_description": "Test query/JSON-body params for server-side template injection",
+        "steps": [
+            "Identify query and JSON-body parameters",
+            "Send polyglot arithmetic probes ({{a*b}}/${a*b}/#{a*b}/<%= a*b %>) and detect eval",
+            "Fingerprint the template engine, then confirm via arithmetic eval or RCE echo-canary",
+        ],
+        "severity": "critical",
+        "applicable_vuln_classes": ["ssti"],
+    },
+    {
         "technique_name": "xss_detection",
         "technique_description": "Test all reflected parameters for XSS",
         "steps": [
