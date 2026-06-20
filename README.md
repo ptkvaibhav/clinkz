@@ -210,14 +210,16 @@ Output formats today: **JSON**, **Markdown**. The HTML/PDF Jinja+WeasyPrint pipe
 ## Testing
 
 ```bash
-# Run all unit / agent / tool / orchestrator tests (skips live integration + DVWA suites)
-pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_integration
+# Keyless gate — unit / agent / tool / orchestrator tests, deterministic and
+# container-free (excludes EVERY live/container-dependent suite, so green means
+# green with or without containers up).
+pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration
 
-# Run integration suite (requires DVWA + tools containers up)
-pytest tests/test_integration/
-
-# Run live DVWA skill smoke suite (requires DVWA at http://localhost:8080)
-pytest tests/test_skills_dvwa/ -m dvwa_smoke
+# Container gate — the live suites (require the target containers up; run serially).
+pytest tests/test_integration/                          # DVWA + tools containers
+pytest tests/test_skills_dvwa/ -m dvwa_smoke            # DVWA at http://localhost:8080
+pytest tests/test_skills_juiceshop/ -m juiceshop_smoke  # Juice Shop at http://localhost:3000
+pytest -m pipeline_smoke tests/test_pipeline_smoke/     # real orchestrator vs containers
 
 # Run a single test module
 pytest tests/test_tools/test_nmap.py -v
