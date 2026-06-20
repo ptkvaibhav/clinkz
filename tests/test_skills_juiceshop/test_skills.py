@@ -404,6 +404,7 @@ async def test_open_redirect_against_juiceshop(
 
 async def test_idor_against_juiceshop(
     juiceshop_url: str,
+    juiceshop_auth: dict[str, str],
     exploit_agent: ExploitAgent,
 ) -> None:
     """``_test_idor`` must find IDOR at Juice Shop's basket endpoint.
@@ -411,16 +412,37 @@ async def test_idor_against_juiceshop(
     Target: ``GET /rest/basket/:id``. Juice Shop authenticates the
     requesting user but doesn't enforce that ``:id`` matches the authed
     user's basket — a classic horizontal IDOR. The reference-mapping
-    phase should classify ``id`` as a sequential numeric reference and
-    the verification phase should see a different-resource shape under
-    a peer id.
+    phase classifies ``id`` as a sequential numeric reference and the
+    verification phase sees a different-resource shape under a peer id
+    (basket 1 and basket 2 diverge in length and content).
+
+    Two real-attacker auth/shape requirements make the methodology fire —
+    both are properties of *how the test models the endpoint*, not of the
+    methodology (verified live: with both applied, ``_test_idor`` emits a
+    horizontal-IDOR finding at ``/rest/basket/2``):
+      * ``/rest/basket/:id`` authorises via ``Authorization: Bearer`` only —
+        the conftest ``token`` cookie returns 401 — so carry the JWT as a
+        bearer header (the NoSQL reviews case does the same).
+      * the reference lives in the path, not a query string, so model the
+        route as the templated ``/rest/basket/:id`` and mark ``id`` as a
+        PATH param. ``_build_request_url`` then substitutes peer ids into
+        the path segment instead of appending an ignored ``?id=``.
 
     Skip if the endpoint is missing in the running Juice Shop build.
     """
     import httpx
 
+    # /rest/basket authorises via Authorization: Bearer (the conftest token
+    # cookie 401s here) — carry the JWT as a bearer header for this surface.
+    exploit_agent._session_headers = dict(juiceshop_auth)
+
     try:
-        head_resp = httpx.get(f"{juiceshop_url}/rest/basket/1", timeout=5.0, follow_redirects=False)
+        head_resp = httpx.get(
+            f"{juiceshop_url}/rest/basket/1",
+            headers=juiceshop_auth,
+            timeout=5.0,
+            follow_redirects=False,
+        )
     except Exception as exc:
         pytest.skip(f"Juice Shop /rest/basket probe failed ({exc}); skipping IDOR smoke")
     if head_resp.status_code == 404:
@@ -428,14 +450,15 @@ async def test_idor_against_juiceshop(
 
     from clinkz.agents.exploit import PageAnalysis
 
-    basket_url = f"{juiceshop_url}/rest/basket/1"
-    # The reference lives in the path, not a query param — treat the
-    # last segment as a synthetic ``id`` param.
+    # Model the route as templated so peer ids substitute into the path
+    # segment (the real probe shape) rather than appending an ignored ?id=.
+    basket_url = f"{juiceshop_url}/rest/basket/:id"
     page = PageAnalysis(
         url=basket_url,
         body="",
         status=200,
         input_params=["id"],
+        param_locations={"id": ParamLocation.PATH},
     )
     findings = await exploit_agent._test_idor(page)
     if not findings:
