@@ -51,7 +51,7 @@ This is the most important rule. Most failures on this project came from acting 
 Before every push, all three must pass. Never bypass with --no-verify, blanket # noqa / # type: ignore, or skip/xfail added solely to keep CI green.
 
 1. Lint: ruff check src/ tests/ and ruff format --check src/ tests/.
-2. Tests: pytest tests/ -q --tb=short for unit/agent/tool/orchestrator. Run integration + dvwa_smoke suites when DVWA is up and the change touches scan/exploit/orchestrator.
+2. Tests — the keyless gate is `pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration` for unit/agent/tool/orchestrator. It must be deterministic and key-free: it excludes EVERY live/container-dependent suite so green means green with or without containers up — a stale exclude list that drags live tests in produces flake noise that trains us to wave off real failures. Run the container gate separately when containers are up and the change touches scan/exploit/orchestrator (live suites, run serially): `pytest tests/test_integration/`, `pytest tests/test_skills_dvwa/ -m dvwa_smoke`, `pytest tests/test_skills_juiceshop/ -m juiceshop_smoke`, `pytest -m pipeline_smoke tests/test_pipeline_smoke/`.
 3. Security review: invoke /security-review on the diff when it touches tools/, scope, credentials, LLM I/O, HTTP/network/subprocess, deserialization, user-path file I/O, MCP, or report rendering. Resolve every finding.
 
 Doc/config-only changes may skip gates 1-2 but gate 3 still applies if runtime behavior can change.

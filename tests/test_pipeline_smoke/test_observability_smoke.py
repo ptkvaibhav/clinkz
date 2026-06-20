@@ -29,54 +29,72 @@ from clinkz.tools.base import ToolBase, ToolOutput
 pytestmark = pytest.mark.pipeline_smoke
 
 
-class _EchoOutput(ToolOutput):
-    """Trivial parsed output — proves attach_parsed_output wiring."""
+@pytest.fixture
+def echo_tool_cls() -> type[ToolBase]:
+    """Return a throwaway ``ToolBase`` subclass scoped to this test.
 
-    text: str = ""
-
-
-class _EchoTool(ToolBase):
-    """Minimal ToolBase subclass that calls _run_subprocess with the host python.
-
-    Reusing the host interpreter is portable across Linux/Windows/macOS
-    and doesn't require a tool container — exactly what we need for a
-    smoke test of the recording layer.
+    ``ToolResolver`` discovers tools by walking ``ToolBase.__subclasses__()``.
+    Defining this subclass at *module* scope would leak it into that global list
+    for the rest of the pytest session, so ``test_resolver.py``'s
+    ``test_all_tools_discovered`` (an exact-set assertion) would see a phantom
+    ``echo_smoke`` tool under full-suite runs (it passes 48/48 in isolation).
+    Keeping it function-local means it becomes collectable once this test is torn
+    down; the ``resolver`` fixture in ``test_resolver.py`` forces a GC pass before
+    reading the registry, which reaps the dead class — so the leak never escapes
+    this test.
     """
 
-    capabilities = ["echo"]
-    category = "utility"
+    class _EchoOutput(ToolOutput):
+        """Trivial parsed output — proves attach_parsed_output wiring."""
 
-    @property
-    def name(self) -> str:
-        return "echo_smoke"
+        text: str = ""
 
-    @property
-    def description(self) -> str:
-        return "Smoke-test echo tool."
+    class _EchoTool(ToolBase):
+        """Minimal ToolBase subclass that calls _run_subprocess with host python.
 
-    def get_schema(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        }
+        Reusing the host interpreter is portable across Linux/Windows/macOS
+        and doesn't require a tool container — exactly what we need for a
+        smoke test of the recording layer.
+        """
 
-    def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
-        return dict(args)
+        capabilities = ["echo"]
+        category = "utility"
 
-    async def execute(self, args: dict[str, Any]) -> str:
-        text = args.get("text", "smoke")
-        cmd = [sys.executable, "-c", f"print({text!r})"]
-        stdout, _stderr, _rc = await self._run_subprocess(cmd)
-        return stdout
+        @property
+        def name(self) -> str:
+            return "echo_smoke"
 
-    def parse_output(self, raw_output: str) -> _EchoOutput:
-        return _EchoOutput(
-            tool_name=self.name, success=True, raw_output=raw_output, text=raw_output
-        )
+        @property
+        def description(self) -> str:
+            return "Smoke-test echo tool."
+
+        def get_schema(self) -> dict[str, Any]:
+            return {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            }
+
+        def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
+            return dict(args)
+
+        async def execute(self, args: dict[str, Any]) -> str:
+            text = args.get("text", "smoke")
+            cmd = [sys.executable, "-c", f"print({text!r})"]
+            stdout, _stderr, _rc = await self._run_subprocess(cmd)
+            return stdout
+
+        def parse_output(self, raw_output: str) -> _EchoOutput:
+            return _EchoOutput(
+                tool_name=self.name, success=True, raw_output=raw_output, text=raw_output
+            )
+
+    return _EchoTool
 
 
-def test_tool_invocation_records_sidecar_files(tmp_path: Path, monkeypatch) -> None:
+def test_tool_invocation_records_sidecar_files(
+    tmp_path: Path, monkeypatch, echo_tool_cls: type[ToolBase]
+) -> None:
     """ToolBase._run_subprocess must drop a full invocation record and link it."""
     # Pin cwd so the TraceWriter writes under tmp_path/outputs/
     monkeypatch.chdir(tmp_path)
@@ -89,7 +107,7 @@ def test_tool_invocation_records_sidecar_files(tmp_path: Path, monkeypatch) -> N
     writer = TraceWriter(engagement_id=engagement_id)
     set_active_trace_writer(writer)
     try:
-        tool = _EchoTool(scope=scope)
+        tool = echo_tool_cls(scope=scope)
 
         async def _go() -> str:
             return await tool.execute({"text": "smoke"})
