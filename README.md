@@ -46,7 +46,7 @@ Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamicall
 3. **Recon** discovers subdomains, ports, services, and tech stack
 4. **Scan** crawls + fuzzes every HTTP service and enumerates non-HTTP services (FTP/SSH/SMB/DB). For single-page apps it adds **SPA/API route discovery** (`agents/_route_discovery.py`: static JS-bundle parsing + OpenAPI probing behind a pluggable discoverer seam) to recover `/api`+`/rest` routes — with their param structure — that an HTML/JS crawl can't see. Crawl-safety skips links that mutate the target (WAF/security toggles, logout) so the shared session is never poisoned for later phases
 5. **Research** queries the persistent KB for known techniques and live-searches the web for new CVEs/writeups (Gemini 3.1 Flash-Lite with native Search Grounding), under a hard wall-clock budget, persisting results back to the KB
-6. **Exploit** plans tests with an LLM and executes deterministic `_test_*` skills (with adaptive multi-phase methodologies for XSS-reflected and SQLi)
+6. **Exploit** plans tests with an LLM and executes deterministic `_test_*` skills (all are adaptive multi-phase methodologies — the injection family spans SQLi, NoSQL, SSTI, XSS, CMDi, LFI, …)
 7. **Critic** validates findings; **Report** emits JSON + Markdown
 
 Phase agents follow **deterministic step sequences with LLM checkpoints** (no free-form ReAct). Every technique result is recorded to the persistent KB so future engagements adapt.
@@ -55,7 +55,7 @@ Phase agents follow **deterministic step sequences with LLM checkpoints** (no fr
 
 - **Concurrent multi-agent execution** — Scan, Research, and Exploit run in parallel through an LLM-mediated orchestrator
 - **Deterministic skills + LLM checkpoints** — Each `_test_*` is a contract: if the vuln is present it MUST be found; LLMs only step in at named planning/synthesis points
-- **Adaptive methodologies** — XSS-reflected and SQLi use multi-phase reflection-mapping / dialect-fingerprinting flows with LLM-driven payload synthesis and bypass; CMDi candidacy uses a reflection-guarded echo-canary probe so injection surfaces even when the base command writes only to stderr
+- **Adaptive methodologies** — every `_test_*` is a multi-phase methodology: the injection family (SQLi, NoSQL, SSTI, XSS, CMDi, LFI, …) maps → fingerprints (SQL dialect / NoSQL carrier / template engine / shell) → ranks → LLM-synthesizes → verifies; SSTI sends polyglot arithmetic probes and is read-back aware for second-order Pug; CMDi candidacy uses a reflection-guarded echo-canary probe so injection surfaces even when the base command writes only to stderr
 - **Session hygiene** — recon/scan map the target without changing it; WAF/security toggles and logout links are never followed, so injection payloads aren't silently WAF-blocked in the exploit phase
 - **Cross-engagement learning** — Persistent knowledge base (`clinkz_knowledge.db`) records every technique success/failure; future engagements adapt
 - **Dynamic tool discovery + fallback chains** — Agents request capabilities (`web_crawling`, `directory_fuzzing`, ...); the resolver walks declared `TOOL_CHAINS` until output meets threshold
@@ -192,7 +192,7 @@ Tools are discovered dynamically at runtime via `ToolResolver.find_tool(capabili
 | **Recon** | Gemini Flash | Port scan → service/version → web recon → tech stack |
 | **Scan** | Gemini Flash | Crawl + fuzz HTTP, enumerate FTP/SSH/SMB/DB; coverage checkpoint via fallback chains |
 | **Research** | Gemini 3.1 Flash-Lite (Search Grounding) | Cross-engagement KB lookup + live web search; rate-limit-aware with a wall-clock budget; persists techniques back to `clinkz_knowledge.db` |
-| **Exploit** | Anthropic Claude | LLM plans tests; deterministic `_test_*` skills execute; adaptive XSS-reflected and SQLi methodologies |
+| **Exploit** | Anthropic Claude | LLM plans tests; deterministic `_test_*` skills execute; 16 adaptive multi-phase methodologies (injection family: SQLi, NoSQL, SSTI, …) |
 | **Critic** | (LLM-only) | Validates findings, checks CVSS, eliminates false positives |
 | **Report** | (no LLM today) | Pulls findings from state store, emits JSON + Markdown |
 
