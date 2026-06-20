@@ -151,6 +151,32 @@ Run them explicitly:
 pytest -m pipeline_smoke tests/test_pipeline_smoke/
 ```
 
+### Run the live suite on its own — not bundled into `pytest tests/`
+
+These tests drive the real orchestrator against shared containers
+(`clinkz-tools`, `clinkz-dvwa`, `clinkz-juiceshop`) and share server-side
+session state (the DVWA `PHPSESSID`, the session-scoped `crawled_dvwa_cookies`
+crawl). They are also timing-sensitive (real recon scans, a real katana crawl,
+LLM retry/backoff). Run them as their **own** invocation with **all three
+containers up** — including `clinkz-tools`, without which the crawl-dependent
+tests skip:
+
+```
+docker compose -f docker/docker-compose.yml up -d   # incl. clinkz-tools
+pytest -m pipeline_smoke tests/test_pipeline_smoke/
+```
+
+In isolation the suite is green (e.g. 10 passed / 6 skipped with `clinkz-tools`
+down; the finding-emission + recon tests pass with it up). It is **excluded
+from the keyless gate** (see CLAUDE.md) precisely because bundling it into a
+full `pytest tests/` run interleaves it with the other live suites and the
+~1.2k unit tests, and the resulting cross-suite session-state/ordering/timing
+contention makes `test_recon_fingerprints_*`, the exploit-plan test, and the
+`test_finding_emission` trio flake — even though pytest runs serially (there is
+no xdist). A deeper per-test isolation fix (fresh session per test, container
+health gating, unique engagement ids) is tracked as deferred follow-up; the
+operational contract today is "run the live suite separately."
+
 CI must run these. Failures here are blocking — they mean the live
 behaviour has drifted from the recorded behaviour.
 
