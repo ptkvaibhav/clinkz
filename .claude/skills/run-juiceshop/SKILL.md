@@ -37,6 +37,13 @@ Juice Shop is the SPA/JWT counterpart to DVWA. Where DVWA is PHP + cookie sessio
 
 Applicable = 13 (all except #4 Command Injection).
 
+### Tier-1 primitives beyond the 14-category map (expansion — see `docs/ROADMAP.md`)
+
+| Primitive | Juice Shop surface | Canonical request | Notes |
+|---|---|---|---|
+| NoSQL Injection (`_test_nosqli`) | Product reviews (MarsDB) | `PATCH /rest/products/reviews` `{"id":{"$ne":-1},"message":...}` | **"NoSQL Manipulation"** — `$ne` operator object widens the match set; confirmed by a `modified`-count jump over the benign baseline. **JSON-body operator object** (the structured carrier). The `$where` DoS surface (`/rest/track-order/:id`, `/rest/products/sleep(N)/reviews`) is **sanitised on recent builds** (the lone quote is stripped, `',sleep(2000),'` collapses to `sleep2000` with no delay) → a verification-honest non-finding there. **Note: Juice Shop's login is SQLi, not NoSQL**, so the gate is reviews-manipulation, not a login `{"$ne":null}` bypass. |
+| SSTI (`_test_ssti`) | Profile username (Pug) | `POST /profile` `username=#{a*b}` → read-back `GET /profile` | **"SSTi"** — second-order Pug injection; `#{a*b}` compiled into `views/userProfile.pug` renders the product on read-back (the POST 302-redirects). Engine fingerprinted as **Pug** (`#{}`). **Expected justified non-finding on default Docker**: the eval is gated behind `isChallengeEnabled(usernameXssChallenge)` and `challenges.safetyMode=auto` + `disabledEnv:[Docker]` disables it, so `#{a*b}` renders literally → nothing emits. Confirmed end-to-end against a `safetyMode=disabled` instance (high-severity `expression_eval`; the `process.mainModule` RCE gadget degrades to eval on Node 22). The profile reflects the username **twice** (eval'd `<p>` + raw input `value=`), so detection is baseline-anchored / scaffold-stripped, not literal-presence-gated. |
+
 ## What the trace must answer (diagnosis, not just a number)
 
 The point of running against Juice Shop is to test the **pipeline**, not the isolated smoke tests (which hand each `_test_*` method a pre-built `PageAnalysis` at the canonical endpoint). The smoke tests passing proves the methodologies work *given the right page*; this run proves whether recon→scan→auth→plan actually *delivers* that page. From `clinkz trace inspect <id>` confirm:

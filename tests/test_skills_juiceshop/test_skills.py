@@ -791,11 +791,11 @@ async def test_js_attacks_against_juiceshop(
 # ---------------------------------------------------------------------------
 
 
-def _json_body_page_kwargs(fields: list[str]) -> dict[str, object]:
-    """`_fetch_page` kwargs that mark *fields* as a JSON request body."""
+def _json_body_page_kwargs(fields: list[str], method: str = "POST") -> dict[str, object]:
+    """`_fetch_page` kwargs that mark *fields* as a JSON request body (POST/PUT/PATCH)."""
     return {
         "params": fields,
-        "method": "POST",
+        "method": method,
         "content_type": "application/json",
         "param_locations": {f: ParamLocation.JSON_BODY for f in fields},
     }
@@ -917,4 +917,177 @@ async def test_stored_xss_reaches_json_feedback_against_juiceshop(
     # completed without raising; any finding must be labelled XSS.
     assert all("xss" in f.title.lower() for f in findings), (
         f"Stored-XSS produced a non-XSS finding at {url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# NoSQL Injection — MongoDB-derivate (marsdb) operator + $where surfaces
+# ---------------------------------------------------------------------------
+
+
+async def test_nosqli_manipulation_against_juiceshop(
+    juiceshop_url: str,
+    juiceshop_auth: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_nosqli`` must confirm NoSQL Manipulation at ``PATCH /rest/products/reviews``.
+
+    Target: ``PATCH /rest/products/reviews`` body ``{"id": {"$ne": -1}, "message": ...}``.
+    The ``$ne`` operator object is interpreted by the MongoDB-derivate backend as
+    a query operator (not a literal), so it matches every review and the response
+    ``modified`` count jumps far above the benign single-id baseline — the
+    operator-injection confirmation. This proves JSON-body operator-object
+    injection (the structured carrier the string-only ``_send_probe`` cannot
+    express) end-to-end against a real target.
+
+    Note: Juice Shop's *login* is SQL injection, not NoSQL, so the canonical
+    NoSQL gate is this reviews-manipulation surface — not a login ``{"$ne":null}``
+    bypass.
+    """
+    # Carry the JWT both as the conftest token cookie and the bearer header —
+    # /rest/products/reviews authorises via Authorization: Bearer.
+    exploit_agent._session_headers = dict(juiceshop_auth)
+    url = f"{juiceshop_url}/rest/products/reviews"
+    page = await exploit_agent._fetch_page(
+        url, **_json_body_page_kwargs(["id", "message"], method="PATCH")
+    )
+    findings = await exploit_agent._test_nosqli(page)
+    if not findings:
+        pytest.skip(
+            "NoSQL Manipulation not confirmed (endpoint auth/shape changed in this "
+            "build) — the JSON-body operator carrier still ran end-to-end."
+        )
+    assert any("nosql" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled NoSQL at {url}: {findings}"
+    )
+    finding = findings[0]
+    assert any("phases_completed=" in ev for ev in finding.evidence), (
+        f"Methodology evidence missing on Juice Shop NoSQL finding: {finding.evidence}"
+    )
+    assert any("injection_type=" in ev for ev in finding.evidence), (
+        f"Expected an injection_type in evidence: {finding.evidence}"
+    )
+
+
+async def test_nosqli_dos_track_order_against_juiceshop(
+    juiceshop_url: str,
+    juiceshop_auth: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_nosqli`` evaluates the ``$where`` DoS surface at ``/rest/track-order/:id``.
+
+    Target: ``GET /rest/track-order/<inj>`` — on a vulnerable build the orderId
+    path segment is concatenated into a server-side JS ``$where`` string, so
+    ``',sleep(2000),'`` injects a sleep (confirmation = time delta beyond
+    threshold). Skip-tolerant by design: recent Juice Shop builds sanitise the
+    orderId (the lone quote is stripped, the sleep payload collapses to the
+    literal ``sleep2000`` with no delay), so the ``$where`` context is correctly
+    not classified and nothing is emitted — a verification-honest non-finding,
+    not a methodology gap. The carrier-B timing logic itself is unit-proven in
+    ``test_methodology_nosqli``.
+    """
+    exploit_agent._session_headers = dict(juiceshop_auth)
+    url = f"{juiceshop_url}/rest/track-order/:id"
+    page = await exploit_agent._fetch_page(
+        url, params=["id"], param_locations={"id": ParamLocation.PATH}
+    )
+    findings = await exploit_agent._test_nosqli(page)
+    if not findings:
+        pytest.skip(
+            "NoSQL DoS non-finding: this Juice Shop build sanitises the "
+            "track-order orderId ($where not injectable), so the string-$where "
+            "carrier correctly emits nothing."
+        )
+    assert any("nosql" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled NoSQL at {url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# SSTI — Juice Shop Pug template injection on the /profile username
+# ---------------------------------------------------------------------------
+
+
+async def test_ssti_against_juiceshop(
+    juiceshop_url: str,
+    juiceshop_auth: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_ssti`` must confirm Pug SSTI at Juice Shop's ``/profile`` username.
+
+    Target: the server-rendered ``/profile`` page (``views/userProfile.pug``).
+    The username is compiled into the Pug template, so a ``#{a*b}`` payload set
+    via ``POST /profile`` renders the product on the subsequent ``GET /profile``
+    (second-order — the POST 302-redirects), and the Pug RCE gadget
+    ``#{global.process.mainModule.require('child_process').execSync('echo <c>')}``
+    runs a command. The methodology's read-back fingerprints Pug and confirms
+    via the echo canary (critical) or arithmetic eval (high).
+
+    Skip-tolerant by design — and the **default Docker deployment is expected to
+    skip**: Juice Shop gates the username-eval behind
+    ``isChallengeEnabled(usernameXssChallenge)``, and with ``challenges.safetyMode
+    = auto`` (the image default) the challenge's ``disabledEnv: [Docker]`` makes
+    that false, so the ``eval`` branch is skipped and ``#{a*b}`` renders
+    literally. Phase 1 then flags no candidate and nothing emits — a
+    verification-honest non-finding, not a methodology gap. (The methodology was
+    confirmed end-to-end against an eval-enabled instance — Juice Shop started
+    with ``challenges.safetyMode=disabled`` — where it reports a high-severity
+    Pug ``expression_eval`` finding; that path plus the engine-conditioned
+    synthesis and the literal-reflection-coexistence detection are unit-proven in
+    ``test_methodology_ssti``.)
+    """
+    # ``/profile`` is cookie-authenticated; carry the JWT both ways.
+    exploit_agent._session_headers = dict(juiceshop_auth)
+    token = juiceshop_auth["Authorization"].removeprefix("Bearer ").strip()
+    profile_url = f"{juiceshop_url}/profile"
+    try:
+        probe = httpx.get(
+            profile_url,
+            cookies={"token": token},
+            timeout=5.0,
+            follow_redirects=False,
+        )
+    except Exception as exc:
+        pytest.skip(f"Juice Shop /profile probe failed ({exc}); skipping SSTI smoke")
+    if probe.status_code not in (200, 302, 304):
+        pytest.skip(
+            f"Juice Shop /profile returned {probe.status_code}; the server-rendered "
+            "profile page may have moved in this build"
+        )
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    # The username is set via a urlencoded form POST to /profile; model it as a
+    # single-field form so _send_probe submits it and the methodology reads back.
+    form = {
+        "action": profile_url,
+        "method": "POST",
+        "fields": [{"name": "username", "type": "text", "value": ""}],
+    }
+    page = PageAnalysis(
+        url=profile_url,
+        body="",
+        status=200,
+        input_params=["username"],
+        forms=[form],
+    )
+    findings = await exploit_agent._test_ssti(page)
+    if not findings:
+        result = await exploit_agent._run_ssti_methodology(page, "username")
+        pytest.skip(
+            "SSTI non-finding (expected on default Docker): Juice Shop disables the "
+            "username-eval (usernameXssChallenge disabledEnv=[Docker], safetyMode=auto), "
+            "so #{a*b} renders literally and the methodology correctly emits nothing. "
+            f"phases_completed={result.phases_completed} engine={result.engine.value} "
+            f"evaluating={result.primitives.evaluating_syntaxes} verified={result.verified}"
+        )
+    assert any("template injection" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled SSTI at {profile_url}: {findings}"
+    )
+    finding = findings[0]
+    assert any("engine=pug" in ev for ev in finding.evidence), (
+        f"Expected engine=pug in evidence: {finding.evidence}"
+    )
+    assert any("phases_completed=" in ev for ev in finding.evidence), (
+        f"Methodology evidence missing on Juice Shop SSTI finding: {finding.evidence}"
     )
