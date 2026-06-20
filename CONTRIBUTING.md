@@ -39,8 +39,14 @@ Agents must never reference tools by name — use the Tool Resolver to find capa
 ## Running Tests
 
 ```bash
-# All tests
-pytest tests/
+# Keyless gate — deterministic, container-free (excludes every live/container suite)
+pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration
+
+# Container gate — live suites, require the target containers up (run serially)
+pytest tests/test_integration/
+pytest tests/test_skills_dvwa/ -m dvwa_smoke
+pytest tests/test_skills_juiceshop/ -m juiceshop_smoke
+pytest -m pipeline_smoke tests/test_pipeline_smoke/
 
 # Specific module
 pytest tests/test_tools/test_nmap.py -v
@@ -74,5 +80,5 @@ ruff format src/    # Format
 
 1. Fork the repository and create a feature branch
 2. Make your changes with tests
-3. Ensure `ruff check src/` and `pytest tests/` pass
+3. Ensure `ruff check src/ tests/` and the keyless gate (`pytest tests/ -q --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration`) pass
 4. Submit a PR with a clear description of what and why
