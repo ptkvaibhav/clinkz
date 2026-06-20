@@ -14,6 +14,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import gc
 from unittest.mock import patch
 
 import pytest
@@ -102,7 +103,17 @@ _EXPLOIT_TOOLS = {"nikto", "nuclei", "sqlmap"}
 
 @pytest.fixture()
 def resolver() -> ToolResolver:
-    """Return a fresh ToolResolver with no MCP endpoints."""
+    """Return a fresh ToolResolver with no MCP endpoints.
+
+    ``ToolResolver`` discovers tools by walking ``ToolBase.__subclasses__()``,
+    which also lists classes that are dead but not yet garbage-collected. A test
+    elsewhere in the session may have defined a throwaway ``ToolBase`` subclass
+    (e.g. the pipeline_smoke ``echo_smoke`` tool) that is now cyclic garbage;
+    force a collection so discovery reflects only live, real tools — otherwise
+    ``test_all_tools_discovered`` (an exact-set assertion) sees a phantom tool
+    under full-suite runs while passing in isolation.
+    """
+    gc.collect()
     return ToolResolver()
 
 
