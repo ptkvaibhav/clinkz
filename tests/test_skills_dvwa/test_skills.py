@@ -130,6 +130,30 @@ async def test_ssti_not_applicable_on_dvwa(
 
 
 # ---------------------------------------------------------------------------
+# 2d. XXE — N/A on DVWA (no endpoint parses an XML request body)
+# ---------------------------------------------------------------------------
+
+
+async def test_xxe_not_applicable_on_dvwa(
+    dvwa_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_xxe`` is N/A on DVWA — no endpoint parses XML, so no false emission.
+
+    DVWA's PHP endpoints ignore an ``application/xml`` request body (and its
+    upload handler rejects non-images without parsing XML), so the benign
+    internal-entity probe never expands, no XML parse-error surfaces, and the
+    malformed/well-formed probes do not diverge. Phase 1 therefore flags no
+    candidate and the methodology emits nothing. The contract here is no false
+    positive and no crash — not a finding.
+    """
+    url = f"{dvwa_url}/vulnerabilities/upload/"
+    page = await exploit_agent._fetch_page(url)
+    findings = await exploit_agent._test_xxe(page)
+    assert findings == [], f"_test_xxe falsely emitted on DVWA (no XML parser) at {url}: {findings}"
+
+
+# ---------------------------------------------------------------------------
 # 3. Reflected XSS
 # ---------------------------------------------------------------------------
 

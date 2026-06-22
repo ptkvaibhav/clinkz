@@ -200,15 +200,15 @@ async def test_record_engagement(kb):
 
 @pytest.mark.asyncio
 async def test_seed_tier1(kb):
-    """Run seed function, verify all 16 entries exist, run again = no duplicates."""
+    """Run seed function, verify all 17 entries exist, run again = no duplicates."""
     await seed_tier1_tests(kb)
     entries = await kb.get_tier1_tests()
-    assert len(entries) == 16
+    assert len(entries) == 17
 
     # Run again — should be idempotent
     await seed_tier1_tests(kb)
     entries = await kb.get_tier1_tests()
-    assert len(entries) == 16
+    assert len(entries) == 17
 
 
 @pytest.mark.asyncio
