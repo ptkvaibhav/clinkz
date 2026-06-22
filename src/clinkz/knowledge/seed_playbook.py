@@ -199,6 +199,18 @@ _TIER1_ENTRIES: list[dict] = [
         "severity": "high",
         "applicable_vuln_classes": ["idor"],
     },
+    {
+        "technique_name": "jwt_detection",
+        "technique_description": "Test JWT-authenticated endpoints for token forgery / tampering",
+        "steps": [
+            "Acquire the engagement's JWT and confirm the endpoint validates its signature",
+            "Fingerprint the token (algorithm, kid, claims, expiry) to gate the attack set",
+            "Forge via alg:none / weak-secret / algorithm-confusion / claim-tamper and re-send",
+            "Confirm in-band when the forged token is accepted like the valid baseline",
+        ],
+        "severity": "critical",
+        "applicable_vuln_classes": ["jwt"],
+    },
 ]
 
 
