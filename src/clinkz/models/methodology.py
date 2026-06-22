@@ -490,6 +490,111 @@ class SSTIMethodologyResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# XXE (XML external entity injection) methodology types
+# ---------------------------------------------------------------------------
+
+
+class XXEExploitationType(StrEnum):
+    """The shape of the XXE exploitation that the synthesis phase will target.
+
+    Selected by the phase-3 LLM checkpoint given the confirmed parser
+    capabilities, ranked by what phase 2 proved the parser supports. Each value
+    implies a different verification rule:
+
+    - ``FILE_DISCLOSURE``: an external ``SYSTEM`` entity reads a local file
+      (``file:///etc/passwd``) whose content reflects in-band — confirmed by a
+      file-content signature in the response (NOT the payload reflected). The
+      canonical, cleanest proof. High severity.
+    - ``SSRF``: an external ``SYSTEM`` entity makes the *server* fetch a URL
+      (``http://internal``) — confirmed by in-scope fetch evidence. Restricted
+      to in-scope targets via the scope-validated client. High severity.
+    - ``OOB_EXFIL``: blind exfiltration via parameter entities + an external DTD
+      callback — confirmed only by a received out-of-band callback. Without OOB
+      collaborator infrastructure this degrades to the in-band path and the
+      limitation is noted (like the SSRF-callback limitation).
+    - ``DOS``: entity-expansion denial of service — confirmed by a *bounded*
+      expansion producing a measurable parse-time delta (or the target's
+      timeout signature). Never a real billion-laughs. Medium severity.
+    """
+
+    FILE_DISCLOSURE = "file_disclosure"
+    SSRF = "ssrf"
+    OOB_EXFIL = "oob_exfil"
+    DOS = "dos"
+
+
+class XXEParserCapability(BaseModel):
+    """XML-parser capabilities confirmed during phase-2 fingerprinting.
+
+    XXE's equivalent of :class:`SQLDialect` / :class:`SSTITemplateEngine`, but a
+    *capability vector* rather than a single discrete class — the parser either
+    resolves entities or it does not, supports external entities or not, etc.,
+    and the combination gates which exploitation types phase 3 may rank. With no
+    ``entity_resolution`` there is no XXE (justified non-finding — the DVWA
+    path, where no endpoint parses XML at all).
+
+    Attributes:
+        entity_resolution: ``True`` when a benign *internal* entity
+            (``<!ENTITY t "MARKER">`` then ``&t;``) expands to its value in the
+            response — the baseline proof that the parser resolves entities.
+        external_entity: ``True`` when a ``SYSTEM`` external entity is resolved
+            (file content / fetch reached) rather than ignored or rejected —
+            drives FILE_DISCLOSURE / SSRF.
+        parameter_entity: ``True`` when a parameter entity (``<!ENTITY % p ...>``)
+            is accepted — drives the OOB external-DTD exfil technique.
+        inband_reflection: ``True`` when expanded entity content is echoed back
+            in the response body (including a 4xx body — Juice Shop's 410
+            deprecation message carries the truncated parsed XML), so file
+            disclosure is verifiable in-band without a collaborator.
+        error_signatures: XML-parser error / deprecation strings observed
+            (libxml/SAX parse errors, "deprecated for security reasons").
+            Evidence, and a hint that input reached the XML parser.
+    """
+
+    entity_resolution: bool = False
+    external_entity: bool = False
+    parameter_entity: bool = False
+    inband_reflection: bool = False
+    error_signatures: list[str] = Field(default_factory=list)
+
+
+class XXEMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one XXE ``_test_*`` invocation.
+
+    Mirrors :class:`SSTIMethodologyResult` with XXE-specific fields. Stored on
+    the resulting Finding's evidence so the report has a complete audit trail of
+    the parser-capability fingerprint, the LLM-picked exploitation type, the
+    synthesized entity payload, and the verification outcome.
+
+    ``candidate_param`` is a synthetic carrier label (``"file"`` for a multipart
+    XML upload, ``"xml_body"`` for a raw ``application/xml`` body) rather than a
+    request parameter — XXE is endpoint-scoped, the whole XML document is the
+    payload, so there is no injectable named parameter (unlike the SQLi/NoSQL/
+    SSTI parameter loop).
+
+    N/A by construction on a non-XML stack (DVWA's PHP/MySQL HTML endpoints): no
+    endpoint parses XML, so phase 1 finds no candidate and nothing is emitted.
+    """
+
+    phases_completed: int = 0
+    capability: XXEParserCapability = Field(default_factory=XXEParserCapability)
+    exploitation_type: XXEExploitationType | None = None
+    synthesized_payload: str | None = None
+    expected_indicator: str | None = None
+    indicator_type: str | None = None
+    indicator_observed: str | None = None
+    candidate_param: str | None = None
+    verified: bool = False
+    # ``verified`` means the methodology emitted a finding.
+    # ``verification_strength`` qualifies it: ``"verified"`` = the indicator for
+    # the chosen exploitation type was directly observed (a file-content
+    # signature in the response, an in-scope SSRF fetch, or a bounded parse-time
+    # delta / timeout); ``"likely"`` = the parser resolved entities but the
+    # specific escalation could not be cleanly confirmed in-band.
+    verification_strength: str = "verified"
+
+
+# ---------------------------------------------------------------------------
 # Command-injection methodology types
 # ---------------------------------------------------------------------------
 
