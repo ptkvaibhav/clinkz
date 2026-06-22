@@ -130,6 +130,13 @@ EXPLOIT (LLM plans, deterministic skills execute)                [DONE]
       fingerprint + engine-conditioned synthesis + RCE canary    [DONE]
       (second new Tier-1 primitive; read-back aware for
       second-order Pug — see docs/ROADMAP.md)
+    - _test_xxe: parser-capability fingerprint + entity payload
+      synthesis + in-band file-content verification (4xx-safe)   [DONE]
+      (third new Tier-1 primitive — see docs/ROADMAP.md)
+    - _test_jwt: token fingerprint + attack ranking + PyJWT
+      deterministic forge + fully in-band acceptance verify      [DONE]
+      (first Tier-2 primitive — cryptographic token manipulation,
+      not injection; SSRF is next — see docs/ROADMAP.md)
     - Other _test_* skills are also adaptive methodologies       [DONE]
 
 REPORT                                                           [partial]
@@ -217,7 +224,8 @@ REPORT                                                           [partial]
 
 > **Capability expansion** (new vuln-class primitives — NoSQL/SSTI/XXE, then JWT/SSRF, then a
 > real Tier-2/3, then chaining) is tracked as a durable plan-of-record in
-> [`docs/ROADMAP.md`](docs/ROADMAP.md). Current position: Tier-1 primitives — NoSQL + SSTI shipped, starting XXE.
+> [`docs/ROADMAP.md`](docs/ROADMAP.md). Current position: Tier-1 complete (NoSQL + SSTI + XXE shipped);
+> Tier-2 underway — **JWT attacks shipped**, SSRF next.
 
 In rough priority order:
 
