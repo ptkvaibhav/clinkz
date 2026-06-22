@@ -1197,3 +1197,66 @@ async def test_xxe_against_juiceshop(
     assert any("phases_completed=" in ev for ev in finding.evidence), (
         f"Methodology evidence missing on Juice Shop XXE finding: {finding.evidence}"
     )
+
+
+# ---------------------------------------------------------------------------
+# JWT attacks — Juice Shop bearer-token forgery (Unsigned / Forged Signed JWT)
+# ---------------------------------------------------------------------------
+
+
+async def test_jwt_against_juiceshop(
+    juiceshop_url: str,
+    juiceshop_auth: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_jwt`` exercises JWT forgery against a Juice Shop bearer-gated route.
+
+    Target: ``GET /rest/basket/:id``, which authorises via ``Authorization:
+    Bearer <jwt>`` (the engagement's captured JWT). Phase 1 baseline-anchors that
+    the endpoint validates the signature (valid token accepted, broken-signature
+    token rejected), then the methodology forges tokens — the **Unsigned JWT**
+    (``alg:none``) and **Forged Signed JWT** Juice Shop challenges — and confirms
+    in-band when a forged token is accepted like the valid baseline.
+
+    **Skip-tolerant by design**: Juice Shop's ``alg:none`` acceptance is
+    build-dependent (older builds accept it; hardened ones reject it). When a
+    forgery is accepted a critical finding emits; when every forgery is rejected
+    the methodology correctly emits nothing — a verification-honest non-finding,
+    not a gap. The full six-phase forge/verify path is unit-proven in
+    ``test_methodology_jwt``.
+    """
+    # /rest/basket authorises via Authorization: Bearer — carry the JWT as a
+    # bearer header so phase 1 can acquire it and baseline-anchor the endpoint.
+    exploit_agent._session_headers = dict(juiceshop_auth)
+
+    basket_url = f"{juiceshop_url}/rest/basket/1"
+    try:
+        probe = httpx.get(basket_url, headers=juiceshop_auth, timeout=5.0, follow_redirects=False)
+    except Exception as exc:
+        pytest.skip(f"Juice Shop /rest/basket probe failed ({exc}); skipping JWT smoke")
+    if probe.status_code == 404:
+        pytest.skip("Juice Shop /rest/basket returned 404; endpoint may have moved in this build")
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    page = PageAnalysis(url=basket_url, body="", status=200)
+    findings = await exploit_agent._test_jwt(page)
+    if not findings:
+        result = await exploit_agent._run_jwt_methodology(page)
+        pytest.skip(
+            "JWT non-finding (expected when the build rejects forged tokens — alg:none "
+            "hardened and the HMAC/RSA secret is not guessable/obtainable). The six-phase "
+            "methodology ran end-to-end and emitted nothing (verification-honest). "
+            f"phases_completed={result.phases_completed} alg={result.fingerprint.algorithm.value} "
+            f"signature_present={result.fingerprint.signature_present} verified={result.verified}"
+        )
+    assert any("jwt" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled JWT at {basket_url}: {findings}"
+    )
+    finding = findings[0]
+    assert any("attack_type=" in ev for ev in finding.evidence), (
+        f"Expected an attack_type in evidence: {finding.evidence}"
+    )
+    assert any("phases_completed=" in ev for ev in finding.evidence), (
+        f"Methodology evidence missing on Juice Shop JWT finding: {finding.evidence}"
+    )
