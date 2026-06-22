@@ -90,6 +90,17 @@ _TIER1_ENTRIES: list[dict] = [
         "applicable_vuln_classes": ["ssti"],
     },
     {
+        "technique_name": "xxe_detection",
+        "technique_description": "Test XML-accepting endpoints for XML external entity injection",
+        "steps": [
+            "Identify endpoints that parse XML (file uploads, application/xml bodies, SOAP/B2B)",
+            "Fingerprint parser capabilities (entity resolution, external/parameter entities)",
+            "Confirm via disclosed file content (SYSTEM file://) or bounded entity-expansion delay",
+        ],
+        "severity": "high",
+        "applicable_vuln_classes": ["xxe"],
+    },
+    {
         "technique_name": "xss_detection",
         "technique_description": "Test all reflected parameters for XSS",
         "steps": [
