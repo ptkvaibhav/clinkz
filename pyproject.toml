@@ -23,6 +23,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "mcp[cli]>=1.0.0",
     "defusedxml>=0.7.1",
+    "PyJWT>=2.13.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
