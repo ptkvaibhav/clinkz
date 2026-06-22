@@ -3,8 +3,8 @@
 Durable plan-of-record for growing the Exploit agent's vuln-class coverage. This is the
 sequence we execute; it is not a backlog of ideas. Keep it lean.
 
-> **Current position:** Tier-1 primitives — **starting XXE** (third new primitive, after NoSQL
-> and SSTI shipped; the original methodology set was 14, now 16).
+> **Current position:** Tier-1 primitives **complete** — NoSQL, SSTI, and XXE shipped. **Next is
+> Tier-2: JWT attacks** (then SSRF). The original methodology set was 14, now 17.
 
 ## Guiding principle
 
@@ -20,18 +20,18 @@ exactly the way the original methodologies were. Three non-negotiables:
 
 ## Coverage map
 
-### CONFIRMED — 16 adaptive methodologies (shipped)
-`sqli`, `nosqli`, `ssti`, `xss_reflected`, `xss_stored`, `xss_dom`, `cmdi`, `lfi`, `file_upload`,
-`csrf`, `brute_force`, `open_redirect`, `idor`, `security_headers`, `weak_session`,
+### CONFIRMED — 17 adaptive methodologies (shipped)
+`sqli`, `nosqli`, `ssti`, `xxe`, `xss_reflected`, `xss_stored`, `xss_dom`, `cmdi`, `lfi`,
+`file_upload`, `csrf`, `brute_force`, `open_redirect`, `idor`, `security_headers`, `weak_session`,
 `javascript_attacks`.
 
-### TIER-1 PRIMITIVES TO ADD — reuse the six-phase injection family
+### TIER-1 PRIMITIVES — reuse the six-phase injection family (all shipped)
 - ~~**NoSQL injection** — MongoDB-style operator/`$where` injection.~~ *(shipped)*
 - ~~**SSTI** — server-side template injection (Pug/EJS/Nunjucks/Jinja2/Freemarker).~~ *(shipped)*
-- **XXE** — XML external entity injection. *(next)*
+- ~~**XXE** — XML external entity injection (file disclosure / SSRF / bounded DoS).~~ *(shipped)*
 
 ### TIER-2 — contained, high-value on modern targets
-- **JWT attacks** — alg=none, weak-secret, key confusion.
+- **JWT attacks** — alg=none, weak-secret, key confusion. *(next)*
 - **SSRF** — server-side request forgery.
 
 ### HARDER — need a reasoning layer / chaining
