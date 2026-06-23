@@ -136,7 +136,13 @@ EXPLOIT (LLM plans, deterministic skills execute)                [DONE]
     - _test_jwt: token fingerprint + attack ranking + PyJWT
       deterministic forge + fully in-band acceptance verify      [DONE]
       (first Tier-2 primitive — cryptographic token manipulation,
-      not injection; SSRF is next — see docs/ROADMAP.md)
+      not injection — see docs/ROADMAP.md)
+    - _test_ssrf: URL/fetch-param map + fetch-capability
+      fingerprint + deterministic internal-target synthesis +
+      in-band reflected-internal verification                    [DONE]
+      (second Tier-2 primitive — coerces the in-scope server to
+      fetch internal/metadata addresses; in-band only, blind SSRF
+      deferred to OOB infra; see docs/ROADMAP.md)
     - Other _test_* skills are also adaptive methodologies       [DONE]
 
 REPORT                                                           [partial]
@@ -225,7 +231,7 @@ REPORT                                                           [partial]
 > **Capability expansion** (new vuln-class primitives — NoSQL/SSTI/XXE, then JWT/SSRF, then a
 > real Tier-2/3, then chaining) is tracked as a durable plan-of-record in
 > [`docs/ROADMAP.md`](docs/ROADMAP.md). Current position: Tier-1 complete (NoSQL + SSTI + XXE shipped);
-> Tier-2 underway — **JWT attacks shipped**, SSRF next.
+> Tier-2 complete — **JWT + SSRF shipped**; next is making Tier-2/3 real (craft-from-knowledge).
 
 In rough priority order:
 
