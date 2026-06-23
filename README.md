@@ -192,7 +192,7 @@ Tools are discovered dynamically at runtime via `ToolResolver.find_tool(capabili
 | **Recon** | Gemini Flash | Port scan → service/version → web recon → tech stack |
 | **Scan** | Gemini Flash | Crawl + fuzz HTTP, enumerate FTP/SSH/SMB/DB; coverage checkpoint via fallback chains |
 | **Research** | Gemini 3.1 Flash-Lite (Search Grounding) | Cross-engagement KB lookup + live web search; rate-limit-aware with a wall-clock budget; persists techniques back to `clinkz_knowledge.db` |
-| **Exploit** | Anthropic Claude | LLM plans tests; deterministic `_test_*` skills execute; 18 adaptive multi-phase methodologies (injection family: SQLi, NoSQL, SSTI, XXE, …; plus Tier-2 JWT token forgery) |
+| **Exploit** | Anthropic Claude | LLM plans tests; deterministic `_test_*` skills execute; 19 adaptive multi-phase methodologies (injection family: SQLi, NoSQL, SSTI, XXE, …; plus Tier-2 JWT token forgery and SSRF) |
 | **Critic** | (LLM-only) | Validates findings, checks CVSS, eliminates false positives |
 | **Report** | (no LLM today) | Pulls findings from state store, emits JSON + Markdown |
 

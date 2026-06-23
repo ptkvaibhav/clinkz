@@ -211,6 +211,19 @@ _TIER1_ENTRIES: list[dict] = [
         "severity": "critical",
         "applicable_vuln_classes": ["jwt"],
     },
+    {
+        "technique_name": "ssrf_detection",
+        "technique_description": "Coerce the in-scope server to fetch internal/metadata addresses",
+        "steps": [
+            "Find URL/fetch params and confirm the param drives a server-side fetch",
+            "Fingerprint the fetcher: fetch-confirmed? content reflected (in-band)? schemes?",
+            "Point the fetch at cloud-metadata / internal / file:// targets (param value only)",
+            "Confirm in-band when the response reflects internal content it should not have",
+            "If the fetch is blind (no reflected content), note OOB-deferred — never a phantom",
+        ],
+        "severity": "critical",
+        "applicable_vuln_classes": ["ssrf"],
+    },
 ]
 
 
