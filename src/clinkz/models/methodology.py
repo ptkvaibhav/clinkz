@@ -595,6 +595,158 @@ class XXEMethodologyResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# JWT (JSON Web Token) attack methodology types
+# ---------------------------------------------------------------------------
+
+
+class JWTAlgorithm(StrEnum):
+    """The ``alg`` header value classified during phase-2 fingerprinting.
+
+    JWT's equivalent of :class:`SQLDialect` / :class:`SSTITemplateEngine`, but
+    cryptographic rather than injection: the algorithm gates which attacks apply.
+    ``alg:none`` acceptance only matters for a currently-*signed* token;
+    RS256→HS256 confusion only for an asymmetric (``RS*`` / ``ES*`` / ``PS*``)
+    algorithm; weak-secret brute-force only for an HMAC (``HS*``) algorithm.
+
+    Enum *values* are the literal ``alg`` strings so ``JWTAlgorithm(value)``
+    round-trips a decoded header. ``NONE`` is the unsigned ``"none"`` algorithm
+    (case-folded during fingerprinting so ``None`` / ``NONE`` map here too).
+    ``UNKNOWN`` is reserved for an unrecognised / unparseable ``alg``.
+    """
+
+    HS256 = "HS256"
+    HS384 = "HS384"
+    HS512 = "HS512"
+    RS256 = "RS256"
+    RS384 = "RS384"
+    RS512 = "RS512"
+    ES256 = "ES256"
+    ES384 = "ES384"
+    PS256 = "PS256"
+    NONE = "none"
+    UNKNOWN = "unknown"
+
+
+class JWTAttackType(StrEnum):
+    """The shape of the JWT attack that the synthesis phase will target.
+
+    Selected by the phase-3 LLM checkpoint given the token fingerprint, ranked by
+    what the fingerprint supports. Each value implies a different forge + a fully
+    in-band verification rule (the server *accepts* a token we forged/tampered):
+
+    - ``ALG_NONE``: strip the signature and set ``alg`` to ``none`` — confirmed
+      when the unsigned token is accepted on an endpoint that rejects a
+      broken-signature token. Forgery / full auth bypass — critical.
+    - ``ALGORITHM_CONFUSION``: an ``RS256`` token re-signed ``HS256`` using the
+      *public* key as the HMAC secret — confirmed when accepted. Needs the public
+      key (a bounded in-scope JWKS probe); declines otherwise. Critical.
+    - ``WEAK_SECRET``: an ``HS*`` token whose signing secret is in a bounded
+      common/default list — proven by a *local* signature verification, then
+      confirmed by re-signing a tampered token the server accepts. Critical.
+    - ``KID_INJECTION``: a ``kid`` header steered (path traversal / predictable
+      key) to a key the attacker controls — confirmed when the resulting token is
+      accepted. Critical.
+    - ``CLAIM_TAMPERING``: a privileged claim (``role`` / ``admin`` / ...) flipped
+      and the token re-signed via an available signing bypass — confirmed by an
+      elevated-access response. Privilege escalation / horizontal access — high.
+    - ``EXPIRED_ACCEPTANCE``: an expired (or back-dated) token replayed —
+      confirmed when ``exp`` is not enforced. High.
+    """
+
+    ALG_NONE = "alg_none"
+    ALGORITHM_CONFUSION = "algorithm_confusion"
+    WEAK_SECRET = "weak_secret"
+    KID_INJECTION = "kid_injection"
+    CLAIM_TAMPERING = "claim_tampering"
+    EXPIRED_ACCEPTANCE = "expired_acceptance"
+
+
+class JWTFingerprint(BaseModel):
+    """Decoded-token characteristics confirmed during phase-2 fingerprinting.
+
+    JWT's equivalent of :class:`InjectionPrimitives` / :class:`XXEParserCapability`
+    — the combination gates which attacks phase 3 may rank. **Redaction-safe by
+    construction**: it stores claim *names* and header-parameter *names*, never
+    their values (a JWT payload routinely carries email / role / session data),
+    so the fingerprint can be logged and attached to evidence without leaking.
+
+    Attributes:
+        algorithm: The ``alg`` header value (:class:`JWTAlgorithm`). Drives the
+            applicable attack set.
+        kid_present: ``True`` when a ``kid`` (key-id) header is present — the
+            precondition for the kid-injection attack.
+        header_params: Names of JOSE header parameters observed (``alg``, ``typ``,
+            ``kid``, ``jku``, ``x5u``, ``jwk``, ...). ``jku`` / ``x5u`` / ``jwk``
+            presence widens the key-injection surface.
+        claim_names: Names of the payload claims (``sub``, ``iat``, ``exp``,
+            ``iss``, ...) — names only, never values.
+        privileged_claim_names: Subset of ``claim_names`` whose name suggests an
+            authorization decision (``role``, ``admin``, ``isAdmin``, ``scope``,
+            ``groups``, ``permissions``) — the claim-tampering target set.
+        has_expiry: ``True`` when an ``exp`` claim is present (drives
+            expired-acceptance ranking).
+        expired: ``True`` when the present ``exp`` is already in the past.
+        signature_present: ``True`` when the third (signature) segment is
+            non-empty — i.e. the token is currently signed (the precondition for
+            ``alg:none`` to be a *bypass* rather than the status quo).
+        error_signatures: Token-parse / decode error strings observed. Evidence,
+            and a hint that the value reached a JWT verifier.
+    """
+
+    algorithm: JWTAlgorithm = JWTAlgorithm.UNKNOWN
+    kid_present: bool = False
+    header_params: list[str] = Field(default_factory=list)
+    claim_names: list[str] = Field(default_factory=list)
+    privileged_claim_names: list[str] = Field(default_factory=list)
+    has_expiry: bool = False
+    expired: bool = False
+    signature_present: bool = False
+    error_signatures: list[str] = Field(default_factory=list)
+
+
+class JWTMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one JWT ``_test_*`` invocation.
+
+    Mirrors :class:`XXEMethodologyResult` with JWT-specific fields. Stored on the
+    resulting Finding's evidence so the report has a complete audit trail of the
+    token fingerprint, the LLM-picked attack type, the (redacted) original and
+    forged tokens, and the in-band acceptance outcome.
+
+    ``candidate_param`` is a synthetic carrier label (``"authorization_bearer"``
+    when the JWT rides the ``Authorization`` header, ``"jwt_cookie:<name>"`` when
+    it rides a cookie) rather than a request parameter — JWT is endpoint-scoped,
+    the *token itself* on an authenticated request is the injection point (there
+    is no injectable named parameter, unlike the SQLi/NoSQL/SSTI parameter loop).
+
+    ``*_token_summary`` fields are **redacted** (decoded header + claim *names*
+    only, signature elided) so a long token carrying sensitive claims is never
+    persisted verbatim.
+
+    N/A by construction on a non-JWT stack (DVWA's PHP session cookies): no JWT is
+    captured for the engagement and none appears on the endpoint, so phase 1 finds
+    no candidate token and nothing is emitted.
+    """
+
+    phases_completed: int = 0
+    fingerprint: JWTFingerprint = Field(default_factory=JWTFingerprint)
+    attack_type: JWTAttackType | None = None
+    original_token_summary: str | None = None
+    synthesized_token_summary: str | None = None
+    expected_indicator: str | None = None
+    indicator_type: str | None = None
+    indicator_observed: str | None = None
+    candidate_param: str | None = None
+    verified: bool = False
+    # ``verified`` means the methodology emitted a finding.
+    # ``verification_strength`` qualifies it: ``"verified"`` = the forged/tampered
+    # token was accepted on a JWT-gated endpoint (the in-band proof — a non-401/403
+    # response matching the valid-token baseline and diverging from the
+    # broken-signature reject); ``"likely"`` = a weak secret cracked locally but
+    # server acceptance could not be cleanly confirmed.
+    verification_strength: str = "verified"
+
+
+# ---------------------------------------------------------------------------
 # Command-injection methodology types
 # ---------------------------------------------------------------------------
 
@@ -1434,6 +1586,10 @@ __all__ = [
     "InjectionType",
     "JSAttackPatternType",
     "JSAttacksMethodologyResult",
+    "JWTAlgorithm",
+    "JWTAttackType",
+    "JWTFingerprint",
+    "JWTMethodologyResult",
     "LFIMethodologyResult",
     "LFIRetrievalType",
     "LFITraversalPrimitives",

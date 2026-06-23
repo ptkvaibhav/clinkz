@@ -154,6 +154,31 @@ async def test_xxe_not_applicable_on_dvwa(
 
 
 # ---------------------------------------------------------------------------
+# 2e. JWT attacks — N/A on DVWA (PHP session cookies, no JWT)
+# ---------------------------------------------------------------------------
+
+
+async def test_jwt_not_applicable_on_dvwa(
+    dvwa_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_jwt`` is N/A on DVWA — it authenticates with a PHP session cookie,
+    not a JWT, so no false emission.
+
+    DVWA holds no bearer JWT and its endpoints issue none (the session is a
+    ``PHPSESSID`` cookie). Phase 1 acquisition therefore finds no candidate token
+    (neither in the engagement session nor on the endpoint) and the methodology
+    emits nothing. The contract here is no false positive and no crash — not a
+    finding. The full six-phase forge/verify path is unit-proven in
+    ``test_methodology_jwt``.
+    """
+    url = f"{dvwa_url}/vulnerabilities/sqli/"
+    page = await exploit_agent._fetch_page(url)
+    findings = await exploit_agent._test_jwt(page)
+    assert findings == [], f"_test_jwt falsely emitted on DVWA (no JWT) at {url}: {findings}"
+
+
+# ---------------------------------------------------------------------------
 # 3. Reflected XSS
 # ---------------------------------------------------------------------------
 
