@@ -1260,3 +1260,87 @@ async def test_jwt_against_juiceshop(
     assert any("phases_completed=" in ev for ev in finding.evidence), (
         f"Methodology evidence missing on Juice Shop JWT finding: {finding.evidence}"
     )
+
+
+# ---------------------------------------------------------------------------
+# SSRF — Juice Shop profile-image-URL server-side fetch
+# ---------------------------------------------------------------------------
+
+
+async def test_ssrf_against_juiceshop(
+    juiceshop_url: str,
+    juiceshop_auth: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_ssrf`` exercises SSRF at Juice Shop's ``POST /profile/image/url``.
+
+    Target: the profile-image-by-URL feature. ``profileImageUrlUpload`` flows the
+    ``imageUrl`` body field straight into a server-side ``request.get(url)`` with
+    no validation — a real SSRF the in-scope server makes on our behalf. The
+    methodology supplies internal/metadata addresses as the ``imageUrl`` *value*
+    in a request to the in-scope target (never a direct connection), proving the
+    safety model end-to-end through planner→dispatch.
+
+    **Skip-tolerant by design — and a default deployment is expected to skip as a
+    justified blind-deferred non-finding**: Juice Shop pipes the fetched response
+    to a file and 302-redirects, so the fetched content is **not reflected** in
+    the HTTP response. That is blind SSRF, which needs an out-of-band collaborator
+    (deferred this build), so the methodology emits NOTHING and notes
+    ``blind_suspected`` — verification-honest, never a phantom. If a build *does*
+    reflect the fetched content in-band, a finding emits and must be labelled
+    SSRF. The full in-band six-phase path (cloud-metadata / file:// / loopback
+    confirmation) and the blind-deferred handling are unit-proven in
+    ``test_methodology_ssrf``.
+    """
+    # /profile/image/url is authenticated — carry the JWT as a bearer header.
+    exploit_agent._session_headers = dict(juiceshop_auth)
+    upload_url = f"{juiceshop_url}/profile/image/url"
+    try:
+        probe = httpx.options(upload_url, timeout=5.0, follow_redirects=False)
+    except Exception as exc:
+        pytest.skip(f"Juice Shop /profile/image/url probe failed ({exc}); skipping SSRF smoke")
+    if probe.status_code == 404:
+        pytest.skip(
+            f"Juice Shop /profile/image/url returned {probe.status_code}; the profile "
+            "image-URL feature may have moved in this build"
+        )
+
+    from clinkz.agents.exploit import PageAnalysis
+
+    # The imageUrl field is submitted as a urlencoded form POST; model it as a
+    # single-field form so _send_probe POSTs the internal URL into imageUrl.
+    form = {
+        "action": upload_url,
+        "method": "POST",
+        "fields": [{"name": "imageUrl", "type": "text", "value": ""}],
+    }
+    page = PageAnalysis(
+        url=upload_url,
+        body="",
+        status=200,
+        input_params=["imageUrl"],
+        forms=[form],
+    )
+    findings = await exploit_agent._test_ssrf(page)
+    if not findings:
+        result = await exploit_agent._run_ssrf_methodology(page, "imageUrl")
+        pytest.skip(
+            "SSRF non-finding (expected on default Juice Shop): the profile-image fetch "
+            "is blind — the fetched body is piped to a file and the response 302-redirects, "
+            "so no internal content reflects in-band. In-band confirmation needs an OOB "
+            "collaborator (deferred), so the methodology emits nothing and notes the "
+            f"limitation. phases_completed={result.phases_completed} "
+            f"fetch_confirmed={result.capability.fetch_confirmed} "
+            f"content_reflected={result.capability.content_reflected} "
+            f"blind_suspected={result.blind_suspected} verified={result.verified}"
+        )
+    assert any("ssrf" in f.title.lower() for f in findings), (
+        f"Findings produced but none labelled SSRF at {upload_url}: {findings}"
+    )
+    finding = findings[0]
+    assert any("exploitation_type=" in ev for ev in finding.evidence), (
+        f"Expected an exploitation_type in evidence: {finding.evidence}"
+    )
+    assert any("phases_completed=" in ev for ev in finding.evidence), (
+        f"Methodology evidence missing on Juice Shop SSRF finding: {finding.evidence}"
+    )
