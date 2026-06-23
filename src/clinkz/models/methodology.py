@@ -747,6 +747,125 @@ class JWTMethodologyResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# SSRF (server-side request forgery) methodology types
+# ---------------------------------------------------------------------------
+
+
+class SSRFExploitationType(StrEnum):
+    """The shape of the SSRF exploitation that the synthesis phase will target.
+
+    Selected by the phase-3 LLM checkpoint given the confirmed fetch
+    capabilities, ranked by what phase 2 proved the server-side fetcher
+    supports. Every value EXCEPT ``BLIND_DEFERRED`` is confirmed **in-band** —
+    the in-scope server's response reflects internal content it should not have
+    access to. Each implies a different verification rule:
+
+    - ``CLOUD_METADATA``: the fetcher reaches a cloud instance-metadata service
+      (AWS ``169.254.169.254``, GCP ``metadata.google.internal``, Azure) and the
+      response reflects IAM / instance-data signatures we never sent. Critical
+      (credential / instance exposure).
+    - ``INTERNAL_SERVICE``: the fetcher reaches an internal address
+      (``127.0.0.1:<port>``, an internal hostname) unreachable from outside and
+      the response reflects that internal service's content. High.
+    - ``FILE_SCHEME``: a ``file://`` URL makes the fetcher read a local file
+      (``file:///etc/passwd``) whose content reflects in-band — confirmed on a
+      file-content signature (NOT the payload reflected). High. Ranked only when
+      phase 2 proved a non-HTTP scheme is followed.
+    - ``REFLECTED_INTERNAL``: a generic internal address whose fetched response
+      body reflects in-band, distinguishable from an external baseline. High.
+    - ``BLIND_DEFERRED``: the fetch is confirmed but no content is reflected
+      (blind SSRF). In-band confirmation is impossible without an out-of-band
+      collaborator, which is **deferred** (no OOB infrastructure this build), so
+      this emits NOTHING and the limitation is noted — a documented limitation,
+      never a finding, never a phantom.
+    """
+
+    CLOUD_METADATA = "cloud_metadata"
+    INTERNAL_SERVICE = "internal_service"
+    FILE_SCHEME = "file_scheme"
+    REFLECTED_INTERNAL = "reflected_internal"
+    BLIND_DEFERRED = "blind_deferred"
+
+
+class SSRFCapability(BaseModel):
+    """Server-side-fetcher capabilities confirmed during phase-2 fingerprinting.
+
+    SSRF's equivalent of :class:`XXEParserCapability` — a *capability vector*
+    rather than a single discrete class. The combination gates which
+    exploitation types phase 3 may rank, and crucially whether confirmation is
+    possible **in-band** (``content_reflected``) or only blind (deferred).
+
+    Attributes:
+        fetch_confirmed: ``True`` when supplying an in-scope URL as the param
+            value caused the server to make a server-side request (observed via a
+            fetch signal — a success/redirect distinct from a clearly
+            unfetchable value, or reflected in-scope content). The baseline proof
+            that the param drives a server-side fetch at all; without it there is
+            no SSRF.
+        content_reflected: ``True`` when the fetched response body is echoed back
+            in the in-scope response — the precondition for **in-band**
+            confirmation. ``False`` ⇒ blind ⇒ phase 3 yields only
+            ``BLIND_DEFERRED`` and nothing is emitted.
+        schemes_allowed: URL schemes the fetcher was observed to follow
+            (``"http"``, ``"https"``, ``"file"``, ``"gopher"``, ``"dict"``).
+            ``file`` presence drives ``FILE_SCHEME`` ranking.
+        follows_redirects: ``True`` when the fetcher follows an HTTP redirect
+            returned by the fetched URL (a redirect-to-internal bypass surface).
+        error_signatures: Fetch / connection error strings observed
+            (``ECONNREFUSED``, ``getaddrinfo``, request errors). Evidence, and a
+            hint that the value reached a server-side HTTP client.
+    """
+
+    fetch_confirmed: bool = False
+    content_reflected: bool = False
+    schemes_allowed: list[str] = Field(default_factory=list)
+    follows_redirects: bool = False
+    error_signatures: list[str] = Field(default_factory=list)
+
+
+class SSRFMethodologyResult(BaseModel):
+    """Roll-up of every phase's output for one SSRF ``_test_*`` invocation.
+
+    Mirrors :class:`XXEMethodologyResult` with SSRF-specific fields. Stored on
+    the resulting Finding's evidence so the report has a complete audit trail of
+    the fetch-capability fingerprint, the LLM-picked exploitation type, the
+    synthesized internal-target URL, and the in-band verification outcome.
+
+    ``candidate_param`` is the URL/fetch parameter the internal address was
+    injected into — SSRF is parameter-scoped (like SSTI), the internal URL rides
+    as the param *value* in a request to the **in-scope** target, never as a
+    direct connection to the internal address (the whole safety model).
+
+    ``blind_suspected`` records the deferred-limitation case: the fetch was
+    confirmed but no content reflected, so in-band confirmation is impossible and
+    an out-of-band collaborator (not built this release) would be required. It is
+    a documented limitation, NOT a finding — nothing is emitted.
+
+    N/A by construction on a stack with no URL/fetch parameter (DVWA): phase 1
+    finds no candidate and nothing is emitted.
+    """
+
+    phases_completed: int = 0
+    capability: SSRFCapability = Field(default_factory=SSRFCapability)
+    exploitation_type: SSRFExploitationType | None = None
+    synthesized_payload: str | None = None
+    expected_indicator: str | None = None
+    indicator_type: str | None = None
+    indicator_observed: str | None = None
+    candidate_param: str | None = None
+    blind_suspected: bool = False
+    verified: bool = False
+    # ``verified`` means the methodology emitted a finding.
+    # ``verification_strength`` qualifies it: ``"verified"`` = the in-scope
+    # server's response reflected internal content it should not have access to
+    # (a cloud-metadata / IAM signature, a local-file signature, or an
+    # internal-service response distinguishable from an external baseline);
+    # ``"likely"`` = a fetch + internal reachability was clear but the reflected
+    # content could not be cleanly signature-matched.
+    verification_strength: str = "verified"
+
+
+# ---------------------------------------------------------------------------
 # Command-injection methodology types
 # ---------------------------------------------------------------------------
 
@@ -1605,6 +1724,9 @@ __all__ = [
     "ReflectionPoint",
     "SQLDialect",
     "SQLiMethodologyResult",
+    "SSRFCapability",
+    "SSRFExploitationType",
+    "SSRFMethodologyResult",
     "SSTIExploitationType",
     "SSTIMethodologyResult",
     "SSTIPrimitives",
