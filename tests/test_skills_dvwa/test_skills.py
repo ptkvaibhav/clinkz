@@ -179,6 +179,33 @@ async def test_jwt_not_applicable_on_dvwa(
 
 
 # ---------------------------------------------------------------------------
+# 2f. SSRF — N/A on DVWA (no URL/fetch param surface by default)
+# ---------------------------------------------------------------------------
+
+
+async def test_ssrf_not_applicable_on_dvwa(
+    dvwa_url: str,
+    exploit_agent: ExploitAgent,
+) -> None:
+    """``_test_ssrf`` is N/A on DVWA — no URL/fetch param, so no false emission.
+
+    DVWA's vulnerable pages take scalar params (``id``, ``ip``, ``name``) that do
+    not drive a server-side fetch. Phase-1 candidacy needs a URL-shaped param name
+    /value or an observed server-side-fetch signal, and DVWA exhibits none, so the
+    methodology declines and emits nothing. The contract here is no false positive
+    and no crash — not a finding. The full six-phase in-band path (cloud-metadata,
+    file://, loopback) and the blind-deferred handling are unit-proven in
+    ``test_methodology_ssrf``.
+    """
+    url = f"{dvwa_url}/vulnerabilities/sqli/?id=1&Submit=Submit"
+    page = await exploit_agent._fetch_page(url, params=["id"])
+    findings = await exploit_agent._test_ssrf(page)
+    assert findings == [], (
+        f"_test_ssrf falsely emitted on DVWA (no fetch param) at {url}: {findings}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 3. Reflected XSS
 # ---------------------------------------------------------------------------
 
