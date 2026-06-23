@@ -3,8 +3,8 @@
 Durable plan-of-record for growing the Exploit agent's vuln-class coverage. This is the
 sequence we execute; it is not a backlog of ideas. Keep it lean.
 
-> **Current position:** Tier-1 primitives **complete** — NoSQL, SSTI, and XXE shipped. **Next is
-> Tier-2: JWT attacks** (then SSRF). The original methodology set was 14, now 17.
+> **Current position:** Tier-2 underway — **JWT attacks shipped** (the first cryptographic,
+> non-injection primitive). **Next is SSRF.** The original methodology set was 14, now 18.
 
 ## Guiding principle
 
@@ -20,8 +20,8 @@ exactly the way the original methodologies were. Three non-negotiables:
 
 ## Coverage map
 
-### CONFIRMED — 17 adaptive methodologies (shipped)
-`sqli`, `nosqli`, `ssti`, `xxe`, `xss_reflected`, `xss_stored`, `xss_dom`, `cmdi`, `lfi`,
+### CONFIRMED — 18 adaptive methodologies (shipped)
+`sqli`, `nosqli`, `ssti`, `xxe`, `jwt`, `xss_reflected`, `xss_stored`, `xss_dom`, `cmdi`, `lfi`,
 `file_upload`, `csrf`, `brute_force`, `open_redirect`, `idor`, `security_headers`, `weak_session`,
 `javascript_attacks`.
 
@@ -31,8 +31,9 @@ exactly the way the original methodologies were. Three non-negotiables:
 - ~~**XXE** — XML external entity injection (file disclosure / SSRF / bounded DoS).~~ *(shipped)*
 
 ### TIER-2 — contained, high-value on modern targets
-- **JWT attacks** — alg=none, weak-secret, key confusion. *(next)*
-- **SSRF** — server-side request forgery.
+- ~~**JWT attacks** — alg=none, weak-secret, algorithm confusion, claim tampering, kid injection,
+  expired acceptance. Fully in-band (server accepts a forged/tampered token).~~ *(shipped)*
+- **SSRF** — server-side request forgery. *(next)*
 
 ### HARDER — need a reasoning layer / chaining
 - Deserialization → RCE, business-logic flaws, broken-auth flows, crypto misuse.
