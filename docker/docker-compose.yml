@@ -45,6 +45,11 @@ services:
 
   # ---------------------------------------------------------------------------
   # Test target: DVWA (Damn Vulnerable Web Application)
+  #
+  # Uses the modern digininja/DVWA image (ships open_redirect / authbypass /
+  # cryptography modules the frozen vulnerables/web-dvwa lacks). It needs an
+  # external MariaDB (dvwa-db) and runs at security=low by default
+  # (DEFAULT_SECURITY_LEVEL) so the full module surface is exercised.
   # ---------------------------------------------------------------------------
   dvwa:
     build:
@@ -52,8 +57,34 @@ services:
       dockerfile: Dockerfile.dvwa
     image: clinkz-dvwa:latest
     container_name: clinkz-dvwa
+    environment:
+      - DB_SERVER=dvwa-db
+      - DB_DATABASE=dvwa
+      - DB_USER=dvwa
+      - DB_PASSWORD=p@ssw0rd
+      - DEFAULT_SECURITY_LEVEL=low
+    depends_on:
+      dvwa-db:
+        condition: service_healthy
     ports:
       - "8080:80"
+    networks:
+      - pentest-targets
+    restart: unless-stopped
+
+  dvwa-db:
+    image: mariadb:10
+    container_name: clinkz-dvwa-db
+    environment:
+      - MYSQL_ROOT_PASSWORD=dvwa
+      - MYSQL_DATABASE=dvwa
+      - MYSQL_USER=dvwa
+      - MYSQL_PASSWORD=p@ssw0rd
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     networks:
       - pentest-targets
     restart: unless-stopped
