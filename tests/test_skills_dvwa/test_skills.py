@@ -405,22 +405,48 @@ async def test_authorization_bypass_against_dvwa(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("level", "expect_finding"),
+    [("low", True), ("medium", True), ("high", True), ("impossible", False)],
+)
 async def test_open_redirect_against_dvwa(
     dvwa_url: str,
     dvwa_session: dict[str, str],
     exploit_agent: ExploitAgent,
+    level: str,
+    expect_finding: bool,
 ) -> None:
+    """Open redirect confirms at Low/Medium/High; Impossible is a justified non-finding.
+
+    DVWA's security level is controlled by the ``security`` cookie (authoritative
+    in this image), so we flip it on the test's *own* agent session — never the
+    shared engagement session — to exercise each level's ground-truth bypass:
+
+      Low        — any absolute off-site URL.
+      Medium     — protocol-relative bypass (absolute ``http(s)://`` blocked).
+      High       — substring-allowlist bypass (target must contain ``info.php``).
+      Impossible — ID-based redirect, no attacker-controlled destination.
+    """
     path = "/vulnerabilities/open_redirect/"
     if not _endpoint_exists(dvwa_url, path, dvwa_session):
         pytest.xfail(f"DVWA version does not have {path} (404)")
 
+    exploit_agent._session_cookies = {**dict(dvwa_session), "security": level}
     url = f"{dvwa_url}{path}?redirect=info.php"
     page = await exploit_agent._fetch_page(url, params=["redirect"])
     findings = await exploit_agent._test_open_redirect(page)
-    assert len(findings) >= 1, (
-        f"_test_open_redirect failed to detect open redirect at {url} "
-        f"(url_params_present={page.has_url_param})"
-    )
+    if expect_finding:
+        assert len(findings) >= 1, (
+            f"_test_open_redirect failed to confirm open redirect at security={level} "
+            f"({url}, url_params_present={page.has_url_param})"
+        )
+        # Honest confirmation: the redirect navigates off-site to the attacker host.
+        assert "evil.example" in " ".join(findings[0].evidence)
+    else:
+        assert findings == [], (
+            f"_test_open_redirect emitted a phantom at security={level}: "
+            f"{[f.title for f in findings]}"
+        )
 
 
 # ---------------------------------------------------------------------------
