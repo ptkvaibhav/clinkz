@@ -85,6 +85,75 @@ def _make_page(url: str = "http://example.com/?to=/home") -> PageAnalysis:
     return PageAnalysis(url=url, body="", status=200, input_params=["to"])
 
 
+def _dvwa_open_redirect_server(level: str):
+    """Simulate DVWA's open_redirect module at a given security level.
+
+    A GET with no ``redirect`` value (the harvest seed / index fetch) returns the
+    module index whose link carries ``?redirect=info.php`` — the allowlist token
+    High requires. A GET carrying a ``redirect`` value applies the level's
+    validator and, when accepted, echoes it into the ``Location`` header — exactly
+    DVWA's ``header("location: " . $_GET['redirect'])`` shape.
+
+    Ground truth (DVWA cheat sheet): Low accepts any absolute URL; Medium blocks
+    ``http(s)://`` (protocol-relative bypass); High requires the target to contain
+    the substring ``info.php`` (attacker-URL-with-info.php bypass); Impossible is
+    ID-based with no attacker-controlled destination.
+    """
+    index_html = '<p>Pick a link.</p><a href="?redirect=info.php">User info</a>'
+
+    def _accepts(value: str) -> bool:
+        low = value.lower()
+        if level == "low":
+            return True
+        if level == "medium":
+            return "http://" not in low and "https://" not in low
+        if level == "high":
+            return "info.php" in low
+        return False  # impossible: destination is not attacker-controlled
+
+    async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
+        if "redirect" not in params:
+            return _HTTPResponse(status=200, body=index_html)
+        value = params["redirect"]
+        if level == "impossible":
+            # ID-based redirect to a fixed in-site page; the value is ignored.
+            return _HTTPResponse(status=302, body="", headers={"Location": "info.php?id=1"})
+        if _accepts(value):
+            return _HTTPResponse(status=302, body="", headers={"Location": value})
+        return _HTTPResponse(status=200, body=index_html)  # blocked → index page
+
+    return fake_get
+
+
+def _relative_echo_server():
+    """Echo the param value into a *relative* same-host ``Location``.
+
+    The redirect lands on an in-site page that merely *contains* the attacker
+    string in a query component — never an off-site navigation. The honesty guard
+    must treat this as a non-finding (a redirect to an in-site page is not the
+    open-redirect finding).
+    """
+    index_html = '<a href="?redirect=info.php">User info</a>'
+
+    async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
+        if "redirect" not in params:
+            return _HTTPResponse(status=200, body=index_html)
+        return _HTTPResponse(
+            status=302, body="", headers={"Location": f"/go?u={params['redirect']}"}
+        )
+
+    return fake_get
+
+
+def _make_dvwa_page() -> PageAnalysis:
+    return PageAnalysis(
+        url="http://dvwa.test/vulnerabilities/open_redirect/?redirect=info.php",
+        body="",
+        status=200,
+        input_params=["redirect"],
+    )
+
+
 # ===========================================================================
 # Phase 1 — Injection-point mapping
 # ===========================================================================
@@ -130,12 +199,12 @@ class TestPhase1InjectionPointMapping:
 
 class TestPhase2RedirectHandlingFingerprint:
     @pytest.mark.asyncio
-    async def test_no_validator_marks_appended_at_proto_relative_working(self) -> None:
+    async def test_no_validator_marks_direct_at_proto_relative_working(self) -> None:
         agent = _make_agent()
 
         async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
             val = params.get("to", "")
-            # Server reflects whatever the param sends.
+            # No validator: the server reflects whatever the param sends.
             return _HTTPResponse(status=302, body="", headers={"Location": val})
 
         agent._http_get = fake_get  # type: ignore[method-assign]
@@ -144,8 +213,13 @@ class TestPhase2RedirectHandlingFingerprint:
         primitives, _ev = await agent._open_redirect_phase2_fingerprint(
             _make_page(), "to", "/home", probes
         )
-        assert "appended_url" in primitives.working_bypass_primitives
+        # A plain absolute off-site URL is accepted ⇒ no validator. The genuinely
+        # off-site shapes are working; ``appended_url`` stays a relative same-host
+        # path, so honest host-resolution does NOT count it as off-site.
+        assert "direct" in primitives.working_bypass_primitives
         assert "at_syntax" in primitives.working_bypass_primitives
+        assert "protocol_relative" in primitives.working_bypass_primitives
+        assert "appended_url" not in primitives.working_bypass_primitives
         assert primitives.validator_type == "none"
 
     @pytest.mark.asyncio
@@ -445,4 +519,70 @@ class TestOpenRedirectAllowlistBypass:
         agent._http_get = fake_get  # type: ignore[method-assign]
         page = _make_page("http://example.com/redirect?to=/home")
         findings = await agent._test_open_redirect(page)
+        assert findings == []
+
+
+# ===========================================================================
+# DVWA security levels — Low / Medium / High confirm; Impossible is a non-finding
+# ===========================================================================
+
+
+class TestDVWALevels:
+    """End-to-end ``_test_open_redirect`` against each DVWA open_redirect level.
+
+    Proves the methodology confirms the ground-truth bypass for each exploitable
+    level (cross-checked against the DVWA cheat sheet) and honestly emits nothing
+    for the unexploitable Impossible level and for a same-host phantom redirect.
+    """
+
+    @pytest.mark.asyncio
+    async def test_low_confirms_direct_offsite(self) -> None:
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 12))
+        agent._methodology_llm = agent.llm
+        agent._http_get = _dvwa_open_redirect_server("low")  # type: ignore[method-assign]
+        findings = await agent._test_open_redirect(_make_dvwa_page())
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "phases_completed=6" in joined
+        # Honesty: confirmation is the off-site host, not a same-host echo.
+        assert "redirect_target_observed=https://evil.example" in joined
+
+    @pytest.mark.asyncio
+    async def test_medium_confirms_protocol_relative(self) -> None:
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 12))
+        agent._methodology_llm = agent.llm
+        agent._http_get = _dvwa_open_redirect_server("medium")  # type: ignore[method-assign]
+        findings = await agent._test_open_redirect(_make_dvwa_page())
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "bypass_type=protocol_relative" in joined
+        assert "//evil.example" in joined
+
+    @pytest.mark.asyncio
+    async def test_high_confirms_substring_allowlist_bypass(self) -> None:
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 12))
+        agent._methodology_llm = agent.llm
+        agent._http_get = _dvwa_open_redirect_server("high")  # type: ignore[method-assign]
+        findings = await agent._test_open_redirect(_make_dvwa_page())
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "bypass_type=allowlist_bypass" in joined
+        # The harvested substring token rides in the off-site attacker URL.
+        assert "info.php" in joined
+        assert "evil.example" in joined
+
+    @pytest.mark.asyncio
+    async def test_impossible_is_a_non_finding(self) -> None:
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 12))
+        agent._methodology_llm = agent.llm
+        agent._http_get = _dvwa_open_redirect_server("impossible")  # type: ignore[method-assign]
+        findings = await agent._test_open_redirect(_make_dvwa_page())
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_same_host_phantom_is_not_confirmed(self) -> None:
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 12))
+        agent._methodology_llm = agent.llm
+        agent._http_get = _relative_echo_server()  # type: ignore[method-assign]
+        findings = await agent._test_open_redirect(_make_dvwa_page())
         assert findings == []
