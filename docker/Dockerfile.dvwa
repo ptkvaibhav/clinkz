@@ -1,8 +1,21 @@
-FROM vulnerables/web-dvwa:latest
+FROM ghcr.io/digininja/dvwa:latest
 
-# Fix known DVWA bug: comment out the closing PHP tag in MySQL.php
-# that can cause "Cannot modify header information" errors after DB setup,
-# and bypass the CSRF check in setup.php so automated DB init works.
+# This image scopes the PHP session cookie to the request host
+# (dvwaPage.inc.php: domain = parse_url(HTTP_HOST)). For the `localhost` target
+# that yields `Set-Cookie: PHPSESSID=...; domain=localhost`, and Python's
+# RFC-6265 cookie jar refuses to send a cookie back to a *dotless* host — so
+# every Python HTTP client (the engagement authenticator, the smoke-test client)
+# silently drops the session on the login POST and auth fails. Make the session
+# cookie host-only (empty domain) so the target behaves like a normal site.
+RUN sed -i "s#\$domain = parse_url(.*PHP_URL_HOST);#\$domain = \"\";#" \
+    /var/www/html/dvwa/includes/dvwaPage.inc.php
+
+# The modern digininja/DVWA image (unlike the frozen vulnerables/web-dvwa) ships
+# the open_redirect / authbypass / cryptography modules, but expects an external
+# MySQL/MariaDB and does NOT create the DVWA tables on its own. dvwa-init.sh
+# backgrounds the setup.php create_db POST (with a real CSRF token) once Apache
+# and the DB are up, so a fresh container is login-ready with admin/password —
+# preserving the auto-init contract the old bundled image provided.
 COPY dvwa-init.sh /dvwa-init.sh
 RUN chmod +x /dvwa-init.sh
 
