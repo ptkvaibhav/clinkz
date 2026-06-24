@@ -145,9 +145,29 @@ def _relative_echo_server():
     return fake_get
 
 
-def _make_dvwa_page() -> PageAnalysis:
+def _dvwa_high_source_server():
+    """DVWA ``source/high.php``: accepts only values containing ``info.php``.
+
+    Models the real DVWA structure where the level handler lives at
+    ``source/high.php`` and serves NO links itself (a bare fetch 500s with no
+    harvestable token), so the substring-allowlist token can only come from the
+    param's own original value (``?redirect=info.php``).
+    """
+
+    async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
+        if "redirect" not in params:
+            return _HTTPResponse(status=500, body="<p>Missing redirect target.</p>")
+        value = params["redirect"]
+        if "info.php" in value:
+            return _HTTPResponse(status=302, body="", headers={"Location": value})
+        return _HTTPResponse(status=500, body="<p>You can only redirect to the info page.</p>")
+
+    return fake_get
+
+
+def _make_dvwa_page(path: str = "/vulnerabilities/open_redirect/") -> PageAnalysis:
     return PageAnalysis(
-        url="http://dvwa.test/vulnerabilities/open_redirect/?redirect=info.php",
+        url=f"http://dvwa.test{path}?redirect=info.php",
         body="",
         status=200,
         input_params=["redirect"],
@@ -569,6 +589,24 @@ class TestDVWALevels:
         assert "bypass_type=allowlist_bypass" in joined
         # The harvested substring token rides in the off-site attacker URL.
         assert "info.php" in joined
+        assert "evil.example" in joined
+
+    @pytest.mark.asyncio
+    async def test_high_via_original_value_token_only(self) -> None:
+        """High confirms when the only allowlist token is the param's own value.
+
+        Mirrors DVWA's real ``source/high.php``: the handler serves no links, so
+        the ``info.php`` substring is recovered from the param's ``?redirect=``
+        value rather than a harvested page.
+        """
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 12))
+        agent._methodology_llm = agent.llm
+        agent._http_get = _dvwa_high_source_server()  # type: ignore[method-assign]
+        page = _make_dvwa_page("/vulnerabilities/open_redirect/source/high.php")
+        findings = await agent._test_open_redirect(page)
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "bypass_type=allowlist_bypass" in joined
         assert "evil.example" in joined
 
     @pytest.mark.asyncio
