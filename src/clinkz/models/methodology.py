@@ -128,6 +128,12 @@ class MethodologyResult(BaseModel):
     # route + JS sink reachable via static analysis) but cannot run the JS to
     # observe execution without a headless browser.
     verification_strength: str = "verified"
+    # The actual response captured by phase-5 verification, anchored on the
+    # reflected payload (truncated). Threaded into the emitted Finding's
+    # evidence so the report shows the real reflecting response — never a
+    # placeholder. Empty ⇒ no response was captured, which (per the emit
+    # honesty guard) blocks a silently-verified finding.
+    verifying_response: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -767,12 +773,12 @@ class SSRFExploitationType(StrEnum):
     - ``INTERNAL_SERVICE``: the fetcher reaches an internal address
       (``127.0.0.1:<port>``, an internal hostname) unreachable from outside and
       the response reflects that internal service's content. High.
-    - ``FILE_SCHEME``: a ``file://`` URL makes the fetcher read a local file
-      (``file:///etc/passwd``) whose content reflects in-band — confirmed on a
-      file-content signature (NOT the payload reflected). High. Ranked only when
-      phase 2 proved a non-HTTP scheme is followed.
     - ``REFLECTED_INTERNAL``: a generic internal address whose fetched response
       body reflects in-band, distinguishable from an external baseline. High.
+
+    A ``file://`` local-file read is deliberately **not** an SSRF type — that is
+    local file inclusion / disclosure, confirmed by ``_test_lfi`` — so a URL/fetch
+    param that reads ``file:///etc/passwd`` is reported as LFI, never SSRF.
     - ``BLIND_DEFERRED``: the fetch is confirmed but no content is reflected
       (blind SSRF). In-band confirmation is impossible without an out-of-band
       collaborator, which is **deferred** (no OOB infrastructure this build), so
@@ -782,7 +788,6 @@ class SSRFExploitationType(StrEnum):
 
     CLOUD_METADATA = "cloud_metadata"
     INTERNAL_SERVICE = "internal_service"
-    FILE_SCHEME = "file_scheme"
     REFLECTED_INTERNAL = "reflected_internal"
     BLIND_DEFERRED = "blind_deferred"
 
@@ -806,9 +811,9 @@ class SSRFCapability(BaseModel):
             in the in-scope response — the precondition for **in-band**
             confirmation. ``False`` ⇒ blind ⇒ phase 3 yields only
             ``BLIND_DEFERRED`` and nothing is emitted.
-        schemes_allowed: URL schemes the fetcher was observed to follow
-            (``"http"``, ``"https"``, ``"file"``, ``"gopher"``, ``"dict"``).
-            ``file`` presence drives ``FILE_SCHEME`` ranking.
+        schemes_allowed: network URL schemes the fetcher was observed to follow
+            (``"http"``, ``"https"``, ``"gopher"``, ``"dict"``). ``file://`` is
+            intentionally not tracked here — a local file read is LFI, not SSRF.
         follows_redirects: ``True`` when the fetcher follows an HTTP redirect
             returned by the fetched URL (a redirect-to-internal bypass surface).
         error_signatures: Fetch / connection error strings observed

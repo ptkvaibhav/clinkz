@@ -226,6 +226,33 @@ class TestPhase4Emission:
         assert len(first) == 1
         assert second == []
 
+    def test_dedup_is_case_insensitive_on_header_name(self) -> None:
+        """BUG 4: the LLM emits header names with inconsistent casing across
+        pages ("Content-Security-Policy" vs "content-security-policy"), which a
+        case-sensitive (origin, header) key let emit twice. The same origin's
+        header must collapse to one finding regardless of casing — including a
+        header reported missing on one page and weak on another."""
+        agent = _make_agent()
+        title_case = SecurityHeadersMethodologyResult(
+            phases_completed=3,
+            origin="http://example.com",
+            observed_url="http://example.com/",
+            missing_headers=["Content-Security-Policy"],
+            severity_rollup=HeaderWeaknessSeverity.MEDIUM,
+        )
+        lower_case = SecurityHeadersMethodologyResult(
+            phases_completed=3,
+            origin="http://example.com",
+            observed_url="http://example.com/vulnerabilities/csp/",
+            headers_observed={"content-security-policy": "script-src 'self'"},
+            weak_headers=[("content-security-policy", "no default-src")],
+            severity_rollup=HeaderWeaknessSeverity.HIGH,
+        )
+        first = agent._security_headers_phase4_emit(title_case)
+        second = agent._security_headers_phase4_emit(lower_case)
+        assert len(first) == 1
+        assert second == []
+
     def test_different_origins_emit_separately(self) -> None:
         agent = _make_agent()
         result_a = SecurityHeadersMethodologyResult(

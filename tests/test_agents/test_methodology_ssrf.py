@@ -4,9 +4,11 @@ SSRF is the second **Tier-2** primitive. It is parameter-scoped (like SSTI) and
 reuses the shared string-only ``_send_probe`` — the internal URL is just a string
 param *value*. Confirmation is **in-band only** this build: the in-scope server's
 response must reflect internal content it should not have (a cloud-metadata / IAM
-signature, ``root:...:0:0`` from ``file://``, or its own loopback content). A
-confirmed fetch with no reflected content is **blind SSRF**, which is *deferred*
-(no out-of-band collaborator) — it emits NOTHING and notes the limitation.
+signature, or its own loopback content). A ``file://`` local-file read is **not**
+SSRF — that is local file inclusion / disclosure (``_test_lfi``) — so a param that
+only reads ``file:///etc/passwd`` yields zero SSRF findings. A confirmed fetch with
+no reflected content is **blind SSRF**, which is *deferred* (no out-of-band
+collaborator) — it emits NOTHING and notes the limitation.
 
 Each phase is exercised against a simulated server-side fetcher (a monkeypatched
 ``_http_get``) and a silent LLM (so the deterministic fallbacks drive). The
@@ -305,19 +307,18 @@ def test_phase1_blind_fetch_confirmed_no_reflection():
 # ---------------------------------------------------------------------------
 
 
-def test_phase2_file_scheme_fingerprint():
+def test_phase2_never_probes_file_scheme():
+    """file:// is LFI, not SSRF — phase 2 must not add a file scheme nor flip reflection.
+
+    Even against a fetcher that *would* reflect a ``file://`` read, phase 2
+    leaves the capability untouched: a local-file read is reported by
+    ``_test_lfi``, never reclassified as SSRF (the ``/fi/?page=file://`` mislabel).
+    """
     agent = _make_agent(_file_only_fetcher())
-    cap = SSRFCapability(fetch_confirmed=True, content_reflected=True, schemes_allowed=["http"])
-    cap = _run(agent._ssrf_phase2_fingerprint(PAGE, "url", cap))
-    assert "file" in cap.schemes_allowed
-    assert cap.content_reflected is True
-
-
-def test_phase2_no_file_scheme_when_not_reflected():
-    agent = _make_agent(_internal_only_fetcher())
-    cap = SSRFCapability(fetch_confirmed=True, content_reflected=True, schemes_allowed=["http"])
+    cap = SSRFCapability(fetch_confirmed=False, content_reflected=False, schemes_allowed=["http"])
     cap = _run(agent._ssrf_phase2_fingerprint(PAGE, "url", cap))
     assert "file" not in cap.schemes_allowed
+    assert cap.content_reflected is False
 
 
 # ---------------------------------------------------------------------------
@@ -338,14 +339,6 @@ def test_phase3_ranks_inband_with_reflection():
     ranked = _run(agent._ssrf_phase3_rank(cap))
     assert SSRFExploitationType.CLOUD_METADATA in ranked
     assert SSRFExploitationType.INTERNAL_SERVICE in ranked
-    assert SSRFExploitationType.FILE_SCHEME not in ranked  # no file scheme followed
-
-
-def test_phase3_file_scheme_precondition():
-    cap_no = SSRFCapability(content_reflected=True, schemes_allowed=["http"])
-    cap_yes = SSRFCapability(content_reflected=True, schemes_allowed=["http", "file"])
-    assert ExploitAgent._ssrf_type_precondition(SSRFExploitationType.FILE_SCHEME, cap_no) is False
-    assert ExploitAgent._ssrf_type_precondition(SSRFExploitationType.FILE_SCHEME, cap_yes) is True
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +353,6 @@ def test_phase4_metadata_targets():
     assert synth is not None
     assert "169.254.169.254" in synth["payload"]
     assert any(t[2] == "aws_iam" for t in synth["targets"])
-
-
-def test_phase4_file_scheme_requires_capability():
-    agent = _make_agent()
-    cap = SSRFCapability(content_reflected=True, schemes_allowed=["http"])  # no file
-    assert agent._ssrf_phase4_synthesize(SSRFExploitationType.FILE_SCHEME, cap, PAGE) is None
 
 
 def test_phase4_internal_uses_page_port():
@@ -396,14 +383,17 @@ def test_end_to_end_cloud_metadata():
     assert "phases_completed=" in joined
 
 
-def test_end_to_end_file_scheme():
+def test_end_to_end_file_scheme_is_not_ssrf():
+    """A param that only discloses a ``file://`` read is LFI — zero SSRF findings.
+
+    The fetcher honours ``file:///etc/passwd`` but reaches no internal network
+    target (metadata + loopback both fail), so there is no in-band SSRF
+    confirmation. Local file disclosure here is ``_test_lfi``'s job; SSRF must
+    emit nothing (the ``/fi/?page=file://`` mislabel is gone).
+    """
     agent = _make_agent(_file_only_fetcher())
     findings = _run(agent._test_ssrf(PAGE))
-    assert len(findings) == 1
-    f = findings[0]
-    assert "ssrf" in f.title.lower()
-    assert f.severity.value == "high"
-    assert any("exploitation_type=file_scheme" in ev for ev in f.evidence)
+    assert findings == []
 
 
 def test_end_to_end_internal_service():

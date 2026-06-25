@@ -27,8 +27,10 @@ from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.models.methodology import (
     CharacterMap,
     FilterBehavior,
+    MethodologyResult,
     ReflectionContext,
     ReflectionPoint,
+    SynthesizedPayload,
 )
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.state import StateStore
@@ -561,6 +563,48 @@ class TestXSSReflectedIntegration:
         )
         findings = await agent._test_xss_reflected(page)
         assert findings == []
+
+    async def test_verifying_response_threaded_into_evidence(self) -> None:
+        """BUG 1: the actual verifying response (with the reflected payload) is
+        threaded into the finding's evidence — never "(response unavailable)" —
+        so the post-run FP-suppression pass does not flag a genuine reflected XSS.
+        """
+        agent = _make_agent(_ScriptedLLM(answers=[""]))
+        agent._methodology_llm = agent.llm
+
+        async def stub_http_get(url: str, params: dict[str, str]) -> _HTTPResponse:
+            value = next(iter(params.values())) if params else ""
+            return _HTTPResponse(
+                status=200,
+                body=f"<html><body><p>Hello {value}!</p></body></html>",
+            )
+
+        agent._http_get = stub_http_get  # type: ignore[method-assign]
+        page = PageAnalysis(url="http://example.com/echo", body="", status=200, input_params=["q"])
+        findings = await agent._test_xss_reflected(page)
+        assert len(findings) == 1
+        response_line = next(e for e in findings[0].evidence if e.startswith("Response:"))
+        assert "(response unavailable)" not in response_line
+        # The real reflecting body slice is shown (the payload landed in "Hello …!").
+        assert "Hello" in response_line
+
+    def test_emit_refuses_blind_verified_finding(self) -> None:
+        """BUG 1 honesty guard: a result marked verified but with no captured
+        verifying response emits nothing (verification ran blind) rather than
+        shipping a placeholder as confirmed evidence."""
+        agent = _make_agent()
+        result = MethodologyResult(
+            phases_completed=6,
+            verified=True,
+            verification_strength="verified",
+            synthesized_payload=SynthesizedPayload(
+                payload="<script>alert(1)</script>",
+                rationale="r",
+                expected_execution="e",
+            ),
+            verifying_response="",  # never captured
+        )
+        assert agent._xss_phase6_emit("http://example.com/echo", "q", result) is None
 
 
 # ===========================================================================
