@@ -979,3 +979,58 @@ class TestSQLiPhase5ReflectionGuard:
         assert agent._sqli_has_db_error('SQLITE_ERROR: near "x"') is True
         assert agent._sqli_has_db_error("You have an error in your SQL syntax ... MySQL") is True
         assert agent._sqli_has_db_error("a perfectly ordinary page") is False
+
+    @pytest.mark.asyncio
+    async def test_union_marker_only_in_echoed_payload_rejected(self) -> None:
+        """A 200 endpoint that echoes the submitted value verbatim makes the
+        union marker a substring of our own payload — input reflection, not
+        extracted data — and must NOT confirm UNION SQLi.
+
+        This is the 1b8101dd / b9dc3627 phantom class: DVWA's
+        ``Wrong password for '<input>'`` on csrf/test_credentials.php and the
+        xss_r ``Hello <input>`` reflected sink both echo the union payload, so a
+        bare ``marker in body`` check trivially (and wrongly) confirmed.
+        """
+        agent = _make_agent()
+        payload = "test' UNION SELECT 'CLINKZUNIONMARKER42',NULL-- -"
+        echo_body = f"<pre>Wrong password for '{payload}'</pre>"  # payload echoed verbatim
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=echo_body)
+        )
+        synth = {
+            "payload": payload,
+            "indicator_type": "union_data",
+            "expected_indicator": "CLINKZUNIONMARKER42",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            _make_page(), "username", synth, {"length": 100}
+        )
+        assert verified is False
+        assert "reflection" in observed
+
+    @pytest.mark.asyncio
+    async def test_genuine_union_data_row_confirms_despite_echo(self) -> None:
+        """DVWA /vulnerabilities/sqli/ echoes the payload in ``ID:`` AND renders
+        the executed UNION's first column in ``First name:`` — the marker
+        survives the echo strip, so a genuine union still confirms (the
+        reflection guard must not over-reject 43aa80a6)."""
+        agent = _make_agent()
+        payload = "1' UNION SELECT 'CLINKZUNIONMARKER42',NULL-- -"
+        # ``ID:`` echoes the raw payload (DVWA low does not escape it); the
+        # executed UNION's first column lands in ``First name:`` in data position.
+        genuine_body = (
+            f"<pre>ID: {payload}<br />First name: CLINKZUNIONMARKER42<br />Surname: </pre>"
+        )
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=genuine_body)
+        )
+        synth = {
+            "payload": payload,
+            "indicator_type": "union_data",
+            "expected_indicator": "CLINKZUNIONMARKER42",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            _make_page(), "id", synth, {"length": 100}
+        )
+        assert verified is True
+        assert "CLINKZUNIONMARKER42" in observed
