@@ -149,6 +149,46 @@ class TestPhase1Hypothesis:
         assert agent._csrf_phase1_hypothesis(csp) is False
         assert agent._csrf_phase1_hypothesis(crypto) is False
 
+    def test_lone_password_field_not_sensitive(self) -> None:
+        """A lone password field is NOT a CSRF target (engagement ec39350b:
+        DVWA ``/cryptography/index.php``'s ``['password','']`` form sprayed a
+        CSRF finding off the single password input). A password signal qualifies
+        only with mutation structure — a second password field or a
+        change/registration qualifier — which this form has neither of."""
+        agent = _make_agent()
+        form = {
+            "method": "POST",
+            "action": "index.php",
+            "fields": [
+                {"name": "password", "type": "password"},
+                {"name": "", "type": "submit"},
+            ],
+        }
+        assert (
+            agent._csrf_is_security_sensitive(
+                form, "http://example.com/vulnerabilities/cryptography/index.php"
+            )
+            is False
+        )
+        assert agent._csrf_phase1_hypothesis(form) is False
+
+    def test_new_and_confirm_password_post_form_qualifies(self) -> None:
+        """A password *mutation* — new + confirm password fields — IS a CSRF
+        target even as a bare POST (the genuine password-change class), via the
+        >= 2 password-fields mutation-structure signal."""
+        agent = _make_agent()
+        form = {
+            "method": "POST",
+            "action": "/account/password",
+            "fields": [
+                {"name": "password_new", "type": "password"},
+                {"name": "password_conf", "type": "password"},
+                {"name": "Change", "type": "submit"},
+            ],
+        }
+        assert agent._csrf_is_security_sensitive(form) is True
+        assert agent._csrf_phase1_hypothesis(form) is True
+
 
 # ===========================================================================
 # Phase 2 — Observation
