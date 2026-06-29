@@ -954,6 +954,53 @@ class TestSQLiPhase5ReflectionGuard:
         assert verified is False
 
     @pytest.mark.asyncio
+    async def test_error_string_indicator_present_in_baseline_rejected(self) -> None:
+        """An over-generic LLM indicator already present in the benign baseline
+        (DVWA's left-nav `SQL Injection` chrome on the xss_r page) is static page
+        content, not an error the payload provoked — must NOT confirm (the
+        b9dc3627 error_string phantom that resurfaced through this branch)."""
+        agent = _make_agent()
+        # Both the benign baseline and the probe response carry the DVWA nav
+        # menu containing "SQL Injection"; only the echoed value differs.
+        chrome = "<a href='/vulnerabilities/sqli/'>SQL Injection</a><pre>Hello "
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=chrome + "1'</pre>")
+        )
+        synth = {
+            "payload": "1'",
+            "indicator_type": "error_string",
+            "expected_indicator": "SQL",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            _make_page(), "name", synth, {"length": 100, "body": chrome + "1</pre>"}
+        )
+        assert verified is False
+        assert "no error substring" in observed
+
+    @pytest.mark.asyncio
+    async def test_error_string_genuine_indicator_absent_from_baseline_confirms(
+        self,
+    ) -> None:
+        """A real error signature absent from the benign baseline still confirms
+        — the baseline-anchor must not over-reject genuine error-based SQLi."""
+        agent = _make_agent()
+        baseline = "<html><body>First name: admin</body></html>"
+        error_body = "You have an error in your SQL syntax; check your MySQL server"
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=error_body)
+        )
+        synth = {
+            "payload": "1'",
+            "indicator_type": "error_string",
+            "expected_indicator": "error in your SQL syntax",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            _make_page(), "id", synth, {"length": 100, "body": baseline}
+        )
+        assert verified is True
+        assert "error in your SQL syntax" in observed
+
+    @pytest.mark.asyncio
     async def test_real_sqlite_error_500_still_confirms(self) -> None:
         """Juice Shop's real 500 SQLITE_ERROR is a genuine error-based hit."""
         agent = _make_agent()
