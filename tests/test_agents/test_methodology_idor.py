@@ -333,6 +333,7 @@ class TestPhase5Verification:
             "id",
             {"reference": "2", "rationale": "peer"},
             phase1_ev,
+            IDORPrimitives(id_format="numeric", authz_check_present=True),
         )
         assert verified is True
         assert observed is not None
@@ -349,6 +350,7 @@ class TestPhase5Verification:
             "id",
             {"reference": "2", "rationale": "peer"},
             phase1_ev,
+            IDORPrimitives(id_format="numeric", authz_check_present=True),
         )
         assert verified is False
 
@@ -364,6 +366,7 @@ class TestPhase5Verification:
             "id",
             {"reference": "2", "rationale": "peer"},
             phase1_ev,
+            IDORPrimitives(id_format="numeric", authz_check_present=True),
         )
         assert verified is False
 
@@ -406,6 +409,11 @@ class TestPhase6FindingEmission:
 class TestIDORMethodologyIntegration:
     @pytest.mark.asyncio
     async def test_dvwa_authbypass_style_horizontal_idor(self) -> None:
+        """A genuine horizontal IDOR end-to-end: an authenticated user reads a
+        peer record (id=1→2) AND the endpoint enforces a boundary — an
+        out-of-allotment id (99999999) is rejected 403 — so phase 5's
+        authorization-boundary precondition is satisfied and all six phases
+        drive to a finding."""
         agent = _make_agent(_ScriptedLLM(answers=[""] * 8))
         agent._methodology_llm = agent.llm
 
@@ -427,7 +435,9 @@ class TestIDORMethodologyIntegration:
                     ),
                 )
             if val == "99999999":
-                return _HTTPResponse(status=404, body="not found")
+                # Out-of-allotment id is access-controlled (403) — a real authz
+                # boundary, so the horizontal peer read (id=2) is a genuine IDOR.
+                return _HTTPResponse(status=403, body="forbidden")
             return _HTTPResponse(
                 status=200,
                 body=("user: other email: other@x.example role: user dob: 1992-03-03 region: ap"),
@@ -440,6 +450,54 @@ class TestIDORMethodologyIntegration:
         joined = " ".join(findings[0].evidence)
         assert "phases_completed=6" in joined
         assert "exploitation_type=" in joined
+
+    @pytest.mark.asyncio
+    async def test_no_authz_boundary_emits_nothing(self) -> None:
+        """The ec39350b phantom, end-to-end: ``info.php?id=2`` → id=3 diverges,
+        but a bogus out-of-allotment id (99999999) ALSO returns a normal 200
+        record — no authorization boundary exists. The content divergence is a
+        public lookup doing its job, not an IDOR. Phase 5 must refuse to verify
+        ⇒ zero findings (without the authz guard the divergent peer WOULD have
+        verified)."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 8))
+        agent._methodology_llm = agent.llm
+
+        async def fake_get(_url: str, params: dict[str, str]) -> _HTTPResponse:
+            val = params.get("id", "")
+            if val == "99999999":
+                # Bogus id served a normal record-shaped 200 — no boundary.
+                return _HTTPResponse(
+                    status=200,
+                    body="name: nobody email: nobody@corp.example role: user status: active",
+                )
+            if val == "2":
+                return _HTTPResponse(
+                    status=200,
+                    body=(
+                        "name: alice email: alice@corp.example role: user "
+                        "dob: 1990-01-01 region: us status: active"
+                    ),
+                )
+            # Every other id (incl. the id=3 peer) returns a substantial,
+            # differently-worded record — divergence that WOULD verify but for
+            # the missing boundary.
+            return _HTTPResponse(
+                status=200,
+                body=(
+                    "name: bob email: bob@corp.example role: user "
+                    "dob: 1985-02-02 region: eu status: active phone: 555-0102"
+                ),
+            )
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://example.com/info.php?id=2",
+            body="",
+            status=200,
+            input_params=["id"],
+        )
+        findings = await agent._test_idor(page)
+        assert findings == []
 
 
 # ===========================================================================
@@ -668,6 +726,7 @@ class TestPhase5Honesty:
             "id",
             {"reference": "longreference123", "rationale": "synthesized"},
             phase1_ev,
+            IDORPrimitives(id_format="opaque", authz_check_present=True),
             "x",
         )
         assert verified is False
@@ -688,7 +747,12 @@ class TestPhase5Honesty:
             "baseline_body": "Account details: name=alice email=alice@x role=user balance=100.",
         }
         verified, observed = await agent._idor_phase5_verify(
-            _make_page(), "id", {"reference": "2", "rationale": "peer"}, phase1_ev, "1"
+            _make_page(),
+            "id",
+            {"reference": "2", "rationale": "peer"},
+            phase1_ev,
+            IDORPrimitives(id_format="numeric", authz_check_present=True),
+            "1",
         )
         assert verified is False
         assert observed is not None and "error" in observed
@@ -710,6 +774,7 @@ class TestPhase5Honesty:
             "id",
             {"reference": "a3f8c2d1e9b74056", "rationale": "synthesized"},
             phase1_ev,
+            IDORPrimitives(id_format="opaque", authz_check_present=True),
             "xss_s",
         )
         assert verified is False
@@ -736,7 +801,79 @@ class TestPhase5Honesty:
             "id",
             {"reference": "beta_module", "rationale": "peer module"},
             phase1_ev,
+            IDORPrimitives(id_format="opaque", authz_check_present=True),
             "alpha_module",
+        )
+        assert verified is True
+        assert observed is not None
+
+
+# ===========================================================================
+# Phase 5 authz-boundary precondition — no boundary ⇒ nothing to bypass
+# ===========================================================================
+
+
+class TestPhase5AuthzBoundary:
+    """An IDOR is the bypass of an authorization boundary. Phase 5 must refuse
+    to verify a content divergence when phase 2 found no boundary
+    (``authz_check_present`` False), and confirm it when a boundary exists. The
+    two cases share the SAME divergent peer response, so the only thing that
+    flips the verdict is the boundary — proving the guard, not another check."""
+
+    _BASELINE = (
+        "name: alice email: alice@corp.example role: user dob: 1990-01-01 region: us status: active"
+    )
+    _DIVERGENT_PEER = (
+        "name: bob email: bob@corp.example role: user "
+        "dob: 1985-02-02 region: eu status: active phone: 555-0102"
+    )
+
+    @pytest.mark.asyncio
+    async def test_no_authz_boundary_does_not_verify(self) -> None:
+        """A divergent peer response with no boundary (out-of-range id returned
+        200, authz_check_present=False) is a public lookup, not an authz break —
+        must NOT verify (the ec39350b info.php?id=2→3 phantom)."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=self._DIVERGENT_PEER)
+        )
+        phase1_ev = {"baseline_status": 200, "baseline_body": self._BASELINE}
+        verified, observed = await agent._idor_phase5_verify(
+            _make_page(),
+            "id",
+            {"reference": "3", "rationale": "peer"},
+            phase1_ev,
+            IDORPrimitives(
+                id_format="numeric",
+                authz_check_present=False,
+                unauth_status_observed=200,
+            ),
+            "2",
+        )
+        assert verified is False
+        assert observed is not None and "boundary" in observed
+
+    @pytest.mark.asyncio
+    async def test_authz_boundary_present_verifies(self) -> None:
+        """The SAME divergent peer response WITH a real boundary
+        (authz_check_present=True) confirms — the guard suppresses only the
+        boundary-less case, never a genuine IDOR."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=self._DIVERGENT_PEER)
+        )
+        phase1_ev = {"baseline_status": 200, "baseline_body": self._BASELINE}
+        verified, observed = await agent._idor_phase5_verify(
+            _make_page(),
+            "id",
+            {"reference": "3", "rationale": "peer"},
+            phase1_ev,
+            IDORPrimitives(
+                id_format="numeric",
+                authz_check_present=True,
+                unauth_status_observed=403,
+            ),
+            "2",
         )
         assert verified is True
         assert observed is not None
