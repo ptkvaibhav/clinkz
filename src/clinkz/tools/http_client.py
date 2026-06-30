@@ -239,9 +239,13 @@ class HTTPClientTool(ToolBase):
         for key, value in headers.items():
             cmd.extend(["-H", f"{key}: {value}"])
 
-        # Request body
+        # Request body. Use --data-binary, not -d: curl's -d strips CR/LF from
+        # the payload, which corrupts multipart/form-data boundary framing (the
+        # body's \r\n separators) and silently breaks file uploads. --data-binary
+        # sends the body byte-for-byte; for urlencoded/JSON bodies (no embedded
+        # newlines) it is equivalent.
         if body:
-            cmd.extend(["-d", body])
+            cmd.extend(["--data-binary", body])
 
         # Cookie jar for persistence across redirect chain
         cmd.extend(["-c", cookie_jar])
