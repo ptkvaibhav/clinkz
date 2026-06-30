@@ -383,6 +383,19 @@ class TestDeterministicPredictabilityGate:
         )
         assert SessionWeaknessType.TIME_CORRELATED in types
 
+    def test_medium_constant_current_timestamp_same_second(self) -> None:
+        """Fast sampling can return the SAME current-epoch value for all 8 PHP
+        time() reads; a token equal to 'now' is still time-correlated."""
+        now = str(int(time.time()))
+        types, _lines = _deterministic_session_weaknesses([now] * 8)
+        assert SessionWeaknessType.TIME_CORRELATED in types
+
+    def test_constant_static_numeric_id_not_weak(self) -> None:
+        """A constant numeric session ID that is NOT a current timestamp is just
+        a static cookie — not a generator weakness."""
+        types, _lines = _deterministic_session_weaknesses(["12345"] * 8)
+        assert types == set()
+
     def test_high_md5_of_counter(self) -> None:
         values = [hashlib.md5(str(i).encode()).hexdigest() for i in range(1, 9)]
         types, _lines = _deterministic_session_weaknesses(values)

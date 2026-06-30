@@ -408,6 +408,57 @@ class TestPhase5Verification:
         assert verified is False
         assert observed is not None and "not locatable" in observed
 
+    @pytest.mark.asyncio
+    async def test_interpreter_misconfig_requires_execution_not_retrievable(self) -> None:
+        """An interpreter_misconfig .phtml that is merely retrievable (served as
+        source, not executed) is NOT a webshell — it must echo the canary as
+        interpreter output to confirm."""
+        agent = _make_agent()
+        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="../../uploads/clinkz_misconfig.phtml was uploaded successfully"
+            )
+        )
+        # Served back as raw source — no interpreter output.
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<?php echo 'clinkzexec9'; ?>")
+        )
+        synth = {
+            "filename": "clinkz_misconfig.phtml",
+            "content": "<?php echo 'clinkzexec9'; ?>",
+            "content_type": "application/octet-stream",
+            "canary": "clinkzexec9",
+        }
+        verified, _url, observed = await agent._file_upload_phase5_verify(
+            "http://example.com/upload", synth, FileUploadExecutionType.INTERPRETER_MISCONFIG
+        )
+        assert verified is False
+        assert observed is not None and "execution unconfirmed" in observed
+
+    @pytest.mark.asyncio
+    async def test_interpreter_misconfig_confirms_on_execution(self) -> None:
+        """A .phtml that the server executes (canary echoed as output) confirms."""
+        agent = _make_agent()
+        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="../../uploads/clinkz_misconfig.phtml was uploaded successfully"
+            )
+        )
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="clinkzexec9")
+        )
+        synth = {
+            "filename": "clinkz_misconfig.phtml",
+            "content": "<?php echo 'clinkzexec9'; ?>",
+            "content_type": "application/octet-stream",
+            "canary": "clinkzexec9",
+        }
+        verified, _url, observed = await agent._file_upload_phase5_verify(
+            "http://example.com/upload", synth, FileUploadExecutionType.INTERPRETER_MISCONFIG
+        )
+        assert verified is True
+        assert observed is not None and "execution" in observed
+
 
 # ===========================================================================
 # Phase 6 — Finding emission
