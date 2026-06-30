@@ -105,6 +105,90 @@ class TestPhase1Hypothesis:
         form = {"method": "GET", "action": "/search", "fields": []}
         assert agent._csrf_phase1_hypothesis(form) is False
 
+    def test_post_without_sensitive_signal_skipped(self) -> None:
+        """A token-less POST that is not security-sensitive (a guestbook sign) is
+        NOT a CSRF target — the over-emission fix (engagement f7a761a1 sprayed
+        CSRF across /xss_s/, /csp/, /javascript/, /upload/)."""
+        agent = _make_agent()
+        form = {
+            "method": "POST",
+            "action": "/vulnerabilities/xss_s/",
+            "fields": [
+                {"name": "txtName", "type": "text"},
+                {"name": "mtxMessage", "type": "text"},
+                {"name": "btnSign", "type": "submit"},
+            ],
+        }
+        assert agent._csrf_phase1_hypothesis(form) is False
+
+    def test_password_change_form_qualifies(self) -> None:
+        """The genuine password-change challenge (DVWA /csrf/, a GET form with
+        password_new/password_conf) must still confirm."""
+        agent = _make_agent()
+        form = {
+            "method": "GET",
+            "action": "",
+            "fields": [
+                {"name": "password_new", "type": "password"},
+                {"name": "password_conf", "type": "password"},
+                {"name": "Change", "type": "submit"},
+            ],
+        }
+        assert agent._csrf_phase1_hypothesis(form) is True
+
+    def test_security_sensitive_predicate_consistency(self) -> None:
+        """Equivalent non-sensitive pages get the SAME verdict (no arbitrary
+        confirmed-vs-FP): a CSP-include and a crypto-encrypt POST both skip."""
+        agent = _make_agent()
+        csp = {"method": "POST", "action": "/vulnerabilities/csp/", "fields": [{"name": "include"}]}
+        crypto = {
+            "method": "POST",
+            "action": "/vulnerabilities/cryptography/",
+            "fields": [{"name": "message"}, {"name": "direction"}],
+        }
+        assert agent._csrf_phase1_hypothesis(csp) is False
+        assert agent._csrf_phase1_hypothesis(crypto) is False
+
+    def test_lone_password_field_not_sensitive(self) -> None:
+        """A lone password field is NOT a CSRF target (engagement ec39350b:
+        DVWA ``/cryptography/index.php``'s ``['password','']`` form sprayed a
+        CSRF finding off the single password input). A password signal qualifies
+        only with mutation structure — a second password field or a
+        change/registration qualifier — which this form has neither of."""
+        agent = _make_agent()
+        form = {
+            "method": "POST",
+            "action": "index.php",
+            "fields": [
+                {"name": "password", "type": "password"},
+                {"name": "", "type": "submit"},
+            ],
+        }
+        assert (
+            agent._csrf_is_security_sensitive(
+                form, "http://example.com/vulnerabilities/cryptography/index.php"
+            )
+            is False
+        )
+        assert agent._csrf_phase1_hypothesis(form) is False
+
+    def test_new_and_confirm_password_post_form_qualifies(self) -> None:
+        """A password *mutation* — new + confirm password fields — IS a CSRF
+        target even as a bare POST (the genuine password-change class), via the
+        >= 2 password-fields mutation-structure signal."""
+        agent = _make_agent()
+        form = {
+            "method": "POST",
+            "action": "/account/password",
+            "fields": [
+                {"name": "password_new", "type": "password"},
+                {"name": "password_conf", "type": "password"},
+                {"name": "Change", "type": "submit"},
+            ],
+        }
+        assert agent._csrf_is_security_sensitive(form) is True
+        assert agent._csrf_phase1_hypothesis(form) is True
+
 
 # ===========================================================================
 # Phase 2 — Observation
@@ -366,17 +450,23 @@ class TestCSRFMethodologyIntegration:
 
 
 def _json_api_page() -> PageAnalysis:
-    """A state-changing JSON API endpoint with no HTML <form>."""
+    """A *security-sensitive* state-changing JSON API endpoint with no HTML <form>.
+
+    A password-change API (the sensitive-action class CSRF actually matters for)
+    reached only via the synthesized JSON pseudo-form (fix #4). A low-impact
+    JSON API (e.g. a feedback/comment post) is deliberately NOT a CSRF target
+    under the tightened sensitivity gate, so this page is sensitive on purpose.
+    """
     return PageAnalysis(
-        url="http://example.com/api/Feedbacks",
+        url="http://example.com/rest/user/change-password",
         body="",
         status=200,
-        input_params=["comment", "rating"],
+        input_params=["current", "new"],
         request_method="POST",
         content_type="application/json",
         param_locations={
-            "comment": ParamLocation.JSON_BODY,
-            "rating": ParamLocation.JSON_BODY,
+            "current": ParamLocation.JSON_BODY,
+            "new": ParamLocation.JSON_BODY,
         },
     )
 
@@ -384,9 +474,10 @@ def _json_api_page() -> PageAnalysis:
 class TestCSRFJsonBody:
     @pytest.mark.asyncio
     async def test_cookie_session_flags_missing_token(self) -> None:
-        """A cookie-authenticated state-changing JSON API with no anti-CSRF
-        token is CSRF-able — the synthesized JSON pseudo-form is evaluated and
-        a finding is emitted (deterministic fallback, silent LLM)."""
+        """A cookie-authenticated *security-sensitive* state-changing JSON API
+        with no anti-CSRF token is CSRF-able — the synthesized JSON pseudo-form
+        is evaluated and a finding is emitted (deterministic fallback, silent
+        LLM)."""
         agent = _make_agent(_ScriptedLLM(answers=[""] * 4))
         agent._methodology_llm = agent.llm
         agent._session_cookies = {"session": "abc"}  # ambient cookie
