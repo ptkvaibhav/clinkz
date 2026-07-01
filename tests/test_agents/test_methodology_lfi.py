@@ -762,3 +762,117 @@ class TestFileServerNullByteBypass:
         first = calls["n"]
         await agent._test_lfi_file_server(page2)
         assert calls["n"] == first  # second call short-circuited on the dedup set
+
+
+# ===========================================================================
+# FIX 2 — bypass-adaptive LFI (DVWA fi/high: fnmatch("file*") filter)
+# ===========================================================================
+
+
+class TestFix2BypassAdaptive:
+    """Traversal honesty, file:// wrapper synthesis, prefix-preserving traversal."""
+
+    @staticmethod
+    def _filtered_probe(passwd_for: set[str]):
+        """A fake `_send_probe` where naive traversal / wrappers are filtered to a
+        block page and only *passwd_for* payload values read /etc/passwd."""
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            if value in passwd_for:
+                return _HTTPResponse(status=200, body="root:x:0:0:root:/root:/bin/bash")
+            if "etc/passwd" in value or "://" in value:
+                return _HTTPResponse(status=200, body="ERROR: File not found!")
+            return _HTTPResponse(status=200, body="X" * 5000)  # normal page
+
+        return fake_probe
+
+    @pytest.mark.asyncio
+    async def test_block_page_divergence_not_recorded_as_traversal(self) -> None:
+        """FIX 2c: a filtered ``../`` returning a block page diverges from the
+        baseline but reads no file — it must NOT be recorded as a working
+        traversal sequence."""
+        agent = _make_agent()
+        agent._technologies = ["php"]
+        agent._send_probe = self._filtered_probe(set())  # type: ignore[method-assign]
+        page = _make_page()
+        _cand, baselines = await agent._lfi_phase1_injection_point(page, "page")
+        primitives, evidence = await agent._lfi_phase2_fingerprint(page, "page", baselines)
+        assert primitives.traversal_sequence is None
+        assert "traversal_divergence_only" not in evidence
+        assert primitives.wrapper_support == []  # no wrapper confirmed on divergence
+
+    @pytest.mark.asyncio
+    async def test_file_wrapper_detected_and_synthesized(self) -> None:
+        """FIX 2b: file:// is confirmed (reads /etc/passwd) even when naive ``../``
+        is filtered, and phase 4 synthesizes the file:// read."""
+        agent = _make_agent()
+        agent._technologies = ["php"]
+        agent._send_probe = self._filtered_probe(  # type: ignore[method-assign]
+            {"file:///etc/passwd"}
+        )
+        page = _make_page()
+        _cand, baselines = await agent._lfi_phase1_injection_point(page, "page")
+        primitives, _evidence = await agent._lfi_phase2_fingerprint(page, "page", baselines)
+        assert "file://" in primitives.wrapper_support
+        assert primitives.traversal_sequence is None  # naive traversal stays honest
+        synth = await agent._lfi_phase4_synthesize_payload(
+            LFIRetrievalType.WRAPPER_EXTRACTION, primitives, _baseline()
+        )
+        assert synth is not None
+        assert synth["payload"] == "file:///etc/passwd"
+        assert synth["indicator_type"] == "file_signature"
+
+    def test_fallback_ranks_wrapper_first_with_file_scheme(self) -> None:
+        """FIX 2b: a confirmed non-php-filter wrapper (file://) ranks wrapper
+        extraction first even with no traversal signature."""
+        agent = _make_agent()
+        ranked = agent._fallback_retrieval_type_ranking(
+            LFITraversalPrimitives(wrapper_support=["file://"]), {}
+        )
+        assert ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
+
+    @pytest.mark.asyncio
+    async def test_direct_read_prefix_preserving_when_naive_blocked(self) -> None:
+        """FIX 2a: naive traversal blocked + a leading token in the original value
+        → a prefix-preserving traversal payload (``file/../../../../etc/passwd``)."""
+        agent = _make_agent()
+        synth = await agent._lfi_phase4_synthesize_payload(
+            LFIRetrievalType.DIRECT_READ,
+            LFITraversalPrimitives(traversal_sequence=None),
+            _baseline(value="file"),
+        )
+        assert synth is not None
+        assert synth["payload"] == "file/../../../../etc/passwd"
+        assert synth["indicator_type"] == "file_signature"
+
+    @pytest.mark.asyncio
+    async def test_data_wrapper_requires_inline_render_not_divergence(self) -> None:
+        """The data:// wrapper is confirmed only when its inline payload is
+        rendered back — a diverging block page is not enough (honest wrappers)."""
+        page = _make_page()
+
+        async def blocked(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            if "etc/passwd" in value or "://" in value:
+                return _HTTPResponse(status=200, body="ERROR: File not found!")
+            return _HTTPResponse(status=200, body="X" * 5000)
+
+        agent = _make_agent()
+        agent._technologies = ["php"]
+        agent._send_probe = blocked  # type: ignore[method-assign]
+        _c, baselines = await agent._lfi_phase1_injection_point(page, "page")
+        primitives, _e = await agent._lfi_phase2_fingerprint(page, "page", baselines)
+        assert "data://" not in primitives.wrapper_support
+
+        async def renders(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            if value.startswith("data://"):
+                return _HTTPResponse(status=200, body="<html>clinkz</html>")
+            if "etc/passwd" in value or "://" in value:
+                return _HTTPResponse(status=200, body="ERROR: File not found!")
+            return _HTTPResponse(status=200, body="X" * 5000)
+
+        agent2 = _make_agent()
+        agent2._technologies = ["php"]
+        agent2._send_probe = renders  # type: ignore[method-assign]
+        _c2, baselines2 = await agent2._lfi_phase1_injection_point(page, "page")
+        prim2, _e2 = await agent2._lfi_phase2_fingerprint(page, "page", baselines2)
+        assert "data://" in prim2.wrapper_support
