@@ -79,6 +79,27 @@ async def test_sqli_blind_against_dvwa(
     )
 
 
+async def test_sqli_blind_cookie_vector_high(
+    dvwa_url: str,
+    exploit_agent_high: ExploitAgent,
+) -> None:
+    """DVWA blind-SQLi ``high`` reads ``$id = $_COOKIE['id']`` — the injection
+    point is a cookie, not a query param. On the bare page (real-pipeline shape,
+    no ``?id=``) there is no HTML/query ``id``; the on-demand harvest discovers
+    ``id`` from the linked ``cookie-input.php`` setter and the cookie carrier
+    confirms boolean-blind via a true/false size delta."""
+    url = f"{dvwa_url}/vulnerabilities/sqli_blind/"
+    page = await exploit_agent_high._fetch_page(url)
+    assert "id" in page.injectable_cookies, (
+        f"cookie harvest failed to discover the 'id' vector at {url} "
+        f"(injectable_cookies={page.injectable_cookies})"
+    )
+    findings = await exploit_agent_high._test_sqli(page)
+    assert any("cookie" in f.title.lower() for f in findings), (
+        f"cookie-borne blind SQLi not confirmed at {url} (titles={[f.title for f in findings]})"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2b. NoSQL Injection — N/A on DVWA (PHP/MySQL stack)
 # ---------------------------------------------------------------------------

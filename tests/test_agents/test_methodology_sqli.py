@@ -16,10 +16,12 @@ from __future__ import annotations
 import time
 from typing import Any
 from unittest.mock import AsyncMock
+from urllib.parse import quote, unquote
 
 import pytest
 
 from clinkz.agents.exploit import (
+    _COOKIE_VECTOR_PREFIX,
     ExploitAgent,
     PageAnalysis,
     _HTTPResponse,
@@ -1119,3 +1121,142 @@ class TestSQLiPhase5ReflectionGuard:
         assert ExploitAgent._marker_only_in_payload_echo(escaped_echo, payload, marker) is True
         data_row = f"<pre>ID: {payload}<br />First name: {marker}<br /></pre>"
         assert ExploitAgent._marker_only_in_payload_echo(data_row, payload, marker) is False
+
+
+# ===========================================================================
+# Cookie injection vector (DVWA blind-SQLi ``high``: $id = $_COOKIE['id'])
+# ===========================================================================
+
+
+class TestCookieInjectionVector:
+    """The cookie carrier + on-demand harvest, and honesty through the carrier."""
+
+    def test_effective_cookies_overlays_without_mutating_session(self) -> None:
+        agent = _make_agent()
+        agent._session_cookies = {"PHPSESSID": "abc", "security": "high"}
+        eff = agent._effective_cookies({"id": "payload"})
+        assert eff == {"PHPSESSID": "abc", "security": "high", "id": "payload"}
+        # The ambient jar is never mutated by an override.
+        assert "id" not in agent._session_cookies
+
+    @pytest.mark.asyncio
+    async def test_cookie_carrier_url_encodes_and_keeps_session_ambient(self) -> None:
+        """``_send_probe`` on a cookie-vector param carries the URL-encoded payload
+        in one cookie, leaving session/auth cookies ambient."""
+        agent = _make_agent()
+        agent._session_cookies = {"PHPSESSID": "abc", "security": "high"}
+        captured: dict[str, Any] = {}
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            captured["url"] = url
+            captured["params"] = params
+            captured["cookie_overrides"] = cookie_overrides
+            return _HTTPResponse(status=200, body="ok")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page(url="http://example.com/vulnerabilities/sqli_blind/")
+        payload = "1' AND 1=1 -- -"
+        await agent._send_probe(page, f"{_COOKIE_VECTOR_PREFIX}id", payload)
+        assert captured["params"] == {}  # cookie is the sole carrier, no query injected
+        assert captured["cookie_overrides"] == {"id": quote(payload, safe="")}
+        assert agent._session_cookies == {"PHPSESSID": "abc", "security": "high"}
+
+    @pytest.mark.asyncio
+    async def test_harvest_discovers_non_session_cookie_from_setter(self) -> None:
+        """A cookie-setter form linked from the page yields its non-session cookie
+        name as an injection vector; session cookies are excluded."""
+        agent = _make_agent()
+        agent._session_cookies = {"PHPSESSID": "abc", "security": "low"}
+
+        setter_form = (
+            '<form method="POST" action="#">'
+            '<input type="text" name="id">'
+            '<input type="submit" name="Submit" value="Submit"></form>'
+        )
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            if url.endswith("cookie-input.php"):
+                return _HTTPResponse(status=200, body=setter_form)
+            return _HTTPResponse(status=200, body="")
+
+        async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            # Setter sets the app cookie AND re-asserts a session cookie; only the
+            # former is injectable.
+            return _HTTPResponse(
+                status=200, body="ok", headers={"Set-Cookie": "id=clinkz, security=low"}
+            )
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        body = '<a href="#" onclick="popUp(\'cookie-input.php\')">change your ID</a>'
+        names = await agent._harvest_injectable_cookies(
+            "http://example.com/vulnerabilities/sqli_blind/", body
+        )
+        assert names == ["id"]
+
+    @pytest.mark.asyncio
+    async def test_no_cookie_setter_link_yields_no_harvest(self) -> None:
+        """A page with no cookie-setter reference triggers no harvest HTTP."""
+        agent = _make_agent()
+        called = False
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            nonlocal called
+            called = True
+            return _HTTPResponse(status=200, body="")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        names = await agent._harvest_injectable_cookies(
+            "http://example.com/x", "<html><body>no setter here</body></html>"
+        )
+        assert names == []
+        assert called is False
+
+    @pytest.mark.asyncio
+    async def test_cookie_carrier_confirms_boolean_blind(self) -> None:
+        """Phase 5 confirms a boolean-blind cookie injection: TRUE ~ baseline,
+        FALSE diverges — carried entirely in the cookie."""
+        agent = _make_agent()
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            val = unquote(cookie_overrides["id"]) if cookie_overrides else ""
+            if val == "1" or "1=1" in val:  # exists
+                return _HTTPResponse(status=200, body="X" * 100)
+            return _HTTPResponse(status=200, body="X" * 106)  # missing (diverged)
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page(url="http://example.com/vulnerabilities/sqli_blind/")
+        synth = {
+            "payload": "1' AND 1=1-- -",
+            "control_payload": "1' AND 1=2-- -",
+            "indicator_type": "content_diff",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            page, f"{_COOKIE_VECTOR_PREFIX}id", synth, {"length": 100, "body": "X" * 100}
+        )
+        assert verified is True, observed
+
+    @pytest.mark.asyncio
+    async def test_reflected_cookie_echo_does_not_confirm(self) -> None:
+        """A cookie value merely echoed in the body must NOT confirm SQLi — the
+        escaping-robust reflection guard applies unchanged through the carrier."""
+        agent = _make_agent()
+        marker = "CLINKZUNIONMARKER99"
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            val = unquote(cookie_overrides["id"]) if cookie_overrides else ""
+            # 2xx page that reflects the (decoded) cookie value verbatim.
+            return _HTTPResponse(status=200, body=f"<p>User ID: {val}</p>")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page(url="http://example.com/vulnerabilities/sqli_blind/")
+        synth = {
+            "payload": f"1' UNION SELECT {marker},NULL-- -",
+            "indicator_type": "union_data",
+            "expected_indicator": marker,
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            page, f"{_COOKIE_VECTOR_PREFIX}id", synth, {"length": 12, "body": "<p>User ID: 1</p>"}
+        )
+        assert verified is False
+        assert "reflection" in observed.lower()
