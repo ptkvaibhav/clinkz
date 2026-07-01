@@ -130,7 +130,12 @@ class TestPhase2RestrictionFingerprint:
         agent = _make_agent()
 
         async def fake_post(
-            _url: str, filename: str, content: str, content_type: str
+            _url: str,
+            filename: str,
+            content: str,
+            content_type: str,
+            field_name: str = "file",
+            extra_fields: Any = None,
         ) -> _HTTPResponse:
             # Permissive server: accepts everything except oversized.
             if len(content) > 1_500_000:
@@ -150,7 +155,12 @@ class TestPhase2RestrictionFingerprint:
         agent = _make_agent()
 
         async def fake_post(
-            _url: str, filename: str, content: str, content_type: str
+            _url: str,
+            filename: str,
+            content: str,
+            content_type: str,
+            field_name: str = "file",
+            extra_fields: Any = None,
         ) -> _HTTPResponse:
             if filename.endswith(".php"):
                 return _HTTPResponse(status=400, body="error: file type not allowed")
@@ -169,7 +179,12 @@ class TestPhase2RestrictionFingerprint:
         agent = _make_agent()
 
         async def fake_post(
-            _url: str, filename: str, content: str, content_type: str
+            _url: str,
+            filename: str,
+            content: str,
+            content_type: str,
+            field_name: str = "file",
+            extra_fields: Any = None,
         ) -> _HTTPResponse:
             # Reject plain .php script bodies; accept GIF89a-prefixed.
             if filename.endswith(".php") and not content.startswith("GIF89a"):
@@ -342,6 +357,108 @@ class TestPhase5Verification:
         assert uploaded_url is None
         assert observed is None
 
+    @pytest.mark.asyncio
+    async def test_reencoded_image_served_as_source_not_verified(self) -> None:
+        """FIX 3(b) (the DVWA-impossible case): accepted and locatable, but the
+        fetched artifact does NOT echo the canary as interpreter output (image
+        re-encoded / served as source) → DIRECT_EXECUTION NOT verified."""
+        agent = _make_agent()
+        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="../../uploads/shell.php was uploaded successfully"
+            )
+        )
+        # Fetch-back returns the PHP *source* (stored but never executed).
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<?php echo 'clinkzexec1'; ?>")
+        )
+        synth = {
+            "filename": "shell.php",
+            "content": "<?php echo 'clinkzexec1'; ?>",
+            "content_type": "application/x-php",
+            "canary": "clinkzexec1",
+        }
+        verified, uploaded_url, observed = await agent._file_upload_phase5_verify(
+            "http://example.com/upload", synth, FileUploadExecutionType.DIRECT_EXECUTION
+        )
+        assert verified is False
+        assert uploaded_url is not None
+        assert observed is not None and "execution unconfirmed" in observed
+
+    @pytest.mark.asyncio
+    async def test_accepted_but_artifact_not_locatable_not_verified(self) -> None:
+        """FIX 3(b): accepted but the artifact cannot be located/fetched →
+        non-finding (cannot prove execution)."""
+        agent = _make_agent()
+        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="upload complete")
+        )
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=404, body="not found")
+        )
+        synth = {
+            "filename": "shell.php",
+            "content": "<?php echo 'x'; ?>",
+            "content_type": "application/x-php",
+            "canary": "clinkzexec2",
+        }
+        verified, _url, observed = await agent._file_upload_phase5_verify(
+            "http://example.com/upload", synth, FileUploadExecutionType.DIRECT_EXECUTION
+        )
+        assert verified is False
+        assert observed is not None and "not locatable" in observed
+
+    @pytest.mark.asyncio
+    async def test_interpreter_misconfig_requires_execution_not_retrievable(self) -> None:
+        """An interpreter_misconfig .phtml that is merely retrievable (served as
+        source, not executed) is NOT a webshell — it must echo the canary as
+        interpreter output to confirm."""
+        agent = _make_agent()
+        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="../../uploads/clinkz_misconfig.phtml was uploaded successfully"
+            )
+        )
+        # Served back as raw source — no interpreter output.
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<?php echo 'clinkzexec9'; ?>")
+        )
+        synth = {
+            "filename": "clinkz_misconfig.phtml",
+            "content": "<?php echo 'clinkzexec9'; ?>",
+            "content_type": "application/octet-stream",
+            "canary": "clinkzexec9",
+        }
+        verified, _url, observed = await agent._file_upload_phase5_verify(
+            "http://example.com/upload", synth, FileUploadExecutionType.INTERPRETER_MISCONFIG
+        )
+        assert verified is False
+        assert observed is not None and "execution unconfirmed" in observed
+
+    @pytest.mark.asyncio
+    async def test_interpreter_misconfig_confirms_on_execution(self) -> None:
+        """A .phtml that the server executes (canary echoed as output) confirms."""
+        agent = _make_agent()
+        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="../../uploads/clinkz_misconfig.phtml was uploaded successfully"
+            )
+        )
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="clinkzexec9")
+        )
+        synth = {
+            "filename": "clinkz_misconfig.phtml",
+            "content": "<?php echo 'clinkzexec9'; ?>",
+            "content_type": "application/octet-stream",
+            "canary": "clinkzexec9",
+        }
+        verified, _url, observed = await agent._file_upload_phase5_verify(
+            "http://example.com/upload", synth, FileUploadExecutionType.INTERPRETER_MISCONFIG
+        )
+        assert verified is True
+        assert observed is not None and "execution" in observed
+
 
 # ===========================================================================
 # Phase 6 — Finding emission
@@ -384,7 +501,12 @@ class TestFileUploadMethodologyIntegration:
         stored: dict[str, str] = {}
 
         async def fake_post(
-            _url: str, filename: str, content: str, content_type: str
+            _url: str,
+            filename: str,
+            content: str,
+            content_type: str,
+            field_name: str = "file",
+            extra_fields: Any = None,
         ) -> _HTTPResponse:
             stored["last"] = filename
             stored["body"] = content
@@ -413,3 +535,66 @@ class TestFileUploadMethodologyIntegration:
         joined = " ".join(findings[0].evidence)
         assert "phases_completed=6" in joined
         assert "execution_type=" in joined
+
+    @pytest.mark.asyncio
+    async def test_form_rerender_emits_no_finding(self) -> None:
+        """FIX 3 end-to-end (the DVWA-impossible phantom): a server that just
+        re-renders the upload form (token-less / re-encoding) never echoes a
+        stored artifact, so nothing is 'accepted' and no finding is emitted."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 10))
+        agent._methodology_llm = agent.llm
+        form_html = (
+            '<form enctype="multipart/form-data" method="POST">'
+            'Choose an image to upload:<input type="file" name="uploaded">'
+            '<input type="submit" name="Upload" value="Upload"></form>'
+        )
+        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=form_html)
+        )
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=404, body="not found")
+        )
+        findings = await agent._test_file_upload(_make_page())
+        assert findings == []
+
+
+# ===========================================================================
+# FIX 3 — acceptance anchored on a positive signal, not the form re-rendering
+# ===========================================================================
+
+
+class TestUploadAcceptanceGuard:
+    def test_form_rerender_not_accepted(self) -> None:
+        agent = _make_agent()
+        body = '<form enctype="multipart/form-data"><input type="file" name="uploaded"></form>'
+        resp = _HTTPResponse(status=200, body=body)
+        assert agent._upload_response_accepted(resp, filename="clinkz_probe.php") is False
+
+    def test_filename_echo_accepted(self) -> None:
+        agent = _make_agent()
+        resp = _HTTPResponse(
+            status=200, body="../../hackable/uploads/clinkz_probe.php succesfully uploaded!"
+        )
+        assert agent._upload_response_accepted(resp, filename="clinkz_probe.php") is True
+
+    def test_success_phrase_accepted(self) -> None:
+        agent = _make_agent()
+        resp = _HTTPResponse(status=200, body="Your file was uploaded successfully.")
+        assert agent._upload_response_accepted(resp, filename="x.php") is True
+
+    def test_4xx_never_accepted(self) -> None:
+        agent = _make_agent()
+        resp = _HTTPResponse(status=403, body="../../uploads/x.php")
+        assert agent._upload_response_accepted(resp, filename="x.php") is False
+
+    def test_redirect_to_index_not_accepted(self) -> None:
+        """DVWA-impossible token reject is a 302 to index.php (not the artifact)."""
+        agent = _make_agent()
+        resp = _HTTPResponse(status=302, body="", headers={"Location": "/dvwa/index.php"})
+        assert agent._upload_response_accepted(resp, filename="x.php") is False
+
+    def test_upload_form_fields_extracts_file_name_and_submit(self) -> None:
+        agent = _make_agent()
+        field, extra = agent._upload_form_fields(_make_upload_form())
+        assert field == "uploaded"
+        assert extra.get("Upload") == "Upload"
