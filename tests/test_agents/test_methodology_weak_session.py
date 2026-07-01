@@ -10,12 +10,19 @@ Each phase is exercised in isolation with mocked HTTP + LLM:
 
 from __future__ import annotations
 
+import hashlib
+import time
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from clinkz.agents.exploit import ExploitAgent, PageAnalysis, _HTTPResponse
+from clinkz.agents.exploit import (
+    ExploitAgent,
+    PageAnalysis,
+    _deterministic_session_weaknesses,
+    _HTTPResponse,
+)
 from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.models.methodology import (
     SessionWeaknessType,
@@ -206,11 +213,13 @@ class TestPhase3Analysis:
         assert weak is True
 
     @pytest.mark.asyncio
-    async def test_missing_flags_fallback(self) -> None:
+    async def test_strong_token_missing_flags_not_weak(self) -> None:
+        """FIX 1: a strong, rotating, high-entropy token is NOT a weak session ID
+        even when HttpOnly/SameSite are absent — missing flags are a
+        cookie-hardening note, never a HIGH 'weak session' finding."""
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        # Strong, rotating tokens but no HttpOnly/SameSite.
         types, weak, _r = await agent._weak_session_phase3_analyze(
             "session",
             [
@@ -220,7 +229,62 @@ class TestPhase3Analysis:
             ],
             {"httponly": False, "secure": False, "samesite": False},
         )
-        assert SessionWeaknessType.MISSING_FLAGS in types
+        assert types == []
+        assert weak is False
+
+    @pytest.mark.asyncio
+    async def test_high_entropy_random_token_not_weak_despite_llm(self) -> None:
+        """FIX 1 (the DVWA-impossible phantom): a 160-bit random token
+        (bin2hex(random_bytes(20))) is NEVER predictable, even when the LLM
+        free-writes 'predictable_format' with confident prose."""
+        llm = _ScriptedLLM(
+            answers=[
+                '{"weakness_types": ["predictable_format"], "weak": true, '
+                '"rationale": "DVWA is known to generate SHA-1 of predictable inputs"}'
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        # HttpOnly+Secure, missing SameSite — exactly the impossible cookie shape.
+        types, weak, _r = await agent._weak_session_phase3_analyze(
+            "dvwaSession",
+            [
+                "558435b215ef0d8329d92ba1ec1e85b9d1f0a8c1",
+                "3a3479869209db45a91b2cf0e1d6f7a8b9c0d1e2",
+                "49964a0a53432bd1f3b6c7d8e9f0a1b2c3d4e5f6",
+            ],
+            {"httponly": True, "secure": True, "samesite": False},
+        )
+        assert weak is False
+        assert SessionWeaknessType.PREDICTABLE_FORMAT not in types
+
+    @pytest.mark.asyncio
+    async def test_md5_of_sequential_int_is_predictable_format(self) -> None:
+        """FIX 1 (MUST keep DVWA-high): md5 of a sequential counter cracks to a
+        bounded preimage → predictable_format → weak, regardless of LLM prose."""
+        llm = _ScriptedLLM(answers=[""])
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        values = [hashlib.md5(str(i).encode()).hexdigest() for i in range(1, 9)]
+        types, weak, _r = await agent._weak_session_phase3_analyze(
+            "dvwaSession", values, {"httponly": False, "secure": False, "samesite": False}
+        )
+        assert SessionWeaknessType.PREDICTABLE_FORMAT in types
+        assert weak is True
+
+    @pytest.mark.asyncio
+    async def test_time_correlated_unix_timestamps_weak(self) -> None:
+        """FIX 1 (MUST keep DVWA-medium): tokens that are recent unix timestamps
+        (PHP time()) confirm via the timestamp-window check."""
+        llm = _ScriptedLLM(answers=[""])
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        now = int(time.time())
+        values = [str(now), str(now), str(now + 1), str(now + 1), str(now + 2)]
+        types, weak, _r = await agent._weak_session_phase3_analyze(
+            "dvwaSession", values, {"httponly": False, "secure": False, "samesite": False}
+        )
+        assert SessionWeaknessType.TIME_CORRELATED in types
         assert weak is True
 
     @pytest.mark.asyncio
@@ -296,3 +360,67 @@ class TestWeakSessionMethodologyIntegration:
         joined = " ".join(findings[0].evidence)
         assert "weak=True" in joined
         assert "phases_completed=4" in joined
+
+
+# ===========================================================================
+# FIX 1 — deterministic predictability gate (LLM-proof ground truth)
+# ===========================================================================
+
+
+class TestDeterministicPredictabilityGate:
+    """Direct unit tests of the gate that decides emission, independent of the
+    LLM. The DVWA matrix in one place: low/medium/high confirm, impossible does
+    not."""
+
+    def test_low_sequential_integer(self) -> None:
+        types, _lines = _deterministic_session_weaknesses(["1", "2", "3", "4", "5"])
+        assert SessionWeaknessType.SEQUENTIAL in types
+
+    def test_medium_unix_timestamps(self) -> None:
+        now = int(time.time())
+        types, _lines = _deterministic_session_weaknesses(
+            [str(now), str(now + 1), str(now + 1), str(now + 2)]
+        )
+        assert SessionWeaknessType.TIME_CORRELATED in types
+
+    def test_medium_constant_current_timestamp_same_second(self) -> None:
+        """Fast sampling can return the SAME current-epoch value for all 8 PHP
+        time() reads; a token equal to 'now' is still time-correlated."""
+        now = str(int(time.time()))
+        types, _lines = _deterministic_session_weaknesses([now] * 8)
+        assert SessionWeaknessType.TIME_CORRELATED in types
+
+    def test_constant_static_numeric_id_not_weak(self) -> None:
+        """A constant numeric session ID that is NOT a current timestamp is just
+        a static cookie — not a generator weakness."""
+        types, _lines = _deterministic_session_weaknesses(["12345"] * 8)
+        assert types == set()
+
+    def test_high_md5_of_counter(self) -> None:
+        values = [hashlib.md5(str(i).encode()).hexdigest() for i in range(1, 9)]
+        types, _lines = _deterministic_session_weaknesses(values)
+        assert SessionWeaknessType.PREDICTABLE_FORMAT in types
+
+    def test_high_sha1_of_counter(self) -> None:
+        values = [hashlib.sha1(str(i).encode()).hexdigest() for i in range(1, 9)]
+        types, _lines = _deterministic_session_weaknesses(values)
+        assert SessionWeaknessType.PREDICTABLE_FORMAT in types
+
+    def test_impossible_random_160bit_token_not_predictable(self) -> None:
+        # bin2hex(random_bytes(20)) — 40 hex chars, 160 bits, no preimage.
+        values = [
+            "558435b215ef0d8329d92ba1ec1e85b9d1f0a8c1",
+            "3a3479869209db45a91b2cf0e1d6f7a8b9c0d1e2",
+            "49964a0a53432bd1f3b6c7d8e9f0a1b2c3d4e5f6",
+            "9e4fa3df63b8b0641122334455667788990aabbc",
+        ]
+        types, _lines = _deterministic_session_weaknesses(values)
+        assert types == set()
+
+    def test_constant_value_not_weak(self) -> None:
+        types, _lines = _deterministic_session_weaknesses(["same", "same", "same"])
+        assert types == set()
+
+    def test_too_few_samples_not_weak(self) -> None:
+        types, _lines = _deterministic_session_weaknesses(["1", "2"])
+        assert types == set()

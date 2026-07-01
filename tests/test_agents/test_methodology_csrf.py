@@ -320,6 +320,51 @@ class TestPhase3Analysis:
         assert weakness is None
         assert protected is True
 
+    @pytest.mark.asyncio
+    async def test_rotating_session_bound_token_overrides_llm_missing(self) -> None:
+        """FIX 2 (the DVWA-high/impossible phantom): a rotating, session-bound
+        user_token transmitted via GET is genuine protection. The phase-3 LLM
+        wrongly rules it 'missing' (citing GET transmission); the deterministic
+        override forces protected and ignores the LLM verdict."""
+        llm = _ScriptedLLM(
+            answers=[
+                '{"weakness": "missing", "protected": false, '
+                '"rationale": "GET-transmitted token is effectively missing"}'
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        form = {
+            "method": "GET",
+            "action": "",
+            "fields": [
+                {"name": "user_token", "type": "hidden", "value": "a1b2"},
+                {"name": "password_new", "type": "password"},
+                {"name": "password_conf", "type": "password"},
+                {"name": "Change", "type": "submit"},
+            ],
+        }
+        weakness, protected, _r = await agent._csrf_phase3_analyze(
+            form,
+            {"user_token": ["a1b2", "c3d4", "e5f6"]},
+            {"tokens_without_cookies": {}, "cookie_samesite": "", "set_cookie_present": False},
+        )
+        assert protected is True
+        assert weakness is None
+
+    @pytest.mark.asyncio
+    async def test_token_present_without_cookies_not_session_bound(self) -> None:
+        """A 'token' that is still served on the cookie-stripped fetch is not
+        session-bound, so the protection override does NOT fire — the LLM/
+        fallback classification stands (here: a constant value → predictable)."""
+        agent = _make_agent(_ScriptedLLM(answers=[""]))
+        agent._methodology_llm = agent.llm
+        protected, _reason = agent._csrf_token_provides_protection(
+            {"user_token": ["a1", "b2", "c3"]},
+            {"tokens_without_cookies": {"user_token": "still-here"}},
+        )
+        assert protected is False
+
 
 # ===========================================================================
 # Phase 4 — Finding
@@ -436,6 +481,57 @@ class TestCSRFMethodologyIntegration:
                     "fields": [
                         {"name": "csrf_token", "type": "hidden", "value": "r1"},
                         {"name": "amount", "type": "text"},
+                    ],
+                }
+            ],
+        )
+        findings = await agent._test_csrf(page)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_rotating_token_get_form_no_finding_despite_llm_missing(self) -> None:
+        """FIX 2 end-to-end: a DVWA-high/impossible-shaped GET password-change
+        form with a rotating, session-bound user_token emits NOTHING even when
+        the LLM insists the token is 'missing'."""
+        llm = _ScriptedLLM(
+            answers=[
+                '{"weakness": "missing", "protected": false, "rationale": "GET token missing"}'
+            ]
+            * 4
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        agent._session_cookies = {"PHPSESSID": "abc"}
+        rotation = iter(
+            [
+                _HTTPResponse(status=200, body='<input name="user_token" value="t2">'),
+                _HTTPResponse(status=200, body='<input name="user_token" value="t3">'),
+                _HTTPResponse(status=200, body=""),  # cookie-inspection GET
+                # without-cookies GET: DVWA 302s to login, no token in body
+                _HTTPResponse(status=302, body=""),
+            ]
+        )
+
+        async def fake_get(_url: str, _params: dict[str, str]) -> _HTTPResponse:
+            try:
+                return next(rotation)
+            except StopIteration:
+                return _HTTPResponse(status=200, body="")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://example.com/vulnerabilities/csrf/",
+            body="",
+            status=200,
+            forms=[
+                {
+                    "method": "GET",
+                    "action": "",
+                    "fields": [
+                        {"name": "password_new", "type": "password"},
+                        {"name": "password_conf", "type": "password"},
+                        {"name": "Change", "type": "submit"},
+                        {"name": "user_token", "type": "hidden", "value": "t1"},
                     ],
                 }
             ],

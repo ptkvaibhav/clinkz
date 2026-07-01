@@ -1081,3 +1081,41 @@ class TestSQLiPhase5ReflectionGuard:
         )
         assert verified is True
         assert "CLINKZUNIONMARKER42" in observed
+
+    @pytest.mark.asyncio
+    async def test_union_marker_in_sql_escaped_echo_rejected(self) -> None:
+        """FIX 4: a sink that SQL-backslash-escapes the echoed input (DVWA
+        xss_s/high mtxMessage, csrf/test_credentials username) turns the
+        payload's quotes into \\' so a verbatim replace(payload) misses and the
+        alphanumeric marker falsely 'survives'. Normalising body AND payload
+        through the same de-escape pipeline blanks the echo, so it is correctly
+        recognised as reflection, not extracted data."""
+        agent = _make_agent()
+        payload = "test' UNION SELECT 'CLINKZUNIONMARKER42',NULL-- -"
+        escaped = payload.replace("'", "\\'")  # addslashes / mysqli_real_escape_string
+        echo_body = f"<pre>Wrong password for '{escaped}'</pre>"
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=echo_body)
+        )
+        synth = {
+            "payload": payload,
+            "indicator_type": "union_data",
+            "expected_indicator": "CLINKZUNIONMARKER42",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            _make_page(), "username", synth, {"length": 100}
+        )
+        assert verified is False
+        assert "reflection" in observed
+
+    def test_marker_echo_guard_escaping_robust(self) -> None:
+        """Unit-level: the de-escape guard rejects an SQL-escaped echo but lets a
+        genuine data-row marker through."""
+        payload = "x' UNION SELECT 'CLINKZMARK',NULL-- -"
+        marker = "CLINKZMARK"
+        escaped_echo = (
+            f"<pre>Wrong password for '{payload.replace(chr(39), chr(92) + chr(39))}'</pre>"
+        )
+        assert ExploitAgent._marker_only_in_payload_echo(escaped_echo, payload, marker) is True
+        data_row = f"<pre>ID: {payload}<br />First name: {marker}<br /></pre>"
+        assert ExploitAgent._marker_only_in_payload_echo(data_row, payload, marker) is False
