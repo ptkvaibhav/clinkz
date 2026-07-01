@@ -23,18 +23,27 @@ class ParamLocation(StrEnum):
 
     The Exploit-side request builder uses this to decide *how* to carry a
     probe value: a query-string pair, a JSON request-body field, a
-    form-urlencoded body field, or a URL path-segment substitution.
+    form-urlencoded body field, a URL path-segment substitution, or a
+    request ``Cookie`` header.
 
     ``QUERY`` is the default (and the only value DVWA-style query/form
     endpoints ever need): an :class:`Endpoint` with an empty
     ``param_locations`` map behaves exactly as before this enum existed, so
     the addition is fully backward-compatible.
+
+    ``COOKIE`` marks a param carried in the request ``Cookie`` header — the
+    injection point when the server reads a value from ``$_COOKIE`` /
+    ``req.cookies`` (e.g. DVWA's blind-SQLi ``high`` level reads ``id`` from
+    a cookie, not the query string). The request builder clones the ambient
+    auth jar and overrides only that one cookie, leaving session/auth cookies
+    intact.
     """
 
     QUERY = "query"
     JSON_BODY = "json_body"
     FORM_BODY = "form_body"
     PATH = "path"
+    COOKIE = "cookie"
 
 
 class Endpoint(BaseModel):
