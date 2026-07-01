@@ -296,6 +296,28 @@ async def test_file_inclusion_against_dvwa(
     )
 
 
+async def test_file_inclusion_bypass_high_via_file_wrapper(
+    dvwa_url: str,
+    exploit_agent_high: ExploitAgent,
+) -> None:
+    """DVWA fi/high filters relative traversal (``fnmatch("file*")``) — naive
+    ``../`` is blocked and returns "ERROR: File not found!". The ``file://``
+    wrapper reads /etc/passwd by absolute path, bypassing the filter. Requires
+    the PHP-stack signal recon supplies in a full run (wrappers are PHP-only)."""
+    exploit_agent_high._technologies = ["php", "mysql", "apache"]
+    url = f"{dvwa_url}/vulnerabilities/fi/?page=include.php"
+    page = await exploit_agent_high._fetch_page(url, params=["page"])
+    result = await exploit_agent_high._run_lfi_methodology(page, "page")
+    assert result.verified, (
+        f"fi/high LFI not confirmed (traversal={result.primitives.traversal_sequence!r}, "
+        f"wrappers={result.primitives.wrapper_support}, observed={result.indicator_observed!r})"
+    )
+    assert "passwd" in (result.indicator_observed or "").lower()
+    # The confirming path is the file:// wrapper; naive ``../`` stays honest
+    # (a filtered block page is never recorded as a working traversal).
+    assert "file://" in result.primitives.wrapper_support
+
+
 # ---------------------------------------------------------------------------
 # 7. Unrestricted File Upload
 # ---------------------------------------------------------------------------
