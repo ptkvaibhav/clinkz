@@ -49,15 +49,18 @@ def dvwa_url() -> str:
     return url
 
 
-@pytest.fixture(scope="session")
-def dvwa_session(dvwa_url: str) -> dict[str, str]:
-    """Authenticate to DVWA and set security=low. Skip the suite if auth fails.
+def login_dvwa(dvwa_url: str, level: str = "low") -> dict[str, str]:
+    """Authenticate to DVWA at *level*; return the session cookie dict.
+
+    Skips the calling test (via ``pytest.skip``) if DVWA auth is unavailable,
+    so it doubles as the per-level session builder for the blind-SQLi ``high``
+    cookie-vector test and the 4-level regression.
 
     Sequence:
         1. GET /login.php — extract user_token.
         2. POST /login.php — admin / password + token.
         3. GET /security.php — extract user_token.
-        4. POST /security.php — security=low + token.
+        4. POST /security.php — security=<level> + token.
     """
     with httpx.Client(base_url=dvwa_url, timeout=10.0, follow_redirects=False) as client:
         # Step 1: GET login page, grab token + PHPSESSID
@@ -95,11 +98,11 @@ def dvwa_session(dvwa_url: str) -> dict[str, str]:
             pytest.skip("DVWA /security.php missing user_token")
         sec_token = token_match.group(1)
 
-        # Step 4: POST security=low
+        # Step 4: POST security=<level>
         r = client.post(
             "/security.php",
             data={
-                "security": "low",
+                "security": level,
                 "seclev_submit": "Submit",
                 "user_token": sec_token,
             },
@@ -112,8 +115,14 @@ def dvwa_session(dvwa_url: str) -> dict[str, str]:
     if "PHPSESSID" not in cookies:
         pytest.skip(f"DVWA auth did not produce a PHPSESSID cookie (got {list(cookies)})")
     # Ensure security cookie is present
-    cookies.setdefault("security", "low")
+    cookies.setdefault("security", level)
     return cookies
+
+
+@pytest.fixture(scope="session")
+def dvwa_session(dvwa_url: str) -> dict[str, str]:
+    """Authenticate to DVWA and set security=low. Skip the suite if auth fails."""
+    return login_dvwa(dvwa_url, "low")
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +167,14 @@ def _make_state() -> AsyncMock:
     return state
 
 
-@pytest_asyncio.fixture
-async def exploit_agent(dvwa_url: str, dvwa_session: dict[str, str]) -> ExploitAgent:
-    """Build an ExploitAgent with DVWA session cookies preloaded."""
+def build_exploit_agent(dvwa_url: str, session: dict[str, str]) -> ExploitAgent:
+    """Build an ExploitAgent preloaded with *session* cookies and a silent LLM.
+
+    The methodology LLM is pinned to the silent stub so the skill tests exercise
+    the deterministic methodology fallback (the v2 contract) rather than
+    whichever Anthropic-hosted model is configured. Real-LLM behaviour is
+    covered by integration tests, not skill smoke.
+    """
     agent = ExploitAgent(
         llm=_SilentLLM(),
         tools=[],
@@ -170,10 +184,28 @@ async def exploit_agent(dvwa_url: str, dvwa_session: dict[str, str]) -> ExploitA
         resolver=ToolResolver(),
         persistent_kb=None,
     )
-    agent._session_cookies = dict(dvwa_session)
-    # Pin the methodology LLM to the silent stub so the skill tests exercise
-    # the deterministic methodology fallback (the v2 contract) rather than
-    # whichever Anthropic-hosted model is currently configured. Real-LLM
-    # behaviour is covered by integration tests, not skill smoke.
+    agent._session_cookies = dict(session)
     agent._methodology_llm = agent.llm
     return agent
+
+
+@pytest_asyncio.fixture
+async def exploit_agent(dvwa_url: str, dvwa_session: dict[str, str]) -> ExploitAgent:
+    """Build an ExploitAgent with DVWA session cookies preloaded (security=low)."""
+    return build_exploit_agent(dvwa_url, dvwa_session)
+
+
+@pytest.fixture(scope="session")
+def dvwa_high_session(dvwa_url: str) -> dict[str, str]:
+    """A DVWA session at security=high — for cookie-vector / bypass-adaptive tests.
+
+    Independent of the session-scoped low ``dvwa_session`` so it never mutates
+    the shared low session other tests rely on.
+    """
+    return login_dvwa(dvwa_url, "high")
+
+
+@pytest_asyncio.fixture
+async def exploit_agent_high(dvwa_url: str, dvwa_high_session: dict[str, str]) -> ExploitAgent:
+    """An ExploitAgent bound to a DVWA security=high session."""
+    return build_exploit_agent(dvwa_url, dvwa_high_session)
