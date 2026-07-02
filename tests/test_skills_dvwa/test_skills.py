@@ -79,6 +79,27 @@ async def test_sqli_blind_against_dvwa(
     )
 
 
+async def test_sqli_blind_cookie_vector_high(
+    dvwa_url: str,
+    exploit_agent_high: ExploitAgent,
+) -> None:
+    """DVWA blind-SQLi ``high`` reads ``$id = $_COOKIE['id']`` — the injection
+    point is a cookie, not a query param. On the bare page (real-pipeline shape,
+    no ``?id=``) there is no HTML/query ``id``; the on-demand harvest discovers
+    ``id`` from the linked ``cookie-input.php`` setter and the cookie carrier
+    confirms boolean-blind via a true/false size delta."""
+    url = f"{dvwa_url}/vulnerabilities/sqli_blind/"
+    page = await exploit_agent_high._fetch_page(url)
+    assert "id" in page.injectable_cookies, (
+        f"cookie harvest failed to discover the 'id' vector at {url} "
+        f"(injectable_cookies={page.injectable_cookies})"
+    )
+    findings = await exploit_agent_high._test_sqli(page)
+    assert any("cookie" in f.title.lower() for f in findings), (
+        f"cookie-borne blind SQLi not confirmed at {url} (titles={[f.title for f in findings]})"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2b. NoSQL Injection — N/A on DVWA (PHP/MySQL stack)
 # ---------------------------------------------------------------------------
@@ -273,6 +294,28 @@ async def test_file_inclusion_against_dvwa(
     assert len(findings) >= 1, (
         f"_test_lfi failed to detect LFI at {url} (file_params_present={page.has_file_param})"
     )
+
+
+async def test_file_inclusion_bypass_high_via_file_wrapper(
+    dvwa_url: str,
+    exploit_agent_high: ExploitAgent,
+) -> None:
+    """DVWA fi/high filters relative traversal (``fnmatch("file*")``) — naive
+    ``../`` is blocked and returns "ERROR: File not found!". The ``file://``
+    wrapper reads /etc/passwd by absolute path, bypassing the filter. Requires
+    the PHP-stack signal recon supplies in a full run (wrappers are PHP-only)."""
+    exploit_agent_high._technologies = ["php", "mysql", "apache"]
+    url = f"{dvwa_url}/vulnerabilities/fi/?page=include.php"
+    page = await exploit_agent_high._fetch_page(url, params=["page"])
+    result = await exploit_agent_high._run_lfi_methodology(page, "page")
+    assert result.verified, (
+        f"fi/high LFI not confirmed (traversal={result.primitives.traversal_sequence!r}, "
+        f"wrappers={result.primitives.wrapper_support}, observed={result.indicator_observed!r})"
+    )
+    assert "passwd" in (result.indicator_observed or "").lower()
+    # The confirming path is the file:// wrapper; naive ``../`` stays honest
+    # (a filtered block page is never recorded as a working traversal).
+    assert "file://" in result.primitives.wrapper_support
 
 
 # ---------------------------------------------------------------------------
