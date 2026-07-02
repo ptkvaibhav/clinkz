@@ -304,9 +304,12 @@ class TestPhase4PayloadSynthesis:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
+        # Non-grounded primitives (no confirmed read) so the LLM path runs — a
+        # confirmed traversal/prefix/wrapper now bypasses the LLM in favour of
+        # the deterministic build (see TestFix3PrefersConfirmedBuild).
         synth = await agent._lfi_phase4_synthesize_payload(
             LFIRetrievalType.DIRECT_READ,
-            LFITraversalPrimitives(traversal_sequence="../"),
+            LFITraversalPrimitives(),
             _baseline(),
         )
         assert synth is not None
@@ -876,3 +879,249 @@ class TestFix2BypassAdaptive:
         _c2, baselines2 = await agent2._lfi_phase1_injection_point(page, "page")
         prim2, _e2 = await agent2._lfi_phase2_fingerprint(page, "page", baselines2)
         assert "data://" in prim2.wrapper_support
+
+
+# ===========================================================================
+# LFI regression — real-pipeline reproductions (PR #75, engagements 9f1b3950 /
+# e32346c0). These exercise the LIVE-LLM path with realistic inputs, not the
+# silent-LLM fallback the prior unit suite pinned (LESSONS.md #18: a green
+# smoke over a stubbed LLM proves only the deterministic fallback):
+#
+#   BUG A: recon named no PHP and the live LLM appended a dead ``%00`` to the
+#          confirmed absolute ``/etc/passwd`` read, so phase 5 re-probed a
+#          broken payload and the genuine read never re-confirmed (fi/low+med).
+#   BUG B: ``_is_php_stack()`` was False (recon miss), so the PHP-only wrapper
+#          loop was skipped and ``file://`` was never probed at fi/high.
+# ===========================================================================
+
+
+class _LFILiveLLM(LLMClient):
+    """LLM that emits *live* Anthropic-style answers keyed off the prompt shape.
+
+    Phase-3 rank prompts get a ranking; phase-4 synthesis prompts get a payload
+    the real LLM would produce — including the dead ``%00`` suffix that broke
+    the confirmed read (BUG A). Unlike the silent ``_ScriptedLLM(answers=[""])``
+    fixture, this drives the same code path the real pipeline exercises.
+    """
+
+    def __init__(self, *, rank: str, synth: str) -> None:
+        self._rank = rank
+        self._synth = synth
+        self.prompts: list[str] = []
+
+    async def reason(
+        self, messages: list[LLMMessage], tools: list[dict[str, Any]] | None = None
+    ) -> Any:
+        raise NotImplementedError
+
+    async def research(self, query: str) -> str:
+        return ""
+
+    async def generate_text(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if "Synthesize a local-file-inclusion payload" in prompt:
+            return self._synth
+        return self._rank
+
+
+class TestFix1PhpStackDetection:
+    """FIX 1: a PHPSESSID session cookie is ground-truth PHP even when recon's
+    LLM tech extraction named no PHP (the DVWA 9f1b3950 / e32346c0 miss)."""
+
+    def test_phpsessid_cookie_implies_php_stack(self) -> None:
+        agent = _make_agent()
+        agent._technologies = []  # recon named no PHP
+        assert agent._is_php_stack() is False
+        agent._session_cookies = {"PHPSESSID": "abc", "security": "high"}
+        assert agent._is_php_stack() is True
+
+    def test_php_in_technologies_still_wins(self) -> None:
+        agent = _make_agent()
+        agent._technologies = ["php", "mysql"]
+        assert agent._is_php_stack() is True
+
+    def test_non_php_session_cookie_stays_non_php(self) -> None:
+        """A Node/Juice-Shop token cookie must NOT read as a PHP stack."""
+        agent = _make_agent()
+        agent._technologies = ["node.js", "express"]
+        agent._session_cookies = {"token": "ey...", "language": "en"}
+        assert agent._is_php_stack() is False
+
+
+class TestFix3PrefersConfirmedBuild:
+    """FIX 2: phase 4 prefers the empirically-grounded deterministic build over
+    the live LLM when phase 2 CONFIRMED the read; phase 3 leads with the
+    confirmed retrieval type so it is never dropped from the tried window."""
+
+    @pytest.mark.asyncio
+    async def test_phase4_absolute_read_ignores_llm_null_byte(self) -> None:
+        """BUG A: prefix_required (absolute /etc/passwd confirmed) → phase 4
+        returns the clean absolute path, NOT the LLM's dead ``%00`` payload."""
+        llm = _LFILiveLLM(
+            rank='{"ranked":[{"type":"direct_read"}]}',
+            synth=(
+                '{"payload": "/etc/passwd%00", "expected_indicator": "root:x:0:0:", '
+                '"indicator_type": "file_signature", "rationale": "null-byte truncation"}'
+            ),
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        synth = await agent._lfi_phase4_synthesize_payload(
+            LFIRetrievalType.DIRECT_READ,
+            LFITraversalPrimitives(prefix_required=True, suffix_handling="appends_extension"),
+            _baseline(value="include.php"),
+        )
+        assert synth is not None
+        assert synth["payload"] == "/etc/passwd"  # deterministic, not /etc/passwd%00
+
+    @pytest.mark.asyncio
+    async def test_phase4_file_wrapper_ignores_llm_guess(self) -> None:
+        """BUG B: file:// confirmed → phase 4 returns file:///etc/passwd even if
+        the LLM would synthesize a traversal guess."""
+        llm = _LFILiveLLM(
+            rank='{"ranked":[{"type":"wrapper_extraction"}]}',
+            synth=(
+                '{"payload": "../../../../etc/passwd", "expected_indicator": "root", '
+                '"indicator_type": "file_signature", "rationale": "traversal"}'
+            ),
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        synth = await agent._lfi_phase4_synthesize_payload(
+            LFIRetrievalType.WRAPPER_EXTRACTION,
+            LFITraversalPrimitives(wrapper_support=["file://"]),
+            _baseline(value="include.php"),
+        )
+        assert synth is not None
+        assert synth["payload"] == "file:///etc/passwd"
+
+    @pytest.mark.asyncio
+    async def test_phase3_leads_with_confirmed_wrapper_even_if_llm_omits(self) -> None:
+        """FIX 2a: file:// confirmed but the LLM ranking omits wrapper_extraction
+        → it is prepended so phase 5 still tries it (fi/high robustness)."""
+        llm = _ScriptedLLM(
+            answers=['{"ranked":[{"type":"direct_read"},{"type":"error_based_path"}]}']
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        ranked = await agent._lfi_phase3_rank_retrieval_types(
+            LFITraversalPrimitives(wrapper_support=["file://"]),
+            {},
+        )
+        assert ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
+        assert LFIRetrievalType.WRAPPER_EXTRACTION in ranked[:3]
+
+    @pytest.mark.asyncio
+    async def test_phase3_llm_order_preserved_when_confirmed_present(self) -> None:
+        """The confirmed-lead reorder must not disturb the LLM's order when the
+        confirmed type is already ranked first."""
+        llm = _ScriptedLLM(
+            answers=['{"ranked":[{"type":"direct_read"},{"type":"wrapper_extraction"}]}']
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        ranked = await agent._lfi_phase3_rank_retrieval_types(
+            LFITraversalPrimitives(prefix_required=True),  # DIRECT_READ confirmed
+            {"absolute_passwd_match": True},
+        )
+        assert ranked[0] == LFIRetrievalType.DIRECT_READ
+        assert ranked[1] == LFIRetrievalType.WRAPPER_EXTRACTION
+
+
+class TestLFIRealPipelineReproduction:
+    """End-to-end ``_test_lfi`` with the exact real-pipeline conditions the old
+    harness masked: recon named NO php, a PHPSESSID cookie is present, and an
+    ACTIVE LLM returns live-vocabulary payloads. A finding must still emit."""
+
+    @pytest.mark.asyncio
+    async def test_fi_low_absolute_read_emits_despite_missing_recon_php(self) -> None:
+        """fi/low style: only the clean absolute ``/etc/passwd`` reads; the LLM
+        would append ``%00``. Finding emits via the deterministic build."""
+        llm = _LFILiveLLM(
+            rank='{"ranked":[{"type":"direct_read"},{"type":"wrapper_extraction"}]}',
+            synth=(
+                '{"payload": "/etc/passwd%00", "expected_indicator": "root:x:0:0:", '
+                '"indicator_type": "file_signature", "rationale": "null-byte"}'
+            ),
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        agent._technologies = []  # recon named no PHP
+        agent._session_cookies = {"PHPSESSID": "s", "security": "low"}
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            if value == "/etc/passwd":  # clean absolute read works (no %00)
+                return _HTTPResponse(
+                    status=200, body="root:x:0:0:root:/root:/bin/bash\nbin:x:1:1:bin:/bin"
+                )
+            return _HTTPResponse(status=200, body="<html>page</html>" * 40)
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page("http://t/vulnerabilities/fi/?page=include.php", params=["page"])
+        findings = await agent._test_lfi(page)
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "/etc/passwd" in joined
+        assert "%00" not in findings[0].evidence[-1] or "payload=/etc/passwd\n" not in joined
+
+    @pytest.mark.asyncio
+    async def test_fi_high_file_wrapper_unlock_end_to_end(self) -> None:
+        """fi/high style: naive ``../`` and absolute ``/etc/passwd`` are filtered
+        to a block page; only ``file:///etc/passwd`` reads. With no php in
+        _technologies but a PHPSESSID cookie, the wrapper loop runs, file:// is
+        probed and confirmed, and a finding emits — even though the LLM ranking
+        omits wrapper_extraction and the LLM synth is a traversal guess."""
+        llm = _LFILiveLLM(
+            rank='{"ranked":[{"type":"direct_read"},{"type":"error_based_path"}]}',
+            synth=(
+                '{"payload": "include.php/../../../etc/passwd", "expected_indicator": "root", '
+                '"indicator_type": "file_signature", "rationale": "prefix traversal"}'
+            ),
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        agent._technologies = []  # recon named no PHP
+        agent._session_cookies = {"PHPSESSID": "s", "security": "high"}
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            if value == "file:///etc/passwd":  # fnmatch("file*") passes → PHP reads it
+                return _HTTPResponse(
+                    status=200, body="root:x:0:0:root:/root:/bin/bash\nbin:x:1:1:bin:/bin"
+                )
+            if "etc/passwd" in value or "../" in value or "://" in value:
+                return _HTTPResponse(status=200, body="ERROR: File not found!")
+            return _HTTPResponse(status=200, body="<html>page</html>" * 40)
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page("http://t/vulnerabilities/fi/?page=include.php", params=["page"])
+        findings = await agent._test_lfi(page)
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        assert "file:///etc/passwd" in joined
+        assert "wrapper_extraction" in joined
+
+    @pytest.mark.asyncio
+    async def test_fi_impossible_whitelist_emits_nothing(self) -> None:
+        """fi/impossible style: a whitelist rejects every probe (no signature
+        anywhere) → no confirmation, no finding, no phantom."""
+        llm = _LFILiveLLM(
+            rank='{"ranked":[{"type":"direct_read"},{"type":"wrapper_extraction"}]}',
+            synth=(
+                '{"payload": "include.php/../../etc/passwd", "expected_indicator": "root", '
+                '"indicator_type": "file_signature", "rationale": "guess"}'
+            ),
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        agent._technologies = []
+        agent._session_cookies = {"PHPSESSID": "s", "security": "impossible"}
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            if value in ("include.php", "file1.php", "file2.php", "file3.php"):
+                return _HTTPResponse(status=200, body="<html>allowed page</html>" * 40)
+            return _HTTPResponse(status=200, body="ERROR: File not found!")
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page("http://t/vulnerabilities/fi/?page=include.php", params=["page"])
+        findings = await agent._test_lfi(page)
+        assert findings == []
