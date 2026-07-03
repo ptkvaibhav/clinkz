@@ -1339,25 +1339,38 @@ class TestSessionCarrier:
         assert got["url"] == _TRIGGER
         assert resp.body == "TRIG"
 
+    @pytest.mark.asyncio
+    async def test_cached_form_carrier_includes_benign_siblings(self) -> None:
+        """With the setter form cached (post-discovery), the carrier submits the
+        payload field plus benign siblings and returns the trigger response."""
+        agent = _make_agent()
+        form = {
+            "action": "#",
+            "method": "POST",
+            "fields": [
+                {"name": "id", "type": "text"},
+                {"name": "Submit", "type": "submit", "value": "Submit"},
+            ],
+        }
+        agent._session_form_cache[_SETTER] = (_SETTER, form)
+        posted: dict[str, Any] = {}
 
-def _dvwa_high_session(state: dict[str, str]):
-    """Stateful (GET setter / POST setter / GET trigger) mock for DVWA SQLi high.
+        async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            posted["url"] = url
+            posted["data"] = dict(data)
+            return _HTTPResponse(status=200, body="Session ID: PWN")
 
-    The value POSTed to the setter is stored in *state* and reflected by the
-    trigger's ``ID:`` echo, mirroring ``$_SESSION['id']`` round-tripping through
-    the server. Callers layer the query-result behaviour onto the trigger body.
-    """
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            return _HTTPResponse(status=200, body="TRIGGER")
 
-    async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
-        if url.endswith("session-input.php"):
-            return _HTTPResponse(status=200, body=_SETTER_FORM)
-        return _HTTPResponse(status=200, body=state["trigger"])
-
-    async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
-        state["id"] = data.get("id", "")
-        return _HTTPResponse(status=200, body="Session ID: " + state["id"])
-
-    return fake_get, fake_post
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page(url=_TRIGGER, params=[])
+        resp = await agent._session_send_probe(page, _SETTER, "id", "PWN")
+        assert posted["url"] == _SETTER
+        assert posted["data"]["id"] == "PWN"
+        assert "Submit" in posted["data"]  # benign sibling carried through
+        assert resp.body == "TRIGGER"
 
 
 class TestSessionLinkGate:
@@ -1427,6 +1440,41 @@ class TestSessionLinkGate:
         vectors = await agent._harvest_session_vectors(_TRIGGER, trigger_body)
         assert [v.field for v in vectors] == ["id"]
         assert vectors[0].setter_url == _SETTER
+
+    @pytest.mark.asyncio
+    async def test_establishes_via_divergence_when_echo_is_row_gated(self) -> None:
+        """DVWA-high shape: the ``ID:`` echo is inside ``while($row=...)``.
+
+        A non-matching benign value (the random marker) renders NOTHING, so the
+        reflection signal can never fire; the benign matching-vs-non-matching
+        divergence must still establish the channel. This is the live-verified
+        gap the marker-only gate missed on the real target.
+        """
+        agent = _make_agent()
+        state = {"id": ""}
+
+        def render() -> str:
+            # Row-gated: only a matching id ('1') renders a result block; any
+            # other value (the random marker, a big id) renders no echo at all.
+            if state["id"] == "1":
+                return "<html><pre>ID: 1<br />First name: admin<br />Surname: admin</pre></html>"
+            return "<html><body>Nothing to display</body></html>"
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            if url.endswith("session-input.php"):
+                return _HTTPResponse(status=200, body=_SETTER_FORM)
+            return _HTTPResponse(status=200, body=render())
+
+        async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            state["id"] = data.get("id", "")
+            return _HTTPResponse(status=200, body="Session ID: " + state["id"])
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        baseline = "<html><body>Nothing to display</body></html>"
+        vectors = await agent._probe_session_setter(_SETTER, _TRIGGER, baseline)
+        assert [v.field for v in vectors] == ["id"]
+        assert _SETTER in agent._session_form_cache
 
 
 class TestSessionPhase5OnTrigger:
