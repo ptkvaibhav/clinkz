@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from clinkz.agents._url_safety import is_state_changing_url
+from clinkz.agents._url_safety import find_session_setter_urls, is_state_changing_url
 
 
 @pytest.mark.parametrize(
@@ -68,3 +68,56 @@ def test_state_changing_urls_flagged(url: str) -> None:
 )
 def test_safe_urls_not_flagged(url: str) -> None:
     assert is_state_changing_url(url) is False
+
+
+# ---------------------------------------------------------------------------
+# Session-value setter reference scraping
+# ---------------------------------------------------------------------------
+
+
+class TestFindSessionSetterUrls:
+    """The scraper must catch DVWA's onclick popUp ref and reject noise."""
+
+    def test_dvwa_onclick_popup_ref_resolved(self) -> None:
+        """DVWA SQLi high links its setter via onclick, not an href/form."""
+        body = (
+            '<a href="#" onclick="popUp(\'session-input.php\'); return false;">'
+            "Click here to change your ID.</a>"
+        )
+        got = find_session_setter_urls("http://t/vulnerabilities/sqli/", body)
+        assert got == ["http://t/vulnerabilities/sqli/session-input.php"]
+
+    def test_href_and_window_open_forms(self) -> None:
+        body = (
+            '<a href="/app/session-input.php">set</a>'
+            "<button onclick=\"window.open('session-set.php')\">x</button>"
+        )
+        got = find_session_setter_urls("http://t/app/page", body)
+        assert "http://t/app/session-input.php" in got
+        assert "http://t/app/session-set.php" in got
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '<script src="/js/sessions.js"></script>',  # bundle, no set/input signal
+            'sessionStorage.getItem("k")',  # not a URL token
+            '<div class="session-banner">hi</div>',  # not path-shaped / not setter
+            "<p>your session expired</p>",  # bare word, no quotes/path
+            "",  # empty body
+        ],
+    )
+    def test_incidental_session_refs_rejected(self, body: str) -> None:
+        assert find_session_setter_urls("http://t/x/", body) == []
+
+    def test_cross_origin_setter_dropped(self) -> None:
+        body = "<a onclick=\"popUp('http://evil.example/session-input.php')\">x</a>"
+        assert find_session_setter_urls("http://t/x/", body) == []
+
+    def test_dedup_preserves_order(self) -> None:
+        body = (
+            "<a onclick=\"popUp('session-input.php')\">a</a>"
+            "<a onclick=\"popUp('session-input.php')\">b</a>"
+            '<a href="session-set.php">c</a>'
+        )
+        got = find_session_setter_urls("http://t/m/", body)
+        assert got == ["http://t/m/session-input.php", "http://t/m/session-set.php"]
