@@ -1,0 +1,71 @@
+# Honesty patterns — clinkz-dev reference
+
+Amplifies `SKILL.md` §2–3. **Read when building or fixing a specific methodology.** Everything here is consolidated from `CLAUDE.md` and `.claude/LESSONS.md` — no new policy, just the lookup you don't want to hold in your head every task.
+
+---
+
+## Confirmation oracles — the defining effect per methodology
+
+Emit only on the **confirm-on** signal; the **phantom** column is what has masqueraded as it. The *witness* endpoints are examples that exercise the general primitive — never bake them into detection.
+
+| Methodology | Confirm on (defining effect) | Phantom to reject | Shape note |
+|---|---|---|---|
+| `_test_sqli` | DB-error signature, boolean row-set delta, or a UNION **data row in a *successful* (non-error) response** | marker in body / inside an **inline (200)** or 4xx/5xx DB error / escaped-echo of the payload | carriers: query·form·json + `_cookie_send_probe` + `_session_send_probe`; break-prefix probe terminates `-- -` |
+| `_test_nosqli` | NoSQL error signature **or** count-based match-set widening (`$ne`) / time delta (`$where`) | a bare body diff (PHP `Array to string`), a SQL error | `_nosql_send_probe` sends a nested operator object as a JSON *value*; N/A on SQL/PHP by construction |
+| `_test_ssti` | arithmetic **product rendered**, baseline-anchored / RCE echo-canary in output position | the template literal reflected verbatim (profile renders username *twice*) | engine-fingerprinted; read-back aware (`_ssti_observe`); scaffold-stripped |
+| `_test_xxe` | **file-content signature we never sent** (embedded, wrapped-channel) / bounded nested-entity parse delay | the payload echoed back | endpoint-scoped; `_http_post_xml`/multipart carrier; **4xx (410) is a legit channel, NOT a reject** |
+| `_test_cmdi` | command output in **command-output position** in a 2xx/3xx (echo-canary probe for stderr-only base cmds) | echo-canary in a 4xx/5xx / stack-trace / an echoed `echo` scaffold (encoding-robust) | reflection-honest phase 5 |
+| `_test_lfi` | actual **file content** (`_LFI_FILE_SIGNATURES` / base64-decoded / source markers) | a filesystem path in a stack trace (disclosure ≠ read) | PHP wrappers probed **only on a PHP stack**; prefer the deterministic build once phase-2 confirms |
+| `_test_file_upload` | stored artifact fetched back **executes** — canary echoed as interpreter output | filename echoed / bare form re-render / merely retrievable | acceptance marker must differ from the app's benign echo (`uploaded`); real multipart transport |
+| `_test_idor` | an **authorization boundary crossed** (out-of-allotment id rejected; forged id → another principal's record) | content-length/body delta with no boundary present; reflection sink; error/denied page; auth-form params | phase-5 refuses when `authz_check_present` is False |
+| `_test_open_redirect` | **3xx `Location`**, browser-resolved (`urljoin`), navigates off-site to the attacker host | attacker string in body / JS / a same-host path that merely *contains* it | allowlist bypass from the app's *own* harvested tokens |
+| `_test_xss_reflected` | payload reflects **unescaped in an executable position**, verifying response captured | a `verified` label with no captured response (verified blind) | thread the phase-5 verifying response into evidence |
+| `_test_xss_stored` | phase-5 verifies the stored payload reflects unescaped in an executable position | a synthesized-but-unverified payload | reaches JSON-body sinks via the synthesized pseudo-form |
+| `_test_xss_dom` | client-side sink reached | — | `strength=likely` (no JS interpreter in-loop) |
+| `_test_csrf` | a **security-sensitive** state change with a missing / cookie-only anti-CSRF token | a plain login; a lone-`password` crypto form; a bearer-only JSON API; a rotating session-bound token that *is* present | sensitivity + bearer-only + rotating-token deterministic gates ahead of the LLM |
+| `_test_brute_force` | no lockout / rate-limit / captcha on a login (JSON or form creds) | — | iterates `_injectable_forms` incl. the JSON pseudo-form |
+| `_test_weak_session` | deterministic predictability: arithmetic progression / recent-timestamp window / cracked md5·sha1·sha256 preimage / measured entropy below a bits floor | a high-entropy random token labelled predictable; a missing `SameSite` called HIGH (it's a hardening note) | phase-3 LLM demoted to advisory rationale only |
+| `_test_security_headers` | missing / weak CSP · Referrer-Policy · Permissions-Policy | the same origin's header emitted twice (casing) | tracker keys `(origin, header.lower())` |
+| `_test_javascript_attacks` | server-rendered form-bound client-side gate | — | SPA route serving no form → skip/empty, not a contract break |
+| `_test_jwt` (Tier-2) | forged token **accepted like the valid baseline** (broken-sig rejected) | a rejected token (never confirms); anything not baseline-anchored | endpoint-scoped; `_jwt_send_with_token` **drops the cookie jar**; deterministic signing; evidence **redacted** |
+| `_test_ssrf` (Tier-2) | internal/metadata **content** the app should not return (cloud-metadata signature / loopback origin marker), **in-band only** | the internal URL echoed back; a `file://` read (that's LFI) | blind → emit **nothing**, note `blind_suspected` (no OOB collaborator) |
+
+---
+
+## Phantom patterns that have actually bitten us
+
+Each is a reusable rule + the one-line failure it prevents. If your change touches the same shape, assume the trap applies.
+
+- **Reflection-in-error-page.** An inline (HTTP 200) DB/parse error, or a 4xx/5xx stack trace, that echoes your marker reads as data/execution. → Guard on the **absence of an error signature**, not on status alone; the CMDi `;echo PWNED` off a 500 and the SQLi union-marker in an inline `mysqli_error()` both slipped a status-only guard.
+- **Escaped-echo reflection.** A sink that `addslashes`/`htmlentities`-escapes your input still reflects it, so a naïve substring survives. → De-escape (HTML **and** backslash) before the echo-compare (DVWA `Wrong password for '<input>'`, `xss_s` `mtxMessage`).
+- **Uniform-confirm across a graded control.** Same confirmation at low/medium/high **and** impossible = the oracle is matching the app's benign response, not exploitation. → A real vuln's exploitability changes as the control hardens; if impossible confirms, the wire probably never reached the app (upload's never-working multipart transport).
+- **Acceptance marker = the app's own benign/failure substring.** The success oracle collides with the form re-render (`name="uploaded"`). → Anchor acceptance on a signal *distinct from* the benign/failure path.
+- **Silent-LLM harness proves only the fallback.** A pinned-silent LLM returns `""` → the methodology always takes the deterministic-fallback labels, so any live-LLM-vocabulary path is untested and green is false. → Validate the **live-LLM** path (real container / live-vocabulary fixture), and gate verification on **response evidence, not a recognised label**.
+- **LLM mangles a proven primitive.** Phase-2 confirmed the read; the live model appends a dead `%00`, and phase-5 re-probes the broken payload. → Once phase-2 empirically confirms a primitive, **use it deterministically** (skip the LLM for that type) — the SQLi/LFI "prefer the empirically-grounded build" discipline.
+- **Flaky LLM stack extraction.** Recon/research names PHP on one run, omits it the next, so a stack-gated branch (`file://`) silently skips. → Backstop stack gates with a **deterministic protocol artifact** (`PHPSESSID` cookie, `.php` path, `X-Powered-By` header), never the LLM tech list alone.
+- **Reused matcher across a new channel.** A line-anchored `^root:` LFI signature fails on an XXE disclosure that arrives **wrapped** (`…reasons: <…>root:x:0:0:`). → When reusing a matcher in a new context, check the **content shape** (raw vs wrapped/embedded/truncated) and use an embedded pattern where the channel wraps.
+- **Removing an FP unmasks an FN one probe away.** Killing the echo-robust divergence made the finding *vanish* (a bare `--` left `' LIMIT 1` un-commented). → **Re-run and re-inspect after *each* fix**; align sibling probe builders (breakout vs union-count vs synthesis all terminate `-- -`).
+- **Premise not verified against the running target.** "The target ships a spec / header / module / initialised DB" is often false on a frozen image. → `curl` the **running** target for the asserted artifact as **step 0** (DVWA had no `users` table; Juice Shop ships no parseable spec; the frozen DVWA image predated `open_redirect`).
+- **Session-poisoning via a state-changing crawl link.** Following `security.php?phpids=on` enabled a WAF for the whole shared session; every later injection hit a block page. → No crawl/plan/probe visits a state-changing link; `is_state_changing_url` is the chokepoint. "Works standalone, fails in pipeline" → diff the **recorded requests** and suspect server/session state an earlier phase mutated.
+- **A live "confirmed" can still be a phantom.** The first HIGH session-indirection run reported `union_data` off an inline-error reflection. → A live-pipeline label is not proof; read the finding's own evidence (payload + where the indicator surfaced + status) and **replay the exact payload** against the live target.
+- **Exit-code false green.** `pytest … | tail` reports the pipe's exit, not pytest's — 3 real failures read as pass. → Capture `$?` immediately: `pytest … > out.txt 2>&1; echo "EXIT=$?"`; never `tail`/`&&`.
+- **LLM-populated `list[str]` is a latent crash.** The live model returns `{id, reason}` objects; construction raises, a broad `except` degrades the whole pass to empty. → Type any LLM-filled object-ish field `list[dict[str, Any]]` with a coercing `@field_validator(mode="before")`; sweep sibling fields when you fix one.
+
+---
+
+## Premise-verification checklist (step 0)
+
+Before building on any asserted artifact, probe the **running** target:
+- Endpoint/module exists? → `curl` it (a frozen vuln-app image is often years behind the cheat-sheet).
+- Spec/header present? → fetch and confirm it parses (Juice Shop's `/api-docs` is Swagger-UI HTML, not a spec).
+- Data plane initialised? → confirm auth actually succeeds (a set `PHPSESSID` alone is **not** an authenticated session).
+- Vuln actually live on *this* deployment? → read the gate / stand up an instance with it enabled ("challenge exists & unsolved" ≠ patched).
+
+If the premise is wrong → **STOP and report.** Don't silently fix a different thing.
+
+## Real-validation quick checklist
+
+- Smoke-gate during build (real endpoint, deterministic signal); full pipeline only for LLM-involved / discovery-integration / one final per-batch confirmation.
+- Pre-flight a real run: keys present (`grep -c`, never print) + live-ping Anthropic **and** Gemini; `TOOL_EXEC_MODE=local` for the in-process HTTP path. Can't run real → STOP, don't sub a harness.
+- Re-run scope = blast radius: new module → its cells + impossible-honesty check; **shared change → the whole affected family across all levels.**
+- Read the report + trace raw. A live "confirmed" is not proof until you've replayed the payload.
