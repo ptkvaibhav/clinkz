@@ -734,26 +734,43 @@ class TestBreakPrefixEchoRobustness:
         )
 
     @pytest.mark.asyncio
-    async def test_discover_break_prefix_skips_echo_divergent_empty_closer(self) -> None:
-        """DVWA sqli/high: the integer ``user_id`` coerces ``'1 OR 1=1 -- -'`` to
-        ``1`` so BOTH empty-closer probes match admin and differ only by the
-        echoed payload — the empty closer must be rejected and the genuine ``'``
-        closer found. This is the a0095af2 break_prefix='' root cause."""
+    async def test_discover_break_prefix_dvwa_high_shape(self) -> None:
+        """DVWA sqli/high breakout discovery must find ``'`` — faithfully models
+        BOTH root causes the session vector exposed (a0095af2 / 62596e97).
+
+        The mock reproduces ``SELECT ... WHERE user_id = '<value>' LIMIT 1`` with
+        an ``ID:`` echo: (1) the integer ``user_id`` coerces ``'1 OR 1=1 -- -'``
+        to ``1`` so BOTH empty-closer probes match admin and differ only by the
+        echoed payload (the empty closer must be rejected); and (2) a bare ``--``
+        does not comment the appended ``' LIMIT 1`` in MySQL, so a ``'`` breakout
+        without ``-- `` errors (the genuine closer is found only because the probe
+        uses ``-- -``, not the bare confirmed comment)."""
         agent = _make_agent()
 
         async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
-            # Only a real ``'`` breakout with a false predicate empties the result
-            # set (no row, no ``ID:`` echo). Everything else coerces to id=1 →
-            # admin row, echoing the raw value in ``ID:``.
-            if value.startswith("1'") and "AND 1=2" in value:
+            breakout = value.startswith("1'")
+            # A ``'`` breakout leaves the appended ``' LIMIT 1`` un-terminated
+            # unless a real line comment (``-- `` with trailing whitespace, or
+            # ``#``) eats it — otherwise the query is unbalanced and errors.
+            if breakout and "-- " not in value and not value.rstrip().endswith("#"):
+                return _HTTPResponse(
+                    status=200,
+                    body="You have an error in your SQL syntax ... MariaDB server version",
+                )
+            # Balanced ``'`` breakout with a false predicate empties the result
+            # set (no row, no ``ID:`` echo).
+            if breakout and "AND 1=2" in value:
                 return _HTTPResponse(status=200, body="<body>Nothing to display.</body>")
+            # Everything else coerces to id=1 → admin row, echoing the raw value.
             return _HTTPResponse(
                 status=200,
                 body=f"<pre>ID: {value}<br />First name: admin<br />Surname: admin</pre>",
             )
 
         agent._send_probe = fake_probe  # type: ignore[method-assign]
-        primitives = InjectionPrimitives(quote_chars=["'"], comment_syntax=["-- -"])
+        # comment_syntax[0] is the bare ``--`` DVWA phase-2 actually confirms; the
+        # discover method must still use ``-- -`` internally so ``'`` does not error.
+        primitives = InjectionPrimitives(quote_chars=["'"], comment_syntax=["--"])
         closer = await agent._sqli_discover_break_prefix(_make_page(), "id", "1", primitives)
         assert closer == "'"
 
