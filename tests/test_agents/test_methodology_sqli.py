@@ -576,6 +576,37 @@ class TestPhase5Verification:
         assert "CLINKZUNIONMARKER42" in observed
 
     @pytest.mark.asyncio
+    async def test_union_data_rejects_marker_inside_inline_db_error(self) -> None:
+        """DVWA sqli/high renders ``mysqli_error()`` INLINE at status 200; a
+        malformed union payload's marker reflected in that error is NOT data.
+
+        This is the a0095af2 session-vector phantom: the marker surfaced only
+        inside "near '<marker>'-- -' ... MariaDB" — input reflection in an error
+        message, not a UNION row. The 4xx/5xx guard cannot catch it (status is
+        200) and the full-payload echo strip misses the partial fragment the
+        parser reports, so the DB-error signature is the honest reject signal.
+        """
+        agent = _make_agent()
+        error_body = (
+            "You have an error in your SQL syntax; check the manual that "
+            "corresponds to your MariaDB server version for the right syntax "
+            "to use near 'CLINKZUNIONMARKER42'-- -' LIMIT 1' at line 1"
+        )
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=error_body)
+        )
+        synth = {
+            "payload": "1 UNION SELECT 'CLINKZUNIONMARKER42'-- -",
+            "indicator_type": "union_data",
+            "expected_indicator": "CLINKZUNIONMARKER42",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            _make_page(), "id", synth, {"length": 100}
+        )
+        assert verified is False
+        assert "DB error" in observed
+
+    @pytest.mark.asyncio
     async def test_content_diff_paired_payloads(self) -> None:
         """Boolean-blind: true ≈ baseline, false diverges."""
         agent = _make_agent()
@@ -671,6 +702,60 @@ class TestPhase5Verification:
         finally:
             exploit_mod.time.monotonic = original_monotonic  # type: ignore[assignment]
         assert verified is False
+
+
+class TestBreakPrefixEchoRobustness:
+    """Phase-2 breakout discovery must not mistake a value-echo for a predicate
+    divergence (the DVWA sqli/high ``ID:`` echo, exposed by the session vector)."""
+
+    def test_diverges_beyond_payload_echo_rejects_echo_only(self) -> None:
+        """Two bodies that differ ONLY because each echoes its own payload are
+        not a real divergence."""
+        agent = _make_agent()
+        true_body = "<pre>ID: 1 OR 1=1 -- -<br />First name: admin</pre>"
+        false_body = "<pre>ID: 1 AND 1=2 -- -<br />First name: admin</pre>"
+        assert (
+            agent._diverges_beyond_payload_echo(
+                true_body, false_body, "1 OR 1=1 -- -", "1 AND 1=2 -- -"
+            )
+            is False
+        )
+
+    def test_diverges_beyond_payload_echo_keeps_real_divergence(self) -> None:
+        """A genuine predicate divergence (row vs no row) survives the echo strip."""
+        agent = _make_agent()
+        true_body = "<pre>ID: 1' OR 1=1 -- -<br />First name: admin</pre>"
+        false_body = "<body>Nothing to display.</body>"
+        assert (
+            agent._diverges_beyond_payload_echo(
+                true_body, false_body, "1' OR 1=1 -- -", "1' AND 1=2 -- -"
+            )
+            is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_discover_break_prefix_skips_echo_divergent_empty_closer(self) -> None:
+        """DVWA sqli/high: the integer ``user_id`` coerces ``'1 OR 1=1 -- -'`` to
+        ``1`` so BOTH empty-closer probes match admin and differ only by the
+        echoed payload — the empty closer must be rejected and the genuine ``'``
+        closer found. This is the a0095af2 break_prefix='' root cause."""
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            # Only a real ``'`` breakout with a false predicate empties the result
+            # set (no row, no ``ID:`` echo). Everything else coerces to id=1 →
+            # admin row, echoing the raw value in ``ID:``.
+            if value.startswith("1'") and "AND 1=2" in value:
+                return _HTTPResponse(status=200, body="<body>Nothing to display.</body>")
+            return _HTTPResponse(
+                status=200,
+                body=f"<pre>ID: {value}<br />First name: admin<br />Surname: admin</pre>",
+            )
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        primitives = InjectionPrimitives(quote_chars=["'"], comment_syntax=["-- -"])
+        closer = await agent._sqli_discover_break_prefix(_make_page(), "id", "1", primitives)
+        assert closer == "'"
 
 
 # ===========================================================================
