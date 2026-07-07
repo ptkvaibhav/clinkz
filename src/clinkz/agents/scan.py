@@ -453,15 +453,9 @@ class ScanAgent(BaseAgent):
         except ValueError:
             self._logger.warning("No fuzzing tools available")
 
-        # Merge parameterized endpoints from crawl fallback (forms, query params)
+        # Merge parameterized endpoints from crawl fallback (forms, query params).
         if hasattr(self, "_crawl_endpoints") and self._crawl_endpoints:
-            # Deduplicate by (url, method) — prefer the version with params
-            seen: set[tuple[str, str]] = {(ep.url, ep.method) for ep in endpoints}
-            for ep in self._crawl_endpoints:
-                key = (ep.url, ep.method)
-                if key not in seen:
-                    endpoints.append(ep)
-                    seen.add(key)
+            self._merge_crawl_endpoints_preferring_params(endpoints, self._crawl_endpoints)
             self._crawl_endpoints = []
 
         return HTTPScanResult(
@@ -529,6 +523,40 @@ class ScanAgent(BaseAgent):
         if hasattr(parsed, "directories"):
             paths.extend(str(d) for d in parsed.directories)
         return paths
+
+    @staticmethod
+    def _merge_crawl_endpoints_preferring_params(
+        endpoints: list[Endpoint], crawl_endpoints: list[Endpoint]
+    ) -> None:
+        """Merge parameterised crawl endpoints into *endpoints*, preferring params.
+
+        Deduplicate by ``(url, method)`` but **prefer the version with params**: a
+        URL-only crawler (katana) adds a bare ``Endpoint(url=..., params=[])`` for
+        every discovered URL, so when enrichment later finds the same URL as a
+        parameterised link, its params must **upgrade** the bare endpoint in place
+        rather than be skipped. Skipping it (the prior behaviour) left query /
+        redirect links such as ``.../open_redirect/source/low.php?redirect=...``
+        param-less in the endpoint set, so the Exploit planner's param-gated
+        methodologies (open-redirect, SQLi, LFI, …) never ran against them — the
+        real endpoint was silently invisible to ``_test_open_redirect``.
+
+        Mutates *endpoints* in place (append new, upgrade bare).
+        """
+        by_key: dict[tuple[str, str], Endpoint] = {}
+        for ep in endpoints:
+            by_key.setdefault((ep.url, ep.method), ep)
+        for ep in crawl_endpoints:
+            key = (ep.url, ep.method)
+            existing = by_key.get(key)
+            if existing is None:
+                endpoints.append(ep)
+                by_key[key] = ep
+            elif ep.params and not existing.params:
+                existing.params = list(ep.params)
+                if ep.param_locations and not existing.param_locations:
+                    existing.param_locations = dict(ep.param_locations)
+                if ep.content_type and not existing.content_type:
+                    existing.content_type = ep.content_type
 
     def _merge_into_crawl_endpoints(self, new_endpoints: list[Endpoint]) -> None:
         """Append new parameterized endpoints into ``self._crawl_endpoints``.

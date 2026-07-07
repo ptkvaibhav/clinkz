@@ -991,3 +991,42 @@ async def test_run_fuzz_tool_omits_cookies_when_session_empty(tmp_path: Path) ->
     assert len(_CookieCapturingFuzzTool.captured) == 1
     args = _CookieCapturingFuzzTool.captured[0]
     assert "cookies" not in args
+
+
+def test_crawl_merge_upgrades_bare_katana_url_with_enriched_params() -> None:
+    """Regression: a bare katana URL must inherit the enriched query params.
+
+    The DVWA open-redirect dispatch gap — katana emits the raw
+    ``.../open_redirect/source/low.php?redirect=info.php?id=1`` URL (added as a
+    bare, param-less Endpoint), then enrichment finds the same URL as a
+    ``redirect``-bearing link. The merge must UPGRADE the bare endpoint with the
+    ``redirect`` param, else the param-gated open-redirect methodology never runs
+    against the real endpoint.
+    """
+    url = "http://10.0.0.1/vulnerabilities/open_redirect/source/low.php?redirect=info.php?id=1"
+    # Bare URL from katana (added first, no params) + enriched param version.
+    endpoints = [Endpoint(url=url, method="GET", params=[])]
+    crawl = [Endpoint(url=url, method="GET", params=["redirect"])]
+    ScanAgent._merge_crawl_endpoints_preferring_params(endpoints, crawl)
+    assert len(endpoints) == 1, "same (url, method) must not duplicate"
+    assert endpoints[0].params == ["redirect"], "bare endpoint must inherit enriched params"
+
+
+def test_crawl_merge_appends_new_and_keeps_existing_params() -> None:
+    """A non-colliding enriched endpoint is appended; a richer existing one wins."""
+    base = "http://10.0.0.1/vulnerabilities/"
+    endpoints = [
+        # Already parameterised — must not be downgraded to bare.
+        Endpoint(url=f"{base}sqli/", method="GET", params=["id"]),
+    ]
+    crawl = [
+        # Same URL, bare — must NOT clobber the existing ["id"].
+        Endpoint(url=f"{base}sqli/", method="GET", params=[]),
+        # Brand-new endpoint — must be appended.
+        Endpoint(url=f"{base}fi/?page=x", method="GET", params=["page"]),
+    ]
+    ScanAgent._merge_crawl_endpoints_preferring_params(endpoints, crawl)
+    by_url = {(e.url, e.method): e for e in endpoints}
+    assert by_url[(f"{base}sqli/", "GET")].params == ["id"]
+    assert by_url[(f"{base}fi/?page=x", "GET")].params == ["page"]
+    assert len(endpoints) == 2
