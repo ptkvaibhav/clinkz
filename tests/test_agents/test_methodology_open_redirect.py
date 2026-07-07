@@ -369,20 +369,49 @@ class TestPhase5Verification:
         assert verified is False
 
     @pytest.mark.asyncio
-    async def test_body_meta_refresh_verifies(self) -> None:
+    async def test_200_with_attacker_location_does_not_verify(self) -> None:
+        """A ``Location`` header on a status-200 response is not a server redirect."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="", headers={"Location": "https://evil.example"}
+            )
+        )
+        verified, _observed = await agent._open_redirect_phase5_verify(
+            _make_page(), "to", "https://evil.example"
+        )
+        assert verified is False
+
+    @pytest.mark.asyncio
+    async def test_body_meta_refresh_does_not_confirm_via_phase5(self) -> None:
+        """Body-level meta refresh (status 200) never rides the 3xx confirm path."""
         agent = _make_agent()
         agent._http_get = AsyncMock(  # type: ignore[method-assign]
             return_value=_HTTPResponse(
                 status=200,
-                body=('<meta http-equiv="refresh" content="0; url=https://evil.example/path">'),
+                body='<meta http-equiv="refresh" content="0; url=https://evil.example/path">',
             )
         )
-        verified, observed = await agent._open_redirect_phase5_verify(
+        verified, _observed = await agent._open_redirect_phase5_verify(
             _make_page(), "to", "https://evil.example/path"
         )
-        assert verified is True
-        assert observed is not None
-        assert "evil.example" in observed
+        assert verified is False
+
+    @pytest.mark.asyncio
+    async def test_dom_signal_detects_body_meta_refresh_separately(self) -> None:
+        """The demoted DOM signal detects a body meta refresh to the attacker host."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200,
+                body='<meta http-equiv="refresh" content="0; url=https://evil.example/path">',
+            )
+        )
+        dom_target = await agent._open_redirect_dom_signal(
+            _make_page(), "to", "https://evil.example/path"
+        )
+        assert dom_target is not None
+        assert "evil.example" in dom_target
 
 
 # ===========================================================================
@@ -413,19 +442,76 @@ class TestPhase6FindingEmission:
         assert "evil.example" in joined
         assert finding.severity.value == "medium"
 
-    def test_js_protocol_bumps_to_high_severity(self) -> None:
+    def test_dom_redirect_is_lower_severity(self) -> None:
+        """A body-level (DOM) redirect emits a lower-severity finding than a 3xx."""
         agent = _make_agent()
         result = OpenRedirectMethodologyResult(
             phases_completed=6,
-            primitives=RedirectPrimitives(),
-            bypass_type=RedirectBypassType.JS_PROTOCOL,
-            synthesized_payload="javascript:alert(1)",
-            redirect_target_observed="javascript:alert(1)",
+            primitives=RedirectPrimitives(redirect_status_form="body_redirect"),
+            bypass_type=RedirectBypassType.DIRECT_REDIRECT,
+            synthesized_payload="https://evil.example/",
+            redirect_target_observed="https://evil.example/",
             verified=True,
-            verification_strength="verified",
+            verification_strength="dom_redirect",
+            dom_redirect=True,
         )
         finding = agent._open_redirect_phase6_emit("http://example.com/redirect", "to", result)
-        assert finding.severity.value == "high"
+        assert finding.severity.value == "low"
+        assert "DOM/client-side" in finding.title
+
+
+# ===========================================================================
+# Confirm-honesty — the deterministic 3xx + attacker-host predicate
+# ===========================================================================
+
+
+class TestConfirmHonestyPredicate:
+    """The load-bearing predicate: confirm ONLY on a 3xx whose Location host is
+    the attacker host. Same-host echoes and javascript:/data: schemes never
+    confirm; a body-only redirect never rides the 3xx path.
+    """
+
+    def test_absolute_attacker_url_is_attacker(self) -> None:
+        agent = _make_agent()
+        assert (
+            agent._redirect_target_is_attacker("https://evil.example/", "http://t.test/x") is True
+        )
+
+    def test_protocol_relative_is_attacker(self) -> None:
+        agent = _make_agent()
+        assert agent._redirect_target_is_attacker("//evil.example/", "http://t.test/x") is True
+
+    def test_same_host_containing_attacker_is_not(self) -> None:
+        agent = _make_agent()
+        # A same-host path that merely CONTAINS the attacker string is in-site.
+        assert (
+            agent._redirect_target_is_attacker("/go?u=https://evil.example", "http://t.test/x")
+            is False
+        )
+
+    def test_javascript_and_data_schemes_never_confirm(self) -> None:
+        agent = _make_agent()
+        assert agent._redirect_target_is_attacker("javascript:alert(1)", "http://t.test/x") is False
+        assert (
+            agent._redirect_target_is_attacker(
+                "data:text/html,<script>alert(1)</script>", "http://t.test/x"
+            )
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_javascript_location_does_not_verify(self) -> None:
+        """Even a 3xx whose Location is a javascript: URI is not a host redirect."""
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=302, body="", headers={"Location": "javascript:alert(1)"}
+            )
+        )
+        verified, _observed = await agent._open_redirect_phase5_verify(
+            _make_page(), "to", "javascript:alert(1)"
+        )
+        assert verified is False
 
 
 # ===========================================================================
