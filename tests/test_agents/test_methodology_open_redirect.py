@@ -306,12 +306,35 @@ class TestPhase3BypassTypeRanking:
 
 class TestPhase4PayloadSynthesis:
     @pytest.mark.asyncio
-    async def test_llm_synthesis_parsed(self) -> None:
+    async def test_llm_advisory_when_primitive_not_confirmed(self) -> None:
+        """When phase 2 did NOT confirm the primitive, the LLM synthesis is used."""
         llm = _ScriptedLLM(
             answers=[
-                '{"payload": "https://evil.example/path", '
+                '{"payload": "https://evil.example/llm-path", '
                 '"expected_indicator": "evil.example", '
                 '"rationale": "appended path"}'
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        synth = await agent._open_redirect_phase4_synthesize(
+            RedirectBypassType.APPENDED_URL,
+            # No confirmed primitive → LLM is consulted (advisory path).
+            RedirectPrimitives(working_bypass_primitives=[]),
+        )
+        assert synth is not None
+        assert synth["payload"] == "https://evil.example/llm-path"
+
+    @pytest.mark.asyncio
+    async def test_deterministic_preferred_when_primitive_confirmed(self) -> None:
+        """LESSONS #18/#28: a confirmed primitive uses the deterministic build,
+        NOT the LLM guess — even when the LLM returns valid (but mangled) JSON.
+        """
+        llm = _ScriptedLLM(
+            answers=[
+                # A live-LLM-style mangle: valid JSON, but a dead %00 appended.
+                '{"payload": "https://evil.example/%00", '
+                '"expected_indicator": "evil.example", "rationale": "guess"}'
             ]
         )
         agent = _make_agent(llm)
@@ -321,7 +344,10 @@ class TestPhase4PayloadSynthesis:
             RedirectPrimitives(working_bypass_primitives=["appended_url"]),
         )
         assert synth is not None
-        assert "evil.example" in synth["payload"]
+        # The deterministic build wins — the LLM's %00 mangle is not used.
+        assert synth["payload"] == "https://evil.example/"
+        # The LLM was not consulted for the confirmed primitive.
+        assert llm.prompts == []
 
     @pytest.mark.asyncio
     async def test_fallback_synthesis_table(self) -> None:
