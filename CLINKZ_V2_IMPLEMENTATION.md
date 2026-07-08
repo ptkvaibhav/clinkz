@@ -209,7 +209,12 @@ REPORT                                                           [partial]
     **Confirm-honesty**: primary confirmation is a server-side 3xx whose
     `Location` resolves to the attacker host only (`_open_redirect_phase5_verify`);
     `javascript:`/`data:` removed (that's XSS); body-level redirects demoted to a
-    lower-severity DOM signal. Phase 4 prefers the deterministic build when the
+    lower-severity DOM signal. **Phase 3 empirical-priority** — floats every
+    phase-2-confirmed primitive ahead of the LLM's ranking and re-adds any the LLM
+    drops (`_prioritize_confirmed_bypass_types`), so a genuine redirect is never
+    mislabeled as a bypass type phase 2 disproved (the `e72ed60a` full-pipeline
+    `appended_url` mislabel — genuine off-site 302, wrong label; re-validated
+    `75ea835f` → `at_syntax`). Phase 4 prefers the deterministic build when the
     primitive is confirmed. Allowlist bypass (`RedirectBypassType.ALLOWLIST_BYPASS`)
     unchanged — harvest an allowlisted token, embed in an attacker URL, confirm
     the off-site redirect despite a substring allowlist.
