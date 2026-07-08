@@ -991,3 +991,55 @@ async def test_run_fuzz_tool_omits_cookies_when_session_empty(tmp_path: Path) ->
     assert len(_CookieCapturingFuzzTool.captured) == 1
     args = _CookieCapturingFuzzTool.captured[0]
     assert "cookies" not in args
+
+
+# ---------------------------------------------------------------------------
+# Session-setter annotation (queueing enabler for DVWA SQLi high)
+# ---------------------------------------------------------------------------
+
+
+def _bare_scan_agent() -> ScanAgent:
+    """A ScanAgent with just the attributes the annotation helpers touch."""
+    agent = ScanAgent.__new__(ScanAgent)
+    agent.scope = SCOPE
+    agent._session_setter_refs = {}
+    return agent
+
+
+def test_record_session_setter_detects_dvwa_onclick_ref() -> None:
+    agent = _bare_scan_agent()
+    trigger = "http://10.0.0.1/vulnerabilities/sqli/"
+    body = '<a href="#" onclick="popUp(\'session-input.php\')">change ID</a>'
+    agent._record_session_setters(trigger, body)
+    assert agent._session_setter_refs[trigger] == [
+        "http://10.0.0.1/vulnerabilities/sqli/session-input.php"
+    ]
+
+
+def test_record_session_setter_ignores_incidental_refs() -> None:
+    agent = _bare_scan_agent()
+    agent._record_session_setters("http://10.0.0.1/x/", '<script src="/js/sessions.js"></script>')
+    assert agent._session_setter_refs == {}
+
+
+def test_annotation_stamped_onto_existing_bare_trigger() -> None:
+    agent = _bare_scan_agent()
+    trigger = "http://10.0.0.1/vulnerabilities/sqli/"
+    setter = trigger + "session-input.php"
+    agent._session_setter_refs = {trigger: [setter]}
+    endpoints = [Endpoint(url=trigger, method="GET", params=[])]
+    agent._apply_session_setter_annotations(endpoints)
+    assert len(endpoints) == 1  # no duplicate emitted
+    assert endpoints[0].session_setters == [setter]
+
+
+def test_annotation_appends_trigger_when_crawl_produced_none() -> None:
+    agent = _bare_scan_agent()
+    trigger = "http://10.0.0.1/vulnerabilities/sqli/"
+    setter = trigger + "session-input.php"
+    agent._session_setter_refs = {trigger: [setter]}
+    endpoints: list[Endpoint] = []
+    agent._apply_session_setter_annotations(endpoints)
+    assert len(endpoints) == 1
+    assert endpoints[0].url == trigger
+    assert endpoints[0].session_setters == [setter]
