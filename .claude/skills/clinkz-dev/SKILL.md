@@ -1,0 +1,123 @@
+---
+name: clinkz-dev
+description: "The Clinkz development + validation operating contract — goal/leverage, phantom-honesty discipline, real-validation standard, risk-tiered workflow, and git protocol. Reference it in a task prompt instead of restating any of this."
+---
+
+# Clinkz dev — operating contract
+
+Standing contract for **any** Clinkz build / fix / diagnose task. It consolidates `CLAUDE.md` (architecture — the source of truth), `docs/architecture.md`, and `.claude/LESSONS.md` into what you must hold while working. Read it every task; it is meant to be skimmed.
+
+When a task prompt and this file conflict: the prompt wins on *scope* (what to build); this file wins on *honesty + validation + git* — those are non-negotiable. Depth for building a specific methodology lives in `honesty-patterns.md` (per-vuln confirmation oracles + the phantom patterns that have actually bitten us) — read it then.
+
+---
+
+## 1 · Goal & leverage
+
+**Mission (one chain):** scope-lock → surface map → port/service/version scan → methodology planning → crawl + OSINT → applicable + tech-specific attacks (NVD / bug-bounty / our own KB intel) → chaining + cross-tech → **novel** discovery → validate **real exploitability AND impact** → industry-standard report → KB of what worked / didn't.
+
+**Leverage (why Clinkz wins):** trustworthy findings (**zero false positives, proven impact**) + attacker depth (chaining, cross-tech, novel) + cross-engagement learning (the KB compounds run over run).
+
+**The generality law (load-bearing).** Every capability you build MUST be **general + honest + KB-ready — never target-specific.** A DVWA / Juice Shop endpoint is a *witness* that exercises a general primitive, never the thing you detect.
+- Session-indirection is a general cross-request injection *carrier* (setter→session→trigger), wired to SQLi as its first consumer — **not** a "DVWA `sqli/high` detector."
+- Proof of generality: the capability is **N/A by construction** on stacks where the vuln is absent (no signal → no candidate → nothing emits), and its **carrier is separated from its consumer** (a new injection *shape* gets a dedicated carrier; the vuln methodology just consumes it).
+- **KB-ready** = every technique result, hit *or* miss, is recorded to `clinkz_knowledge.db`.
+
+---
+
+## 2 · Phantom / honesty discipline (the core)
+
+A finding is a claim that we exploited something. **Emit only when your own evidence proves the DEFINING security effect — never a correlate.** Confirm on the state change, not the reflection.
+
+| Vuln | Confirm on (defining effect) | NEVER on (phantom) |
+|---|---|---|
+| Upload | stored artifact fetched back **executes** (canary as interpreter output) | filename echoed / form re-rendered / merely retrievable |
+| SQLi | DB-error signature, boolean row-set delta, or a UNION **data row in a *successful* (non-error) response** | a marker reflected in the body or inside an inline/4xx/5xx DB error |
+| CMDi | command output in **command-output position** in a 2xx/3xx | echo-canary reflected in a 4xx/5xx / stack trace |
+| Open redirect | **3xx `Location`** (browser-resolved) navigates off-site to the attacker host | attacker string reflected in body / JS / a same-host path |
+| IDOR | an **authorization boundary actually crossed** (out-of-allotment id rejected; forged id serves another principal's record) | content-length / body delta with no boundary present |
+| SSTI | arithmetic **product rendered** (absent from a benign baseline) / RCE canary in output position | the template literal reflected verbatim |
+| XXE | **file-content signature we never sent** (embedded — wrapped-channel aware) | the payload echoed back |
+| SSRF | internal/metadata **content** the app should not return | the internal URL echoed back |
+| JWT | forged token **accepted like the valid baseline** (broken-sig rejected) | — fully in-band; a rejected token never confirms |
+
+**For any vuln not in the table:** name the effect that occurs *only* when the vuln truly fires, baseline-anchor it, confirm on that. `honesty-patterns.md` has the full per-methodology oracle set.
+
+**The guards that keep confirmation honest:**
+- **Escaping-robust reflection guard.** Before ruling "reflection," blank the body's own echoed payload with **both** HTML-unescape **and** SQL/backslash de-escape (`\'`→`'`), collapse whitespace, then check if the marker survives *elsewhere*. A sink that `addslashes`/`htmlentities`-escapes your input still reflects it — a naïve substring check misses that.
+- **Baseline-delta attribution.** The effect must be absent from a benign baseline and attributable to *your payload* — not page chrome, not a per-request CSRF token, not a value the app echoes on its benign/failure path. An acceptance marker must never be a substring the app also emits when it **rejects** you.
+- **Status alone is not a guard.** An inline (HTTP 200) DB/parse error defeats a status-code-only reflection guard → guard on the **absence of an error signature**, not just on 2xx. Conversely some legitimate channels are 4xx (XXE's 410) → the reject rule is *content-shaped, per methodology*, never a blanket "4xx = reject."
+- **The deterministic check GATES the LLM.** The LLM reasons / ranks / synthesizes; a **deterministic signal decides emission.** No LLM verdict emits on its own. When phase-2 has *empirically confirmed* the primitive, phase-4 **prefers the deterministic build and skips the LLM** for that type — an LLM that paraphrases/mangles a proven payload (e.g. appends a dead `%00`) is the bug.
+- **Impossible-level = the honesty control.** Any finding at DVWA `impossible` (or any hardened control) is a **loophole in your oracle, not a catch**. A finding that confirms *identically at every security level* means the oracle is matching the app's benign response — treat **uniform-confirm-across-a-graded-control as a prime phantom signal**.
+- **Suppress a true positive before you emit a false positive.** Zero-FP is the product. If a guard's only choice is "risk a phantom" vs "drop a real one," **drop the real one.** Verification-honest emission is the primary guard; the post-run FP-marking pass is advisory on top, never the safety net.
+- **Never hardcode a target/benchmark value.** No DVWA string, no Juice Shop challenge constant baked into a methodology. Discover the app's own tokens at runtime (allowlist strings, form-field names, cookie setters). A hardcoded witness value is exactly how a "general" capability silently degrades into a target detector.
+
+---
+
+## 3 · Validation standard
+
+**The false-green precedent (read this twice).** A keyless / silent-LLM / direct-invocation **harness pins the deterministic fallback path and never exercises the live-LLM path** — so it *structurally cannot* test any fix that lives in an LLM-override, synthesis, or verification-vocabulary path. Green there is **not evidence**. This has burned us repeatedly (the silent-LLM-fallback, LFI-`%00`, and upload-uniform-confirm lessons). **Never cite a keyless harness as merge evidence.**
+
+**Two real-validation modes:**
+- **Smoke gate — the default, during build.** A cheap real-container check: hit the **real target endpoint**, assert a **deterministic signal**. No full pipeline, no LLM in the loop where avoidable. Fast enough to run as you build. This is the proof for a self-contained methodology cell.
+- **Full pipeline run — reserved.** `python -m clinkz scan --target <url>` end-to-end. Reserve for: **LLM-involved emission** paths, **crawl-reach / discovery integration** (does recon→scan→plan actually *deliver* the vulnerable page?), and **one final multi-level confirmation per batch**. A real run is validated by **reading the report + trace**, never a self-graded summary.
+
+**Pre-flight before any "real run" claim (mandatory):**
+1. **Keys present — count, never print:** `grep -c` the key names in the env/`.env` (Anthropic + Gemini); confirm non-zero. **Never echo a value.**
+2. **Live-ping both providers:** one cheap real call each (Anthropic + Gemini) to prove the key works and quota isn't depleted (the credit-preflight rationale in `CLAUDE.md`).
+3. **If it can't run real** (missing key, depleted quota, target down) → **STOP and report.** Never substitute a keyless/silent harness and call it validated. "Couldn't validate for real" is an honest, acceptable outcome; a harness-green stand-in is not.
+4. The in-process HTTP path needs `TOOL_EXEC_MODE=local` when the `clinkz-tools` container isn't the path (docker mode curls inside a possibly-down container → silent status 0).
+
+**Re-run scope = blast radius:**
+- **New, self-contained module** → its own smoke cells **+ the impossible-level honesty check.**
+- **Shared methodology / helper change** (the `_send_probe` family, a reflection guard, phase-5 verification, a signature table) → **re-run the WHOLE affected family across all levels.** The LFI regression came from trusting a unit-green shared-path change; a shared change that's only spot-checked is unvalidated.
+- **A "justified non-finding" must be proven against an instance where the vuln is actually LIVE** (stand up `safetyMode=disabled`, enable the challenge, read the gate). "Challenge exists & unsolved" means *present*, not patched. A green unit suite over a mocked engine hides real detection bugs.
+
+**Premise verification — step 0 of any build that leans on an asserted artifact.** The brief says "the target ships an OpenAPI spec / a `foo` header / an `open_redirect` module / an initialised DB" → **curl/probe the RUNNING target for it before building on it.** A frozen vuln-app image is often years behind the cheat-sheet; Juice Shop ships no parseable spec; a fresh DVWA container has no `users` table. **Confirm the data plane, not the claim.** If the premise is wrong, **STOP and report** — don't silently "fix" a different thing.
+
+---
+
+## 4 · Workflow & risk-tiering
+
+**Plan first, always.** Every task opens with a brief plan that folds in the git-discipline standing items below. Consult `.claude/LESSONS.md` during planning **only** when the task resembles a past failure; append to it **only** after a real error worth not repeating.
+
+**Risk-tier the work:**
+- **Phantom-prone or novel-primitive cell** (new injection carrier; a shared verification/guard change; anything whose failure mode is a *false positive*) → strict **diagnose → design → fix** split. Do the design pass first, separate diagnosis from build, so a wrong premise surfaces before code.
+- **Well-understood vuln on a known shape** → combine **diagnose + build** in one pass. Don't ceremony-tax a routine change.
+- **Correct-and-stop:** if the premise is wrong or two instructions conflict, say so and stop — don't proceed on a bad premise or pick a side silently.
+
+**Architecture invariants (from `CLAUDE.md` — non-negotiable; they are what make "general" possible):**
+- LLM only through `llm/` (never import openai/anthropic/gemini in agent code); per-agent providers (Gemini recon/scan/report, Anthropic exploit/research; Exploit pinned).
+- Tools only through `ToolResolver.find_tool(capability=...)` — never a tool name, never a direct import. Every tool **validates scope before any network activity**.
+- Agents never talk directly — **all comms route through the Orchestrator.**
+- **Deterministic steps + LLM at named checkpoints.** No free-form ReAct.
+- Pydantic v2 for every model; async everywhere; structured logging at step boundaries. Any field an LLM populates that it might emit as objects is `list[dict[str, Any]]` with a coercing `@field_validator(mode="before")` — never `list[str]` (a broad `except` around model construction turns a schema mismatch into a silent feature outage).
+- **A new injection *shape* gets a DEDICATED carrier** (`_cookie_send_probe`, `_session_send_probe`, `_http_post_xml`, …); leave the shared string-only `_send_probe` untouched.
+- **Never poison the shared engagement session** — no crawl/plan/probe visits a state-changing link (WAF/security toggle, logout); `is_state_changing_url` is the chokepoint.
+- **Stack-conditioned branches** (`_is_php_stack`, engine fingerprints, dialect) are backed by a **deterministic protocol artifact** (a `PHPSESSID` cookie, a `.php` path, a header) — never the flaky LLM tech list alone.
+- Record every technique result (hit or miss) to the persistent KB.
+
+**Git protocol (every push):**
+- Commit **per logical unit**; imperative `prefix(scope): summary` with **no trailing period**; end each commit message with the `Co-Authored-By` trailer. Push to origin after each commit once gates pass. **No `--force`, no `--no-verify`.**
+- On Windows, multi-line commit/PR bodies go **via a file**: `git commit -F <file>` / `gh pr create --body-file <file>` — a `-m "$var"` with embedded `"` breaks PowerShell's arg parser.
+- Maintain **one open PR** for the branch against `main`; update its description (the aggregate narrative) on every push. A **structural change** (adds/removes/renames a file, agent, tool, model, config option, or alters architecture) → update **ALL** affected docs (`README.md`, `CLAUDE.md`, `CLINKZ_V2_IMPLEMENTATION.md`, `docs/`, `CONTRIBUTING.md`) in the **same push**. Stale docs = task not done.
+
+**The three pre-push gates (never bypass; fix the root cause — no blanket `# noqa`/`# type: ignore`, no skip/xfail to stay green):**
+1. **Lint** — `ruff check src/ tests/` + `ruff format --check src/ tests/`; also clean up every file the diff touches (dead code, naming, stale comments, `None` guards, no hardcoded secrets).
+2. **Keyless test gate** — `pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration`. **Capture the exit code directly** — `pytest … > out.txt 2>&1; echo "EXIT=$?"` — **NEVER pipe through `tail`/`&&`** (that reports the *pipe's* exit — a false green). Container gate (separately, serially, when containers are up and the change touches scan/exploit/orchestrator): `pytest tests/test_integration/`, `pytest tests/test_skills_dvwa/ -m dvwa_smoke`, `pytest tests/test_skills_juiceshop/ -m juiceshop_smoke`, `pytest -m pipeline_smoke tests/test_pipeline_smoke/`.
+3. **Security review** — `/security-review` on the diff when it touches `tools/`, scope, credentials, LLM I/O, HTTP/network/subprocess, deserialization, user-path file I/O, MCP, or report rendering. Resolve every finding. (Doc/config-only may skip 1–2; gate 3 still applies if runtime behavior can change.)
+
+**Report results raw.** Give the **real** artifact paths — `outputs/<id>/report_<id>.json` / `.md`, `outputs/<id>/trace.jsonl` — with **no self-grading, no inflated coverage**. The raw artifacts are the evidence; let them speak. A live-pipeline "confirmed" is **not** proof: read the finding's own evidence (payload + where the indicator surfaced + status) and replay it against the live target before trusting the label.
+
+---
+
+## 5 · Prompt template
+
+One line an author invokes instead of restating any of the above:
+
+> **Apply clinkz-dev. [diagnose | build] `<cell/capability>`. Smoke-gate during build; [full-run at batch end | full-run this cell if LLM-involved]. Out of scope: `<…>`.**
+
+Examples:
+- `Apply clinkz-dev. build GraphQL-injection carrier. Smoke-gate during build; full-run this cell (LLM-involved emission). Out of scope: websocket/subscription transport.`
+- `Apply clinkz-dev. diagnose the SSRF blind-deferred non-finding on Juice Shop. Smoke-gate only; full-run at batch end. Out of scope: wiring an OOB collaborator.`
+
+That inherits the full generality law, honesty discipline, validation standard, and git protocol from this file — nothing else needs restating.
