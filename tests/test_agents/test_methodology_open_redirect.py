@@ -354,6 +354,30 @@ class TestPhase3BypassTypeRanking:
         )
         assert ranked == [RedirectBypassType.APPENDED_URL, RedirectBypassType.AT_SYNTAX]
 
+    @pytest.mark.asyncio
+    async def test_confirmed_primitive_dropped_by_llm_is_readded(self) -> None:
+        """A confirmed primitive the LLM omits entirely is re-added (LESSONS #28).
+
+        The phase-3 LLM is non-deterministic; if it drops a working type from its
+        ranking, the empirical result must still be tried — a plain re-order can
+        only reposition what is present, so the working-set is re-added.
+        """
+        # LLM ranks only appended_url, dropping the confirmed protocol_relative.
+        llm = _ScriptedLLM(answers=['{"ranked": [{"type": "appended_url"}]}'])
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+            RedirectPrimitives(
+                validator_type="exact", working_bypass_primitives=["protocol_relative"]
+            ),
+            {},
+        )
+        assert ranked[0] == RedirectBypassType.PROTOCOL_RELATIVE
+        assert RedirectBypassType.APPENDED_URL in ranked
+        assert ranked.index(RedirectBypassType.PROTOCOL_RELATIVE) < ranked.index(
+            RedirectBypassType.APPENDED_URL
+        )
+
 
 # ===========================================================================
 # Phase 4 — Payload synthesis
