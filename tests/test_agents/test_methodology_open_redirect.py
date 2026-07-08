@@ -290,13 +290,69 @@ class TestPhase3BypassTypeRanking:
         agent = _make_agent(llm)
         agent._methodology_llm = llm
         ranked = await agent._open_redirect_phase3_rank_bypass_types(
+            # Realistic phase-2 output: ``validator_type == "none"`` is set BECAUSE
+            # the ``direct`` probe confirmed, so ``direct`` is in the working set.
             RedirectPrimitives(
                 validator_type="none",
-                working_bypass_primitives=["appended_url", "at_syntax"],
+                working_bypass_primitives=["direct", "appended_url", "at_syntax"],
             ),
             {},
         )
         assert ranked[0] == RedirectBypassType.DIRECT_REDIRECT
+
+    @pytest.mark.asyncio
+    async def test_llm_ranking_confirmed_types_float_ahead_of_nonworking(self) -> None:
+        """LESSONS #18/#28 for ranking: a phase-2-non-working type the LLM ranked
+        first is deprioritized below every confirmed one (the e72ed60a shape).
+        """
+        # Phase 2 proved direct/at_syntax/protocol_relative work; appended_url did
+        # NOT. The LLM nonetheless ranks appended_url first.
+        llm = _ScriptedLLM(
+            answers=[
+                '{"ranked": ['
+                '{"type": "appended_url", "rationale": "guess"},'
+                '{"type": "at_syntax", "rationale": "userinfo"},'
+                '{"type": "protocol_relative", "rationale": "//"},'
+                '{"type": "direct_redirect", "rationale": "absolute"}'
+                "]}"
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+            RedirectPrimitives(
+                validator_type="none",
+                working_bypass_primitives=["direct", "at_syntax", "protocol_relative"],
+            ),
+            {},
+        )
+        # A confirmed primitive leads; appended_url (non-working) is NOT first and
+        # is pushed to the tail (kept, not dropped).
+        assert ranked[0] != RedirectBypassType.APPENDED_URL
+        assert set(ranked[:3]) == {
+            RedirectBypassType.AT_SYNTAX,
+            RedirectBypassType.PROTOCOL_RELATIVE,
+            RedirectBypassType.DIRECT_REDIRECT,
+        }
+        assert ranked[-1] == RedirectBypassType.APPENDED_URL
+        # Relative order within the confirmed group is the LLM's (advisory).
+        assert ranked.index(RedirectBypassType.AT_SYNTAX) < ranked.index(
+            RedirectBypassType.PROTOCOL_RELATIVE
+        )
+
+    @pytest.mark.asyncio
+    async def test_nothing_confirmed_preserves_llm_order(self) -> None:
+        """With no working primitive, the ranking is untouched — the phase-4 LLM
+        advisory path (and the allowlist-bypass fallback) still gets to try.
+        """
+        llm = _ScriptedLLM(answers=['{"ranked": [{"type": "appended_url"},{"type": "at_syntax"}]}'])
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+            RedirectPrimitives(validator_type="strict_or_unknown", working_bypass_primitives=[]),
+            {},
+        )
+        assert ranked == [RedirectBypassType.APPENDED_URL, RedirectBypassType.AT_SYNTAX]
 
 
 # ===========================================================================
@@ -562,6 +618,52 @@ class TestOpenRedirectMethodologyIntegration:
         joined = " ".join(findings[0].evidence)
         assert "phases_completed=6" in joined
         assert "bypass_type=" in joined
+
+    @pytest.mark.asyncio
+    async def test_llm_ranks_nonworking_first_finding_uses_working_type(self) -> None:
+        """End-to-end regression for the e72ed60a mislabel.
+
+        On DVWA low ``appended_url`` stays a relative same-host path (phase 2 marks
+        it non-working) while direct/at_syntax/protocol_relative navigate off-site.
+        A live-style LLM ranks ``appended_url`` FIRST; the emitted finding must be
+        a GENUINE confirm labeled with a working primitive — never ``appended_url``.
+
+        The param's original value is ``info.php?id=2`` (the e72ed60a crawl shape):
+        the embedded ``?`` makes the appended probe ``info.php?id=2https://…`` a
+        relative same-host path, so appended_url is honestly non-working — unlike a
+        bare ``info.php`` where ``info.phphttps`` would parse as a URL scheme.
+        """
+        llm = _ScriptedLLM(
+            answers=[
+                '{"ranked": ['
+                '{"type": "appended_url", "rationale": "guess"},'
+                '{"type": "at_syntax", "rationale": "userinfo"},'
+                '{"type": "protocol_relative", "rationale": "//"},'
+                '{"type": "direct_redirect", "rationale": "absolute"}'
+                "]}"
+            ]
+            + [""] * 8
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        agent._http_get = _dvwa_open_redirect_server("low")  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://dvwa.test/vulnerabilities/open_redirect/source/low.php?redirect=info.php?id=2",
+            body="",
+            status=200,
+            input_params=["redirect"],
+        )
+        findings = await agent._test_open_redirect(page)
+        assert len(findings) == 1
+        joined = " ".join(findings[0].evidence)
+        # The genuine redirect is NOT attributed to the disproved appended_url type.
+        assert "bypass_type=appended_url" not in joined
+        assert any(
+            f"bypass_type={t}" in joined
+            for t in ("direct_redirect", "at_syntax", "protocol_relative")
+        )
+        # And it is a real off-site confirm, not a same-host echo.
+        assert "evil.example" in joined
 
 
 # ===========================================================================
