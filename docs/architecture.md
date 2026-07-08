@@ -90,7 +90,10 @@ resolution and remote-ref rejection as an SSRF guard — else probe a tight set 
 conventional JSON roots plus a curated JSON-POST body fallback). Results union
 into `HTTPScanResult.endpoints` (additive, deduped) and flow to Exploit with
 their **param structure and location** (`ParamLocation`: query / json_body /
-form_body / path, on `Endpoint.param_locations` + `content_type`). The seam is
+form_body / path / cookie / session, on `Endpoint.param_locations` +
+`content_type`; `cookie`/`session` carry cross-request injection points invisible
+to `input_params` — DVWA `sqli_blind/high`'s `$_COOKIE['id']` and `sqli/high`'s
+`$_SESSION['id']`). The seam is
 intentional: a future browser-driven `HeadlessDiscoverer` slots in as another
 implementation. Discovery fetches carry the engagement session (cookies +
 JWT/bearer) and are bounded and same-origin (safety against SSRF / hostile
@@ -100,7 +103,10 @@ and resolved at probe time by the Exploit URL builder's `_resolve_path_params`.
 The Exploit phase threads each param's `ParamLocation` (`Endpoint` →
 `ExploitTask` → `PageAnalysis`) into a **shared request builder**: `_send_probe`
 injects a payload into the correct place — query string, JSON request body
-(`_http_post_json`), form body, or path segment — and the form-shaped
+(`_http_post_json`), form body, path segment, or a dedicated cross-request
+carrier (`_cookie_send_probe` overrides one ambient cookie; `_session_send_probe`
+POSTs a session-setter then GETs the trigger, for setter→session→trigger sinks) —
+and the form-shaped
 methodologies (stored-XSS / CSRF / brute-force) iterate `_injectable_forms`,
 which synthesizes a JSON pseudo-form for body-only endpoints (e.g. `POST
 /api/Feedbacks {comment}`) that have no HTML `<form>`. JSON requests carry the

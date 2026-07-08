@@ -22,6 +22,8 @@ import pytest
 
 from clinkz.agents.exploit import (
     _COOKIE_VECTOR_PREFIX,
+    _SESSION_VECTOR_PREFIX,
+    _SQLI_UNION_MARKER,
     ExploitAgent,
     PageAnalysis,
     _HTTPResponse,
@@ -33,6 +35,7 @@ from clinkz.models.methodology import (
     SQLDialect,
     SQLiMethodologyResult,
 )
+from clinkz.models.scan import SessionVector
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
@@ -573,6 +576,37 @@ class TestPhase5Verification:
         assert "CLINKZUNIONMARKER42" in observed
 
     @pytest.mark.asyncio
+    async def test_union_data_rejects_marker_inside_inline_db_error(self) -> None:
+        """DVWA sqli/high renders ``mysqli_error()`` INLINE at status 200; a
+        malformed union payload's marker reflected in that error is NOT data.
+
+        This is the a0095af2 session-vector phantom: the marker surfaced only
+        inside "near '<marker>'-- -' ... MariaDB" — input reflection in an error
+        message, not a UNION row. The 4xx/5xx guard cannot catch it (status is
+        200) and the full-payload echo strip misses the partial fragment the
+        parser reports, so the DB-error signature is the honest reject signal.
+        """
+        agent = _make_agent()
+        error_body = (
+            "You have an error in your SQL syntax; check the manual that "
+            "corresponds to your MariaDB server version for the right syntax "
+            "to use near 'CLINKZUNIONMARKER42'-- -' LIMIT 1' at line 1"
+        )
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=error_body)
+        )
+        synth = {
+            "payload": "1 UNION SELECT 'CLINKZUNIONMARKER42'-- -",
+            "indicator_type": "union_data",
+            "expected_indicator": "CLINKZUNIONMARKER42",
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            _make_page(), "id", synth, {"length": 100}
+        )
+        assert verified is False
+        assert "DB error" in observed
+
+    @pytest.mark.asyncio
     async def test_content_diff_paired_payloads(self) -> None:
         """Boolean-blind: true ≈ baseline, false diverges."""
         agent = _make_agent()
@@ -668,6 +702,77 @@ class TestPhase5Verification:
         finally:
             exploit_mod.time.monotonic = original_monotonic  # type: ignore[assignment]
         assert verified is False
+
+
+class TestBreakPrefixEchoRobustness:
+    """Phase-2 breakout discovery must not mistake a value-echo for a predicate
+    divergence (the DVWA sqli/high ``ID:`` echo, exposed by the session vector)."""
+
+    def test_diverges_beyond_payload_echo_rejects_echo_only(self) -> None:
+        """Two bodies that differ ONLY because each echoes its own payload are
+        not a real divergence."""
+        agent = _make_agent()
+        true_body = "<pre>ID: 1 OR 1=1 -- -<br />First name: admin</pre>"
+        false_body = "<pre>ID: 1 AND 1=2 -- -<br />First name: admin</pre>"
+        assert (
+            agent._diverges_beyond_payload_echo(
+                true_body, false_body, "1 OR 1=1 -- -", "1 AND 1=2 -- -"
+            )
+            is False
+        )
+
+    def test_diverges_beyond_payload_echo_keeps_real_divergence(self) -> None:
+        """A genuine predicate divergence (row vs no row) survives the echo strip."""
+        agent = _make_agent()
+        true_body = "<pre>ID: 1' OR 1=1 -- -<br />First name: admin</pre>"
+        false_body = "<body>Nothing to display.</body>"
+        assert (
+            agent._diverges_beyond_payload_echo(
+                true_body, false_body, "1' OR 1=1 -- -", "1' AND 1=2 -- -"
+            )
+            is True
+        )
+
+    @pytest.mark.asyncio
+    async def test_discover_break_prefix_dvwa_high_shape(self) -> None:
+        """DVWA sqli/high breakout discovery must find ``'`` — faithfully models
+        BOTH root causes the session vector exposed (a0095af2 / 62596e97).
+
+        The mock reproduces ``SELECT ... WHERE user_id = '<value>' LIMIT 1`` with
+        an ``ID:`` echo: (1) the integer ``user_id`` coerces ``'1 OR 1=1 -- -'``
+        to ``1`` so BOTH empty-closer probes match admin and differ only by the
+        echoed payload (the empty closer must be rejected); and (2) a bare ``--``
+        does not comment the appended ``' LIMIT 1`` in MySQL, so a ``'`` breakout
+        without ``-- `` errors (the genuine closer is found only because the probe
+        uses ``-- -``, not the bare confirmed comment)."""
+        agent = _make_agent()
+
+        async def fake_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            breakout = value.startswith("1'")
+            # A ``'`` breakout leaves the appended ``' LIMIT 1`` un-terminated
+            # unless a real line comment (``-- `` with trailing whitespace, or
+            # ``#``) eats it — otherwise the query is unbalanced and errors.
+            if breakout and "-- " not in value and not value.rstrip().endswith("#"):
+                return _HTTPResponse(
+                    status=200,
+                    body="You have an error in your SQL syntax ... MariaDB server version",
+                )
+            # Balanced ``'`` breakout with a false predicate empties the result
+            # set (no row, no ``ID:`` echo).
+            if breakout and "AND 1=2" in value:
+                return _HTTPResponse(status=200, body="<body>Nothing to display.</body>")
+            # Everything else coerces to id=1 → admin row, echoing the raw value.
+            return _HTTPResponse(
+                status=200,
+                body=f"<pre>ID: {value}<br />First name: admin<br />Surname: admin</pre>",
+            )
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        # comment_syntax[0] is the bare ``--`` DVWA phase-2 actually confirms; the
+        # discover method must still use ``-- -`` internally so ``'`` does not error.
+        primitives = InjectionPrimitives(quote_chars=["'"], comment_syntax=["--"])
+        closer = await agent._sqli_discover_break_prefix(_make_page(), "id", "1", primitives)
+        assert closer == "'"
 
 
 # ===========================================================================
@@ -1260,3 +1365,364 @@ class TestCookieInjectionVector:
         )
         assert verified is False
         assert "reflection" in observed.lower()
+
+
+# ===========================================================================
+# Session-indirection vector (DVWA SQLi high — cross-request inject-and-trigger)
+# ===========================================================================
+
+
+_SETTER = "http://example.com/vulnerabilities/sqli/session-input.php"
+_TRIGGER = "http://example.com/vulnerabilities/sqli/"
+_SETTER_FORM = (
+    '<form action="#" method="POST">Session ID: '
+    '<input type="text" name="id">'
+    '<input type="submit" name="Submit" value="Submit"></form>'
+)
+
+
+class TestSessionCarrier:
+    """The carrier writes via the setter and observes ONLY the trigger."""
+
+    @pytest.mark.asyncio
+    async def test_posts_setter_then_returns_trigger_response(self) -> None:
+        agent = _make_agent()
+        posted: dict[str, Any] = {}
+
+        async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            posted["url"] = url
+            posted["data"] = dict(data)
+            # The setter's OWN response echoes the payload — must be discarded.
+            return _HTTPResponse(status=200, body="Session ID: SETTER-ECHO-PAYLOAD")
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            return _HTTPResponse(status=200, body="TRIGGER-BODY")
+
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page(url=_TRIGGER, params=[])
+        resp = await agent._session_send_probe(page, _SETTER, "id", "PAYLOAD")
+
+        assert posted["url"] == _SETTER
+        assert posted["data"]["id"] == "PAYLOAD"
+        # The observation point is the trigger, never the setter's self-echo.
+        assert resp.body == "TRIGGER-BODY"
+        assert "SETTER-ECHO" not in resp.body
+
+    @pytest.mark.asyncio
+    async def test_send_probe_dispatches_session_location_to_carrier(self) -> None:
+        agent = _make_agent()
+        page = _make_page(url=_TRIGGER, params=[])
+        page.session_vectors = [SessionVector(setter_url=_SETTER, field="id")]
+        seen: dict[str, Any] = {}
+
+        async def fake_carrier(pg, setter_url, field, value):  # type: ignore[no-untyped-def]
+            seen.update(setter_url=setter_url, field=field, value=value)
+            return _HTTPResponse(status=200, body="T")
+
+        agent._session_send_probe = fake_carrier  # type: ignore[method-assign]
+        resp = await agent._send_probe(page, f"{_SESSION_VECTOR_PREFIX}id", "PAYLOAD")
+        assert seen == {"setter_url": _SETTER, "field": "id", "value": "PAYLOAD"}
+        assert resp.body == "T"
+
+    @pytest.mark.asyncio
+    async def test_send_probe_session_without_vector_fetches_trigger_unchanged(self) -> None:
+        """A session param with no established vector degrades to a plain GET."""
+        agent = _make_agent()
+        page = _make_page(url=_TRIGGER, params=[])  # no session_vectors
+        got: dict[str, Any] = {}
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            got["url"] = url
+            return _HTTPResponse(status=200, body="TRIG")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        resp = await agent._send_probe(page, f"{_SESSION_VECTOR_PREFIX}id", "X")
+        assert got["url"] == _TRIGGER
+        assert resp.body == "TRIG"
+
+    @pytest.mark.asyncio
+    async def test_cached_form_carrier_includes_benign_siblings(self) -> None:
+        """With the setter form cached (post-discovery), the carrier submits the
+        payload field plus benign siblings and returns the trigger response."""
+        agent = _make_agent()
+        form = {
+            "action": "#",
+            "method": "POST",
+            "fields": [
+                {"name": "id", "type": "text"},
+                {"name": "Submit", "type": "submit", "value": "Submit"},
+            ],
+        }
+        agent._session_form_cache[_SETTER] = (_SETTER, form)
+        posted: dict[str, Any] = {}
+
+        async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            posted["url"] = url
+            posted["data"] = dict(data)
+            return _HTTPResponse(status=200, body="Session ID: PWN")
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            return _HTTPResponse(status=200, body="TRIGGER")
+
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = _make_page(url=_TRIGGER, params=[])
+        resp = await agent._session_send_probe(page, _SETTER, "id", "PWN")
+        assert posted["url"] == _SETTER
+        assert posted["data"]["id"] == "PWN"
+        assert "Submit" in posted["data"]  # benign sibling carried through
+        assert resp.body == "TRIGGER"
+
+
+class TestSessionLinkGate:
+    """The benign-marker link gate proves the setter write reaches the trigger."""
+
+    @pytest.mark.asyncio
+    async def test_establishes_vector_when_marker_roundtrips(self) -> None:
+        agent = _make_agent()
+        state = {"id": "", "trigger": "<pre>ID: </pre>"}
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            if url.endswith("session-input.php"):
+                return _HTTPResponse(status=200, body=_SETTER_FORM)
+            # Trigger reflects the current session id (the data channel).
+            return _HTTPResponse(status=200, body=f"<pre>ID: {state['id']}</pre>")
+
+        async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            state["id"] = data.get("id", "")
+            return _HTTPResponse(status=200, body="ok")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        vectors = await agent._probe_session_setter(_SETTER, _TRIGGER, "<pre>ID: </pre>")
+        assert [v.field for v in vectors] == ["id"]
+        assert vectors[0].setter_url == _SETTER
+        # The setter's parsed form is cached for the carrier.
+        assert _SETTER in agent._session_form_cache
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_marker_does_not_reach_trigger(self) -> None:
+        """A setter whose write does not feed the trigger yields no vector."""
+        agent = _make_agent()
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            if url.endswith("session-input.php"):
+                return _HTTPResponse(status=200, body=_SETTER_FORM)
+            # Trigger NEVER reflects the marker (no data flow).
+            return _HTTPResponse(status=200, body="<pre>ID: static</pre>")
+
+        async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            return _HTTPResponse(status=200, body="ok")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        vectors = await agent._probe_session_setter(_SETTER, _TRIGGER, "<pre>ID: static</pre>")
+        assert vectors == []
+
+    @pytest.mark.asyncio
+    async def test_harvest_end_to_end_on_dvwa_shaped_trigger(self) -> None:
+        agent = _make_agent()
+        state = {"id": ""}
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            if url.endswith("session-input.php"):
+                return _HTTPResponse(status=200, body=_SETTER_FORM)
+            return _HTTPResponse(status=200, body=f"<pre>ID: {state['id']}</pre>")
+
+        async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            state["id"] = data.get("id", "")
+            return _HTTPResponse(status=200, body="ok")
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        trigger_body = (
+            '<a href="#" onclick="popUp(\'session-input.php\')">change ID</a><pre>ID: 1</pre>'
+        )
+        vectors = await agent._harvest_session_vectors(_TRIGGER, trigger_body)
+        assert [v.field for v in vectors] == ["id"]
+        assert vectors[0].setter_url == _SETTER
+
+    @pytest.mark.asyncio
+    async def test_establishes_via_divergence_when_echo_is_row_gated(self) -> None:
+        """DVWA-high shape: the ``ID:`` echo is inside ``while($row=...)``.
+
+        A non-matching benign value (the random marker) renders NOTHING, so the
+        reflection signal can never fire; the benign matching-vs-non-matching
+        divergence must still establish the channel. This is the live-verified
+        gap the marker-only gate missed on the real target.
+        """
+        agent = _make_agent()
+        state = {"id": ""}
+
+        def render() -> str:
+            # Row-gated: only a matching id ('1') renders a result block; any
+            # other value (the random marker, a big id) renders no echo at all.
+            if state["id"] == "1":
+                return "<html><pre>ID: 1<br />First name: admin<br />Surname: admin</pre></html>"
+            return "<html><body>Nothing to display</body></html>"
+
+        async def fake_get(url, params, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            if url.endswith("session-input.php"):
+                return _HTTPResponse(status=200, body=_SETTER_FORM)
+            return _HTTPResponse(status=200, body=render())
+
+        async def fake_post(url, data, cookie_overrides=None):  # type: ignore[no-untyped-def]
+            state["id"] = data.get("id", "")
+            return _HTTPResponse(status=200, body="Session ID: " + state["id"])
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        baseline = "<html><body>Nothing to display</body></html>"
+        vectors = await agent._probe_session_setter(_SETTER, _TRIGGER, baseline)
+        assert [v.field for v in vectors] == ["id"]
+        assert _SETTER in agent._session_form_cache
+
+
+class TestSessionPhase5OnTrigger:
+    """Phase 5 observes the trigger; the ``ID: {payload}`` echo never confirms."""
+
+    @pytest.mark.asyncio
+    async def test_union_confirms_on_genuine_trigger_data(self) -> None:
+        agent = _make_agent()
+        page = _make_page(url=_TRIGGER, params=[])
+        payload = f"1' UNION SELECT '{_SQLI_UNION_MARKER}',NULL-- -"
+        # Trigger echoes the payload in ID AND returns the marker as query DATA.
+        body = f"<pre>ID: {payload}<br />First name: {_SQLI_UNION_MARKER}<br />Surname: x</pre>"
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=body)
+        )
+        synth = {
+            "payload": payload,
+            "indicator_type": "union_data",
+            "expected_indicator": _SQLI_UNION_MARKER,
+        }
+        verified, _obs = await agent._sqli_phase5_verify(
+            page,
+            f"{_SESSION_VECTOR_PREFIX}id",
+            synth,
+            {"length": 44, "body": "<pre>ID: 1<br />First name: admin</pre>"},
+        )
+        assert verified is True
+
+    @pytest.mark.asyncio
+    async def test_union_rejected_when_marker_only_in_id_echo(self) -> None:
+        """The load-bearing phantom guard: reflection in ID: {payload} is not data."""
+        agent = _make_agent()
+        page = _make_page(url=_TRIGGER, params=[])
+        payload = f"1' UNION SELECT '{_SQLI_UNION_MARKER}',NULL-- -"
+        # Trigger reflects the payload (marker appears ONLY inside the ID echo);
+        # the query result is unchanged (admin) — no genuine data cell.
+        body = f"<pre>ID: {payload}<br />First name: admin<br />Surname: admin</pre>"
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=body)
+        )
+        synth = {
+            "payload": payload,
+            "indicator_type": "union_data",
+            "expected_indicator": _SQLI_UNION_MARKER,
+        }
+        verified, observed = await agent._sqli_phase5_verify(
+            page,
+            f"{_SESSION_VECTOR_PREFIX}id",
+            synth,
+            {"length": 44, "body": "<pre>ID: 1<br />First name: admin</pre>"},
+        )
+        assert verified is False
+        assert "reflection" in observed.lower()
+
+
+class TestSessionMethodologyIntegration:
+    """_test_sqli's third loop over page.session_vectors, end to end."""
+
+    @pytest.mark.asyncio
+    async def test_cross_request_error_based_confirms_with_session_label(self) -> None:
+        """A quote written to the session slot errors the trigger query → finding."""
+        agent = _make_agent(_ScriptedLLM(answers=[""]))  # silent → deterministic
+        agent._methodology_llm = agent.llm
+        agent._run_sqlmap = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+        async def fake_probe(_page, _param, value):  # type: ignore[no-untyped-def]
+            # The trigger reflects the session value and runs the query on it.
+            if "'" in value or '"' in value:
+                return _HTTPResponse(
+                    status=200,
+                    body=(
+                        f"<pre>ID: {value}</pre>You have an error in your SQL syntax; "
+                        "check the manual that corresponds to your MySQL server version"
+                    ),
+                )
+            return _HTTPResponse(
+                status=200,
+                body=f"<pre>ID: {value}<br />First name: admin<br />Surname: admin</pre>",
+            )
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page(url=_TRIGGER, params=[])
+        page.input_params = []  # param-less trigger — the session vector is the only path
+        page.session_vectors = [SessionVector(setter_url=_SETTER, field="id")]
+        findings = await agent._test_sqli(page)
+        assert len(findings) == 1
+        assert "id (session)" in findings[0].description
+        assert "session" in findings[0].title.lower()
+        joined = " ".join(findings[0].evidence)
+        assert "injection_type=error_based" in joined
+
+    @pytest.mark.asyncio
+    async def test_echo_only_trigger_does_not_confirm(self) -> None:
+        """A trigger that only reflects ID: {payload} (no query effect) → non-finding."""
+        agent = _make_agent(_ScriptedLLM(answers=[""]))
+        agent._methodology_llm = agent.llm
+        agent._run_sqlmap = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+        async def fake_probe(_page, _param, value):  # type: ignore[no-untyped-def]
+            # Reflects the value in ID (so phase 1 sees divergence) but the query
+            # result never changes and no DB error surfaces — pure reflection.
+            return _HTTPResponse(
+                status=200,
+                body=f"<pre>ID: {value}<br />First name: admin<br />Surname: admin</pre>",
+            )
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        page = _make_page(url=_TRIGGER, params=[])
+        page.input_params = []
+        page.session_vectors = [SessionVector(setter_url=_SETTER, field="id")]
+        findings = await agent._test_sqli(page)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_no_session_vector_emits_nothing(self) -> None:
+        """A param-less trigger with no established vector yields no session finding."""
+        agent = _make_agent(_ScriptedLLM(answers=[""]))
+        agent._methodology_llm = agent.llm
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<html>static</html>")
+        )
+        page = _make_page(url=_TRIGGER, params=[])
+        page.input_params = []  # no params, no session_vectors → nothing to probe
+        findings = await agent._test_sqli(page)
+        assert findings == []
+
+
+class TestSessionPhase6Emission:
+    def test_finding_carries_clean_session_label(self) -> None:
+        agent = _make_agent()
+        result = SQLiMethodologyResult(
+            phases_completed=6,
+            dialect=SQLDialect.MYSQL,
+            primitives=InjectionPrimitives(quote_chars=["'"], comment_syntax=["-- -"]),
+            injection_type=InjectionType.UNION_BASED,
+            synthesized_payload=f"1' UNION SELECT '{_SQLI_UNION_MARKER}',NULL-- -",
+            expected_indicator=_SQLI_UNION_MARKER,
+            indicator_type="union_data",
+            indicator_observed="matched union marker",
+            verified=True,
+            verification_strength="verified",
+        )
+        finding = agent._sqli_phase6_emit(_TRIGGER, f"{_SESSION_VECTOR_PREFIX}id", result)
+        # The internal sentinel is stripped; the report shows a clean name.
+        assert "\x00" not in finding.title
+        assert "\x00" not in finding.description
+        assert "id (session)" in finding.description
+        assert "session value" in finding.title.lower()
+        assert finding.severity.value == "high"
