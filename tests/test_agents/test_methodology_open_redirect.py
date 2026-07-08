@@ -595,6 +595,52 @@ class TestConfirmHonestyPredicate:
         )
         assert verified is False
 
+    @pytest.mark.asyncio
+    async def test_same_site_relative_302_with_attacker_substring_does_not_confirm(
+        self,
+    ) -> None:
+        """The e72ed60a doubled-param shape: a SAME-SITE relative 302 whose value
+        merely CONTAINS the attacker string must NOT confirm.
+
+        Regression guard for the appended_url false-positive: had phase 5 used a
+        payload-substring check instead of urljoin host-resolution, a
+        ``Location: info.php?id=2?redirect=//evil.example`` (a relative same-host
+        path — what DVWA returns for a doubled ``redirect`` param) would have been
+        misread as off-site. Host-resolution resolves it to the target host, so it
+        is correctly a non-finding regardless of query-string contents.
+        """
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=302,
+                body="",
+                headers={"Location": "info.php?id=2?redirect=//evil.example"},
+            )
+        )
+        verified, _observed = await agent._open_redirect_phase5_verify(
+            _make_page("http://t.test/open_redirect/source/low.php?redirect=info.php?id=2"),
+            "redirect",
+            "//evil.example",
+        )
+        assert verified is False
+
+    @pytest.mark.asyncio
+    async def test_clean_offsite_protocol_relative_302_confirms(self) -> None:
+        """The clean single-param shape ``Location: //evil.example`` (what the
+        param-replacing request actually produces) resolves off-site and confirms.
+        """
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=302, body="", headers={"Location": "//evil.example"})
+        )
+        verified, observed = await agent._open_redirect_phase5_verify(
+            _make_page("http://t.test/open_redirect/source/low.php?redirect=info.php?id=2"),
+            "redirect",
+            "//evil.example",
+        )
+        assert verified is True
+        assert observed == "//evil.example"
+
 
 # ===========================================================================
 # Integration — full _test_open_redirect driving all six phases
