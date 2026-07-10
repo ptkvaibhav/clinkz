@@ -13,7 +13,11 @@ cross-service reachability, and Orchestrator-wired agents are out of scope.
 
 from __future__ import annotations
 
+from clinkz.discovery.catalog import CATALOG, match_primitives, primitive_by_class
 from clinkz.discovery.constants import CARRIER_ALIGN_HOST
+from clinkz.discovery.engine import DiscoveryEngine, DiscoveryResult
+from clinkz.discovery.hypothesis import generate_hypotheses
+from clinkz.discovery.intent import compute_delta
 from clinkz.discovery.models import (
     CallSite,
     CapabilityDelta,
@@ -29,16 +33,20 @@ from clinkz.discovery.models import (
     SoundnessGrade,
     SourceModel,
 )
+from clinkz.discovery.reachability import compute_reachability
 from clinkz.discovery.source_ingest import JavaSourceIngestor
 
 __all__ = [
     "CARRIER_ALIGN_HOST",
+    "CATALOG",
     "CallSite",
     "CapabilityDelta",
     "CapabilityPrimitive",
     "CoverageGrade",
     "DeltaGrade",
+    "DiscoveryEngine",
     "DiscoveryHypothesis",
+    "DiscoveryResult",
     "Entrypoint",
     "Guard",
     "JavaSourceIngestor",
@@ -47,4 +55,9 @@ __all__ = [
     "ReachabilityEdge",
     "SoundnessGrade",
     "SourceModel",
+    "compute_delta",
+    "compute_reachability",
+    "generate_hypotheses",
+    "match_primitives",
+    "primitive_by_class",
 ]
