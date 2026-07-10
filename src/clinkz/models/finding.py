@@ -94,6 +94,11 @@ class ExploitTask(BaseModel):
         technique_name: Human-readable technique name.
         technique_steps: Steps from research runbook (tier 3).
         priority: Execution priority (lower = run first).
+        carrier_constraints: Per-instance probe-carrier constraints from a
+            discovery-engine proof obligation (e.g. ``align_host_with_injected_
+            url_host``). Threaded onto the ``PageAnalysis`` so the shared request
+            builder honours them; empty for LLM/deterministic-planned tasks
+            (unchanged behaviour). Sourced from the hypothesis, never LLM JSON.
     """
 
     test_method: str
@@ -107,6 +112,7 @@ class ExploitTask(BaseModel):
     technique_name: str = ""
     technique_steps: list[str] = Field(default_factory=list)
     priority: int = 0
+    carrier_constraints: list[str] = Field(default_factory=list)
 
 
 class ExploitPlan(BaseModel):
