@@ -17,6 +17,7 @@ import pytest
 
 from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.agents.exploit import ExploitAgent
+from clinkz.agents.scan import ScanAgent
 from clinkz.models.finding import ExploitPlan, Finding
 from clinkz.models.scan import Endpoint
 
@@ -495,6 +496,57 @@ async def test_open_redirect_against_dvwa(
         assert findings == [], (
             f"_test_open_redirect emitted a phantom at {level}: {[f.title for f in findings]}"
         )
+
+
+async def test_open_redirect_through_scan_merge_and_dispatch_against_dvwa(
+    dvwa_url: str,
+    dvwa_session: dict[str, str],
+    exploit_agent: ExploitAgent,
+) -> None:
+    """Open redirect reaches the methodology through the FULL chain — not the skill.
+
+    Reproduces the dispatch gap end-to-end (the real cause behind the false
+    "live-validated" claim): a URL-only crawler (katana) emits the real redirect
+    endpoint as a BARE ``Endpoint(params=[])``; enrichment finds the SAME URL as a
+    ``?redirect=`` link. The scan merge must UPGRADE the bare endpoint with the
+    ``redirect`` param — otherwise the endpoint reaches Exploit param-less, the
+    param-gated open-redirect methodology is never queued, and the whole module
+    silently confirms nothing (which the isolated ``_test_open_redirect`` smoke
+    test cannot catch, because it hands the param in directly). Then the planner
+    must queue ``_test_open_redirect`` and dispatch must confirm on the live
+    target.
+    """
+    module = "/vulnerabilities/open_redirect/"
+    if not _endpoint_exists(dvwa_url, module, dvwa_session):
+        pytest.xfail(f"DVWA version does not have {module} (404)")
+
+    redirect_url = f"{dvwa_url}{module}source/low.php?redirect=info.php"
+    # Scan-side inputs: the bare katana URL (added first, no params) AND the
+    # enriched ?redirect= endpoint from link extraction.
+    endpoints = [Endpoint(url=redirect_url, method="GET", params=[])]
+    enriched = [Endpoint(url=redirect_url, method="GET", params=["redirect"])]
+    ScanAgent._merge_crawl_endpoints_preferring_params(endpoints, enriched)
+    assert any("redirect" in (e.params or []) for e in endpoints), (
+        "scan merge dropped the redirect param (dispatch gap regressed)"
+    )
+
+    # The planner coverage union must queue _test_open_redirect against it even
+    # when the LLM plan is empty (the /source/ path is rank-demoted, not excluded).
+    ranked = exploit_agent._dedupe_and_rank_endpoints(endpoints)
+    plan = exploit_agent._merge_coverage(ExploitPlan(tasks=[]), ranked, [], [])
+    assert any(
+        t.test_method == "_test_open_redirect" and "open_redirect" in t.endpoint_url
+        for t in plan.tasks
+    ), "planner did not queue _test_open_redirect against the redirect endpoint"
+
+    # Dispatch only the open-redirect tasks (fast) with no deadline; confirm.
+    plan.tasks = [t for t in plan.tasks if t.test_method == "_test_open_redirect"]
+    exploit_agent._deadline_ts = None
+    findings = await exploit_agent._step_execute_exploits(plan, None)
+    assert any("evil.example" in " ".join(f.evidence) for f in findings), (
+        f"open redirect not confirmed via dispatch against {redirect_url}; "
+        f"findings={[(f.title, f.target) for f in findings]}"
+    )
 
 
 # ---------------------------------------------------------------------------
