@@ -201,9 +201,23 @@ REPORT                                                           [partial]
     static file-server poison-null-byte sub-methodology (`_test_lfi_file_server`,
     `%2500.md` allowlist bypass on `/ftp`), planner-gated for param-less
     file-server routes.
-  - Open redirect: allowlist bypass (`RedirectBypassType.ALLOWLIST_BYPASS`) —
-    harvest allowlisted tokens from the app's own pages/bundles, embed in attacker
-    URLs, confirm a redirect to the attacker host despite a substring allowlist.
+  - Open redirect: **dispatch fix** — the scan crawl-merge
+    (`ScanAgent._merge_crawl_endpoints_preferring_params`) upgrades a bare
+    katana URL with the enriched `?redirect=` param instead of dropping it, so
+    the real `source/<level>.php?redirect=` endpoint reaches the param-gated
+    methodology (the gap behind the prior false "live-validated" claim).
+    **Confirm-honesty**: primary confirmation is a server-side 3xx whose
+    `Location` resolves to the attacker host only (`_open_redirect_phase5_verify`);
+    `javascript:`/`data:` removed (that's XSS); body-level redirects demoted to a
+    lower-severity DOM signal. **Phase 3 empirical-priority** — floats every
+    phase-2-confirmed primitive ahead of the LLM's ranking and re-adds any the LLM
+    drops (`_prioritize_confirmed_bypass_types`), so a genuine redirect is never
+    mislabeled as a bypass type phase 2 disproved (the `e72ed60a` full-pipeline
+    `appended_url` mislabel — genuine off-site 302, wrong label; re-validated
+    `75ea835f` → `at_syntax`). Phase 4 prefers the deterministic build when the
+    primitive is confirmed. Allowlist bypass (`RedirectBypassType.ALLOWLIST_BYPASS`)
+    unchanged — harvest an allowlisted token, embed in an attacker URL, confirm
+    the off-site redirect despite a substring allowlist.
 - Adaptive methodologies (W2.1):
   - XSS-reflected — done
   - SQLi — done
