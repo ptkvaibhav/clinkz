@@ -27,6 +27,7 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock
+from urllib.parse import urlparse
 
 import pytest
 
@@ -36,6 +37,7 @@ from clinkz.agents.exploit import (
     PageAnalysis,
     _HTTPResponse,
 )
+from clinkz.discovery.constants import CARRIER_ALIGN_HOST
 from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.models.methodology import SSRFCapability, SSRFExploitationType
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
@@ -414,6 +416,113 @@ def test_iam_credentials_redacted_in_finding():
     assert "AccessKeyId field present" in blob
     # The secret value is never persisted in the finding.
     assert "AKIAFAKESECRET99" not in blob
+
+
+# ---------------------------------------------------------------------------
+# Confirmation evidence — raw, bounded, independently auditable proof.
+#
+# The slice-1 gap: the trace preserved the confirmation CONCLUSION
+# (``content_reflected=True``) but not the EVIDENCE, so genuine-vs-chrome could
+# not be independently checked. A confirmation must now record the RAW reflected
+# excerpt (the bytes that satisfied P3 — content we never sent) AND the control
+# it was distinguished against (the without-carrier / non-resolving probe that
+# did NOT reflect it). These are the unit gate for that preservation.
+# ---------------------------------------------------------------------------
+
+
+def _carrier_gated_fetcher() -> Callable[..., Any]:
+    """Reflects loopback content ONLY when the Host carrier aligns (GeoServer model).
+
+    Models CVE-2021-40822: the servlet's host-check guard passes only when the
+    request ``Host`` header (carried as ``host_override``) equals the injected
+    url's host. WITHOUT the carrier the fetch is rejected (``IllegalStateException``
+    — TestWfsPost's own error chrome, no marker); WITH it, the loopback content is
+    proxied back and the marker reflects in-band. Accepts ``**_`` so it tolerates
+    the ``host_override`` kwarg the real ``_http_get`` consumes.
+    """
+
+    async def http_get(
+        url: str, params: dict[str, str], host_override: str | None = None, **_: Any
+    ) -> _HTTPResponse:
+        if not params:
+            return _resp(200, f"<title>{MARKER}</title>")
+        value = next(iter(params.values()))
+        low = value.lower()
+        if _SSRF_UNFETCHABLE_HOST in low:
+            return _resp(502, "Error: ENOTFOUND")
+        host = urlparse(value).netloc
+        if host_override != host:
+            return _resp(500, "java.lang.IllegalStateException: Invalid url requested")
+        return _resp(200, f"<title>{MARKER}</title>loopback-proxied")
+
+    return http_get
+
+
+def test_internal_confirmation_records_excerpt_and_differential_control():
+    """A no-carrier internal-service confirm records the reflected excerpt + control."""
+    agent = _make_agent(_internal_only_fetcher())
+    result = _run(agent._run_ssrf_methodology(PAGE, "url"))
+    assert result.verified is True
+    ev = result.confirmation_evidence
+    assert ev is not None
+    assert ev.primitive == "P3"
+    assert MARKER in ev.confirming_marker  # the internal content we never sent
+    assert MARKER in ev.confirming_excerpt  # the raw reflected bytes, in context
+    assert ev.control_confirms is False  # the control did NOT reflect the marker
+    assert _SSRF_UNFETCHABLE_HOST in ev.control_label
+    assert "ENOTFOUND" in ev.control_excerpt  # the differential control's own output
+    # ...and the pair reaches the finding evidence, not only the result object.
+    findings = _run(agent._test_ssrf(PAGE))
+    blob = "\n".join(findings[0].evidence)
+    assert "confirming_excerpt:" in blob
+    assert "control_excerpt:" in blob
+    assert MARKER in blob
+
+
+def test_carrier_confirmation_records_without_carrier_control():
+    """A carrier-bearing confirm records the WITHOUT-carrier control (IllegalStateException).
+
+    The load-bearing proof the slice-1 trace omitted: WITH the Host-alignment
+    carrier the marker reflects; the SAME probe WITHOUT it is rejected and does
+    NOT reflect — so a reviewer sees the marker is fetched content, not the
+    servlet's own chrome. The confirming target is the non-self-aligned loopback
+    (127.0.0.1), so the carrier is genuinely load-bearing (§4.2 masking avoided).
+    """
+    page = PageAnalysis(
+        url="http://example.com/fetch",
+        body="",
+        status=200,
+        input_params=["url"],
+        carrier_constraints=[CARRIER_ALIGN_HOST],
+    )
+    agent = _make_agent(_carrier_gated_fetcher())
+    result = _run(agent._run_ssrf_methodology(page, "url"))
+    assert result.verified is True
+    assert result.exploitation_type == SSRFExploitationType.INTERNAL_SERVICE
+    ev = result.confirmation_evidence
+    assert ev is not None
+    assert MARKER in ev.confirming_excerpt  # reflected WITH the carrier
+    assert "127.0.0.1" in ev.confirming_target  # non-self-aligned target
+    assert "WITHOUT the Host-alignment carrier" in ev.control_label
+    assert "IllegalStateException" in ev.control_excerpt  # rejected WITHOUT the carrier
+    assert ev.control_status == 500
+    assert ev.control_confirms is False
+
+
+def test_metadata_confirmation_excerpt_redacts_secret_value():
+    """A cloud-metadata confirm records a redacted excerpt — field names, never secrets."""
+    agent = _make_agent(_iam_only_fetcher())
+    result = _run(agent._run_ssrf_methodology(PAGE, "url"))
+    assert result.verified is True
+    ev = result.confirmation_evidence
+    assert ev is not None
+    assert "AccessKeyId" in ev.confirming_marker  # proves access by field NAME
+    assert ev.confirming_excerpt  # an excerpt was captured
+    assert "<redacted>" in ev.confirming_excerpt  # the secret VALUE is masked
+    # The secret value never appears in ANY stored form of the evidence.
+    assert "AKIAFAKESECRET99" not in ev.model_dump_json()
+    findings = _run(agent._test_ssrf(PAGE))
+    assert "AKIAFAKESECRET99" not in "\n".join(findings[0].evidence)
 
 
 def test_blind_deferred_emits_nothing():
