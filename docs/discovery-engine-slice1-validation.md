@@ -31,8 +31,8 @@ confirmed **in-band via P3** (internal content the payload never contained — G
 
 Driver: `scripts/live_geoserver_discovery.py`, against live Vulhub `geoserver/CVE-2021-40822` on
 `:8080`, with a **live Anthropic exploit LLM** (the methodology LLM is never stubbed — lessons
-#18/#28). Latest passing engagement `23d419c8-b599-41eb-846d-7fcc5ddfd928`
-(`outputs/23d419c8…/report_23d419c8….{json,md}`, `trace.jsonl`).
+#18/#28). Latest passing engagement `14ca7001-944d-429a-89fc-216e609c000d`
+(`outputs/14ca7001…/report_14ca7001….{json,md}`, `trace.jsonl`).
 
 ```
 1. SOURCE INGESTION → entrypoint ['GET','POST'] /TestWfsPost params=['body','url','username','password']
@@ -42,9 +42,11 @@ Driver: `scripts/live_geoserver_discovery.py`, against live Vulhub `geoserver/CV
 2. Δ: exposed conf=0.9 :: guard compares two attacker-controlled values, gated on ProxyBaseUrl (unset)
    reach: static_confirmed conf=0.9 :: url → new URL(...) → openConnection()
    → ExploitTask _test_ssrf POST …/TestWfsPost params=['url'] carrier=['align_host_with_injected_url_host']
-3. PROOF: 27 tests run, 1 finding. [HIGH] SSRF — internal_service status=confirmed
+3. PROOF: 46 tests run, 1 finding. [HIGH] SSRF — internal_service status=confirmed
           content_reflected=True via http://127.0.0.1:8080/geoserver/ (P3)
-4. CARRIER: WITH → reflects 'GeoServer'; WITHOUT → IllegalStateException (host mismatch)   ← gap #3, isolated
+          confirming_excerpt: …<title>GeoServer: Redirecting</title>…  (fetched mount-base — marker present)
+          control (WITHOUT carrier): <servlet-exception> java.lang.IllegalStateException…  (marker absent)
+4. CARRIER: WITH → reflects 'GeoServer'; WITHOUT → IllegalStateException (host mismatch)   ← gap #3, now in-trace
 5. ZERO-FP: control param 'username' → 0 SSRF findings
 
 VERDICT: SSRF confirmed in-band (P3) ✔  carrier load-bearing ✔  zero false positives ✔  → PASS
@@ -142,6 +144,30 @@ one deterministic `DiscoveryEngine.discover()` pass. §2.1's co-location note an
 the pragmatic first build, so it is a **sanctioned simplification**, not a surprise — but stated here for
 completeness. Wiring discovery in as an Orchestrator-scheduled phase (populating `_discovery_tasks`
 before the Exploit phase plans) is the next slice.
+
+### 4.6 The confirmation was conclusion-only — now raw-auditable (validation-gap closure)
+
+The first cut of this slice preserved the confirmation *conclusion* (`content_reflected=True`) but not the
+*evidence*: the trace was exploit-phase events with no response bodies and no isolation, so a reviewer had to
+**trust** that `GeoServer: Redirecting` came from the SSRF fetch rather than from TestWfsPost's own output. For a
+zero-FP-moat product that is unacceptable — the FP boundary is only credible if a confirmation is independently
+re-derivable from the artifact, not self-asserted.
+
+Closed by persisting a bounded `ConfirmationEvidence` pair at confirm time (`models/methodology.py`;
+`ExploitAgent._ssrf_internal_confirmation_evidence`), into **both** the finding evidence and the phase-5 trace
+event: (a) the **confirming excerpt** — the raw reflected bytes anchored on the marker (`…<title>GeoServer:
+Redirecting</title>…`, GeoServer's own mount-base redirect page proxied back), and (b) the **control** it was
+distinguished against. For a carrier-bearing confirmation the control is the sharpest one — the *same*
+internal-target probe re-sent WITHOUT the Host-alignment carrier, which the servlet rejects
+(`java.lang.IllegalStateException`, marker absent). The pair makes "the marker is fetched content, not chrome"
+visible in the raw bytes, and puts the §4.2 carrier isolation **inside the pipeline trace**, not only the driver's
+stdout. Cloud-metadata excerpts redact credential values (a field name proves access, never the secret).
+
+**Why this generalizes.** It is the operational form of the §4.1 lesson: reducing a capability to a "built,
+proven" primitive is not enough — the confirmation must be *auditable*, so every discovery confirmation now
+records the confirming-evidence-plus-control pair rather than a boolean. SSRF is the first consumer;
+`ConfirmationEvidence` is the general shape. Re-validated live on engagement `14ca7001` (report + trace embed the
+pair; the `username` control param still yields zero findings).
 
 ## 5. Net assessment
 
