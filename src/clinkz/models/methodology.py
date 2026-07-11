@@ -1388,15 +1388,15 @@ class RedirectBypassType(StrEnum):
     - ``UNICODE_LOOKALIKE``: validator uses string compare that doesn't
       normalise homoglyphs — ``ⅽvil.example`` (or similar) bypasses the
       allowlist.
-    - ``JS_PROTOCOL``: validator allows the ``javascript:`` scheme — a
-      body-level ``window.location`` write or meta-refresh dispatches it.
-    - ``DATA_PROTOCOL``: validator allows ``data:text/html`` — body-level
-      redirect renders attacker-controlled content.
     - ``ALLOWLIST_BYPASS``: a substring/contains allowlist accepts any target
       that merely *contains* an allowlisted token, so an attacker URL carrying
       that token as a query/path/fragment/userinfo component is accepted while
       the browser still navigates to the attacker host (Juice Shop's outdated
       allowlist class).
+
+    ``javascript:`` / ``data:`` schemes are deliberately NOT modelled here — a
+    ``javascript:``/``data:`` sink is XSS / content injection (handled by the XSS
+    methodologies), not a host-navigation open redirect.
     """
 
     DIRECT_REDIRECT = "direct_redirect"
@@ -1404,8 +1404,6 @@ class RedirectBypassType(StrEnum):
     AT_SYNTAX = "at_syntax"
     PROTOCOL_RELATIVE = "protocol_relative"
     UNICODE_LOOKALIKE = "unicode_lookalike"
-    JS_PROTOCOL = "js_protocol"
-    DATA_PROTOCOL = "data_protocol"
     ALLOWLIST_BYPASS = "allowlist_bypass"
 
 
@@ -1453,11 +1451,14 @@ class OpenRedirectMethodologyResult(BaseModel):
     redirect_target_observed: str | None = None
     candidate_param: str | None = None
     verified: bool = False
-    # ``verified`` = the ``Location`` header (or body-level redirect) was
-    # observed pointing to the attacker-controlled host. ``"likely"`` =
-    # validator divergence was clearly observed but no attacker-host target
-    # surfaced — bypass is plausible but unconfirmed.
+    # ``verified`` = a server-side 3xx ``Location`` (primary) OR a body-level
+    # DOM redirect (``dom_redirect``, demoted/lower-severity) resolved to the
+    # attacker-controlled host.
     verification_strength: str = "verified"
+    # A body-level (meta-refresh / JS ``location``) redirect confirmed off-site
+    # instead of a server 3xx ``Location``. Lower-severity, separately-gated
+    # signal — it never rides the primary 3xx confirm path.
+    dom_redirect: bool = False
 
 
 # ---------------------------------------------------------------------------
