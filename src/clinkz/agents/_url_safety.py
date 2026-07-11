@@ -24,7 +24,8 @@ left exactly as the operator set it.
 
 from __future__ import annotations
 
-from urllib.parse import parse_qs, urlsplit
+import re
+from urllib.parse import parse_qs, urljoin, urlparse, urlsplit
 
 # Query-parameter keys whose presence flips a server-side security/session
 # control. Matched case-insensitively against the URL's query keys. Kept tight
@@ -85,4 +86,69 @@ def is_state_changing_url(url: str) -> bool:
     return False
 
 
-__all__ = ["is_state_changing_url"]
+# ---------------------------------------------------------------------------
+# Session-value setter reference scraping
+# ---------------------------------------------------------------------------
+
+# Quoted URL-ish tokens containing "session" — links, form actions, and JS
+# string args (``popUp('session-input.php')`` / ``window.open("...")``). The
+# basename predicate below narrows these to actual value-setter pages.
+_SESSION_SETTER_TOKEN_RE = re.compile(r"""['"]([^'"<>\s]*session[^'"<>\s]*)['"]""", re.IGNORECASE)
+
+
+def _is_session_setter_basename(last_seg: str) -> bool:
+    """Whether a URL's last path segment names a session-value setter page.
+
+    ``session-input.php`` (DVWA's setter) matches directly; a bare ``session``
+    token additionally requires a ``set``/``input`` signal so incidental refs
+    (``sessionStorage``, a ``sessions.js`` bundle) are not mistaken for a
+    setter. Kept deliberately tight — the caller's link gate is the real
+    correctness filter, but a loose scrape wastes gate round-trips.
+    """
+    low = last_seg.lower()
+    if "session-input" in low:
+        return True
+    return "session" in low and ("input" in low or "set" in low)
+
+
+def find_session_setter_urls(page_url: str, body: str) -> list[str]:
+    """Resolve same-origin session-value *setter* URLs referenced by *body*.
+
+    Scrapes quoted URL-ish tokens (including ``onclick``/JS string refs such as
+    DVWA's ``popUp('session-input.php')``) whose basename names a session-value
+    setter, resolves them against *page_url*, and keeps the same-origin ones.
+    A path-shaped token (``.`` or ``/``) is required so a bare identifier is not
+    mistaken for a URL. Deduped, order-preserving.
+
+    This is a **pure scrape** — it applies neither scope nor state-change
+    guards; callers (the Scan crawler and the Exploit ``_harvest_session_vectors``
+    link gate) apply ``scope.contains`` + :func:`is_state_changing_url` before
+    acting on a candidate. Returns ``[]`` for empty/parameterless bodies.
+    """
+    if not body:
+        return []
+    try:
+        origin = urlsplit(page_url)
+    except ValueError:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in _SESSION_SETTER_TOKEN_RE.findall(body):
+        token = raw.strip()
+        if "." not in token and "/" not in token:
+            continue
+        candidate = urljoin(page_url, token)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        parsed = urlparse(candidate)
+        if (parsed.scheme, parsed.netloc) != (origin.scheme, origin.netloc):
+            continue
+        last_seg = parsed.path.rsplit("/", 1)[-1]
+        if not _is_session_setter_basename(last_seg):
+            continue
+        found.append(candidate)
+    return found
+
+
+__all__ = ["find_session_setter_urls", "is_state_changing_url"]

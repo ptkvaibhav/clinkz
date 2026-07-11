@@ -28,7 +28,7 @@ from clinkz.agents._route_discovery import (
     default_discoverers,
     run_route_discovery,
 )
-from clinkz.agents._url_safety import is_state_changing_url
+from clinkz.agents._url_safety import find_session_setter_urls, is_state_changing_url
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
 from clinkz.models.recon import (
@@ -372,6 +372,12 @@ class ScanAgent(BaseAgent):
         directories: list[str] = []
         crawl_tool = ""
         fuzz_tool = ""
+        # Trigger URL → session-value setter URLs it references, collected as the
+        # crawl visits each page and stamped onto the trigger endpoints below.
+        # This annotation is what lets the Exploit planner queue the injection
+        # family against an otherwise param-less cross-request trigger (DVWA SQLi
+        # ``high``, whose ``$_SESSION['id']`` is set via ``session-input.php``).
+        self._session_setter_refs: dict[str, list[str]] = {}
 
         # Crawl using fallback chain
         try:
@@ -457,6 +463,11 @@ class ScanAgent(BaseAgent):
         if hasattr(self, "_crawl_endpoints") and self._crawl_endpoints:
             self._merge_crawl_endpoints_preferring_params(endpoints, self._crawl_endpoints)
             self._crawl_endpoints = []
+
+        # Stamp session-setter annotations onto their trigger endpoints (or emit
+        # a param-less trigger endpoint if the crawl produced none) so the
+        # cross-request injection point is queued downstream.
+        self._apply_session_setter_annotations(endpoints)
 
         return HTTPScanResult(
             endpoints=endpoints,
@@ -580,6 +591,58 @@ class ScanAgent(BaseAgent):
                 existing.append(ep)
                 seen.add(key)
 
+    def _record_session_setters(self, page_url: str, body: str) -> None:
+        """Record session-value setter URLs *page_url* references, for stamping.
+
+        Populates ``self._session_setter_refs`` (trigger URL → resolved,
+        same-origin setter URLs) as the crawl visits each page. DVWA's SQLi
+        ``high`` page references ``session-input.php`` via
+        ``onclick="popUp(...)"``; recording it lets ``_scan_http_service`` stamp
+        the trigger endpoint so the Exploit planner queues the injection family
+        against it (the injection point is cross-request and invisible to a
+        param scan). Scope- and state-change-guarded; the Exploit-side link gate
+        is the correctness filter, so a loose match here is safe.
+        """
+        refs = getattr(self, "_session_setter_refs", None)
+        if refs is None or not body:
+            return
+        resolved = [
+            u
+            for u in find_session_setter_urls(page_url, body)
+            if self.scope.contains(u) and not is_state_changing_url(u)
+        ]
+        if not resolved:
+            return
+        existing = refs.setdefault(page_url, [])
+        for u in resolved:
+            if u not in existing:
+                existing.append(u)
+
+    def _apply_session_setter_annotations(self, endpoints: list[Endpoint]) -> None:
+        """Stamp recorded session-setter refs onto their trigger endpoints.
+
+        For each recorded trigger URL, set ``Endpoint.session_setters`` on the
+        matching endpoint (a bare param-less URL the crawler already emitted), or
+        append a new param-less trigger endpoint if the crawl produced none —
+        either way the annotation reaches the Exploit planner. In-place, so it
+        runs just before the ``HTTPScanResult`` is assembled.
+        """
+        refs = getattr(self, "_session_setter_refs", None)
+        if not refs:
+            return
+        by_url: dict[str, Endpoint] = {}
+        for ep in endpoints:
+            by_url.setdefault(ep.url, ep)
+            by_url.setdefault(ep.url.rstrip("/"), ep)
+        for trigger_url, setters in refs.items():
+            ep = by_url.get(trigger_url) or by_url.get(trigger_url.rstrip("/"))
+            if ep is not None:
+                ep.session_setters = list(dict.fromkeys([*ep.session_setters, *setters]))
+            else:
+                endpoints.append(
+                    Endpoint(url=trigger_url, method="GET", session_setters=list(setters))
+                )
+
     async def _discovery_http_get(self, url: str) -> FetchResult | None:
         """Session-carrying GET for route discovery and endpoint enrichment.
 
@@ -660,6 +723,10 @@ class ScanAgent(BaseAgent):
                 status, body = res.status, res.body
                 if status < 200 or status >= 400 or not body:
                     continue
+
+                # Record any session-value setter this page references (DVWA SQLi
+                # ``high``'s ``session-input.php``) for cross-request injection.
+                self._record_session_setters(current_url, body)
 
                 # Extract forms — Endpoint per form action.
                 for action_url, method, param_names in self._extract_forms(body, current_url):
@@ -760,6 +827,10 @@ class ScanAgent(BaseAgent):
                     continue
 
                 discovered.append(current_url)
+
+                # Record any session-value setter this page references (DVWA SQLi
+                # ``high``'s ``session-input.php``) for cross-request injection.
+                self._record_session_setters(current_url, body)
 
                 # Extract forms and their parameters
                 forms = self._extract_forms(body, current_url)
