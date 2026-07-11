@@ -18,6 +18,57 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 
+class ConfirmationEvidence(BaseModel):
+    """Raw, bounded proof that a confirmation is genuine — not self-asserted.
+
+    A confirmation is only auditable when the artifact preserves BOTH sides of
+    the decision the methodology made:
+
+    * the CONFIRMING evidence — the actual observed bytes that satisfied the
+      proof primitive: content the payload never contained (P3), or the measured
+      differential (P1). Enough surrounding context that a reviewer sees the
+      proof came from the fetch/observation, not from static response chrome.
+    * the CONTROL it was distinguished against — the negative/differential case
+      (the without-carrier re-probe, a non-resolving / closed-port host, a
+      non-matching probe) and what IT returned. Without the control, "the marker
+      reflected" is self-asserted; with it, a reviewer re-derives the verdict.
+
+    General across discovery/proof confirmations; the SSRF P3 oracle (GeoServer
+    CVE-2021-40822) is the first consumer. All fields are BOUNDED excerpts, never
+    full HTTP logs, and redaction-safe — credential VALUES are masked upstream so
+    only a non-secret marker / field name is ever stored (the JWT/IAM discipline).
+
+    Attributes:
+        primitive: The confirmation primitive this evidence reduces to (``"P3"``
+            content-reflected, ``"P1"`` measured-differential, ...).
+        confirming_target: The payload / internal target that was fetched (the
+            well-known, safe-to-show address — never an exfil host).
+        confirming_status: HTTP status of the confirming response.
+        confirming_marker: The specific token that proved the confirmation
+            (redaction-safe: the app's own content marker or a metadata field
+            NAME, never a secret value).
+        confirming_excerpt: Bounded window of the confirming response body around
+            ``confirming_marker`` — the raw bytes a reviewer inspects.
+        control_label: What the control was (e.g. "without the Host-alignment
+            carrier" / "non-resolving control host").
+        control_status: HTTP status of the control response.
+        control_excerpt: Bounded window of the control response body.
+        control_confirms: Whether the control ALSO reflected ``confirming_marker``.
+            For a genuine confirmation this MUST be ``False`` — the marker appears
+            only in the confirming case, proving it is fetched content, not chrome.
+    """
+
+    primitive: str = ""
+    confirming_target: str = ""
+    confirming_status: int | None = None
+    confirming_marker: str = ""
+    confirming_excerpt: str = ""
+    control_label: str = ""
+    control_status: int | None = None
+    control_excerpt: str = ""
+    control_confirms: bool = False
+
+
 class ReflectionContext(StrEnum):
     """The HTML / JS / URL context where a probe token reflects.
 
@@ -859,6 +910,12 @@ class SSRFMethodologyResult(BaseModel):
     indicator_observed: str | None = None
     candidate_param: str | None = None
     blind_suspected: bool = False
+    # Raw, bounded proof of the in-band confirmation (the reflected internal
+    # content that satisfied P3 AND the control it was distinguished against —
+    # the without-carrier / non-resolving probe). Present only on a verified
+    # result; makes the confirmation independently auditable from the artifact
+    # rather than trusting ``indicator_observed``'s conclusion.
+    confirmation_evidence: ConfirmationEvidence | None = None
     verified: bool = False
     # ``verified`` means the methodology emitted a finding.
     # ``verification_strength`` qualifies it: ``"verified"`` = the in-scope
