@@ -37,6 +37,15 @@ class ParamLocation(StrEnum):
     a cookie, not the query string). The request builder clones the ambient
     auth jar and overrides only that one cookie, leaving session/auth cookies
     intact.
+
+    ``SESSION`` marks a **cross-request** injection point: the value is written
+    to a server-side session slot (``$_SESSION[field]``) by one request (a
+    *setter*), then read by a *trigger* page's query on a later request (e.g.
+    DVWA's SQLi ``high`` level reads ``$_SESSION['id']`` — set by POSTing to
+    ``session-input.php`` — inside ``/vulnerabilities/sqli/``'s query). The
+    request builder POSTs the value to the setter, then observes the trigger;
+    both ride the ambient session, so the injected value round-trips through the
+    server's session state. See :class:`SessionVector`.
     """
 
     QUERY = "query"
@@ -44,6 +53,7 @@ class ParamLocation(StrEnum):
     FORM_BODY = "form_body"
     PATH = "path"
     COOKIE = "cookie"
+    SESSION = "session"
 
 
 class Endpoint(BaseModel):
@@ -58,6 +68,14 @@ class Endpoint(BaseModel):
     it). ``content_type`` records the request content-type a body-bearing
     endpoint expects (e.g. ``application/json``) so the builder serializes
     the body correctly.
+
+    ``session_setters`` annotates a **param-less trigger** page with the
+    same-origin URL(s) of a session-value *setter* it references (DVWA's SQLi
+    ``high`` page links ``session-input.php`` via ``onclick="popUp(...)"``).
+    Its presence is the signal the Exploit planner uses to queue the injection
+    family against an otherwise param-less page — without it the cross-request
+    session-indirection injection point is never reached. Empty by default, so
+    the field is fully backward-compatible. See :class:`SessionVector`.
     """
 
     url: str
@@ -67,6 +85,26 @@ class Endpoint(BaseModel):
     status_code: int = 0
     content_type: str | None = None
     param_locations: dict[str, ParamLocation] = Field(default_factory=dict)
+    session_setters: list[str] = Field(default_factory=list)
+
+
+class SessionVector(BaseModel):
+    """A cross-request session-write injection vector.
+
+    The value POSTed to ``field`` on ``setter_url`` is stored server-side in a
+    session slot (``$_SESSION[field]``) keyed by the ambient session cookie,
+    then read by a *trigger* page's query on a subsequent request. This is the
+    injection point for DVWA's SQLi ``high`` level: POSTing ``id`` to
+    ``.../sqli/session-input.php`` sets ``$_SESSION['id']``, which
+    ``/vulnerabilities/sqli/`` reads into its ``SELECT ... WHERE user_id =
+    '$id'`` query. A vector is only recorded after a benign-marker link gate
+    proves the write actually flows to the trigger (see the Exploit agent's
+    ``_harvest_session_vectors``); the setter/trigger pairing is what makes the
+    otherwise param-less trigger injectable.
+    """
+
+    setter_url: str
+    field: str
 
 
 class FormField(BaseModel):
