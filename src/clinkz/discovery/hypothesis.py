@@ -38,8 +38,18 @@ _EVIDENCE_WEIGHT = {
 
 
 def _target_url(base_url: str, route: str) -> str:
-    """Join the app base URL (context root) with the entrypoint's servlet route."""
-    return base_url.rstrip("/") + "/" + route.lstrip("/")
+    """Join the app base URL with the entrypoint's route.
+
+    A servlet route (GeoServer ``/TestWfsPost``) is appended to the context root.
+    A **non-servlet param-bag entrypoint** (Solr's shared ``SolrRequestParsers``)
+    has no source-derived route — the reachable reflecting handler is a deployment
+    fact the operator supplies as ``base_url`` — so an empty route joins to the
+    base unchanged (no spurious trailing slash, which Solr's path-exact handlers
+    would 404 on).
+    """
+    base = base_url.rstrip("/")
+    route = route.strip("/")
+    return f"{base}/{route}" if route else base
 
 
 def _delta_for(edge: ReachabilityEdge, deltas: list[CapabilityDelta]) -> CapabilityDelta | None:
