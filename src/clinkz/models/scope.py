@@ -90,6 +90,20 @@ class EngagementScope(BaseModel):
         description="Whitelist of ports to test. Empty list means all ports allowed.",
     )
 
+    # Gray-box discovery inputs (optional; absent ⇒ black-box, engine inert).
+    # ``source_dir`` is the ingestable target source tree the discovery engine
+    # reads (§2.2 — a source tree is an engagement input alongside the scope).
+    # ``discovery_base_url`` is the app base URL that source-derived routes join
+    # onto (e.g. ``http://host:8080/geoserver``); a shared request parser with no
+    # source-derived route (Solr) supplies the reflecting handler URL here. When
+    # unset the discovery step falls back to the primary target URL.
+    source_dir: str | None = Field(
+        default=None, description="Gray-box: path to the target source tree to ingest"
+    )
+    discovery_base_url: str | None = Field(
+        default=None, description="Gray-box: app base URL that discovered routes join onto"
+    )
+
     # Engagement-scoped DNS caches. Resolution happens once per hostname / port,
     # then every subsequent contains() call is dict lookups. PrivateAttrs are
     # excluded from serialization and recreated fresh on model_copy() — both

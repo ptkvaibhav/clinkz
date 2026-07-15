@@ -38,6 +38,7 @@ from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.config import settings
 from clinkz.credentials.store import CredentialStore
+from clinkz.discovery import DiscoveryEngine
 from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
@@ -48,6 +49,7 @@ from clinkz.llm.fallback import (
     preflight_provider_available,
     validate_agent_chains,
 )
+from clinkz.models.finding import ExploitTask
 from clinkz.models.recon import (
     PortScanResult,
     ReconResult,
@@ -630,6 +632,18 @@ class OrchestratorAgent:
                 f"Do NOT attempt to login again.\n\n" + exploit_content["task"]
             )
 
+        # Discovery engine — the gray-box THIRD plan source (§2.7 / §4.5). When the
+        # engagement supplies a source tree, ingest it now and hand the lowered
+        # Tier-A hypotheses to Exploit BEFORE it plans, so a channel a black-box
+        # crawl missed (the unlinked GeoServer TestWfsPost servlet; Solr's shared
+        # stream.url request parser) is still tested. Inert when no source_dir is
+        # configured — the default pipeline is unchanged.
+        discovery_tasks = self._build_discovery_tasks(technologies, targets_str)
+        if discovery_tasks:
+            exploit_content["discovery_tasks"] = [
+                t.model_dump(mode="json") for t in discovery_tasks
+            ]
+
         # Exploit phase budget. Default (settings.exploit_phase_budget == 0) is
         # UNBOUNDED: no cooperative deadline is passed (the agent runs the full
         # task queue to completion) and _run_phase gets no hard cap — a genuine
@@ -689,6 +703,60 @@ class OrchestratorAgent:
                 results[name] = {"status": "not_started"}
 
         return results
+
+    # ------------------------------------------------------------------
+    # Discovery engine (gray-box) — the third exploit-plan source
+    # ------------------------------------------------------------------
+
+    def _build_discovery_tasks(
+        self, technologies: list[str], targets_str: str
+    ) -> list[ExploitTask]:
+        """Run the discovery engine over the engagement source tree, if any.
+
+        Gray-box only: with no ``scope.source_dir`` this returns ``[]`` and the
+        pipeline is exactly black-box. Otherwise it ingests the source, derives
+        Δ-capability × reachability hypotheses, and lowers them to Tier-A
+        ``ExploitTask``s the Exploit agent unions into its plan (§2.7). The
+        recon-derived *technologies* are the fingerprint; the base URL that
+        source-derived routes join onto is ``scope.discovery_base_url`` (a shared
+        request parser with no source route, like Solr, supplies the reflecting
+        handler here), falling back to the primary target URL. Failures degrade to
+        black-box — discovery never breaks the engagement.
+        """
+        scope = self._scope
+        if scope is None or not scope.source_dir:
+            return []
+        if not Path(scope.source_dir).exists():
+            self._logger.warning("Discovery: source_dir does not exist: %s", scope.source_dir)
+            return []
+        base_url = scope.discovery_base_url or self._primary_target_url()
+        if not base_url:
+            self._logger.warning("Discovery: no base URL for %s — skipping", targets_str)
+            return []
+        try:
+            result = DiscoveryEngine().discover(scope.source_dir, technologies, base_url)
+        except Exception as exc:  # noqa: BLE001 — discovery must never break the run
+            self._logger.error("Discovery engine failed (proceeding black-box): %s", exc)
+            return []
+        tasks = result.exploit_tasks()
+        self._logger.info(
+            "Discovery: %d hypothesis task(s) from source "
+            "(%d entrypoints, %d Δ, %d reachability edges) base=%s",
+            len(tasks),
+            len(result.source_model.entrypoints),
+            len(result.deltas),
+            len(result.edges),
+            base_url,
+        )
+        return tasks
+
+    def _primary_target_url(self) -> str:
+        """A base URL for discovery from the first in-scope target (best effort)."""
+        scope = self._scope
+        if scope is None or not scope.targets:
+            return ""
+        value = scope.targets[0].value
+        return value if "://" in value else f"http://{value}"
 
     # ------------------------------------------------------------------
     # Phase runner
