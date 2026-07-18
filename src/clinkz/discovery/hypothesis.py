@@ -16,7 +16,7 @@ it the guard rejects the probe and a genuinely exploitable SSRF fails to confirm
 
 from __future__ import annotations
 
-from clinkz.discovery.constants import CARRIER_ALIGN_HOST
+from clinkz.discovery.constants import CARRIER_ALIGN_HOST, CARRIER_PATH_TRAVERSAL
 from clinkz.discovery.models import (
     CapabilityDelta,
     CapabilityPrimitive,
@@ -26,6 +26,7 @@ from clinkz.discovery.models import (
     ReachabilityEdge,
     SourceModel,
 )
+from clinkz.models.scan import ParamLocation
 
 # Weight applied to a primitive's evidence grade in the rank score. Bootstrapped
 # (source/CVE-derived) primitives are trusted enough to spend budget on; the score
@@ -64,16 +65,27 @@ def _delta_for(edge: ReachabilityEdge, deltas: list[CapabilityDelta]) -> Capabil
     )
 
 
-def _instance_obligation(primitive: CapabilityPrimitive, guard: Guard | None) -> ProofObligation:
+def _instance_obligation(
+    primitive: CapabilityPrimitive, guard: Guard | None, edge: ReachabilityEdge
+) -> ProofObligation:
     """Copy the primitive's obligation and attach per-instance carrier constraints.
 
-    The Host-alignment constraint is added only when the reaching guard is a
-    bypassable host-match guard — the concrete-fixture finding of §10 gap #3.
+    Each carrier is discoverable only from the concrete instance (§10 gap #3):
+
+      * the **Host-alignment** constraint when the reaching guard is a bypassable
+        host-match guard (EGRESS_FETCH / GeoServer — the SSRF fetch guard compares
+        two attacker values); and
+      * the **path-segment-traversal** constraint when the reaching channel is a
+        URL path parameter (FILE_READ / Flink — the traversal must ride the path
+        segment verbatim and stay one opaque segment). The encoding is a property
+        of the channel location, not the primitive, so it is added here.
     """
     constraints = list(primitive.proof_obligation.carrier_constraints)
     if guard is not None and guard.kind == "host_match" and guard.bypassable_by_default:
         if CARRIER_ALIGN_HOST not in constraints:
             constraints.append(CARRIER_ALIGN_HOST)
+    if edge.channel_location == ParamLocation.PATH and CARRIER_PATH_TRAVERSAL not in constraints:
+        constraints.append(CARRIER_PATH_TRAVERSAL)
     return primitive.proof_obligation.model_copy(update={"carrier_constraints": constraints})
 
 
@@ -99,7 +111,7 @@ def generate_hypotheses(
             if delta.call_site.guard_symbol
             else None
         )
-        obligation = _instance_obligation(primitive, guard)
+        obligation = _instance_obligation(primitive, guard, edge)
         rank = (
             delta.delta_confidence
             * edge.reach_confidence

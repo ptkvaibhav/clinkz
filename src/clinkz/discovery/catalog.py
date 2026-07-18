@@ -1,13 +1,27 @@
-"""Capability catalog (seeded) — the transfer key (§3, first vertical slice).
+"""Capability catalog (seeded) — the transfer key (§3).
 
 The general Capability Agent (re-scoped Research, CVE/CWE/source ingestion to grow
-a cross-engagement catalog) is out of scope for this slice. Here we **seed one
-primitive** — a Java ``openConnection`` server-side fetch — payload-free and
-technology-invariant, so the same catalog entry would transfer to any Java target
-with an HTTP-fetch sink (the point of primitive-not-payload, §3.1). Its
-``proof_obligation`` reduces to confirmation primitives Clinkz already has
-(P3 content-we-never-sent / P1 differential), so a hypothesis built from it
-inherits zero-FP by construction (§6.1).
+a cross-engagement catalog) is out of scope. Here we **seed primitives** — each
+payload-free and technology-invariant, so the same catalog entry transfers to any
+Java target with the matching sink shape (the point of primitive-not-payload,
+§3.1). Each ``proof_obligation`` reduces to confirmation primitives Clinkz already
+has (P3 content-we-never-sent / P1 differential), so a hypothesis built from a
+primitive inherits zero-FP by construction (§6.1).
+
+Two capability classes are catalogued, and the catalog is **class-generic**: the
+matcher, intent, reachability, hypothesis and proof-reduction layers are keyed on
+:class:`PrimitiveClass`, never on any one class. Adding the second class was a
+single catalog entry (this file) + the class-specific *source idiom* (the file-read
+sink) and *carrier* (path-segment traversal) — the abstraction extends, it does not
+fork per class:
+
+* ``EGRESS_FETCH`` — a Java ``URL.openConnection()`` server-side fetch → SSRF,
+  proven by ``_test_ssrf`` (GeoServer CVE-2021-40822; Solr RemoteStreaming).
+* ``FILE_READ`` — a request-tainted path into a ``java.io.File`` / ``Files`` /
+  ``FileInputStream`` read sink with no basename-strip/canonicalize guard →
+  arbitrary file read, proven by ``_test_lfi`` (Flink CVE-2020-17519). The proof
+  reduces to the **same** P3 file-content oracle the black-box LFI methodology
+  already uses — zero new proof code.
 """
 
 from __future__ import annotations
@@ -55,7 +69,58 @@ EGRESS_FETCH_JAVA_OPENCONNECTION = CapabilityPrimitive(
     evidence_grade="bootstrapped-from-source",
 )
 
-CATALOG: list[CapabilityPrimitive] = [EGRESS_FETCH_JAVA_OPENCONNECTION]
+# The second capability class — the first multi-class test of the catalog
+# abstraction. Same schema, different sink shape: a request-tainted path reaching
+# a filesystem-read sink (``new File(dir, name)`` / ``Files.read*`` /
+# ``new FileInputStream``) with no basename-strip/canonicalize guard. Deliberately
+# free of any Flink-, route-, or payload-specificity — the generic path-traversal
+# file-read capability the existing ``_test_lfi`` methodology confirms. Its
+# obligation reduces to the built P3 file-content oracle (an /etc/passwd signature
+# reflected in-band — content the payload never carried), so the hypothesis is
+# zero-FP by construction. The Host-alignment carrier is EGRESS-specific; FILE_READ
+# instead carries the path-segment-traversal constraint, attached per-instance by
+# the Hypothesis layer when the reaching channel is a URL path parameter (§10 gap
+# #3 — the encoding of the traversal is discoverable only from the concrete channel
+# location, exactly like the Host carrier is discoverable only from the guard).
+FILE_READ_JAVA_FILE_SINK = CapabilityPrimitive(
+    id="file_read.java_file_sink",
+    technology_pattern=r"(?i)\bjava\b|servlet",
+    name="java-tainted-path-file-read",
+    primitive_class=PrimitiveClass.FILE_READ,
+    trigger_shape=(
+        "a request-derived path (query/form/path parameter) becomes the name of a "
+        "java.io.File / Files.read* / FileInputStream read whose bytes may return "
+        "in-band, with no basename-strip (.getName()) or canonicalization guard"
+    ),
+    input_carriers=["path", "query", "body_field"],
+    effect_class="filesystem_read",
+    proof_obligation=ProofObligation(
+        test_method="_test_lfi",
+        # Reduces to the SAME built P3 file-content oracle the black-box LFI
+        # methodology uses — content the payload never contained (§6.1). Zero new
+        # proof code: the hypothesis rides the existing ``_test_lfi`` plan-union.
+        confirmation_primitives=["P3"],
+        # Base obligation carries no carrier constraint; the Hypothesis layer adds
+        # the path-segment-traversal carrier per-instance when the reaching channel
+        # is a URL path parameter (the encoding is a property of the concrete
+        # channel, not the primitive).
+        carrier_constraints=[],
+        description=(
+            "in-band arbitrary file read: confirm by an /etc/passwd (or other "
+            "well-known file) content signature reflected in the response — content "
+            "the traversal payload never carried (P3)"
+        ),
+    ),
+    gating_config=None,
+    cwe_refs=["CWE-22", "CWE-98"],
+    provenance=["framework-source: new File(dir, pathParam) sink", "CVE-2020-17519"],
+    evidence_grade="bootstrapped-from-source",
+)
+
+CATALOG: list[CapabilityPrimitive] = [
+    EGRESS_FETCH_JAVA_OPENCONNECTION,
+    FILE_READ_JAVA_FILE_SINK,
+]
 
 
 def match_primitives(

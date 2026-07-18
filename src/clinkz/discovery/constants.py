@@ -16,3 +16,16 @@ from __future__ import annotations
 # (empty ``carrier_constraints`` ⇒ unchanged behaviour) so it never fires where a
 # host rewrite would break routing.
 CARRIER_ALIGN_HOST: str = "align_host_with_injected_url_host"
+
+# Per-instance carrier constraint a FILE_READ (path-traversal) proof obligation
+# carries when its channel is a URL *path* parameter (the whole ``:filename``
+# segment is attacker-controlled). It tells the probe carrier to inject the
+# traversal payload into the path segment **verbatim** — the generic path carrier
+# ``quote(safe="")``-re-encodes the value (so an already-encoded ``..%252f`` token
+# becomes ``..%25252f`` and the traversal is defeated) — and to normalise every
+# literal ``/`` left in the payload (the target's ``etc/passwd`` separators) to the
+# payload's own encoded-slash token so the whole payload stays ONE opaque path
+# segment routed to the file handler (Apache Flink CVE-2020-17519 routes a literal
+# ``/`` to a different handler). Opt-in, so IDOR's encoded ``:id`` value carrier
+# and every query/form probe are byte-for-byte unchanged.
+CARRIER_PATH_TRAVERSAL: str = "carry_path_segment_traversal_raw"

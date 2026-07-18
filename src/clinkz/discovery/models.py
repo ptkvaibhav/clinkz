@@ -85,15 +85,21 @@ class CoverageGrade(StrEnum):
 class Entrypoint(BaseModel):
     """An untrusted-input entrypoint surfaced from source.
 
-    For this slice: an HTTP servlet handler. ``route`` is the mounted path a
-    black-box crawler would need to have found; ``params`` are the request
-    parameters the handler reads (``request.getParameter(...)``).
+    An HTTP handler that reads untrusted request input. ``route`` is the mounted
+    path a black-box crawler would need to have found; ``params`` are the request
+    parameters the handler reads (``request.getParameter(...)`` /
+    ``params.get(NAME)`` / a typed ``getPathParameter(X.class)``). ``path_params``
+    is the subset of ``params`` carried in the URL *path* itself (Flink's typed
+    ``:filename`` REST path parameter) rather than the query string / form body —
+    the reachability layer maps those to :attr:`ParamLocation.PATH` so the probe
+    is carried as a path segment, not a ``?name=`` query.
     """
 
     route: str
     http_methods: list[str] = Field(default_factory=list)
     handler_symbol: str = ""
     params: list[str] = Field(default_factory=list)
+    path_params: list[str] = Field(default_factory=list)
     file: str = ""
     line: int = 0
 
