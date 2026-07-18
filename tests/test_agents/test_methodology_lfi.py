@@ -387,9 +387,39 @@ class TestPhase5Verification:
             "indicator_type": "file_signature",
             "expected_indicator": "root:x:0:0:",
         }
-        verified, observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        verified, observed, _ev = await agent._lfi_phase5_verify(_make_page(), "page", synth)
         assert verified is True
         assert "passwd" in observed.lower()
+
+    @pytest.mark.asyncio
+    async def test_confirmation_evidence_pair_is_raw_auditable(self) -> None:
+        """A verified file read carries the raw P3 pair: leaked bytes + benign control.
+
+        The confirming probe reads /etc/passwd; the benign non-traversal control
+        reads no file — so the signature (marker) appears ONLY in the confirming
+        response, proving it is fetched file content, not response chrome (§4.6,
+        file read is ConfirmationEvidence's second consumer after SSRF).
+        """
+        agent = _make_agent()
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                _HTTPResponse(status=200, body="root:x:0:0:root:/root:/bin/bash\nbin:x:1:1:bin"),
+                _HTTPResponse(status=404, body='{"errors":["This file does not exist."]}'),
+            ]
+        )
+        synth = {
+            "payload": "%252e%252e%252fetc/passwd",
+            "indicator_type": "file_signature",
+            "expected_indicator": "root:x:0:0:",
+        }
+        verified, _observed, evidence = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        assert verified is True
+        assert evidence is not None
+        assert evidence.primitive == "P3"
+        assert evidence.confirming_marker == "root:x:0:0:"
+        assert "root:x:0:0:" in evidence.confirming_excerpt
+        assert evidence.control_confirms is False  # control read no file — marker absent
+        assert evidence.control_status == 404
 
     @pytest.mark.asyncio
     async def test_file_signature_winini_matched(self) -> None:
@@ -405,7 +435,7 @@ class TestPhase5Verification:
             "indicator_type": "file_signature",
             "expected_indicator": "[fonts]",
         }
-        verified, observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        verified, observed, _ev = await agent._lfi_phase5_verify(_make_page(), "page", synth)
         assert verified is True
         assert "win.ini" in observed.lower() or "[fonts]" in observed.lower()
 
@@ -428,7 +458,7 @@ class TestPhase5Verification:
             "indicator_type": "base64_blob",
             "expected_indicator": "passwd",
         }
-        verified, observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        verified, observed, _ev = await agent._lfi_phase5_verify(_make_page(), "page", synth)
         assert verified is True
         assert "decode" in observed.lower()
 
@@ -457,7 +487,7 @@ class TestPhase5Verification:
             "indicator_type": "error_path",
             "expected_indicator": "filesystem path",
         }
-        verified, observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        verified, observed, _ev = await agent._lfi_phase5_verify(_make_page(), "page", synth)
         assert verified is False
         assert "no file content read" in observed
         assert "/var/www" in observed  # disclosed path recorded as a hint
@@ -476,7 +506,7 @@ class TestPhase5Verification:
             "indicator_type": "error_path",
             "expected_indicator": "filesystem path",
         }
-        verified, observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        verified, observed, _ev = await agent._lfi_phase5_verify(_make_page(), "page", synth)
         assert verified is True
         assert "passwd" in observed
 
@@ -491,7 +521,7 @@ class TestPhase5Verification:
             "indicator_type": "file_signature",
             "expected_indicator": "root:x",
         }
-        verified, _observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        verified, _observed, _ev = await agent._lfi_phase5_verify(_make_page(), "page", synth)
         assert verified is False
 
 
@@ -545,7 +575,7 @@ class TestPhase5LLMVocabulary:
             # base64 of "root:x:0:0:" — does NOT byte-align inside the file blob.
             "expected_indicator": "cm9vdDp4OjA6MDo",
         }
-        verified, observed = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        verified, observed, _ev = await agent._lfi_phase5_verify(_make_page(), "page", synth)
         assert verified is True
         assert "passwd" in observed.lower()
 
@@ -564,7 +594,7 @@ class TestPhase5LLMVocabulary:
             "indicator_type": "base64_encoded_string",
             "expected_indicator": "cm9vdDp4OjA6MDo",
         }
-        verified, _ = await agent._lfi_phase5_verify(_make_page(), "page", synth)
+        verified, _, _ev = await agent._lfi_phase5_verify(_make_page(), "page", synth)
         assert verified is False
 
 
