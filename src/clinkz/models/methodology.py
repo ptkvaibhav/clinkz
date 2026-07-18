@@ -1102,6 +1102,14 @@ class LFIMethodologyResult(BaseModel):
     indicator_type: str | None = None
     indicator_observed: str | None = None
     candidate_param: str | None = None
+    # Raw, bounded proof of the in-band file read (the P3 file-content signature
+    # that satisfied verification AND the benign non-traversal control it was
+    # distinguished against — a control that read no file). Present only on a
+    # verified result; makes the confirmation independently auditable from the
+    # artifact rather than trusting ``indicator_observed``'s conclusion. The
+    # file-read discovery class (Flink CVE-2020-17519) is the second consumer of
+    # :class:`ConfirmationEvidence` after SSRF.
+    confirmation_evidence: ConfirmationEvidence | None = None
     verified: bool = False
     # ``verified`` means the methodology emitted a finding.
     # ``verification_strength`` qualifies how strong that confirmation is.
