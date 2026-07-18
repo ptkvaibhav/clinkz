@@ -454,22 +454,73 @@ analysis in a gray-box web app spanning services:
 | `STATIC_HEURISTIC` | plausible path within a bounded call-graph walk, not proven | depth-bounded symbol walk (LLM-assisted), same discipline as `_route_discovery` BFS |
 | `HYPOTHESIZED` | no static path (missing source, cross-service, or sequence) but plausible by shape | LLM plausibility judgement over wiring/behavior |
 
-### 4.3 The key move: reachability is a *prior*, not a proof
+### 4.3 Reachability is a *prior* — which relocates the hard problem onto proof budget
 
-This is the design's central bet for making the hard core tractable:
+The original central bet was: we don't need sound reachability to preserve zero-FP,
+because the proof engine is the arbiter no matter how a hypothesis was generated —
+so reachability only has to *rank*. That is half right, and **the false half is the
+dangerous one.**
 
-> We do **not** need sound cross-service reachability to preserve zero-FP. The
-> proof engine guarantees zero-FP regardless of how a hypothesis was generated.
-> Reachability analysis is needed only for **recall and prioritization** — to
-> decide which hypotheses are worth the proof budget.
+**The true half.** Treating a `HYPOTHESIZED` edge as a prior removes all
+false-*positive* risk. An over-eager reachability guess can never become a wrong
+finding — the proof engine zeroes it. And a confirmed effect *is* the reachability
+proof, retired into the graph as `STATIC_CONFIRMED` for next time (§6, §7). We let
+the world resolve what the static analysis couldn't.
 
-That converts an intractable requirement (sound cross-service dataflow without
-full source) into a tractable one (a *plausibility prior* that ranks
-hypotheses). A `HYPOTHESIZED` edge is still emitted as a (lower-ranked)
-hypothesis; if the proof engine confirms an end-to-end effect, the path
-provably exists — **the confirmed effect *is* the reachability proof**, retired
-back into the graph as `STATIC_CONFIRMED` for next time (§6). We let the world
-resolve what the analysis couldn't.
+**The false half.** "It only has to rank" quietly moves the whole difficulty off
+*soundness* and onto *proof budget* — which **nothing in this design sizes.** A weak
+prior doesn't produce wrong findings; it produces **too many candidates**, and the
+proof engine (which is not free) never reaches the real one before the engagement
+ends. Zero-FP is preserved and the vuln is still missed. The failure mode has moved
+from *false positive* to **false negative under budget exhaustion** — harder to
+notice, because nothing looks broken.
+
+So the real research bet is **not** *"is reachability sound"* but:
+
+> **Can the reachability prior be good enough that the real vuln lands in the
+> top-N candidates the proof budget can actually afford to test?**
+
+The rest of this section is about that N. It is **not solved here — it is named**,
+and it is §9's risk #1.
+
+#### 4.3.1 Proof-budget economics (first-class, unsized, make-or-break)
+
+- **What a job costs — heterogeneously.** One proof-engine job is *not* one HTTP
+  request. A **Tier-A** job (bind to a `_test_*`) is a bounded burst of probes
+  (baseline + differential + verify) — cheap, seconds. A **Tier-B** job (generic
+  obligation runner) adds an LLM planning call to instantiate the obligation. A
+  **P6/OOB** job adds a *wall-clock wait* for a callback that may never arrive — the
+  most expensive unit, because it spends *time*, not requests. Budget must be
+  counted in these mixed units, never in "number of hypotheses."
+- **What an engagement can afford.** Today the exploit phase has *no* wall-clock
+  deadline (`EXPLOIT_PHASE_BUDGET=0`; operation-level timeouts are the only valve,
+  CLAUDE.md). With a fixed menu of methodologies that is safe. The moment discovery
+  becomes a **third, unbounded task source**, "no phase deadline" flips from a safety
+  property into a liability — the queue can grow faster than it drains. Budget has to
+  become an explicit, *counted* resource the day discovery ships.
+- **How the prior spends it.** Rank by `Δ-grade × reach_confidence ×
+  primitive_evidence_grade` (§6.4), dispatch highest-value-first, so the top-N the
+  budget affords are the likeliest true. Same discipline the codebase already lives
+  by: the ranking decides *order and spend*, the live proof decides *emission* —
+  never the reverse.
+- **Fallback when the budget is spent.** Remaining hypotheses are **not silently
+  dropped** — they demote to *ranked operator research-leads* (the same channel as
+  no-obligation hypotheses, §6.4), so the report says "these N (Δ × channel) pairs
+  were generated but not proof-tested, for budget, in this order." A vuln *generated
+  but unaffordable* is a recoverable operator decision; a vuln *never generated* is
+  not. The budget edge must be **legible, not a truncation.**
+- **Starvation guard: don't let a weak prior eat the budget.** The dangerous case is
+  a low-precision, high-volume prior (cross-service / business-logic, §4.4) emitting
+  a flood at uniform low confidence that consumes the budget before one
+  high-confidence convergent hypothesis (the GeoServer-class intra-function SSRF,
+  §10) is ever tested. Three guards, none yet built: **(1) partition budget by prior
+  class** — `STATIC_CONFIRMED`/convergent gets a *reserved share* the
+  `HYPOTHESIZED`/divergent flood cannot touch (a budget-level analogue of the exploit
+  round-robin's per-category fairness); **(2) cap per-class candidate volume** before
+  ranking, so an unbounded cross-service generator cannot enqueue past its share;
+  **(3) a minimum `reach_confidence` floor** to consume *paid* budget at all — below
+  the floor a hypothesis goes straight to research-lead, never to a job. Sizing the
+  reserved shares, the caps, and the floor is **open-question #1.**
 
 ### 4.4 Tractable now vs frontier
 
@@ -512,7 +563,14 @@ them precisely is what lets novel hypotheses inherit the guarantee:
 | P6 | **Out-of-band callback** — server reaches an attacker-controlled collaborator | **NOT built** — deferred everywhere (CMDi `BLIND_OOB`, XXE `oob_exfil`, SSRF blind). §9. |
 
 **A hypothesis inherits zero-FP if and only if its proof obligation reduces to
-one of P1–P6.** That is the whole game.
+one of P1–P6.** That is the whole game — and it is also the **product boundary**:
+the discoverable-vuln universe is *exactly* the set of capability classes whose
+proof obligation reduces to a confirmation primitive Clinkz has built. Obligations
+that do not reduce to P1–P6 are **not emitted** (emitting one anyway is precisely
+how zero-FP breaks). The roadmap (§8) is therefore organized around *growing the
+primitive set* — you expand what you can **discover** by expanding what you can
+**prove** — and the P6 row above, the one unbuilt primitive, is the gate on the
+entire blind-egress half of that universe (§8.1).
 
 ### 6.2 The Proof Obligation abstraction
 
@@ -633,23 +691,88 @@ Failure is signal, and the *reason* matters:
 
 ---
 
-## 8. Build sequencing (convergent-first)
+## 8. Roadmap — the confirmation-primitive set *is* the spine
 
-A pragmatic order that yields value early and defers the frontier:
+The discoverable-vuln universe is **exactly** bounded by the confirmation-primitive
+vocabulary (P1–P6, §6.1). This is not a limitation to be worked around — it is the
+product boundary, and it is the spec:
 
-1. **Catalog + Capability Agent re-scope**, bootstrapped from CVE/CWE for a
-   handful of high-value technologies. Manifest→capability lookup. *No new proof
-   code.*
-2. **Intent Agent (source-driven Δ)** + **intra-service reachability**
-   (`STATIC_CONFIRMED` / `STATIC_HEURISTIC`). Δ-directed selection/seeding of the
-   *existing* methodologies = Tier-A convergent hypotheses. **First measurable
-   lift: catalogue-seeded convergent findings black-box scanning misses.**
-3. **Chaining** (compose confirmed primitives) + **log-sink / stored / parsed-file
-   channels** — still Tier-A where a methodology exists.
-4. **Generic obligation runner (Tier B)** + **OOB collaborator (P6)** — unlocks
-   divergent/novel and the Log4Shell-class flagship.
-5. **Cross-service + business-logic reachability** — the frontier, proof-arbitrated.
+> **A capability class becomes discoverable when — and only when — its proof
+> obligation reduces to a confirmation primitive Clinkz has built. Obligations that
+> do not reduce to P1–P6 are not emitted. Emitting one anyway is precisely how
+> zero-FP breaks.**
 
+So the roadmap is not "add agents." It is **"add confirmation primitives, and
+inherit every vuln class whose obligation reduces to them."** You expand what you can
+*discover* by expanding what you can *prove*. Everything else — catalog growth,
+reachability, ranking — improves *recall and cost within* the boundary the primitive
+set draws; **only a new primitive moves the boundary.**
+
+**What each primitive already unlocks (the discoverable set today, P1–P5):**
+
+| Primitive | Vuln classes whose obligation reduces to it | Discoverable now? |
+|---|---|---|
+| P1 differential baseline | SQLi (boolean), IDOR, access-control differentials, **in-band SSRF (reachable vs unreachable internal host)** | **yes** |
+| P2 reflection-guarded marker | CMDi (echo-canary), reflected/stored XSS, SSTI eval | **yes** |
+| P3 content-we-never-sent | LFI, XXE file disclosure, **in-band SSRF (internal content reflected)** | **yes** |
+| P4 in-band-effect-matching-a-control | JWT forgery, auth bypass, SSRF metadata signature | **yes** |
+| P5 bounded side-effect | time-based SQLi/NoSQLi, ReDoS, bounded XXE expansion | **yes** |
+| **P6 out-of-band callback** | **blind SSRF, blind CMDi, blind XXE exfil, deserialization RCE, Log4Shell-class blind egress** | **NO — primitive not built** |
+
+The table is the roadmap's true north: **five of six primitives exist, and the sixth
+is the gate on the entire blind-egress half of the vuln universe.**
+
+### 8.1 P6/OOB is a precondition, not a footnote
+
+The flagship "discover a Log4Shell-class bug" use case is **literally unconfirmable
+without P6.** Log4Shell is blind by construction — JNDI egress to an attacker host,
+no in-band signal — so its proof obligation *cannot* reduce to P1–P5; it reduces to
+P6 or to nothing. The same is true of blind SSRF (no reflection), blind
+OS-command injection, blind deserialization gadget chains, and any exfil-over-DNS
+class. **Until an OOB collaborator exists, none of these is discoverable — not
+because the discovery engine can't hypothesize them, but because the proof engine
+can't confirm them, so by the boundary-as-feature spec they are correctly *not
+emitted*.**
+
+This reorders the build. P6 is not step 4's afterthought; it is the **precondition
+for an entire class of discovery**, and must be sequenced as deliberately as the
+catalog. Standing up an OOB collaborator safely (in-scope, without becoming attacker
+infrastructure) is its own design (§9 risk 4) — but the roadmap must treat it as
+*the gating dependency it is*, not a "later." The honest statement to the owner:
+**without P6, the marquee use case is out of scope of what can be built at all**, and
+the near-term deliverable is the P1–P5 in-band half — which, per the GeoServer
+walkthrough (§10), is genuinely valuable and includes real SSRF.
+
+### 8.2 Build order, re-anchored on the primitive spine
+
+Each step names the primitive work that moves the boundary and the discovery
+machinery that raises recall within it:
+
+1. **P1–P5 in-band, Tier-A only (no new primitive).** Catalog + Capability re-scope
+   (CVE/CWE bootstrap) → Intent Δ over source → intra-function `STATIC_CONFIRMED`
+   reachability → Δ-directed selection/seeding of the *existing* 19 `_test_*`
+   methods. Every hypothesis binds to a built methodology, so it reduces to a built
+   primitive by construction. **First measurable lift, zero new proof code, zero
+   zero-FP risk.** This is the GeoServer-class in-band SSRF slice (§10).
+2. **P1–P5 in-band, Tier-B generic obligation runner (no new primitive, new
+   *executor*).** Build the one component that can express an *arbitrary* P1–P5
+   obligation (not just the 19 hand-tuned ones), using the existing honesty helpers.
+   Unlocks convergent hypotheses that *don't* map onto an existing `_test_*` but
+   still reduce to P1–P5. The boundary doesn't move; the machinery to reach it
+   generalizes. **The largest new proof effort that does not require OOB.**
+3. **P6 out-of-band collaborator (moves the boundary).** The first genuine boundary
+   expansion. Unlocks the entire blind-egress half in one step: blind SSRF, blind
+   CMDi/XXE, deserialization, **Log4Shell-class**. Gated on the collaborator design
+   (§9 risk 4). Nothing above the in-band line is discoverable before this lands.
+4. **Recall-within-boundary: chaining, log-sink / stored / parsed-file channels,
+   cross-tech primitive transfer.** Raises recall for classes *already* inside the
+   boundary; needs the reachability and catalog work of §3–§4, not a new primitive.
+5. **Frontier reachability (cross-service, business-logic).** Highest candidate
+   volume, weakest prior — gated on the proof-budget economics of §4.3, not on a
+   primitive.
+
+The ordering is deliberate: **steps 1–2 exhaust the in-band boundary; step 3 is the
+single move that opens the blind half; steps 4–5 are recall and cost, not boundary.**
 Each step degrades to the previous cleanly; the floor is always today's pipeline.
 
 ---
@@ -659,15 +782,30 @@ Each step degrades to the previous cleanly; the floor is always today's pipeline
 These are unsolved. Surfacing them is the deliverable; do not read past them as
 if the earlier sections closed them.
 
-1. **Cross-service reachability without full source — the hardest bet.** §4.3
-   reframes it (reachability as a recall prior, proof engine as arbiter), which
-   *avoids the FP risk* but **shifts the cost to proof budget**: if we
-   `HYPOTHESIZE` every cross-service edge, we can generate an unbounded number of
-   plausible-but-wrong hypotheses and drown the proof engine. Is the plausibility
-   prior from wiring + partial source *good enough for recall* without a budget
-   blowup? Unknown. This is the make-or-break risk for the frontier.
+1. **Proof-budget economics — the relocated hard problem, and risk #1 (§4.3).**
+   Reframing reachability as a prior removes false-*positive* risk but relocates the
+   difficulty onto a proof budget **nothing sizes.** A job is a heterogeneous unit
+   (Tier-A probe burst / Tier-B + LLM planning / P6 wall-clock OOB wait); an
+   engagement has no phase deadline today (`EXPLOIT_PHASE_BUDGET=0`), so an unbounded
+   discovery source can out-produce the proof engine and miss the real vuln by
+   **budget exhaustion** — a false *negative*, not a false positive, and therefore
+   invisible (nothing looks broken). We have **no data** on whether `Δ-grade ×
+   reach_confidence × primitive_evidence_grade` ranks well enough to land the true
+   vuln in the affordable top-N, **no sizing** for the per-class reserved shares /
+   volume caps / confidence floor (§4.3.1) that stop a weak cross-service prior from
+   starving a strong convergent one, and **no measured cost-per-job**. This is the
+   make-or-break bet of the whole engine — named, not solved.
 
-2. **Generic proof-obligation runner (Tier B).** Building a runner expressive
+2. **Cross-service reachability without full source — the hardest *prior*.** The
+   frontier reachability class (cross-service, business-logic) is where the weak,
+   high-volume prior of risk #1 actually originates: `HYPOTHESIZE` every
+   cross-service edge and you generate an unbounded number of plausible-but-wrong
+   hypotheses. §4.3 avoids the FP risk (proof engine is arbiter), but the *recall*
+   question stays open: is the plausibility prior from wiring + partial source good
+   enough to surface the real cross-service path *within* the budget guards of risk
+   #1? Unknown. The make-or-break risk for the frontier specifically.
+
+3. **Generic proof-obligation runner (Tier B).** Building a runner expressive
    enough for novel obligations but constrained enough to stay zero-FP is a real
    research build, not an afternoon. Today's 19 methods are hand-tuned; a generic
    P1–P6 executor with the same honesty is unproven. **Until it exists, "novel/
@@ -676,28 +814,29 @@ if the earlier sections closed them.
    for confirming arbitrary capability firing, or will novel primitives need
    confirmation shapes we haven't enumerated?
 
-3. **OOB collaborator (P6) is a hard dependency for the flagship.** Log4Shell is
+4. **OOB collaborator (P6) is a hard dependency for the flagship.** Log4Shell is
    *blind* — JNDI egress to an attacker host with no in-band signal. The current
    system defers *all* out-of-band confirmation. **The marquee "discover a
    Log4Shell-class bug" use case is literally impossible to confirm without an
-   OOB collaborator (DNS/HTTP callback infrastructure).** Standing this up
-   safely, in-scope, and without becoming attacker infrastructure is its own
-   design.
+   OOB collaborator (DNS/HTTP callback infrastructure).** §8.1 now treats P6 as a
+   sequenced *precondition* for the entire blind-egress half of the vuln universe,
+   not a "later" — but standing the collaborator up safely, in-scope, and without
+   becoming attacker infrastructure is still its own design.
 
-4. **CVE → primitive abstraction reliability.** The catalog's quality is bounded
+5. **CVE → primitive abstraction reliability.** The catalog's quality is bounded
    by an LLM's ability to strip target-specificity and keep the true primitive
    (§3.4). Mis-abstraction is structurally contained (bad primitive → wasted
    budget, not a false finding) but a systematically wrong catalog degrades recall
    *and* burns budget. How do we measure catalog quality? What's the human-review
    loop for new primitives, if any?
 
-5. **Divergent hypothesis volume vs. proof budget.** Even fully proof-gated,
-   generating too many divergent hypotheses costs wall-clock and LLM spend. Is
-   `Δ-grade × reach_confidence × primitive_evidence_grade` a good enough ranking
-   to keep recall high under a bounded budget? We have no data yet on the
-   precision of these priors.
+6. **Divergent hypothesis volume vs. proof budget** (the divergent-generation
+   instance of risk #1). Even fully proof-gated, generating too many divergent
+   hypotheses costs wall-clock and LLM spend. Is `Δ-grade × reach_confidence ×
+   primitive_evidence_grade` a good enough ranking to keep recall high under a
+   bounded budget? We have no data yet on the precision of these priors.
 
-6. **Intent inference is inherently fuzzy.** "What the developer meant" is not
+7. **Intent inference is inherently fuzzy.** "What the developer meant" is not
    crisply recoverable from code. A capability with a call site *and a guard* can
    still be vulnerable (bypassable guard); a capability with no call site might be
    dead, not exposed. Δ is a graded belief, not a boolean. Risk of *under*-counting
@@ -705,39 +844,206 @@ if the earlier sections closed them.
    failure from FPs, and one the proof engine cannot catch because we never
    hypothesize it.
 
-7. **Version precision.** "Log4j present" is not a primitive — the primitive is
+8. **Version precision.** "Log4j present" is not a primitive — the primitive is
    version-gated (2.15 partial, 2.16/2.17 progressively fixed). Catalog must be
    version-range-aware *and* manifest parsing must be version-exact, or Δ is
    simply wrong. Fingerprint-only targets (no manifest) inflate Capability
    (assume-vulnerable), trading precision for recall — acceptable, but it moves
    cost to proof budget again.
 
-8. **Business-logic / request-sequence channels barely started.** Representing
+9. **Business-logic / request-sequence channels barely started.** Representing
    application *state* so we can reason about sequence-based reachability
    (checkout quantity, workflow step-skip, TOCTOU) is close to unsolved here.
    First build is templated patterns only; inferring the state machine from
    source/behavior is open.
 
-9. **Source trust and ingestion safety.** Ingested target source is untrusted
-   input: it may be generated, vendored (not matching the manifest), partial, or
-   deliberately misleading. Ingestion must stay regex/bounded-AST-only (no `eval`),
-   sandboxed, and skeptical — and we must decide how much to *trust* source claims
-   vs. verify them against runtime behavior (a manifest can lie; the running app
-   cannot).
+10. **Source trust and ingestion safety.** Ingested target source is untrusted
+    input: it may be generated, vendored (not matching the manifest), partial, or
+    deliberately misleading. Ingestion must stay regex/bounded-AST-only (no `eval`),
+    sandboxed, and skeptical — and we must decide how much to *trust* source claims
+    vs. verify them against runtime behavior (a manifest can lie; the running app
+    cannot).
 
-10. **Agent decomposition (open call).** Four layers ≠ necessarily four agents.
+11. **Agent decomposition (open call).** Four layers ≠ necessarily four agents.
     Intent + Reachability share the `SourceModel` and are tightly coupled;
     co-locating them as one "Surface Agent" may be the right first build. Splitting
     is cleaner on paper (this doc) but adds Orchestrator routing overhead. To be
     decided with the owner.
 
-11. **Where does the catalog's cold-start corpus come from, and who curates it?**
+12. **Where does the catalog's cold-start corpus come from, and who curates it?**
     Bootstrapping from public CVE/CWE/bug-bounty data is noisy and legally/ethically
     bounded. The offline framework-source ingestion (§3.4 path 3) is the most
     differentiated but also the most labor-intensive. Is there a seed set of
-    technologies to prove the model on first (the current DVWA/Juice-Shop targets
-    are thin on the multi-service, source-available shapes this engine most wants)?
+    technologies to prove the model on first? The GeoServer fixture (§10) is the
+    first concrete source-available, real-SSRF seed chosen for exactly this — the
+    multi-service / source-available shape DVWA and Juice Shop lack.
 
 ---
 
-*End of specification. Pressure-test §9 first.*
+## 10. Validation walkthrough — GeoServer TestWfsPost SSRF (CVE-2021-40822)
+
+The doc has been abstract; this section runs one **real, verified, source-available**
+vulnerability end-to-end through all four layers *on paper*, and is explicit about
+where the engine would miss it. It is the concrete pressure-test the owner asked for.
+
+**The fixture (verified).** CVE-2021-40822 — unauthenticated SSRF in GeoServer's
+`TestWfsPost` servlet (GeoServer ≤ 2.18.5 and 2.19.0–2.19.2; Vulhub
+`geoserver/CVE-2021-40822`). GeoServer is open-source Java, so its source is
+ingestible. The endpoint is `POST /geoserver/TestWfsPost` with parameters `url` (the
+target the server will fetch), `body` (empty ⇒ the server issues a GET, any value ⇒
+POST), and optional `username`/`password` (basic auth forwarded to the target). **It
+is in-band:** the fetched URL's response is reflected verbatim in the HTTP response to
+the attacker ("you will see that response from `google.com` is returned"). The only
+constraint is that the `url` host match the request's `Host` header — *both
+attacker-controlled* — and only when `PROXY_BASE_URL` is unset (the default).
+Confirmation therefore does **not** need an OOB collaborator; this is the Tier-1
+in-band case the fixture was chosen to represent. (The same servlet re-surfaced years
+later as CVE-2024-29198 — a fact that itself argues for cataloguing the *primitive*,
+not the payload.)
+
+**The claim under test:** the design finds this vuln as a **Tier-A convergent
+hypothesis**, proves it with an **existing** confirmation primitive (P3, and/or P1),
+needs **no** OOB, and its main failure risks are in *channel enumeration* and *Δ
+adjudication* — not in proof.
+
+### (a) Capability catalog — does the fetch capability transfer as a primitive, not a payload?
+
+**Yes, by three independent paths — the layer least likely to fail.**
+
+- The relevant entry is the primitive `EGRESS_FETCH`: *"a request-derived string
+  becomes the target of a server-side outbound HTTP fetch, whose response may return
+  in-band."* This is **payload-free and technology-invariant** — it says nothing about
+  `/geoserver/TestWfsPost` or the `url` parameter name. It is already the primitive
+  class underpinning the existing `_test_ssrf` methodology (§3.1, §6.1), so it is in
+  the catalog on day one, before any GeoServer-specific knowledge.
+- Its `proof_obligation_template` is "internal content reflected in-band (P3) *or*
+  reachable-vs-unreachable differential (P1)" — again generic.
+- Where a GeoServer-*specific* entry would come from, if wanted: (i) CVE-2021-40822
+  through the abstraction checkpoint (§3.4 path 1) → the *same* `EGRESS_FETCH`
+  primitive with `technology_pattern` GeoServer/Java-servlet and a `gating_config`
+  note `PROXY_BASE_URL`; or (ii) framework-source ingestion (§3.4 path 3) reading
+  `TestWfsPost.java`'s `openConnection(new URL(request.getParameter("url")))` — a
+  primitive derived from code *independent of any CVE*.
+
+**Verdict (a): transfers cleanly.** Primitive-not-payload is exactly right here; the
+capability is generic SSRF egress and the catalog already holds it.
+
+### (b) Intent inference — intended behavior vs. the Δ
+
+`SourceModel` over `TestWfsPost.java` yields: an **entrypoint** (`POST
+/geoserver/TestWfsPost`, params `url`/`body`), a **call site** with capability hint
+`EGRESS_FETCH` (`URL.openConnection` on a request-derived string), and a **config
+fact** — the guard: *the `url` host is validated against `PROXY_BASE_URL` if set, else
+against the request `Host` header.*
+
+The intended behavior is legible from the servlet's shape: a **test tool that POSTs a
+WFS request to the GeoServer's own OWS endpoint** — a self-directed proxy, not a
+general fetcher. So Capability = "fetch any URL"; Intent = "fetch my own OWS
+endpoint"; **Δ = arbitrary egress**, present because the only guard is
+attacker-satisfiable.
+
+The load-bearing step is the **Δ-adjudication LLM checkpoint** (§2.4 step 4): a naive
+static reader sees *a host check exists* → "guarded / sanctioned" → low Δ →
+de-prioritized. The correct adjudication is *the guard compares two attacker-controlled
+values (`url` host vs `Host` header) when `PROXY_BASE_URL` is unset* → **bypassable →
+high Δ, config-gated-exposed.** A clean instance of the `gating_config` mechanic:
+`PROXY_BASE_URL` set ⇒ subtract the primitive (real guard against a fixed admin
+value); unset (default) ⇒ leave it in Δ.
+
+**Verdict (b): recoverable, but this is the sharpest failure risk in the whole
+walkthrough** — if Intent scores the host check as a real guard, Δ collapses and the
+hypothesis never earns budget. This is open-question #7 (bypassable-guard under-count)
+made concrete. The design *can* get it right; it is not *guaranteed* to.
+
+### (c) Reachability — does the prior rank it high enough to spend budget?
+
+The **easy** reachability case, and the strongest part of the trace:
+
+- The `url` request param reaches the `openConnection` sink **in the same handler** —
+  an **intra-function** path, grade `STATIC_CONFIRMED` (§4.2), the cheapest, soundest
+  grade. No call-graph walk, no cross-service inference, no OOB.
+- The ranking `Δ-grade × reach_confidence × primitive_evidence_grade` is high on all
+  three factors (high Δ from (b), `STATIC_CONFIRMED` reach, mature SSRF primitive), so
+  under §4.3's budget economics it sits in the affordable top-N and dispatches early —
+  *provided* the per-class budget partition (§4.3.1 guard 1) reserves share for
+  `STATIC_CONFIRMED` convergent hypotheses so a weak cross-service prior can't starve
+  it.
+
+**But there is a real channel-enumeration gap in black-box mode.**
+`/geoserver/TestWfsPost` is a demo servlet often **not linked** from the crawled app
+surface. With **no source**, the discovery engine degrades to catalog-seeded
+hypotheses over *crawled* channels — and if the crawler never finds `TestWfsPost`, the
+channel is never enumerated and `_test_ssrf` never runs against it. The vuln is missed
+**at channel discovery, not at proof.** *This is precisely where source ingestion
+earns its keep:* the entrypoint comes from `SourceModel.entrypoints`, so the gray-box
+path surfaces a channel the black-box crawler misses. The walkthrough thus doubles as
+the argument for the whole gray-box design.
+
+**Verdict (c): ranked high with source; missed at channel enumeration without it** — a
+recall gap the engine's own source layer closes.
+
+### (d) Proof — which P1–P6 primitive confirms it?
+
+Reduces to in-band primitives, **no OOB**:
+
+- **P3 (content we never sent):** point `url` at an internal-only service or cloud
+  metadata (`http://169.254.169.254/latest/meta-data/…`) and confirm the response
+  reflects content that service returns and the payload never contained — the exact
+  honesty discipline of the existing SSRF metadata-signature match (§6.1;
+  `_SSRF_METADATA_SIGNATURES`, IAM field-name-not-value).
+- **P1 (differential):** `url=http://127.0.0.1:<open-port>` vs a closed port /
+  non-resolving `.invalid` control, confirmed by a status/latency/body divergence the
+  value-echo can't explain (`_ssrf_fetch_signal`).
+
+Both are **in-band** and both are already implemented — so this binds to the **existing
+`_test_ssrf` methodology as a Tier-A job** (§6.3). **Zero new proof code; zero new
+primitive; the fixture assumption is verified — genuinely a Tier-1 in-band case, not
+an OOB one.**
+
+**One concrete proof-layer gap the fixture exposes.** The vuln only fires when the
+request `Host` header matches the `url` host (Proxy-Base-URL-unset path). The current
+`_test_ssrf` carrier injects the internal URL as a *param value* but does **not**
+rewrite the `Host` header to match. So even when correctly dispatched, the existing
+methodology **could fail to confirm** unless the primitive's `proof_obligation_template`
+carries a per-instance carrier constraint — *"align the `Host` header with the injected
+`url` host"* — that the generic SSRF probe does not express today. This is a real,
+actionable finding: some Tier-A bindings need a **carrier-constraint field** on the
+obligation template, discoverable only by running a concrete fixture. It is the single
+most useful thing this walkthrough surfaces for implementation.
+
+**Verdict (d): confirmable in-band via P3/P1, Tier-A — with one carrier-constraint gap
+to close in the obligation template.**
+
+### Walkthrough result — FOUND on paper, with named gaps
+
+**Found.** With source ingested, the design discovers CVE-2021-40822 as a **Tier-A
+convergent SSRF hypothesis**, ranks it high on a `STATIC_CONFIRMED` intra-function
+prior, and confirms it in-band via **P3 (and/or P1)** on the existing `_test_ssrf`
+machinery — **no OOB, no new primitive.** The fixture's Tier-1 in-band assumption is
+**verified.**
+
+It would **fail to find it** in three concrete, named places — and the point of the
+walkthrough is that all three are *outside the proof layer*, exactly as the zero-FP
+design predicts:
+
+1. **Channel enumeration, black-box only** — no source ⇒ the unlinked demo servlet may
+   never be crawled ⇒ the channel is never enumerated. *Closed by source ingestion —
+   the gray-box value-add.*
+2. **Δ under-count** — if Intent scores the attacker-controlled `Host`-vs-`url`-host
+   check as a real guard, Δ collapses and the hypothesis never earns budget
+   (open-question #7, made concrete).
+3. **Carrier-constraint gap in the obligation template** — the existing `_test_ssrf`
+   probe doesn't align the `Host` header to the injected `url` host, so this Tier-A
+   binding dispatches but may fail to confirm without a per-instance carrier
+   constraint.
+
+None of the three is a false-*positive* risk; all three are **recall / plumbing** —
+exactly the class of problem the proof-budget-and-boundary framing (§4.3, §8) predicts
+the engine should have. The GeoServer fixture is a good Tier-1 anchor **because it is
+confirmable in-band**, and because failing to find it (if it failed) would be for
+reasons the design already names as open questions, never for a broken proof.
+
+---
+
+*End of specification. Pressure-test §9 risk #1 (proof-budget economics) and the §10
+walkthrough result first.*
