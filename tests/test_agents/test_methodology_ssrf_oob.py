@@ -301,7 +301,7 @@ def test_oob_send_builds_callback_from_carrier_only() -> None:
 
         agent._send_probe = capture  # type: ignore[method-assign]
         try:
-            outcome = await agent._ssrf_oob_send(PAGE, "url", "hyp-x")
+            outcome = await agent._oob_send(PAGE, "url", "hyp-x")
         finally:
             await collab.stop()
         assert outcome is not None

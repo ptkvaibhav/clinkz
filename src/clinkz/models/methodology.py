@@ -966,6 +966,45 @@ class SSRFMethodologyResult(BaseModel):
     verification_strength: str = "verified"
 
 
+class Log4ShellMethodologyResult(BaseModel):
+    """Roll-up of one ``_test_log4shell`` invocation on one candidate param (P6).
+
+    Log4Shell (CVE-2021-44228) has **no in-band signal** — the JNDI message-lookup
+    egress is only observable out-of-band — so this result carries only the P6
+    outcome, mirroring the SSRF P6 fields so the report never conflates the three
+    outcomes (§P6.3.4 / §P6.7.1):
+
+    * ``confirmed`` — a JNDI/DNS callback bearing the probe's fresh nonce reached the
+      Clinkz collaborator: a genuine confirmed Log4Shell (``verified``, critical).
+    * ``blind_unconfirmed`` — the probe was sent through a **healthy** collaborator
+      but no callback arrived within the window: *inconclusive, egress may be
+      filtered* → an operator research-lead, **never** ``not_vulnerable``.
+    * ``collaborator_unavailable`` — no healthy collaborator was wired: surfaced as
+      "collaborator unavailable", **never** as ``blind_unconfirmed`` (a dead
+      collaborator must not make a target look clean).
+
+    N/A by construction where the discovery engine surfaced no log-sink channel or
+    the manifest showed a patched log4j: nothing is queued, nothing is emitted.
+    """
+
+    candidate_param: str | None = None
+    # The manifest-capability verdict that armed the class (the log4j version), for
+    # the finding evidence — e.g. "log4j-core 2.14.1 (< 2.15.0) … JNDI un-gated".
+    manifest_evidence: str = ""
+    confirmed: bool = False
+    indicator_observed: str | None = None
+    blind_unconfirmed: bool = False
+    collaborator_unavailable: bool = False
+    oob_note: str = ""
+    # Raw-auditable P6 pair (the outbound ${jndi:…<nonce>…} probe + the inbound
+    # callback bearing the SAME nonce + a never-sent control) — makes the
+    # confirmation independently re-derivable from the artifact (§P6.2.4).
+    confirmation_evidence: ConfirmationEvidence | None = None
+    verified: bool = False
+    # ``"verified-oob"`` when a callback confirmed; empty otherwise.
+    verification_strength: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Command-injection methodology types
 # ---------------------------------------------------------------------------

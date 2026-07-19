@@ -438,6 +438,20 @@ class OOBCollaborator:
         """The zone/authority the carrier interpolates the nonce into."""
         return self.zone
 
+    def dns_authority(self) -> str:
+        """The DNS-leg authority a ``jndi:dns://`` lookup targets directly.
+
+        For the ``PATH`` shape the JNDI DNS provider queries the nonce as a domain
+        straight at the collaborator's DNS leg (no wildcard delegation, no port 53),
+        so the authority is the zone host with the **DNS** port — the reliable
+        docker-mode Log4Shell channel (§P6.5.4). For the ``SUBDOMAIN`` shape the nonce
+        rides as a subdomain resolved by the target's own resolver, so the delegated
+        zone is used as-is.
+        """
+        if self.callback_shape is CallbackShape.SUBDOMAIN:
+            return self.zone
+        return f"{_host_only(self.zone)}:{self._dns_port}"
+
 
 # ---------------------------------------------------------------------------
 # Stateless helpers — parsing & nonce extraction
