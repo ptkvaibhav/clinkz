@@ -49,9 +49,32 @@ its channel differ, the machinery does not (it extends, it does not fork):
      value sanitized (Intent → SANCTIONED, Δ removed); its ABSENCE is the intent-gap
      (EXPOSED) — exactly the missing ``.getName()`` Flink's fix added.
 
+A **third capability class** (Log4Shell log-sink egress, CVE-2021-44228) adds two
+more general idioms — the sink is a *logging call* and the capability is gated on a
+*build manifest*, not intra-function taint:
+
+  7. **Logging calls are sinks.** An SLF4J/Log4j logging call
+     (``log(ger)?.(trace|debug|info|warn|error|fatal)(…)`` — incl. Solr's
+     ``log().info(…)`` accessor) whose argument is request-derived (a tainted var,
+     a request-param-bag read ``req.getParams()``/``getParameterMap()``, or a
+     direct ``getParameter``/``getHeader``/``getQueryString`` accessor) is a
+     ``LOG_INTERPOLATION`` call site. The channel→sink path is *not* required to be
+     intra-function (the reachability layer grades it heuristic), so the sink is a
+     coarse "request reaches a logger" fact — exactly the Log4Shell shape where the
+     interpolation happens deep inside log4j-core (design §P6.5.3).
+  8. **Manifest-derived, version-gated capability.** A vulnerable ``log4j-core``
+     (< 2.15.0, JNDI message-lookups un-gated) declared in a build manifest
+     (``pom.xml`` ``<version>``, a gradle/ivy coordinate ``…:log4j-core:2.14.1``)
+     or a shipped-jar filename (``log4j-core-2.14.1.jar``) emits the
+     :data:`~clinkz.discovery.constants.LOG4J_VULNERABLE_TOKEN` into
+     ``SourceModel.technologies`` — the token the LOG_INTERPOLATION catalog
+     primitive matches on. The version is learned from the manifest; a patched
+     line (≥ 2.15) emits no token ⇒ the primitive is not active ⇒ N/A by
+     construction (design §P6.5.2 version-gating).
+
 It stays deliberately shallow: single-language (Java), pattern-based, bounded —
 not a whole-program analyzer. Cross-function / cross-service reachability beyond
-the wrapper case remains the next slice.
+the wrapper + heuristic-log-sink cases remains the next slice.
 """
 
 from __future__ import annotations
@@ -60,6 +83,7 @@ import logging
 import re
 from pathlib import Path
 
+from clinkz.discovery.constants import LOG4J_VULNERABLE_TOKEN
 from clinkz.discovery.models import (
     CallSite,
     CoverageGrade,
@@ -85,18 +109,26 @@ _RE_HANDLER = re.compile(
 # --- Request-parameter reads (the untrusted channel) ------------------------
 # A named reference is either a "string literal" or a symbolic Foo.BAR constant.
 _NAMEREF = r'(?:"[^"]+"|[A-Za-z_][\w.]*)'
+# A trailing ``, <default>`` arg many param-bag getters accept (Solr's
+# ``params.get(ACTION, STATUS.toString())`` / ``Properties.getProperty(k, d)``): the
+# first arg is the param NAME, the rest is a default we ignore. ``[^)]*`` stops at
+# the first ``)`` so a defaulted read still captures its name (bounded, no nesting).
+_OPT_DEFAULT = r"(?:,[^)]*)?"
 # Servlet: request.getParameter("p")
 _RE_GET_PARAM = re.compile(r'getParameter\(\s*"([^"]+)"\s*\)')
-# Param-bag scalar read: params.get(NAME) — the String form (NOT getParams()).
-_RE_PARAM_BAG_GET = re.compile(rf"\.get\(\s*({_NAMEREF})\s*\)")
+# Param-bag scalar read: params.get(NAME) / params.get(NAME, default) — the String
+# form (NOT getParams()).
+_RE_PARAM_BAG_GET = re.compile(rf"\.get\(\s*({_NAMEREF})\s*{_OPT_DEFAULT}\)")
 # Param-bag array read: params.getParams(NAME) — the String[] form.
-_RE_PARAM_BAG_GETPARAMS = re.compile(rf"\.getParams\(\s*({_NAMEREF})\s*\)")
+_RE_PARAM_BAG_GETPARAMS = re.compile(rf"\.getParams\(\s*({_NAMEREF})\s*{_OPT_DEFAULT}\)")
 # ``var = ...getParameter("p")`` — a request parameter bound to a local.
 _RE_VAR_FROM_PARAM = re.compile(r'(\w+)\s*=\s*[^;]*?getParameter\(\s*"([^"]+)"\s*\)')
-# ``var = ...params.get(NAME)`` — scalar bag read bound to a local.
-_RE_VAR_FROM_BAG_GET = re.compile(rf"(\w+)\s*=\s*[^;]*?\.get\(\s*({_NAMEREF})\s*\)")
+# ``var = ...params.get(NAME[, default])`` — scalar bag read bound to a local.
+_RE_VAR_FROM_BAG_GET = re.compile(rf"(\w+)\s*=\s*[^;]*?\.get\(\s*({_NAMEREF})\s*{_OPT_DEFAULT}\)")
 # ``var = ...params.getParams(NAME)`` — array bag read bound to a local.
-_RE_VAR_FROM_BAG_GETPARAMS = re.compile(rf"(\w+)\s*=\s*[^;]*?\.getParams\(\s*({_NAMEREF})\s*\)")
+_RE_VAR_FROM_BAG_GETPARAMS = re.compile(
+    rf"(\w+)\s*=\s*[^;]*?\.getParams\(\s*({_NAMEREF})\s*{_OPT_DEFAULT}\)"
+)
 # ``for (Type elem : coll)`` — a foreach element bound to a collection.
 _RE_FOR_EACH = re.compile(r"for\s*\(\s*(?:final\s+)?[\w.<>\[\]]+\s+(\w+)\s*:\s*(\w+)\s*\)")
 
@@ -158,6 +190,71 @@ _RE_ROUTE_FORMAT = re.compile(r'String\.format\(\s*"(/[^"]*%s[^"]*)"\s*,\s*(\w+)
 # case where the framework writes the route out in full).
 _RE_ROUTE_LITERAL = re.compile(r'"(/[^"]*:(\w+)[^"]*)"')
 
+# --- Logging-call sinks (the Log4Shell LOG_INTERPOLATION class) --------------
+# An SLF4J/Log4j logging call: ``log.info(…)`` / ``logger.warn(…)`` / Solr's
+# ``log().info(…)`` accessor. Case-tolerant on the receiver (``log`` / ``LOG`` /
+# ``logger``); the match ends at the opening ``(`` so the argument slice is read by
+# a bounded balanced-paren scan. Literal-free — no framework/message string baked in.
+_RE_LOG_CALL = re.compile(
+    r"\b(?:log|logger)\s*(?:\(\s*\))?\s*\.\s*(?:trace|debug|info|warn|error|fatal)\s*\(",
+    re.IGNORECASE,
+)
+# ``var = …req.getParams()`` / ``getParameterMap()`` / ``getParameterValues()`` —
+# a local bound to the WHOLE untrusted request param bag (Solr's ``SolrParams
+# params = it.req.getParams()``). Any request param — incl. ``action`` — rides in
+# it, so logging it is the log-sink channel. Broader than the named-scalar
+# ``_RE_VAR_FROM_BAG_GET`` (which needs a ``.get(NAME)``).
+_RE_REQUEST_BAG_VAR = re.compile(
+    r"(\w+)\s*=\s*[^;]*?\.(?:getParams|getParameterMap|getParameterValues|getParameterNames)\s*\("
+)
+# A direct untrusted-request accessor appearing INSIDE a logging call's arguments —
+# the request is logged without being bound to a local first.
+_RE_REQUEST_ACCESSOR = re.compile(
+    r"\.(?:getParams|getParameterMap|getParameterValues|getParameter|getQueryString"
+    r"|getRequestURI|getRequestURL|getHeader|getPathInfo)\s*\("
+)
+# Symbol recorded for a LOG_INTERPOLATION (log-sink) call site.
+_LOG_SINK_SYMBOL = "log_interpolation"
+# Coarse taint marker for a log sink whose logged value is the whole request (not a
+# single named param) — the reachability layer connects it to entrypoint params by
+# the heuristic prior, so the exact bag var name is not load-bearing.
+_LOG_SINK_COARSE_TAINT = "*request*"
+# Bounded window (chars) scanned for a logging call's balanced argument list.
+_MAX_LOG_ARGS_SCAN = 600
+
+# --- Manifest capability (log4j-core version → JNDI lookup egress) -----------
+# The vulnerable-log4j threshold: message-lookup JNDI egress is un-gated below
+# 2.15.0; 2.15+ restricts it, 2.16+/JndiLookup-removed disables it (design §P6.5.2).
+_LOG4J_SAFE_VERSION: tuple[int, int, int] = (2, 15, 0)
+# Manifest filenames worth reading for a declared log4j-core version (bounded).
+_MANIFEST_NAMES: tuple[str, ...] = (
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "ivy.xml",
+    "ivy-versions.properties",
+    "versions.props",
+    "versions.lock",
+    "gradle.properties",
+    "libs.versions.toml",
+    "dependencies.txt",
+    "MANIFEST.MF",
+)
+# A shipped-jar / license-sha1 filename embeds the exact version (Solr ships
+# ``log4j-core-2.14.1.jar.sha1``): the distribution's own manifest.
+_RE_LOG4J_JAR = re.compile(r"log4j-core-(\d+\.\d+(?:\.\d+)?)\.jar", re.IGNORECASE)
+# A gradle / ivy coordinate: ``org.apache.logging.log4j:log4j-core:2.14.1`` (``:``
+# or a slashed ivy path). Version captured directly.
+_RE_LOG4J_COORD = re.compile(
+    r"org\.apache\.logging\.log4j[:/]log4j-core[:/](\d+\.\d+(?:\.\d+)?)", re.IGNORECASE
+)
+# A Maven POM ``<artifactId>log4j-core</artifactId>`` whose version is the nearest
+# following ``<version>…</version>`` (bounded forward window).
+_RE_LOG4J_POM_ARTIFACT = re.compile(r"log4j-core\s*</artifactId>", re.IGNORECASE)
+_RE_POM_VERSION = re.compile(r"<version>\s*(\d+\.\d+(?:\.\d+)?)\s*</version>", re.IGNORECASE)
+# Max chars to look ahead from a POM artifactId for its version element.
+_MAX_POM_VERSION_LOOKAHEAD = 240
+
 # --- Constants (route + param-name resolution) ------------------------------
 # ``[static] [final] String NAME = "value"`` incl. interface constants
 # (``String STREAM_URL = "stream.url"`` — no modifiers). Restricted to
@@ -196,6 +293,45 @@ def _resolve_param_name(nameref: str, const_map: dict[str, str]) -> str | None:
         return nameref.strip('"')
     simple = nameref.split(".")[-1]
     return const_map.get(simple)
+
+
+def _balanced_arg_slice(text: str, open_index: int, max_scan: int = _MAX_LOG_ARGS_SCAN) -> str:
+    """Return the substring inside the balanced parens starting at *open_index*.
+
+    Bounded (never unbounded over untrusted source); returns ``""`` if *open_index*
+    is not a ``(`` or the parens do not balance within *max_scan* chars.
+    """
+    if open_index >= len(text) or text[open_index] != "(":
+        return ""
+    depth = 0
+    end = min(len(text), open_index + max_scan)
+    for i in range(open_index, end):
+        char = text[i]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1 : i]
+    return ""
+
+
+def _identifier_in(ident: str, text: str) -> bool:
+    """Whether *ident* appears as a whole-word identifier (not a field-access tail)."""
+    if not ident:
+        return False
+    return re.search(rf"(?<![\w.]){re.escape(ident)}\b", text) is not None
+
+
+def _parse_semver(raw: str) -> tuple[int, int, int] | None:
+    """Parse ``X`` / ``X.Y`` / ``X.Y.Z`` into a 3-tuple; ``None`` if non-numeric."""
+    try:
+        nums = [int(part) for part in raw.split(".")[:3]]
+    except ValueError:
+        return None
+    while len(nums) < 3:
+        nums.append(0)
+    return (nums[0], nums[1], nums[2])
 
 
 class JavaSourceIngestor:
@@ -258,9 +394,18 @@ class JavaSourceIngestor:
             model.coverage_grade = CoverageGrade.PARTIAL
         if model.entrypoints:
             model.technologies = ["Java", "Java Servlet"] if saw_servlet else ["Java"]
+        # Manifest capability (Log4Shell class): a declared vulnerable log4j-core
+        # (< 2.15) arms the LOG_INTERPOLATION primitive by emitting its match token.
+        # A patched line emits nothing ⇒ the primitive is not active (N/A). Read
+        # only when a log sink was actually found — no manifest scan cost otherwise.
+        if any(cs.primitive_class is PrimitiveClass.LOG_INTERPOLATION for cs in model.call_sites):
+            vulnerable, manifest_evidence = self._scan_log4j_manifest(root)
+            if vulnerable:
+                model.technologies.append(LOG4J_VULNERABLE_TOKEN)
+                model.manifest_evidence = manifest_evidence
         logger.info(
             "source ingest: %d files → %d entrypoints, %d call-sites, %d guards "
-            "(%d consts, %d wrappers, %d path-param keys, %d routes)",
+            "(%d consts, %d wrappers, %d path-param keys, %d routes) manifest=%s",
             len(texts),
             len(model.entrypoints),
             len(model.call_sites),
@@ -269,6 +414,7 @@ class JavaSourceIngestor:
             len(wrapper_types),
             len(pathparam_keys),
             len(route_by_pathparam),
+            model.manifest_evidence or "(none)",
         )
         return model
 
@@ -410,8 +556,10 @@ class JavaSourceIngestor:
         )
         if need_sanitize_guard:
             model.guards.append(self._path_sanitize_guard(text, file))
+        log_sites = self._extract_log_call_sites(text, file, var_to_param, attacker_vars)
         model.call_sites.extend(call_sites)
         model.call_sites.extend(file_read_sites)
+        model.call_sites.extend(log_sites)
 
         # Route: a typed-path-param handler resolves its mounted route from the
         # pass-1 route registry (via the param class it reads); a servlet resolves
@@ -560,6 +708,120 @@ class JavaSourceIngestor:
         )
 
     @staticmethod
+    def _extract_log_call_sites(
+        text: str,
+        file: str,
+        var_to_param: dict[str, str],
+        attacker_vars: set[str],
+    ) -> list[CallSite]:
+        """Find LOG_INTERPOLATION sinks: logging calls whose arg is request-derived.
+
+        A logging call (``log.info(…)`` / ``logger.warn(…)`` / Solr's ``log().info(…)``
+        accessor) is a Log4Shell log-sink channel when its argument list references
+        untrusted request data — a tainted var (``var_to_param`` / ``attacker_vars``),
+        a var bound to the whole request param bag (``req.getParams()``), or a direct
+        request accessor. A logging call with no request-derived argument (a static
+        ``log.info("started")``) is NOT a channel and is skipped.
+
+        Unlike the egress/file-read sinks, the taint need NOT be intra-function to the
+        entrypoint that first read the param — the reachability layer grades the
+        log-sink edge ``STATIC_HEURISTIC`` (design §P6.5.3), so this only asserts "a
+        request-derived value is logged here". ``tainted_by`` is the specific named
+        param if the args reference one, else the coarse ``*request*`` marker (the
+        whole bag is logged, so any request param — incl. the CVE's ``action`` — reaches
+        the logger). The manifest gate, not this call site, decides activation.
+        """
+        request_bag_vars = {m.group(1) for m in _RE_REQUEST_BAG_VAR.finditer(text)}
+        request_vars = set(var_to_param) | attacker_vars | request_bag_vars
+        sites: list[CallSite] = []
+        for m in _RE_LOG_CALL.finditer(text):
+            args = _balanced_arg_slice(text, m.end() - 1)
+            if not args:
+                continue
+            named_var = next((v for v in var_to_param if _identifier_in(v, args)), None)
+            has_request = named_var is not None or any(
+                _identifier_in(v, args) for v in request_vars
+            )
+            if not has_request and not _RE_REQUEST_ACCESSOR.search(args):
+                continue  # a log call with no request-derived argument is not a channel
+            tainted_by = (
+                var_to_param.get(named_var) if named_var else None
+            ) or _LOG_SINK_COARSE_TAINT
+            sites.append(
+                CallSite(
+                    primitive_class=PrimitiveClass.LOG_INTERPOLATION,
+                    symbol=_LOG_SINK_SYMBOL,
+                    file=file,
+                    line=_line_of(text, m.start()),
+                    tainted_by=tainted_by,
+                    guard_symbol=None,
+                )
+            )
+        return sites
+
+    @staticmethod
+    def _scan_log4j_manifest(root: Path) -> tuple[bool, str]:
+        """Whether a vulnerable log4j-core (< 2.15) is declared in the source tree.
+
+        Reads bounded build manifests (``pom.xml`` / gradle / ivy / props) and
+        shipped-jar / license-sha1 filenames, extracting every declared
+        ``log4j-core`` version. Vulnerable when the LOWEST declared version is
+        < 2.15.0 (JNDI message-lookups un-gated). The version is learned from the
+        manifest — no version literal is baked in — so a patched line (≥ 2.15)
+        returns ``(False, "")`` and the LOG_INTERPOLATION primitive stays inactive
+        (N/A by construction). Bounded single tree walk, source treated as untrusted.
+
+        Returns ``(vulnerable, evidence)``.
+        """
+        found: list[tuple[tuple[int, int, int], str, str]] = []  # (semver, raw, source)
+
+        def _consider(raw: str, source: str) -> None:
+            semver = _parse_semver(raw)
+            if semver is not None:
+                found.append((semver, raw, source))
+
+        search_root = root if root.is_dir() else root.parent
+        seen_files = 0
+        for path in search_root.rglob("*"):
+            if seen_files >= _MAX_FILES:
+                break
+            if not path.is_file():
+                continue
+            seen_files += 1
+            name = path.name
+            jar_match = _RE_LOG4J_JAR.search(name)
+            if jar_match:
+                _consider(jar_match.group(1), name)
+                continue
+            if name not in _MANIFEST_NAMES:
+                continue
+            try:
+                if path.stat().st_size > _MAX_FILE_BYTES:
+                    continue
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                logger.warning("manifest scan: cannot read %s: %s", path, exc)
+                continue
+            for cm in _RE_LOG4J_COORD.finditer(content):
+                _consider(cm.group(1), name)
+            for am in _RE_LOG4J_POM_ARTIFACT.finditer(content):
+                window = content[am.end() : am.end() + _MAX_POM_VERSION_LOOKAHEAD]
+                vm = _RE_POM_VERSION.search(window)
+                if vm:
+                    _consider(vm.group(1), name)
+
+        if not found:
+            return False, ""
+        found.sort(key=lambda item: item[0])
+        lowest_semver, lowest_raw, source = found[0]
+        if lowest_semver >= _LOG4J_SAFE_VERSION:
+            return False, ""
+        return True, (
+            f"log4j-core {lowest_raw} (< 2.15.0) declared in {source} "
+            "→ JNDI message-lookup egress un-gated (CVE-2021-44228)"
+        )
+
+    @staticmethod
     def _build_taint_map(text: str, const_map: dict[str, str]) -> dict[str, str]:
         """Map local var → wire param name (attacker taint, intra-function).
 
@@ -607,7 +869,8 @@ class JavaSourceIngestor:
                 seen.append(name)
 
         combined = re.compile(
-            rf'getParameter\(\s*"([^"]+)"\s*\)|\.getParams?\(\s*({_NAMEREF})\s*\)'
+            rf'getParameter\(\s*"([^"]+)"\s*\)'
+            rf"|\.(?:get|getParam|getParams)\(\s*({_NAMEREF})\s*{_OPT_DEFAULT}\)"
         )
         for m in combined.finditer(text):
             if m.group(1) is not None:

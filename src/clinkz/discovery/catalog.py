@@ -8,12 +8,11 @@ Java target with the matching sink shape (the point of primitive-not-payload,
 has (P3 content-we-never-sent / P1 differential), so a hypothesis built from a
 primitive inherits zero-FP by construction (§6.1).
 
-Two capability classes are catalogued, and the catalog is **class-generic**: the
+Three capability classes are catalogued, and the catalog is **class-generic**: the
 matcher, intent, reachability, hypothesis and proof-reduction layers are keyed on
-:class:`PrimitiveClass`, never on any one class. Adding the second class was a
-single catalog entry (this file) + the class-specific *source idiom* (the file-read
-sink) and *carrier* (path-segment traversal) — the abstraction extends, it does not
-fork per class:
+:class:`PrimitiveClass`, never on any one class. Each new class was a single catalog
+entry (this file) + its class-specific *source idiom* and (where the channel needs
+one) a *carrier* — the abstraction extends, it does not fork per class:
 
 * ``EGRESS_FETCH`` — a Java ``URL.openConnection()`` server-side fetch → SSRF,
   proven by ``_test_ssrf`` (GeoServer CVE-2021-40822; Solr RemoteStreaming).
@@ -22,6 +21,14 @@ fork per class:
   arbitrary file read, proven by ``_test_lfi`` (Flink CVE-2020-17519). The proof
   reduces to the **same** P3 file-content oracle the black-box LFI methodology
   already uses — zero new proof code.
+* ``LOG_INTERPOLATION`` — a request-derived string reaching an SLF4J/Log4j logging
+  call whose vulnerable ``log4j-core`` interpolates a ``${jndi:…}`` message lookup
+  → blind egress (Log4Shell, CVE-2021-44228), proven by ``_test_log4shell``. The
+  flagship, and the first class whose proof reduces to the **out-of-band** primitive
+  (P6) — a JNDI/DNS callback bearing a fresh nonce — rather than an in-band oracle;
+  it also brings the first **heuristic, cross-function** reachability and a
+  **manifest-version-gated** capability. Zero new proof code: it rides the same P6
+  mint→build→send→reap→ConfirmationEvidence machinery the blind-SSRF path uses.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+from clinkz.discovery.constants import LOG4J_VULNERABLE_TOKEN
 from clinkz.discovery.models import (
     CapabilityPrimitive,
     PrimitiveClass,
@@ -117,9 +125,73 @@ FILE_READ_JAVA_FILE_SINK = CapabilityPrimitive(
     evidence_grade="bootstrapped-from-source",
 )
 
+# The third capability class — the flagship, and the first class whose proof
+# reduces to the out-of-band primitive (P6) rather than an in-band oracle. Same
+# schema, a fundamentally different sink shape: a request-derived string reaches a
+# **logging call** whose library (vulnerable ``log4j-core``) interpolates
+# ``${jndi:…}`` message lookups into an outbound egress (Log4Shell, CVE-2021-44228).
+# Deliberately free of any Solr-, route- or payload-specificity — the generic
+# log-sink egress capability. Three things make this class distinct from EGRESS_FETCH,
+# and all three are why it is its own class, not an EGRESS_FETCH variant:
+#
+#   * **Manifest-derived, version-gated.** The capability is present only when a
+#     vulnerable ``log4j-core`` (< 2.15) is declared in a build manifest / shipped
+#     jar; the ingestor emits ``LOG4J_VULNERABLE_TOKEN`` in that case, and this
+#     ``technology_pattern`` matches it. A patched target (≥ 2.15 / JndiLookup
+#     removed) emits no token ⇒ not active ⇒ N/A by construction (design §P6.5.2).
+#   * **Heuristic, cross-function reachability.** The channel→sink path is NOT
+#     intra-function (``action`` flows request→dispatch→a deep logging call); the
+#     reachability layer grades it ``STATIC_HEURISTIC`` — a loose prior ("a request
+#     param plausibly reaches a logging call"), and P6 is the precise confirmation
+#     (reachability-as-prior, §4.3).
+#   * **Out-of-band proof (P6), no in-band signal.** There is no reflected content,
+#     so the obligation reduces to P6 or NOTHING (§8.1): a JNDI/DNS callback bearing
+#     a fresh nonce reaches the Clinkz collaborator ⇒ zero-FP by construction. The
+#     JNDI payload is a CLINKZ-OWNED, nonce-only template (the §P6.7.4 exfil
+#     guardrail holds — no target data in the lookup). Zero new proof code: the
+#     hypothesis rides the same P6 mint→build→send→reap→ConfirmationEvidence
+#     machinery the blind-SSRF path already uses, via ``_test_log4shell``.
+LOG4J_INTERPOLATION_JNDI = CapabilityPrimitive(
+    id="log_interpolation.log4j_jndi",
+    # Gated on the manifest-derived vulnerable-log4j verdict, NOT a bare "java"
+    # match — so a Java target on a patched log4j never activates this primitive.
+    technology_pattern=rf"(?i){re.escape(LOG4J_VULNERABLE_TOKEN)}",
+    name="log4j-message-lookup-jndi-egress",
+    primitive_class=PrimitiveClass.LOG_INTERPOLATION,
+    trigger_shape=(
+        "a request-derived string reaches an SLF4J/Log4j logging call "
+        "(logger.info/warn/error/…) whose vulnerable log4j-core interpolates a "
+        "${jndi:…} message lookup, performing an outbound JNDI/LDAP/DNS fetch"
+    ),
+    input_carriers=["query", "body_field", "path", "header"],
+    effect_class="outbound_network",
+    proof_obligation=ProofObligation(
+        test_method="_test_log4shell",
+        # Reduces to the built out-of-band primitive (P6) ONLY — there is no in-band
+        # signal, so it is P6 or nothing (§8.1). Zero new proof code.
+        confirmation_primitives=["P6"],
+        # No per-instance carrier: the JNDI string rides as the param VALUE via the
+        # shared string carrier (like SSRF), so no Host / path-segment carrier.
+        carrier_constraints=[],
+        description=(
+            "blind egress via a log sink: confirm by a JNDI/DNS callback bearing a "
+            "fresh single-use nonce reaching the Clinkz collaborator (P6) — the "
+            "target executed the interpolated lookup; unforgeable ⇒ zero-FP"
+        ),
+    ),
+    # Setting this config disables the lookup egress (subtracts from Δ): the 2.14.1
+    # default leaves it unset ⇒ EXPOSED. Version ≥ 2.16 / JndiLookup removal is
+    # handled upstream by the manifest gate (no token ⇒ primitive not active).
+    gating_config="log4j2.formatMsgNoLookups",
+    cwe_refs=["CWE-917", "CWE-502"],
+    provenance=["framework-source: log4j-core JndiLookup/StrSubstitutor", "CVE-2021-44228"],
+    evidence_grade="bootstrapped-from-source",
+)
+
 CATALOG: list[CapabilityPrimitive] = [
     EGRESS_FETCH_JAVA_OPENCONNECTION,
     FILE_READ_JAVA_FILE_SINK,
+    LOG4J_INTERPOLATION_JNDI,
 ]
 
 
