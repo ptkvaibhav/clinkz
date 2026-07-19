@@ -96,17 +96,40 @@ def test_egress_sink_via_cross_class_url_wrapper(source_model):
 
 
 def test_position_aware_taint_not_the_reused_var_later_binding(source_model):
-    """Regression: the reused ``strs`` local must bind the loop to stream.url.
+    """Regression: the reused ``strs`` local must bind the EGRESS loop to stream.url.
 
     Solr reassigns one ``String[] strs`` across ``stream.url`` → ``stream.file`` →
     ``stream.body``. A flat last-wins taint map would mis-attribute the URL loop to
     ``stream.body``; the nearest-preceding pairing keeps it ``stream.url``. A
-    ``stream.body`` / ``stream.file`` egress site here would be a false channel.
+    ``stream.body`` egress site here (or the URL loop bound to the wrong param)
+    would be a false channel.
     """
-    tainted = {c.tainted_by for c in source_model.call_sites}
-    assert tainted == {"stream.url"}
-    assert "stream.body" not in tainted
-    assert "stream.file" not in tainted
+    egress_tainted = {
+        c.tainted_by
+        for c in source_model.call_sites
+        if c.primitive_class == PrimitiveClass.EGRESS_FETCH
+    }
+    assert egress_tainted == {"stream.url"}
+    # ``stream.body`` has no capability sink at all — it must never be a channel.
+    assert all(c.tainted_by != "stream.body" for c in source_model.call_sites)
+
+
+def test_file_read_class_also_transfers_to_solr_stream_file(source_model):
+    """The SECOND capability class (FILE_READ) also fires on Solr's ``stream.file``.
+
+    ``new ContentStreamBase.FileStream(new File(file))`` where ``file`` traces to
+    ``stream.file`` is a genuine local-file-read sink. Surfacing it is the file-read
+    class transferring to a second codebase from the SAME catalog entry — a bonus
+    multi-class result, not a regression of the stream.url SSRF (asserted elsewhere).
+    """
+    file_reads = [
+        c for c in source_model.call_sites if c.primitive_class == PrimitiveClass.FILE_READ
+    ]
+    assert len(file_reads) == 1
+    site = file_reads[0]
+    assert site.symbol == "file_read"
+    assert site.tainted_by == "stream.file"
+    assert site.guard_symbol is None  # no basename-strip/canonicalize guard on Solr's read
 
 
 def test_wrapper_discovery_is_selective():
@@ -135,11 +158,16 @@ def test_resolve_param_name_literal_and_symbolic():
 
 
 def test_reuses_geoserver_egress_primitive_no_new_catalog(result):
-    """The SAME catalogued EGRESS_FETCH primitive fires — no Solr-specific entry."""
+    """The SAME catalogued EGRESS_FETCH primitive fires — no Solr-specific entry.
+
+    The catalogued FILE_READ class also matches (Solr's ``stream.file``), but the
+    SSRF proof reuses exactly the GeoServer egress primitive — no new SSRF entry.
+    """
     ids = {p.id for p in result.active_primitives}
-    assert ids == {"egress_fetch.java_openconnection"}
-    prim = result.active_primitives[0]
-    assert prim.primitive_class == PrimitiveClass.EGRESS_FETCH
+    assert "egress_fetch.java_openconnection" in ids
+    prim = next(
+        p for p in result.active_primitives if p.primitive_class == PrimitiveClass.EGRESS_FETCH
+    )
     assert prim.proof_obligation.test_method == "_test_ssrf"
     assert {"P3", "P1"}.issubset(set(prim.proof_obligation.confirmation_primitives))
 
@@ -151,17 +179,16 @@ def test_intent_exposed_via_no_guard_intent_gap(result):
     all, so it reaches the same verdict through the other adjudication branch —
     the engine's intent layer transfers without change.
     """
-    assert len(result.deltas) == 1
-    delta = result.deltas[0]
+    ssrf_deltas = [d for d in result.deltas if d.primitive_id == "egress_fetch.java_openconnection"]
+    assert len(ssrf_deltas) == 1
+    delta = ssrf_deltas[0]
     assert delta.delta_grade == DeltaGrade.EXPOSED
     assert delta.call_site.tainted_by == "stream.url"
     assert "no guard" in delta.intent_evidence.lower()
 
 
 def test_reachability_query_channel_static_confirmed(result):
-    assert len(result.edges) == 1
-    edge = result.edges[0]
-    assert edge.channel_param == "stream.url"
+    edge = next(e for e in result.edges if e.channel_param == "stream.url")
     assert edge.channel_location == ParamLocation.QUERY
     assert edge.soundness_grade == SoundnessGrade.STATIC_CONFIRMED
 
@@ -173,16 +200,17 @@ def test_hypothesis_binds_test_ssrf_with_no_carrier(result):
     GeoServer needed is correctly absent — the carrier machinery is guard-driven,
     not vuln-class-driven.
     """
-    assert len(result.hypotheses) == 1
-    hyp = result.hypotheses[0]
+    ssrf_hyps = [h for h in result.hypotheses if h.obligation.test_method == "_test_ssrf"]
+    assert len(ssrf_hyps) == 1
+    hyp = ssrf_hyps[0]
     assert hyp.target_url == BASE_URL  # no trailing slash (path-exact handler)
-    assert hyp.obligation.test_method == "_test_ssrf"
     assert hyp.obligation.carrier_constraints == []
     assert CARRIER_ALIGN_HOST not in hyp.obligation.carrier_constraints
 
 
 def test_hypothesis_lowers_to_tier_a_query_task(result):
-    task = result.hypotheses[0].to_exploit_task()
+    ssrf_hyp = next(h for h in result.hypotheses if h.obligation.test_method == "_test_ssrf")
+    task = ssrf_hyp.to_exploit_task()
     assert task.test_method == "_test_ssrf"
     assert task.endpoint_url == BASE_URL
     assert task.endpoint_method == "GET"

@@ -51,7 +51,12 @@ def _orchestrator_with_scope(scope: EngagementScope) -> OrchestratorAgent:
 
 
 def test_build_discovery_tasks_from_graybox_source():
-    """A gray-box ``source_dir`` yields the Solr stream.url Tier-A task."""
+    """A gray-box ``source_dir`` yields the Solr stream.url SSRF Tier-A task.
+
+    The engine now catalogues a second capability class, so Solr's ``stream.file``
+    → ``new File(file)`` local file read *also* surfaces (a legitimate multi-class
+    transfer). The SSRF task under test is byte-identical — no regression.
+    """
     scope = EngagementScope(
         name="solr-graybox",
         targets=[ScopeEntry(value="localhost", type=ScopeType.DOMAIN)],
@@ -60,13 +65,15 @@ def test_build_discovery_tasks_from_graybox_source():
     )
     orch = _orchestrator_with_scope(scope)
     tasks = orch._build_discovery_tasks(["Java", "Solr"], "localhost")
-    assert len(tasks) == 1
-    task = tasks[0]
-    assert task.test_method == "_test_ssrf"
+    task = next(t for t in tasks if t.test_method == "_test_ssrf")
     assert task.endpoint_url == SOLR_BASE  # operator-supplied reflecting handler
     assert task.endpoint_params == ["stream.url"]
     assert task.param_locations == {"stream.url": ParamLocation.QUERY}
     assert task.carrier_constraints == []  # Solr has no host guard → no carrier
+    # The file-read class also transfers to Solr's stream.file (a bonus, not a
+    # regression) — same catalog, no Solr-specific entry.
+    file_read = next(t for t in tasks if t.test_method == "_test_lfi")
+    assert file_read.endpoint_params == ["stream.file"]
 
 
 def test_build_discovery_tasks_inert_without_source_dir():
@@ -117,9 +124,8 @@ def test_parse_discovery_tasks_round_trip_and_union():
     wire = [t.model_dump(mode="json") for t in disc.exploit_tasks()]  # JSON handoff
 
     parsed = ExploitAgent._parse_discovery_tasks(wire)
-    assert len(parsed) == 1
-    assert parsed[0].test_method == "_test_ssrf"
-    assert parsed[0].param_locations == {"stream.url": ParamLocation.QUERY}
+    ssrf = next(t for t in parsed if t.test_method == "_test_ssrf")
+    assert ssrf.param_locations == {"stream.url": ParamLocation.QUERY}
 
 
 def test_parse_discovery_tasks_skips_malformed():
@@ -159,6 +165,8 @@ def test_handoff_unions_into_plan():
         tier1_count=1,
     )
     merged = agent._merge_discovery_tasks(plan)
-    assert len(merged.tasks) == 2
-    assert merged.tasks[-1].test_method == "_test_ssrf"
-    assert merged.tasks[-1].endpoint_url == SOLR_BASE
+    # The pre-existing sqli plan task + the two Solr hypotheses (stream.url SSRF and
+    # stream.file file read) union in as the third plan source.
+    assert len(merged.tasks) == 3
+    ssrf = next(t for t in merged.tasks if t.test_method == "_test_ssrf")
+    assert ssrf.endpoint_url == SOLR_BASE
