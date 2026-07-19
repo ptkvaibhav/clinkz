@@ -160,3 +160,34 @@ def test_dns_template_requires_subdomain_shape() -> None:
     )
     with pytest.raises(ValueError):
         build_oob_payload(OOBTemplateId.DNS_LOOKUP, nonce, ZONE, shape=CallbackShape.PATH)
+
+
+def test_jndi_dns_template_path_shape_puts_nonce_in_the_queried_domain() -> None:
+    """The Log4Shell channel: ``${jndi:dns://<authority>/<nonce>}`` (PATH shape).
+
+    The nonce is the queried domain, the authority is the collaborator's DNS leg —
+    so the JNDI DNS provider queries the nonce directly at the collaborator (no
+    wildcard delegation). Payload-free (only the nonce varies), no gadget.
+    """
+    nonce = mint_nonce()
+    authority = "host.docker.internal:15353"
+    payload = build_oob_payload(OOBTemplateId.JNDI_DNS, nonce, authority, shape=CallbackShape.PATH)
+    assert payload == f"${{jndi:dns://{authority}/{nonce}}}"
+    assert "class" not in payload.lower()  # no second-stage gadget reference
+
+
+def test_jndi_dns_template_subdomain_shape_puts_nonce_as_leftmost_label() -> None:
+    """SUBDOMAIN shape rides the nonce as a resolved subdomain (delegated setup)."""
+    nonce = mint_nonce()
+    payload = build_oob_payload(OOBTemplateId.JNDI_DNS, nonce, ZONE, shape=CallbackShape.SUBDOMAIN)
+    assert payload == f"${{jndi:dns://{nonce}.{ZONE}}}"
+
+
+@pytest.mark.parametrize(
+    "exfil_attempt",
+    ["${env:AWS_SECRET_ACCESS_KEY}", "../../etc/passwd", "victim.internal", "a b", ""],
+)
+def test_jndi_dns_carrier_refuses_non_nonce_data(exfil_attempt: str) -> None:
+    """The exfil guardrail holds for JNDI_DNS exactly as for every other template."""
+    with pytest.raises(ValueError):
+        build_oob_payload(OOBTemplateId.JNDI_DNS, exfil_attempt, ZONE, shape=CallbackShape.PATH)

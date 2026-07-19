@@ -187,6 +187,18 @@ def test_dns_answers_only_its_own_advertised_address() -> None:
     _run(scenario())
 
 
+def test_dns_authority_targets_the_dns_port_for_path_shape() -> None:
+    """The jndi:dns:// authority is the zone host with the DNS port (PATH shape)."""
+    collab = _make_collab()  # zone=127.0.0.1:<http>, dns_port=<dns>
+    assert collab.dns_authority() == f"127.0.0.1:{_DNS_PORT}"
+
+
+def test_dns_authority_uses_delegated_zone_for_subdomain_shape() -> None:
+    """SUBDOMAIN shape resolves via the target's resolver, so the zone is used as-is."""
+    collab = _make_collab(zone="oob.clinkz.test", callback_shape=CallbackShape.SUBDOMAIN)
+    assert collab.dns_authority() == "oob.clinkz.test"
+
+
 def test_non_nonce_traffic_never_pollutes_the_index() -> None:
     """A scanner hitting '/' or '/favicon.ico' records no correlatable nonce."""
 

