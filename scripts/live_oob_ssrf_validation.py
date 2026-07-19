@@ -211,6 +211,7 @@ async def main() -> int:
                 print(f"  [{f.severity.value.upper()}] {f.title}")
                 for ev in f.evidence[:5]:
                     print(f"      • {str(ev)[:150]}")
+                await agent._persist_finding(f)
             print(f"  in-band SSRF findings: {len(inband_findings)} (confirmed={inband_confirmed})")
 
             # ---- B. P6 CONFIRM via the OOB callback --------------------------
@@ -241,15 +242,30 @@ async def main() -> int:
                 f"  control confirmed_out_of_band={ctrl_confirmed} (expect False)  note={ctrl_note}"
             )
 
-            # Persist the confirmed OOB finding so the report/trace carry it.
-            if oob_confirmed:
-                oob_findings = await agent._test_ssrf(
-                    page
-                )  # blind path re-emits via OOB if in-band blind
-                # (In-band GeoServer reflects, so re-run emits the in-band finding;
-                #  the OOB confirmation above is the isolated P6 proof in the trace.)
-                for f in oob_findings:
-                    await agent._persist_finding(f)
+            # Persist the OOB-confirmed finding so report.json + trace.jsonl carry
+            # the raw P6 pair. GeoServer reflects in-band (so the normal blind
+            # branch never fires here); this emits the BLIND_OOB_CONFIRMED finding
+            # from the section-B evidence via the real phase-6 emitter/trace.
+            if oob_confirmed and oob_evidence is not None:
+                from clinkz.models.methodology import (
+                    SSRFExploitationType,
+                    SSRFMethodologyResult,
+                )
+
+                oob_result = SSRFMethodologyResult(
+                    candidate_param="url",
+                    exploitation_type=SSRFExploitationType.BLIND_OOB_CONFIRMED,
+                    synthesized_payload=oob_evidence.confirming_target,
+                    indicator_type="oob_callback",
+                    indicator_observed=note,
+                    confirmation_evidence=oob_evidence,
+                    verified=True,
+                    verification_strength="verified-oob",
+                    phases_completed=6,
+                )
+                oob_result.capability.fetch_confirmed = True
+                oob_finding = agent._ssrf_phase6_emit(twp_url, "url", oob_result)
+                await agent._persist_finding(oob_finding)
 
             # ---- REPORT ------------------------------------------------------
             _rule("REPORT + TRACE (raw artifact paths)")
