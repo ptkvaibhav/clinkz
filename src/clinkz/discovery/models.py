@@ -34,12 +34,22 @@ from clinkz.models.scan import ParamLocation
 class PrimitiveClass(StrEnum):
     """Capability-primitive taxonomy (§3.2).
 
-    Only :attr:`EGRESS_FETCH` is exercised by this slice; the rest are declared
-    so the catalog schema is forward-compatible without a migration next slice.
+    Three classes are exercised today — :attr:`EGRESS_FETCH` (SSRF),
+    :attr:`FILE_READ` (path-traversal file read), and :attr:`LOG_INTERPOLATION`
+    (the Log4Shell log-sink egress) — proving the catalog holds classes with
+    distinct sink shapes, reachability grades and proof primitives. The rest are
+    declared so the catalog schema is forward-compatible without a migration.
     """
 
     EGRESS_FETCH = "egress_fetch"
     FILE_READ = "file_read"
+    # Log4Shell class: a request-derived string reaches a logging call whose
+    # library (vulnerable log4j-core) interpolates ``${jndi:…}`` lookups into an
+    # outbound egress. Conceptually an egress-fetch reached via a *log sink*
+    # (design §P6.5.1), modelled as its own class so its distinct source idiom
+    # (logging calls), heuristic cross-function reachability and out-of-band (P6)
+    # proof never cross-wire with the in-band EGRESS_FETCH SSRF path.
+    LOG_INTERPOLATION = "log_interpolation"
     CODE_EVAL = "code_eval"
     QUERY_ESCAPE = "query_escape"
     DESERIALIZE = "deserialize"
@@ -153,6 +163,10 @@ class SourceModel(BaseModel):
     coverage_grade: CoverageGrade = CoverageGrade.ABSENT
     files_ingested: int = 0
     technologies: list[str] = Field(default_factory=list)
+    # Human-readable manifest-capability verdict, for the trace/report (e.g.
+    # "log4j-core 2.14.1 (< 2.15) declared in pom.xml → JNDI message-lookups
+    # un-gated"). Empty when no manifest-gated capability was found.
+    manifest_evidence: str = ""
 
 
 # ---------------------------------------------------------------------------
