@@ -30,6 +30,25 @@ idioms carry the transfer:
      where the literal ``openConnection`` lives one class away. GeoServer's
      direct ``u.openConnection()`` is the in-handler case, unchanged.
 
+A **second capability class** (file read, Flink CVE-2020-17519) reuses the SAME
+two-pass ingestor with three additional general Java idioms — the sink shape and
+its channel differ, the machinery does not (it extends, it does not fork):
+
+  4. **Typed request PATH parameters are entrypoints.** ``getPathParameter(
+     Xxx.class)`` reads an untrusted URL path segment; the class resolves to its
+     wire name via a ``KEY`` constant (pass-1 registry), and the mounted route
+     (``/jobmanager/logs/:filename``) is learned from a ``String.format("/…:%s",
+     Xxx.KEY)`` route builder — no route/param literal in the logic (JAX-RS
+     ``@PathParam`` / Spring ``@PathVariable`` are the same typed-path-param shape).
+  5. **File-read sinks.** A request-tainted path reaching ``new File(dir, name)`` /
+     ``new FileInputStream(name)`` / ``Files.read*(name)`` is a ``FILE_READ`` call
+     site — the arbitrary-file-read analogue of the egress ``openConnection`` sink.
+  6. **Basename-strip / canonicalize guards.** ``new File(pathParam).getName()`` /
+     ``getCanonicalPath`` / ``normalize`` applied to the tainted path before the
+     sink is the file-read analogue of the host-check guard: its presence marks the
+     value sanitized (Intent → SANCTIONED, Δ removed); its ABSENCE is the intent-gap
+     (EXPOSED) — exactly the missing ``.getName()`` Flink's fix added.
+
 It stays deliberately shallow: single-language (Java), pattern-based, bounded —
 not a whole-program analyzer. Cross-function / cross-service reachability beyond
 the wrapper case remains the next slice.
@@ -91,6 +110,54 @@ _RE_NEW_URL_IN_CTOR = re.compile(r"new\s+([\w.]+)\s*\(\s*new\s+URL\(\s*([^)]+?)\
 # A URL-fetch call anywhere in a class body ⇒ that class is an egress wrapper.
 _RE_URL_FETCH = re.compile(r"\.(?:openConnection|openStream)\s*\(")
 
+# --- File-read sinks + path-parameter channel (the SECOND capability class) --
+# A typed request PATH-parameter read: ``getPathParameter(Xxx.class)`` (Flink's
+# framework idiom; JAX-RS ``@PathParam`` / Spring ``@PathVariable`` are the same
+# shape). The class simple name resolves to the wire param name via its ``KEY``
+# constant (pass-1 registry). ``var = ...getPathParameter(Xxx.class)...`` binds the
+# request path param to a local, so the sink taint traces back to it.
+_RE_PATH_PARAM_READ = re.compile(r"getPathParameter\(\s*(\w+)\.class\s*\)")
+_RE_VAR_FROM_PATHPARAM = re.compile(
+    r"(\w+)\s*=\s*([^;]*?getPathParameter\(\s*(\w+)\.class\s*\)[^;]*)"
+)
+# File-read sinks: the request-tainted path becomes the file name/path. Captures
+# the (last / sole) constructor or reader argument — a bare local var, which the
+# taint map then resolves to a request param. Covers ``new File(dir, name)`` /
+# ``new File(name)``, ``new FileInputStream(name)`` / ``new RandomAccessFile(name,
+# ...)``, and ``Files.<read>(name)``. Deliberately literal-free: no path, no
+# param, no framework name is baked in.
+_RE_FILE_SINK = re.compile(
+    r"new\s+File\s*\(\s*(?:[^,()]+,\s*)?(\w+)\s*\)"
+    r"|new\s+(?:FileInputStream|FileReader)\s*\(\s*(\w+)\s*\)"
+    r"|new\s+RandomAccessFile\s*\(\s*(\w+)\s*,"
+    r"|\bFiles\.(?:readAllBytes|readAllLines|lines|readString|newInputStream|newBufferedReader)"
+    r"\s*\(\s*(\w+)\b"
+)
+# A basename-strip / canonicalization guard applied to the tainted path *before*
+# it reaches the sink — the file-read analogue of the egress host-check guard, and
+# exactly the fix Flink shipped (``new File(pathParam).getName()``). Its presence
+# in the tainting assignment marks the value sanitized ⇒ Intent reads SANCTIONED
+# (Δ removed). Absence ⇒ the intent-gap (EXPOSED).
+_RE_PATH_SANITIZER = re.compile(
+    r"\.getName\(\s*\)|getCanonicalPath|getCanonicalFile|\.normalize\(\s*\)|toRealPath"
+    r"|FilenameUtils\.getName"
+)
+# Symbol recorded for a detected basename-strip/canonicalize guard.
+_FILE_READ_GUARD_SYMBOL = "path_basename_strip"
+
+# ``public static final String KEY = "filename"`` inside a path-parameter class —
+# the wire name a ``getPathParameter(Xxx.class)`` read resolves to. Restricted to
+# the ``KEY`` field (the idiomatic path-param key name), scanned per class body so
+# each param class maps to its own key.
+_RE_KEY_CONST = re.compile(r'\bString\s+KEY\s*=\s*"([^"]+)"')
+# ``String.format("/route/:%s", Xxx.KEY)`` — a REST route built from a path-param
+# key. The literal (``/jobmanager/logs/:%s``) + the resolved key give the concrete
+# route (``/jobmanager/logs/:filename``). No route string is hardcoded.
+_RE_ROUTE_FORMAT = re.compile(r'String\.format\(\s*"(/[^"]*%s[^"]*)"\s*,\s*(\w+)\.KEY\s*\)')
+# A plain route literal already carrying a ``:name`` placeholder (the degenerate
+# case where the framework writes the route out in full).
+_RE_ROUTE_LITERAL = re.compile(r'"(/[^"]*:(\w+)[^"]*)"')
+
 # --- Constants (route + param-name resolution) ------------------------------
 # ``[static] [final] String NAME = "value"`` incl. interface constants
 # (``String STREAM_URL = "stream.url"`` — no modifiers). Restricted to
@@ -138,11 +205,14 @@ class JavaSourceIngestor:
         """Ingest every ``*.java`` under *root* (bounded), returning a SourceModel.
 
         Two deterministic passes. Pass 1 builds the cross-file facts an entrypoint
-        file may depend on — the constant map (symbolic param names) and the set of
-        egress-fetch wrapper types (classes that open a ``URLConnection``). Pass 2
-        extracts entrypoints / call sites / guards from each **entrypoint** file
-        (a file that reads a request parameter), resolving names and wrappers
-        against the pass-1 facts. Non-entrypoint library files (e.g. the wrapper's
+        file may depend on — the constant map (symbolic param names), the set of
+        egress-fetch wrapper types (classes that open a ``URLConnection``), the
+        path-parameter key registry (``Xxx.class`` → wire name via its ``KEY``
+        constant) and the REST route registry (path-param class → mounted route).
+        Pass 2 extracts entrypoints / call sites / guards from each **entrypoint**
+        file (a file that reads a request parameter — query, form-bag, or typed
+        path parameter), resolving names, wrappers and routes against the pass-1
+        facts. Non-entrypoint library files (a wrapper's / route-header's / param's
         own defining file) contribute only pass-1 facts — never a stray entrypoint.
         """
         root = Path(root)
@@ -155,6 +225,7 @@ class JavaSourceIngestor:
         texts: list[tuple[str, str]] = []
         const_map: dict[str, str] = {}
         wrapper_types: set[str] = set()
+        pathparam_keys: dict[str, str] = {}
         for path in files[:_MAX_FILES]:
             try:
                 if path.stat().st_size > _MAX_FILE_BYTES:
@@ -166,27 +237,38 @@ class JavaSourceIngestor:
             texts.append((str(path), text))
             const_map.update({m.group(1): m.group(2) for m in _RE_STRING_CONST.finditer(text)})
             wrapper_types |= self._discover_egress_wrapper_types(text)
+            pathparam_keys.update(self._discover_pathparam_keys(text))
+
+        # Route registry needs the full path-param-key map (routes reference param
+        # classes across files), so resolve it after pass 1 completes.
+        route_by_pathparam: dict[str, str] = {}
+        for _file, text in texts:
+            route_by_pathparam.update(self._discover_pathparam_routes(text, pathparam_keys))
 
         saw_servlet = False
         for file, text in texts:
-            if self._ingest_text(text, file, model, const_map, wrapper_types):
+            if self._ingest_text(
+                text, file, model, const_map, wrapper_types, pathparam_keys, route_by_pathparam
+            ):
                 if _RE_SERVLET_CLASS.search(text):
                     saw_servlet = True
 
         model.files_ingested = len(texts)
-        if any(c.primitive_class == PrimitiveClass.EGRESS_FETCH for c in model.call_sites):
+        if model.call_sites:
             model.coverage_grade = CoverageGrade.PARTIAL
         if model.entrypoints:
             model.technologies = ["Java", "Java Servlet"] if saw_servlet else ["Java"]
         logger.info(
             "source ingest: %d files → %d entrypoints, %d call-sites, %d guards "
-            "(%d consts, %d wrappers)",
+            "(%d consts, %d wrappers, %d path-param keys, %d routes)",
             len(texts),
             len(model.entrypoints),
             len(model.call_sites),
             len(model.guards),
             len(const_map),
             len(wrapper_types),
+            len(pathparam_keys),
+            len(route_by_pathparam),
         )
         return model
 
@@ -211,6 +293,59 @@ class JavaSourceIngestor:
                 wrappers.add(m.group(1))
         return wrappers
 
+    @staticmethod
+    def _discover_pathparam_keys(text: str) -> dict[str, str]:
+        """Path-parameter classes in *text* → their wire key (``KEY`` constant).
+
+        For each ``class``/``interface`` declaration, the body slice up to the next
+        declaration is scanned for ``String KEY = "<wire>"``; a match maps the class
+        simple name to ``<wire>``. This is how ``LogFileNamePathParameter`` is
+        *learned* to carry the wire name ``filename`` from Flink's own source, so a
+        ``getPathParameter(LogFileNamePathParameter.class)`` read one class away
+        resolves to ``filename`` — the typed-path-param analogue of Solr's symbolic
+        ``CommonParams.STREAM_URL`` resolution. No param name is hardcoded.
+        """
+        keys: dict[str, str] = {}
+        decls = list(_RE_ANY_CLASS.finditer(text))
+        for i, m in enumerate(decls):
+            start = m.end()
+            end = decls[i + 1].start() if i + 1 < len(decls) else len(text)
+            km = _RE_KEY_CONST.search(text, start, end)
+            if km:
+                keys[m.group(1)] = km.group(1)
+        return keys
+
+    @staticmethod
+    def _discover_pathparam_routes(text: str, pathparam_keys: dict[str, str]) -> dict[str, str]:
+        """Path-parameter class → its concrete mounted route, learned from source.
+
+        Two general REST-route idioms, both literal-free:
+
+          * ``String.format("/jobmanager/logs/:%s", LogFileNamePathParameter.KEY)``
+            — the route template's ``%s`` is filled by the resolved param key,
+            giving ``/jobmanager/logs/:filename`` (Flink's route builder).
+          * a plain literal already carrying a ``:name`` placeholder whose ``name``
+            is a known path-param key — the degenerate case where the route is
+            written out in full.
+
+        Both map the *param class* → route so a handler that reads
+        ``getPathParameter(Xxx.class)`` in another file resolves its mounted path.
+        """
+        routes: dict[str, str] = {}
+        for m in _RE_ROUTE_FORMAT.finditer(text):
+            template, param_class = m.group(1), m.group(2)
+            wire = pathparam_keys.get(param_class)
+            if wire is not None:
+                routes[param_class] = template.replace("%s", wire, 1)
+        if pathparam_keys:
+            key_to_class = {v: k for k, v in pathparam_keys.items()}
+            for m in _RE_ROUTE_LITERAL.finditer(text):
+                route_literal, placeholder = m.group(1), m.group(2)
+                cls = key_to_class.get(placeholder)
+                if cls is not None:
+                    routes.setdefault(cls, route_literal)
+        return routes
+
     def _ingest_text(
         self,
         text: str,
@@ -218,18 +353,24 @@ class JavaSourceIngestor:
         model: SourceModel,
         const_map: dict[str, str],
         wrapper_types: set[str],
+        pathparam_keys: dict[str, str],
+        route_by_pathparam: dict[str, str],
     ) -> bool:
         """Extract entrypoint / call sites / guard from one file. Returns ingested?
 
-        A file is an **entrypoint file** only if it reads a request parameter
-        (servlet ``getParameter`` or a param-bag ``get``/``getParams``). Files that
-        merely *define* a wrapper or constants (Solr's ``ContentStreamBase`` /
-        ``CommonParams``) contribute only pass-1 facts and are skipped here.
+        A file is an **entrypoint file** only if it reads a request parameter —
+        servlet ``getParameter``, a param-bag ``get``/``getParams``, or a typed
+        ``getPathParameter(Xxx.class)`` (the file-read class's path channel). Files
+        that merely *define* a wrapper, constants or route headers (Solr's
+        ``ContentStreamBase`` / ``CommonParams``, Flink's ``JobManagerCustomLog
+        Headers`` / ``LogFileNamePathParameter``) contribute only pass-1 facts and
+        are skipped here.
         """
         has_param_read = bool(
             _RE_GET_PARAM.search(text)
             or _RE_PARAM_BAG_GET.search(text)
             or _RE_PARAM_BAG_GETPARAMS.search(text)
+            or _RE_PATH_PARAM_READ.search(text)
         )
         if not has_param_read:
             return False
@@ -247,6 +388,13 @@ class JavaSourceIngestor:
         attacker_vars = {m.group(1) for m in _RE_VAR_FROM_REQUEST.finditer(text)}
         config_vars = {m.group(1) for m in _RE_VAR_FROM_CONFIG.finditer(text)}
 
+        # File-read (path-traversal) taint: local var → wire path-param name, plus
+        # the set of vars whose tainting assignment basename-stripped/canonicalized
+        # the path (sanitized), and the path-param classes read here.
+        path_taint, sanitized_path_vars, read_classes = self._build_path_taint_map(
+            text, pathparam_keys
+        )
+
         guard = self._extract_guard(
             text, file, attacker_vars, config_vars, var_to_urlarg, var_to_param
         )
@@ -256,10 +404,29 @@ class JavaSourceIngestor:
         call_sites = self._extract_egress_call_sites(
             text, file, var_to_param, var_to_urlarg, wrapper_types, guard.symbol if guard else None
         )
-        model.call_sites.extend(call_sites)
 
-        route = self._resolve_route(text, handler_symbol) if servlet_match else ""
+        file_read_sites, need_sanitize_guard = self._extract_file_read_call_sites(
+            text, file, path_taint, sanitized_path_vars, var_to_param
+        )
+        if need_sanitize_guard:
+            model.guards.append(self._path_sanitize_guard(text, file))
+        model.call_sites.extend(call_sites)
+        model.call_sites.extend(file_read_sites)
+
+        # Route: a typed-path-param handler resolves its mounted route from the
+        # pass-1 route registry (via the param class it reads); a servlet resolves
+        # from its own path constant; otherwise the operator's base URL carries it.
+        path_route = next(
+            (route_by_pathparam[c] for c in read_classes if c in route_by_pathparam), ""
+        )
+        route = path_route or (self._resolve_route(text, handler_symbol) if servlet_match else "")
+
+        path_params = [wire for c in read_classes if (wire := pathparam_keys.get(c)) is not None]
         params = self._ordered_params(text, const_map)
+        for wire in path_params:
+            if wire not in params:
+                params.append(wire)
+
         methods = sorted({m.group(1) for m in _RE_HANDLER.finditer(text)} & {"doGet", "doPost"})
         http_methods: list[str] = []
         if "doGet" in methods:
@@ -267,8 +434,8 @@ class JavaSourceIngestor:
         if "doPost" in methods:
             http_methods.append("POST")
         if not http_methods:
-            # A non-servlet param-bag entrypoint (shared request parser) is reached
-            # by a query-carried GET on whatever handler route the operator supplies.
+            # A non-servlet param-bag / path-param entrypoint (shared request
+            # parser, Flink REST handler) is reached by a GET on its route.
             http_methods = ["GET"]
         model.entrypoints.append(
             Entrypoint(
@@ -276,6 +443,7 @@ class JavaSourceIngestor:
                 http_methods=http_methods,
                 handler_symbol=handler_symbol,
                 params=params,
+                path_params=path_params,
                 file=file,
                 line=_line_of(text, (servlet_match or any_class or _RE_GET_PARAM).start())
                 if (servlet_match or any_class)
@@ -283,6 +451,113 @@ class JavaSourceIngestor:
             )
         )
         return True
+
+    @staticmethod
+    def _build_path_taint_map(
+        text: str, pathparam_keys: dict[str, str]
+    ) -> tuple[dict[str, str], set[str], list[str]]:
+        """Map local var → wire path-param name for ``getPathParameter`` reads.
+
+        Returns ``(path_taint, sanitized_vars, read_classes)``:
+
+          * ``path_taint`` — ``filename`` → ``"filename"`` for
+            ``String filename = handlerRequest.getPathParameter(Xxx.class)`` (the
+            class resolved to its wire name via the pass-1 key registry).
+          * ``sanitized_vars`` — vars whose tainting assignment applied a
+            basename-strip/canonicalize (Flink's fixed ``new File(...).getName()``),
+            so Intent reads the sink SANCTIONED rather than EXPOSED.
+          * ``read_classes`` — the path-param classes read in this handler, used to
+            resolve the route and the entrypoint's path params.
+        """
+        path_taint: dict[str, str] = {}
+        sanitized_vars: set[str] = set()
+        read_classes: list[str] = []
+        for m in _RE_VAR_FROM_PATHPARAM.finditer(text):
+            var, rhs, param_class = m.group(1), m.group(2), m.group(3)
+            wire = pathparam_keys.get(param_class)
+            if wire is None:
+                continue
+            path_taint[var] = wire
+            if param_class not in read_classes:
+                read_classes.append(param_class)
+            if _RE_PATH_SANITIZER.search(rhs):
+                sanitized_vars.add(var)
+        # A path param read but never bound to a local (rare) still surfaces its
+        # class so the route/params resolve — the reachability edge just needs the
+        # tainted sink, which the bound-var case above provides.
+        for m in _RE_PATH_PARAM_READ.finditer(text):
+            param_class = m.group(1)
+            if param_class in pathparam_keys and param_class not in read_classes:
+                read_classes.append(param_class)
+        return path_taint, sanitized_vars, read_classes
+
+    @staticmethod
+    def _extract_file_read_call_sites(
+        text: str,
+        file: str,
+        path_taint: dict[str, str],
+        sanitized_path_vars: set[str],
+        var_to_param: dict[str, str],
+    ) -> tuple[list[CallSite], bool]:
+        """Find FILE_READ sinks reachable from a request param in this function.
+
+        A ``new File(dir, name)`` / ``new FileInputStream(name)`` / ``Files.read*(
+        name)`` whose argument traces to a request param (a path param preferred,
+        else a query/form param) is a file-read call site. A sink whose path was
+        basename-stripped/canonicalized in its tainting assignment carries the
+        ``path_basename_strip`` guard so Intent marks it SANCTIONED (Flink's fixed
+        variant); an unsanitized one carries no guard — the intent-gap (EXPOSED).
+
+        Only *tainted* sinks are emitted: an untainted file read (Solr's
+        ``FileStream(File f)`` over a constructor arg, not a request param) has no
+        reaching channel and would only add a Δ with no reachability edge. Returns
+        ``(sites, need_sanitize_guard)``.
+        """
+        sites: list[CallSite] = []
+        need_sanitize_guard = False
+        for m in _RE_FILE_SINK.finditer(text):
+            arg = next((g for g in m.groups() if g), None)
+            if arg is None:
+                continue
+            wire = path_taint.get(arg)
+            sanitized = arg in sanitized_path_vars
+            if wire is None:
+                wire = var_to_param.get(arg)  # a query/form-param-tainted file read
+            if wire is None:
+                continue  # untainted file read — no reaching channel
+            guard_symbol = _FILE_READ_GUARD_SYMBOL if sanitized else None
+            if sanitized:
+                need_sanitize_guard = True
+            sites.append(
+                CallSite(
+                    primitive_class=PrimitiveClass.FILE_READ,
+                    symbol="file_read",
+                    file=file,
+                    line=_line_of(text, m.start()),
+                    tainted_by=wire,
+                    guard_symbol=guard_symbol,
+                )
+            )
+        return sites, need_sanitize_guard
+
+    @staticmethod
+    def _path_sanitize_guard(text: str, file: str) -> Guard:
+        """A real (non-bypassable) basename-strip/canonicalize guard on a path.
+
+        The file-read analogue of the host-check guard: unlike the bypassable
+        host-match guard (two attacker operands), a basename-strip fixes the value
+        the attacker controls, so it is a genuine constraint — Intent reads it
+        SANCTIONED and the sink is removed from Δ. Flink's fix (``new File(
+        pathParam).getName()``) is exactly this guard.
+        """
+        sm = _RE_PATH_SANITIZER.search(text)
+        return Guard(
+            symbol=_FILE_READ_GUARD_SYMBOL,
+            kind="path_sanitize",
+            bypassable_by_default=False,
+            file=file,
+            line=_line_of(text, sm.start()) if sm else 0,
+        )
 
     @staticmethod
     def _build_taint_map(text: str, const_map: dict[str, str]) -> dict[str, str]:

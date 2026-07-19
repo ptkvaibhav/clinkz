@@ -28,14 +28,17 @@ def _entrypoint_for_param(param: str, entrypoints: list[Entrypoint]) -> Entrypoi
     return next((e for e in entrypoints if param in e.params), None)
 
 
-def _channel_location(entrypoint: Entrypoint) -> ParamLocation:
-    """Where the channel param rides: a POST-capable servlet reads it from the
-    form body; otherwise it is a query param.
+def _channel_location(entrypoint: Entrypoint, param: str) -> ParamLocation:
+    """Where the channel param rides: URL path segment, form body, or query.
 
-    A servlet's ``getParameter`` reads both query and form-body params, so for a
-    POST entrypoint we carry the probe in the form body (the shape the live
-    exploit needs), else the query string.
+    A typed path parameter (Flink's ``:filename``) rides in the URL *path* itself,
+    so the probe is carried as a path segment — the file-read class's channel. A
+    servlet's ``getParameter`` reads both query and form-body params, so for a POST
+    entrypoint we carry the probe in the form body (the SSRF shape), else the query
+    string.
     """
+    if param in entrypoint.path_params:
+        return ParamLocation.PATH
     if "POST" in {m.upper() for m in entrypoint.http_methods}:
         return ParamLocation.FORM_BODY
     return ParamLocation.QUERY
@@ -62,13 +65,13 @@ def compute_reachability(
         edges.append(
             ReachabilityEdge(
                 channel_param=param,
-                channel_location=_channel_location(entrypoint),
+                channel_location=_channel_location(entrypoint, param),
                 primitive_id=delta.primitive_id,
                 entrypoint_route=entrypoint.route,
                 entrypoint_methods=entrypoint.http_methods,
                 path_evidence=(
-                    f"intra-function: request param {param!r} → new URL(...) → "
-                    f"{delta.call_site.symbol}() in {entrypoint.handler_symbol} "
+                    f"intra-function: request param {param!r} → "
+                    f"{delta.call_site.symbol}() sink in {entrypoint.handler_symbol} "
                     f"({delta.call_site.file}:{delta.call_site.line})"
                 ),
                 soundness_grade=SoundnessGrade.STATIC_CONFIRMED,
