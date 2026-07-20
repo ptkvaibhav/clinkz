@@ -17,6 +17,15 @@ from __future__ import annotations
 # host rewrite would break routing.
 CARRIER_ALIGN_HOST: str = "align_host_with_injected_url_host"
 
+# Manifest-derived capability token the source ingestor emits into
+# ``SourceModel.technologies`` when a vulnerable ``log4j-core`` (< 2.15.0, JNDI
+# message-lookups un-gated) is declared in a build manifest / shipped jar. The
+# LOG_INTERPOLATION catalog primitive's ``technology_pattern`` matches this token,
+# so a patched target (≥ 2.15, or JndiLookup removed) never emits it ⇒ the Log4Shell
+# primitive is not active ⇒ N/A by construction (design §P6.5.2 version-gating). The
+# specific version is learned from the manifest; only the derived verdict is a token.
+LOG4J_VULNERABLE_TOKEN: str = "log4j-jndi-lookup-exposed"
+
 # Per-instance carrier constraint a FILE_READ (path-traversal) proof obligation
 # carries when its channel is a URL *path* parameter (the whole ``:filename``
 # segment is attacker-controlled). It tells the probe carrier to inject the

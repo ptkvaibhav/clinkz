@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Minimal, REAL manifest fragment for the Log4Shell fixture (Apache Solr 8.11.0).
+  The log4j-core version below is the genuine Vulhub CVE-2021-44228 dependency
+  (verified against the running container: /opt/solr/server/lib/ext/log4j-core-2.14.1.jar).
+  The manifest-capability ingestor learns the version FROM this declaration — no
+  version literal is baked into the ingestor. 2.14.1 < 2.15.0 ⇒ the JNDI message-
+  lookup egress is un-gated ⇒ the LOG_INTERPOLATION capability is EXPOSED.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.apache.solr</groupId>
+  <artifactId>solr-core</artifactId>
+  <version>8.11.0</version>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>1.7.32</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-core</artifactId>
+      <version>2.14.1</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-slf4j-impl</artifactId>
+      <version>2.14.1</version>
+    </dependency>
+  </dependencies>
+</project>
