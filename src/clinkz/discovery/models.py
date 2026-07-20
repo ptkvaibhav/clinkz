@@ -23,7 +23,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from clinkz.models.finding import ExploitTask
+from clinkz.models.finding import DiscoveryProvenance, ExploitTask
 from clinkz.models.scan import ParamLocation
 
 # ---------------------------------------------------------------------------
@@ -119,7 +119,12 @@ class CallSite(BaseModel):
 
     ``tainted_by`` names the entrypoint parameter whose value reaches this call
     site *inside the same function* (the intra-function taint of §4.4). ``guard``
-    references the guard symbol invoked before the sink, if any.
+    references the guard symbol invoked before the sink, if any. ``sink_shape_id``
+    is a stable label from the recognizer's fixed vocabulary (design §1.3 /
+    §S1.3) — ``java.url_openconnection`` / ``java.file_sink`` / ``log4j.log_sink`` —
+    a *tag on already-existing detection*, not new detection, so the Layer-2
+    write-back can key a capability fact on the sink shape. Empty when the idiom
+    predates the tag (never gates behaviour).
     """
 
     primitive_class: PrimitiveClass
@@ -128,6 +133,7 @@ class CallSite(BaseModel):
     line: int = 0
     tainted_by: str | None = None
     guard_symbol: str | None = None
+    sink_shape_id: str = ""
 
 
 class Guard(BaseModel):
@@ -167,6 +173,13 @@ class SourceModel(BaseModel):
     # "log4j-core 2.14.1 (< 2.15) declared in pom.xml → JNDI message-lookups
     # un-gated"). Empty when no manifest-gated capability was found.
     manifest_evidence: str = ""
+    # Structured manifest capability, for the Layer-2 write-back (§S1.3): the
+    # carrying dependency the fact is keyed on and the EXACT observed point
+    # version. Populated by the manifest recognizer (e.g. ``log4j-core`` /
+    # ``2.14.1``); empty when no manifest-gated capability was found. The
+    # dependency name is recognizer vocabulary, never a target literal.
+    manifest_technology_key: str = ""
+    manifest_observed_version: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -261,14 +274,42 @@ class DiscoveryHypothesis(BaseModel):
     param_locations: dict[str, ParamLocation] = Field(default_factory=dict)
     rank_score: float = 0.0
     rationale: str = ""
+    # Capability-learning provenance (§S1.3), populated by ``generate_hypotheses``
+    # from the manifest/fingerprint. ``technology_key`` is the carrying dependency
+    # the Layer-2 fact keys on (``log4j-core``) or a normalized fingerprint;
+    # ``observed_version`` is the EXACT point version (``2.14.1``) or ``""`` (→ ``*``).
+    technology_key: str = ""
+    observed_version: str = ""
+    gating_config: str | None = None
+
+    def _discovery_provenance(self) -> DiscoveryProvenance:
+        """Bundle the capability-learning provenance carried on the lowered task.
+
+        Reads the sink shape, primitive class, reachability grade and confirmation
+        primitive off the already-existing sub-objects (§S1.3): only the version
+        identity is new. Enables the Layer-2 write-back to key a fact + build an
+        observation without further plumbing.
+        """
+        return DiscoveryProvenance(
+            technology_key=self.technology_key,
+            observed_version=self.observed_version,
+            sink_shape_id=self.delta.call_site.sink_shape_id,
+            primitive_class=self.delta.call_site.primitive_class.value,
+            primitive_id=self.primitive_id,
+            confirmation_primitive="/".join(self.obligation.confirmation_primitives),
+            reachability_grade=self.edge.soundness_grade.value,
+            gating_config=self.gating_config,
+        )
 
     def to_exploit_task(self) -> ExploitTask:
         """Lower this hypothesis to a Tier-A ``ExploitTask`` for the proof engine.
 
         The task binds the obligation's ``test_method`` to the reaching channel
         and carries the per-instance ``carrier_constraints`` so the probe honours
-        them (§10 gap #3). It enters the Exploit planner unioned exactly like the
-        LLM and deterministic plans — no dispatch changes.
+        them (§10 gap #3), plus the capability-learning ``discovery_provenance``
+        so a confirmed finding writes a capability fact (§S1.5). It enters the
+        Exploit planner unioned exactly like the LLM and deterministic plans — no
+        dispatch changes.
         """
         return ExploitTask(
             test_method=self.obligation.test_method,
@@ -285,4 +326,60 @@ class DiscoveryHypothesis(BaseModel):
             tier=1,
             technique_name=f"discovery:{self.primitive_id}",
             priority=0,
+            discovery_provenance=self._discovery_provenance(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Layer-2 capability memory (the learning loop, §2.3) — slice 1 WRITE side
+# ---------------------------------------------------------------------------
+
+
+class CapabilityFact(BaseModel):
+    """A durable, per-technology capability memory (design §2.3 / §S1.1).
+
+    The transfer-capable unit the learning loop grows: ``T@version`` has a sink of
+    shape ``sink_shape_id`` belonging to Layer-1 ``primitive_class`` — a *capability
+    property of the technology*, decoupled from whether it was reachable on any one
+    target (§1.2). Keyed on the carrying dependency, never a target host (§5.3).
+    ``confidence`` is a corroboration-with-recency-decay PRIOR (§S1.2), **never** an
+    emission gate. ``provenance`` is a convenience view assembled at read time from
+    the observation ledger (the fact table stores only the engagement span); it is
+    empty on write.
+
+    ``CapabilityRecall`` (the load-as-prior return shape, §2.3) is deferred to
+    slice 2 — slice 1 only WRITES facts, it does not read them back.
+    """
+
+    technology_key: str
+    version_predicate: str = "*"
+    primitive_class: PrimitiveClass
+    sink_shape_id: str
+    input_carriers: list[str] = Field(default_factory=list)
+    confirmation_primitive: str = ""
+    gating_config: str | None = None
+    evidence_grade: str = "derived_unconfirmed"  # confirmed|derived_unconfirmed|transferred|gated
+    confidence: float = 0.0  # PRIOR only — never gates emission
+    provenance: list[str] = Field(default_factory=list)
+
+
+class CapabilityObservation(BaseModel):
+    """One append-only provenance row for a proof-engine outcome (design §2.3 / §3).
+
+    Every outcome — confirming or not — leaves an observation. ``evidence_ref`` is a
+    LINK into the engagement's own :class:`~clinkz.models.methodology.ConfirmationEvidence`
+    (never a copy of response bytes — §5.3). A non-confirming outcome carries no
+    durable fact (§3.5), so it is written with ``capability_fact_id=None``.
+    """
+
+    engagement_id: str
+    observed_technology: str = ""
+    observed_version: str = ""
+    sink_shape_id: str = ""
+    primitive_class: PrimitiveClass
+    outcome: (
+        str  # confirmed|failed_unreachable|failed_gated|blind_unconfirmed|collaborator_unavailable
+    )
+    confirmation_primitive: str = ""
+    reachability_grade: SoundnessGrade = SoundnessGrade.HYPOTHESIZED
+    evidence_ref: str = ""  # link, not a copy of response bytes
