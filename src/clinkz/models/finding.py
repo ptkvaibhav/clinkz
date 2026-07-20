@@ -52,6 +52,11 @@ class Finding(BaseModel):
         remediation: Recommended fix.
         discovered_at: Timestamp when the finding was created.
         validated_at: Timestamp when the Critic Agent validated it.
+        discovery_provenance: Capability-learning provenance when this finding came
+            from a discovery-engine hypothesis (stamped from its
+            :class:`ExploitTask` at the ``_execute_task`` seam). ``None`` for
+            LLM/deterministic/black-box findings — those write no capability fact
+            (design §S1.5).
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -67,11 +72,54 @@ class Finding(BaseModel):
     remediation: str = ""
     discovered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     validated_at: datetime | None = None
+    discovery_provenance: DiscoveryProvenance | None = None
 
 
 # ---------------------------------------------------------------------------
 # Exploit Agent v2 models
 # ---------------------------------------------------------------------------
+
+
+class DiscoveryProvenance(BaseModel):
+    """Capability-learning provenance a discovery-originated task/finding carries.
+
+    Threaded hypothesis → :class:`ExploitTask` → :class:`Finding` (and onto the
+    exploit ``PageAnalysis`` for the non-confirming ledger path) so the Layer-2
+    write-back can key a ``capability_fact`` and build a ``capability_observation``
+    without new plumbing (design §S1.3). ``None`` on every LLM-planned,
+    deterministic-coverage, and black-box task — so a black-box finding writes no
+    capability fact (the deprecate-replace end-state).
+
+    The enum-valued fields are carried as their plain ``str`` values (StrEnum
+    ``.value``): this model lives in the leaf ``models.finding`` so
+    ``discovery.models`` (which imports :class:`ExploitTask`) can reference the
+    provenance without a circular import, and the Layer-2 DB columns are TEXT.
+
+    Attributes:
+        technology_key: Normalized TECH identity the fact is keyed on — the
+            carrying dependency (e.g. ``log4j-core``) or a normalized fingerprint.
+            Never a target host/URL (§5.3).
+        observed_version: EXACT observed point version (e.g. ``2.14.1``); ``""``
+            when no manifest/banner version is observable (→ predicate ``*``).
+        sink_shape_id: Fixed recognizer-vocabulary sink id
+            (``java.url_openconnection`` / ``java.file_sink`` / ``log4j.log_sink``).
+        primitive_class: Layer-1 :class:`PrimitiveClass` value
+            (``egress_fetch`` / ``file_read`` / ``log_interpolation`` / …).
+        primitive_id: The catalog :class:`CapabilityPrimitive` id.
+        confirmation_primitive: The P-id(s) the obligation reduces to (``P6``, ``P3``).
+        reachability_grade: The :class:`SoundnessGrade` value the reaching edge carried.
+        gating_config: The config flag that would subtract this capability from Δ
+            (for the ``failed_gated`` refine), or ``None``.
+    """
+
+    technology_key: str = ""
+    observed_version: str = ""
+    sink_shape_id: str = ""
+    primitive_class: str = ""
+    primitive_id: str = ""
+    confirmation_primitive: str = ""
+    reachability_grade: str = ""
+    gating_config: str | None = None
 
 
 class ExploitTask(BaseModel):
@@ -113,6 +161,7 @@ class ExploitTask(BaseModel):
     technique_steps: list[str] = Field(default_factory=list)
     priority: int = 0
     carrier_constraints: list[str] = Field(default_factory=list)
+    discovery_provenance: DiscoveryProvenance | None = None
 
 
 class ExploitPlan(BaseModel):

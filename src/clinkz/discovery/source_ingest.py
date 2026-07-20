@@ -215,6 +215,14 @@ _RE_REQUEST_ACCESSOR = re.compile(
 )
 # Symbol recorded for a LOG_INTERPOLATION (log-sink) call site.
 _LOG_SINK_SYMBOL = "log_interpolation"
+
+# Stable sink-shape ids — the recognizer's fixed Layer-2 vocabulary (design §1.3 /
+# §S1.3). A *tag on already-existing detection* the capability-learning write-back
+# keys a fact on; growing this set means teaching a NEW source idiom, exactly like
+# growing the Layer-1 oracles.
+_SINK_SHAPE_EGRESS = "java.url_openconnection"
+_SINK_SHAPE_FILE_READ = "java.file_sink"
+_SINK_SHAPE_LOG = "log4j.log_sink"
 # Coarse taint marker for a log sink whose logged value is the whole request (not a
 # single named param) — the reachability layer connects it to entrypoint params by
 # the heuristic prior, so the exact bag var name is not load-bearing.
@@ -226,6 +234,10 @@ _MAX_LOG_ARGS_SCAN = 600
 # The vulnerable-log4j threshold: message-lookup JNDI egress is un-gated below
 # 2.15.0; 2.15+ restricts it, 2.16+/JndiLookup-removed disables it (design §P6.5.2).
 _LOG4J_SAFE_VERSION: tuple[int, int, int] = (2, 15, 0)
+# The carrying dependency the Layer-2 capability fact is keyed on (design §2.4):
+# Log4Shell is a property of log4j-core, so any app that bundles it inherits the
+# capability. Recognizer vocabulary, not a target literal.
+_LOG4J_TECHNOLOGY_KEY = "log4j-core"
 # Manifest filenames worth reading for a declared log4j-core version (bounded).
 _MANIFEST_NAMES: tuple[str, ...] = (
     "pom.xml",
@@ -399,10 +411,12 @@ class JavaSourceIngestor:
         # A patched line emits nothing ⇒ the primitive is not active (N/A). Read
         # only when a log sink was actually found — no manifest scan cost otherwise.
         if any(cs.primitive_class is PrimitiveClass.LOG_INTERPOLATION for cs in model.call_sites):
-            vulnerable, manifest_evidence = self._scan_log4j_manifest(root)
+            vulnerable, manifest_evidence, observed_version = self._scan_log4j_manifest(root)
             if vulnerable:
                 model.technologies.append(LOG4J_VULNERABLE_TOKEN)
                 model.manifest_evidence = manifest_evidence
+                model.manifest_technology_key = _LOG4J_TECHNOLOGY_KEY
+                model.manifest_observed_version = observed_version
         logger.info(
             "source ingest: %d files → %d entrypoints, %d call-sites, %d guards "
             "(%d consts, %d wrappers, %d path-param keys, %d routes) manifest=%s",
@@ -684,6 +698,7 @@ class JavaSourceIngestor:
                     line=_line_of(text, m.start()),
                     tainted_by=wire,
                     guard_symbol=guard_symbol,
+                    sink_shape_id=_SINK_SHAPE_FILE_READ,
                 )
             )
         return sites, need_sanitize_guard
@@ -755,12 +770,13 @@ class JavaSourceIngestor:
                     line=_line_of(text, m.start()),
                     tainted_by=tainted_by,
                     guard_symbol=None,
+                    sink_shape_id=_SINK_SHAPE_LOG,
                 )
             )
         return sites
 
     @staticmethod
-    def _scan_log4j_manifest(root: Path) -> tuple[bool, str]:
+    def _scan_log4j_manifest(root: Path) -> tuple[bool, str, str]:
         """Whether a vulnerable log4j-core (< 2.15) is declared in the source tree.
 
         Reads bounded build manifests (``pom.xml`` / gradle / ivy / props) and
@@ -768,10 +784,12 @@ class JavaSourceIngestor:
         ``log4j-core`` version. Vulnerable when the LOWEST declared version is
         < 2.15.0 (JNDI message-lookups un-gated). The version is learned from the
         manifest — no version literal is baked in — so a patched line (≥ 2.15)
-        returns ``(False, "")`` and the LOG_INTERPOLATION primitive stays inactive
-        (N/A by construction). Bounded single tree walk, source treated as untrusted.
+        returns ``(False, "", "")`` and the LOG_INTERPOLATION primitive stays
+        inactive (N/A by construction). Bounded single tree walk, source treated as
+        untrusted.
 
-        Returns ``(vulnerable, evidence)``.
+        Returns ``(vulnerable, evidence, observed_version)`` — the raw point
+        version (e.g. ``2.14.1``) feeds the Layer-2 capability fact's predicate.
         """
         found: list[tuple[tuple[int, int, int], str, str]] = []  # (semver, raw, source)
 
@@ -811,14 +829,18 @@ class JavaSourceIngestor:
                     _consider(vm.group(1), name)
 
         if not found:
-            return False, ""
+            return False, "", ""
         found.sort(key=lambda item: item[0])
         lowest_semver, lowest_raw, source = found[0]
         if lowest_semver >= _LOG4J_SAFE_VERSION:
-            return False, ""
-        return True, (
-            f"log4j-core {lowest_raw} (< 2.15.0) declared in {source} "
-            "→ JNDI message-lookup egress un-gated (CVE-2021-44228)"
+            return False, "", ""
+        return (
+            True,
+            (
+                f"log4j-core {lowest_raw} (< 2.15.0) declared in {source} "
+                "→ JNDI message-lookup egress un-gated (CVE-2021-44228)"
+            ),
+            lowest_raw,
         )
 
     @staticmethod
@@ -926,6 +948,7 @@ class JavaSourceIngestor:
                     line=_line_of(text, line_index),
                     tainted_by=tainted_by,
                     guard_symbol=guard_symbol,
+                    sink_shape_id=_SINK_SHAPE_EGRESS,
                 )
             )
 
