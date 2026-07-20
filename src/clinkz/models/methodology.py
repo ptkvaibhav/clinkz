@@ -47,8 +47,16 @@ class ConfirmationEvidence(BaseModel):
         confirming_marker: The specific token that proved the confirmation
             (redaction-safe: the app's own content marker or a metadata field
             NAME, never a secret value).
+        outbound_probe: For the out-of-band primitive (P6) only — the RAW outbound
+            probe that carried the nonce to the target (method, endpoint, param +
+            the callback URL bearing the nonce). One half of the P6 evidence pair
+            (§P6.2.4): the confirming excerpt is the *inbound* callback bearing the
+            same nonce, so a reviewer sees the nonce leave in this probe and return
+            to the collaborator. Empty for the in-band primitives (P1/P3), where the
+            confirming signal is a response to our own request.
         confirming_excerpt: Bounded window of the confirming response body around
-            ``confirming_marker`` — the raw bytes a reviewer inspects.
+            ``confirming_marker`` — the raw bytes a reviewer inspects. For P6 this
+            is the bounded inbound-callback record (proto, source, host/path, Δt).
         control_label: What the control was (e.g. "without the Host-alignment
             carrier" / "non-resolving control host").
         control_status: HTTP status of the control response.
@@ -62,6 +70,9 @@ class ConfirmationEvidence(BaseModel):
     confirming_target: str = ""
     confirming_status: int | None = None
     confirming_marker: str = ""
+    # Optional P6 (out-of-band) field: the outbound probe that carried the nonce.
+    # Empty for in-band P1/P3 consumers, so the general shape is unchanged for them.
+    outbound_probe: str = ""
     confirming_excerpt: str = ""
     control_label: str = ""
     control_status: int | None = None
@@ -830,16 +841,22 @@ class SSRFExploitationType(StrEnum):
     A ``file://`` local-file read is deliberately **not** an SSRF type — that is
     local file inclusion / disclosure, confirmed by ``_test_lfi`` — so a URL/fetch
     param that reads ``file:///etc/passwd`` is reported as LFI, never SSRF.
+    - ``BLIND_OOB_CONFIRMED``: the fetch is confirmed **out-of-band** (P6) — a
+      Clinkz-owned collaborator received an inbound callback bearing the probe's
+      unique nonce, proving the server executed the egress even though no content
+      reflected in-band. Confirmed, not deferred; high severity. Requires a healthy
+      collaborator (``OOB_COLLABORATOR_MODE != disabled`` + a passed health-check).
     - ``BLIND_DEFERRED``: the fetch is confirmed but no content is reflected
-      (blind SSRF). In-band confirmation is impossible without an out-of-band
-      collaborator, which is **deferred** (no OOB infrastructure this build), so
-      this emits NOTHING and the limitation is noted — a documented limitation,
-      never a finding, never a phantom.
+      (blind SSRF) **and** no healthy collaborator is wired. In-band confirmation is
+      impossible without an out-of-band collaborator, so this emits NOTHING and the
+      limitation is noted (``blind_suspected`` / ``blind_unconfirmed``) — a
+      documented limitation, never a finding, never a phantom.
     """
 
     CLOUD_METADATA = "cloud_metadata"
     INTERNAL_SERVICE = "internal_service"
     REFLECTED_INTERNAL = "reflected_internal"
+    BLIND_OOB_CONFIRMED = "blind_oob_confirmed"
     BLIND_DEFERRED = "blind_deferred"
 
 
@@ -893,9 +910,22 @@ class SSRFMethodologyResult(BaseModel):
     direct connection to the internal address (the whole safety model).
 
     ``blind_suspected`` records the deferred-limitation case: the fetch was
-    confirmed but no content reflected, so in-band confirmation is impossible and
-    an out-of-band collaborator (not built this release) would be required. It is
-    a documented limitation, NOT a finding — nothing is emitted.
+    confirmed but no content reflected, so in-band confirmation is impossible.
+    Without a healthy out-of-band collaborator it is a documented limitation, NOT a
+    finding — nothing is emitted.
+
+    The three P6 (out-of-band) outcome fields are mutually distinct so the report
+    never conflates them (§P6.3.4 / §P6.7.1):
+
+    * ``blind_oob_confirmed`` — a callback bearing the probe's nonce arrived: a
+      genuine confirmed SSRF (``exploitation_type = BLIND_OOB_CONFIRMED``).
+    * ``blind_unconfirmed`` — an OOB probe was sent through a **healthy**
+      collaborator but no callback arrived within the window: *inconclusive, egress
+      may be filtered* → an operator research-lead, **never** ``not_vulnerable``.
+    * ``collaborator_unavailable`` — no healthy collaborator was wired (mode
+      disabled or the health-check failed): surfaced as "collaborator unavailable",
+      **never** as ``blind_unconfirmed`` (a dead collaborator must not make a target
+      look clean).
 
     N/A by construction on a stack with no URL/fetch parameter (DVWA): phase 1
     finds no candidate and nothing is emitted.
@@ -910,6 +940,14 @@ class SSRFMethodologyResult(BaseModel):
     indicator_observed: str | None = None
     candidate_param: str | None = None
     blind_suspected: bool = False
+    # P6 (out-of-band) outcome flags — see the class docstring. At most one of
+    # ``blind_unconfirmed`` / ``collaborator_unavailable`` is set on a blind path;
+    # a confirmed OOB callback sets ``exploitation_type = BLIND_OOB_CONFIRMED``.
+    blind_unconfirmed: bool = False
+    collaborator_unavailable: bool = False
+    # Human-readable note for the report / operator research-lead (the exact
+    # inconclusive/unavailable message; empty otherwise).
+    oob_note: str = ""
     # Raw, bounded proof of the in-band confirmation (the reflected internal
     # content that satisfied P3 AND the control it was distinguished against —
     # the without-carrier / non-resolving probe). Present only on a verified
@@ -922,9 +960,49 @@ class SSRFMethodologyResult(BaseModel):
     # server's response reflected internal content it should not have access to
     # (a cloud-metadata / IAM signature, a local-file signature, or an
     # internal-service response distinguishable from an external baseline);
-    # ``"likely"`` = a fetch + internal reachability was clear but the reflected
-    # content could not be cleanly signature-matched.
+    # ``"verified-oob"`` = an out-of-band callback bearing the probe's nonce
+    # confirmed the egress fired (P6); ``"likely"`` = a fetch + internal
+    # reachability was clear but the reflected content could not be cleanly matched.
     verification_strength: str = "verified"
+
+
+class Log4ShellMethodologyResult(BaseModel):
+    """Roll-up of one ``_test_log4shell`` invocation on one candidate param (P6).
+
+    Log4Shell (CVE-2021-44228) has **no in-band signal** — the JNDI message-lookup
+    egress is only observable out-of-band — so this result carries only the P6
+    outcome, mirroring the SSRF P6 fields so the report never conflates the three
+    outcomes (§P6.3.4 / §P6.7.1):
+
+    * ``confirmed`` — a JNDI/DNS callback bearing the probe's fresh nonce reached the
+      Clinkz collaborator: a genuine confirmed Log4Shell (``verified``, critical).
+    * ``blind_unconfirmed`` — the probe was sent through a **healthy** collaborator
+      but no callback arrived within the window: *inconclusive, egress may be
+      filtered* → an operator research-lead, **never** ``not_vulnerable``.
+    * ``collaborator_unavailable`` — no healthy collaborator was wired: surfaced as
+      "collaborator unavailable", **never** as ``blind_unconfirmed`` (a dead
+      collaborator must not make a target look clean).
+
+    N/A by construction where the discovery engine surfaced no log-sink channel or
+    the manifest showed a patched log4j: nothing is queued, nothing is emitted.
+    """
+
+    candidate_param: str | None = None
+    # The manifest-capability verdict that armed the class (the log4j version), for
+    # the finding evidence — e.g. "log4j-core 2.14.1 (< 2.15.0) … JNDI un-gated".
+    manifest_evidence: str = ""
+    confirmed: bool = False
+    indicator_observed: str | None = None
+    blind_unconfirmed: bool = False
+    collaborator_unavailable: bool = False
+    oob_note: str = ""
+    # Raw-auditable P6 pair (the outbound ${jndi:…<nonce>…} probe + the inbound
+    # callback bearing the SAME nonce + a never-sent control) — makes the
+    # confirmation independently re-derivable from the artifact (§P6.2.4).
+    confirmation_evidence: ConfirmationEvidence | None = None
+    verified: bool = False
+    # ``"verified-oob"`` when a callback confirmed; empty otherwise.
+    verification_strength: str = ""
 
 
 # ---------------------------------------------------------------------------

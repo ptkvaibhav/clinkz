@@ -44,6 +44,7 @@ from clinkz.agents.research import ResearchAgent
 from clinkz.agents.scan import ScanAgent
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
+from clinkz.oob import OOBCollaborator
 
 if TYPE_CHECKING:
     from clinkz.comms.bus import MessageBus
@@ -144,6 +145,10 @@ class AgentLifecycleManager:
         self._knowledge_base = knowledge_base
         self._llm_per_agent: dict[str, LLMClient] = llm_per_agent or {}
         self._persistent_kb = persistent_kb
+        # Optional P6 out-of-band collaborator, wired onto the Exploit agent when
+        # provisioned by the Orchestrator preflight (docs/p6-oob-design.md). ``None``
+        # ⇒ blind hypotheses defer exactly as before (the black-box floor).
+        self._oob_collaborator: OOBCollaborator | None = None
         # Keyed by agent.name (e.g. "recon", "crawl", "exploit")
         self._records: dict[str, _AgentRecord] = {}
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -191,6 +196,12 @@ class AgentLifecycleManager:
             bus=self._bus,
             persistent_kb=kb_for_agent,
         )
+
+        # Wire the P6 collaborator onto the Exploit agent so its SSRF blind branch
+        # can confirm out-of-band. Set post-construction (the collaborator is a live
+        # object, not an agent-ctor arg); other agents never see it.
+        if agent_type == "exploit" and self._oob_collaborator is not None:
+            agent._collaborator = self._oob_collaborator  # type: ignore[attr-defined]
 
         # Shut down any pre-existing agent with the same canonical name
         if agent.name in self._records:

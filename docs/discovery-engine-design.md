@@ -724,6 +724,13 @@ is the gate on the entire blind-egress half of the vuln universe.**
 
 ### 8.1 P6/OOB is a precondition, not a footnote
 
+> **Design:** P6 now has its own think-on-paper spec —
+> [`docs/p6-oob-design.md`](./p6-oob-design.md) — covering the collaborator infra +
+> scope guardrail, the unforgeable-nonce zero-FP semantics, the wall-clock
+> proof-budget economics, engine integration through the existing proof seam, and a
+> verified Log4Shell (Vulhub Solr 8.11.0 / Log4j 2.14.1) walkthrough. This section is
+> the summary; that doc is the detail.
+
 The flagship "discover a Log4Shell-class bug" use case is **literally unconfirmable
 without P6.** Log4Shell is blind by construction — JNDI egress to an attacker host,
 no in-band signal — so its proof obligation *cannot* reduce to P1–P5; it reduces to
@@ -821,7 +828,9 @@ if the earlier sections closed them.
    OOB collaborator (DNS/HTTP callback infrastructure).** §8.1 now treats P6 as a
    sequenced *precondition* for the entire blind-egress half of the vuln universe,
    not a "later" — but standing the collaborator up safely, in-scope, and without
-   becoming attacker infrastructure is still its own design.
+   becoming attacker infrastructure is still its own design, now written up in
+   [`docs/p6-oob-design.md`](./p6-oob-design.md) (§P6.1.5 guardrail, §P6.3.4 the
+   egress-filtered false-negative floor).
 
 5. **CVE → primitive abstraction reliability.** The catalog's quality is bounded
    by an LLM's ability to strip target-specificity and keep the true primitive

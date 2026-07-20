@@ -22,6 +22,7 @@ from clinkz.discovery.models import (
     CapabilityPrimitive,
     DiscoveryHypothesis,
     Guard,
+    PrimitiveClass,
     ProofObligation,
     ReachabilityEdge,
     SourceModel,
@@ -54,12 +55,29 @@ def _target_url(base_url: str, route: str) -> str:
 
 
 def _delta_for(edge: ReachabilityEdge, deltas: list[CapabilityDelta]) -> CapabilityDelta | None:
-    """The Δ whose call site this edge's channel taints."""
-    return next(
+    """The Δ whose call site this edge's channel taints.
+
+    Intra-function edges bind to the Δ whose ``tainted_by`` is exactly the channel
+    param. Heuristic log-sink edges (Log4Shell) are decoupled from any single proven
+    param — the sink logs the whole request cross-function — so they associate to a
+    representative Δ of the same primitive by primitive_id alone.
+    """
+    exact = next(
         (
             d
             for d in deltas
             if d.primitive_id == edge.primitive_id and d.call_site.tainted_by == edge.channel_param
+        ),
+        None,
+    )
+    if exact is not None:
+        return exact
+    return next(
+        (
+            d
+            for d in deltas
+            if d.primitive_id == edge.primitive_id
+            and d.call_site.primitive_class is PrimitiveClass.LOG_INTERPOLATION
         ),
         None,
     )

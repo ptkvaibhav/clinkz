@@ -26,6 +26,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -63,6 +64,7 @@ from clinkz.observability.trace import (
     TraceWriter,
     set_active_trace_writer,
 )
+from clinkz.oob import CallbackShape, OOBCollaborator
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.orchestrator.target_resolver import resolve_target_for_docker_mode
 from clinkz.state import StateStore
@@ -155,6 +157,10 @@ class OrchestratorAgent:
         self._cred_store: CredentialStore | None = None
         self._scope: EngagementScope | None = None
         self._engagement_id: str | None = None
+
+        # P6 out-of-band collaborator (provisioned per engagement when opted in;
+        # None on the default black-box floor). Held for teardown in run()'s finally.
+        self._oob_collaborator: OOBCollaborator | None = None
 
         # Persistent knowledge base (created during run())
         self._persistent_kb: PersistentKnowledgeBase | None = None
@@ -275,6 +281,14 @@ class OrchestratorAgent:
             resolver = ToolResolver()
             cred_store = CredentialStore(state)
             await cred_store.initialize()
+
+            # P6 out-of-band collaborator (disabled by default). Provisioned +
+            # health-checked here alongside the other preflights; a healthy one is
+            # wired onto the Exploit agent so its SSRF blind branch can confirm
+            # out-of-band. A down / disabled collaborator leaves the black-box floor
+            # intact (blind hypotheses defer). Torn down in the engagement finally.
+            self._oob_collaborator = await self._provision_collaborator()
+            lifecycle._oob_collaborator = self._oob_collaborator
 
             self._state = state
             self._bus = bus
@@ -426,6 +440,13 @@ class OrchestratorAgent:
                 return summary
             finally:
                 await persistent_kb.close()
+                # Tear down the P6 collaborator (bounded, per-engagement, redacted
+                # log cleared) — always, even on failure.
+                if self._oob_collaborator is not None:
+                    with contextlib.suppress(Exception):
+                        await self._oob_collaborator.stop()
+                    self._oob_collaborator = None
+                    lifecycle._oob_collaborator = None
                 # Always close + unset the trace writer so module-level state
                 # cannot leak between back-to-back engagements (relevant in
                 # tests and long-running daemon processes).
@@ -749,6 +770,59 @@ class OrchestratorAgent:
             base_url,
         )
         return tasks
+
+    # ------------------------------------------------------------------
+    # P6 out-of-band collaborator provisioning (docs/p6-oob-design.md §P6.1.3)
+    # ------------------------------------------------------------------
+
+    async def _provision_collaborator(self) -> OOBCollaborator | None:
+        """Provision + health-check the P6 collaborator, or ``None`` (P6 disabled).
+
+        Mirrors the container-preflight degradation discipline: a collaborator that
+        cannot bind its listeners, or fails its self-round-trip health-check, is
+        logged and skipped — the engagement completes on the in-band half exactly as
+        before (blind hypotheses defer). Only a **healthy** collaborator (both DNS
+        and HTTP legs round-tripped) is returned, so the exploit agent may turn a P6
+        non-confirmation into a research-lead only when the loop is proven (§P6.7.1).
+        Never raises.
+        """
+        mode = settings.oob_collaborator_mode
+        if mode == "disabled":
+            return None
+        if mode == "external":
+            # A self-hosted interactsh-style client is reserved (§P6.1.2); the public
+            # shared server is refused, not defaulted (§P6.1.5 guardrail 5). Not built.
+            self._logger.warning(
+                "OOB collaborator mode 'external' is not implemented — P6 disabled "
+                "(the public shared server is refused by design)"
+            )
+            return None
+        try:
+            collab = OOBCollaborator(
+                zone=settings.oob_zone,
+                callback_shape=CallbackShape(settings.oob_callback_shape),
+                http_port=settings.oob_http_port,
+                dns_port=settings.oob_dns_port,
+                advertised_ip=settings.oob_advertised_ip,
+            )
+            await collab.start()
+        except Exception as exc:  # noqa: BLE001 — P6 must never break the engagement
+            self._logger.warning("OOB collaborator failed to start — P6 disabled: %s", exc)
+            return None
+        if not await collab.health_check():
+            self._logger.warning(
+                "OOB collaborator health-check failed — P6 disabled (collaborator "
+                "unavailable; blind hypotheses will NOT be marked clean)"
+            )
+            with contextlib.suppress(Exception):
+                await collab.stop()
+            return None
+        self._logger.info(
+            "OOB collaborator provisioned and healthy: zone=%s shape=%s",
+            collab.zone,
+            collab.callback_shape.value,
+        )
+        return collab
 
     def _primary_target_url(self) -> str:
         """A base URL for discovery from the first in-scope target (best effort)."""
