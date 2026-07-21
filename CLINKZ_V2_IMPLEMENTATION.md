@@ -69,8 +69,13 @@ CI proves this:
   (15 Tier-1 skills covered, marker `dvwa_smoke`)
 - `tests/test_skills_juiceshop/` — same shape against Juice Shop
 
-After each engagement, `record_technique_result(...)` updates
-`times_tried` / `times_succeeded` / `success_rate` on the playbook entry.
+Cross-engagement learning now lives in the discovery catalog's **Layer-2
+capability memory** (`capability_facts` + `capability_observations` in
+`clinkz_knowledge.db`; see `docs/discovery-engine-capability-learning-design.md`).
+A confirmed discovery-originated finding UPSERTs a per-technology capability fact.
+The older technique-success loop (`record_technique_result(...)` updating
+`times_tried` / `times_succeeded` / `success_rate`) is **retired** — kept
+read-only for the report's historical view; `success_rate` is frozen.
 
 ### 4. Claude Code workflow — **DONE**
 Repository ships with:

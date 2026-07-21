@@ -1,0 +1,111 @@
+11:07:58 clinkz.knowledge.persistent_kb INFO  PersistentKB: opened C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-learning\capability_kb.db
+11:07:58 clinkz.oob.collaborator      INFO  OOB collaborator started: zone=host.docker.internal:18080 shape=path http=0.0.0.0:18080 dns=0.0.0.0:15353
+11:07:58 clinkz.oob.collaborator      INFO  OOB collaborator health-check: http=True dns=True recorded=['dns', 'http'] → healthy=True
+11:07:59 clinkz.discovery.source_ingest INFO  source ingest: 3 files → 2 entrypoints, 5 call-sites, 0 guards (48 consts, 0 wrappers, 0 path-param keys, 0 routes) manifest=log4j-core 2.14.1 (< 2.15.0) declared in pom.xml → JNDI message-lookup egress un-gated (CVE-2021-44228)
+11:07:59 clinkz.discovery.engine      INFO  discovery: 1 active primitives, 5 Δ, 8 reachability edges, 8 hypotheses
+11:07:59 clinkz.llm.factory           INFO  Initializing LLM client: provider=anthropic agent_role=-
+11:08:00 clinkz.state                 INFO  State store connected (WAL mode): C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-learning\engagement_state.db
+11:08:00 clinkz.state                 INFO  Created engagement: Capability-learning A — Solr CVE-2021-44228 (ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8)
+11:08:00 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+11:08:00 clinkz.agents.base.ExploitAgent INFO  Discovery handoff: 8 hypothesis task(s) received
+11:08:00 clinkz.agents.base.ExploitAgent INFO  Step 1: LLM planning exploits
+11:08:02 clinkz.agents.base.ExploitAgent WARNING LLM plan unparseable/empty; re-prompting LLM once for valid JSON
+11:08:04 clinkz.agents.base.ExploitAgent INFO  Coverage union: 1 LLM-planned + 0 deterministic coverage tasks (cap 150)
+11:08:04 clinkz.agents.base.ExploitAgent INFO  Discovery union: 8 hypothesis task(s) added to plan (9 total, cap 150)
+11:08:04 clinkz.agents.base.ExploitAgent INFO  Step 2: Executing 9 planned tasks (T1=9, T2=0, T3=0)
+11:08:04 clinkz.agents.base.ExploitAgent WARNING HTTP GET / failed: Invalid URL: /
+11:08:04 clinkz.agents.base.ExploitAgent WARNING Unknown test method: GET
+11:08:04 clinkz.agents.base.ExploitAgent INFO  Skipping duplicate finding 'Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — action' on http://localhost:8983/solr/admin/cores
+11:08:05 clinkz.agents.base.ExploitAgent INFO  Skipping duplicate finding 'Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — action' on http://localhost:8983/solr/admin/cores
+11:08:05 clinkz.agents.base.ExploitAgent INFO  Skipping duplicate finding 'Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — action' on http://localhost:8983/solr/admin/cores
+11:08:05 clinkz.agents.base.ExploitAgent INFO  Skipping duplicate finding 'Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — action' on http://localhost:8983/solr/admin/cores
+11:08:05 clinkz.agents.base.ExploitAgent INFO  Skipping duplicate finding 'Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — action' on http://localhost:8983/solr/admin/cores
+11:08:06 clinkz.agents.base.ExploitAgent INFO  Skipping duplicate finding 'Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — action' on http://localhost:8983/solr/admin/cores
+11:08:06 clinkz.agents.base.ExploitAgent INFO  Skipping duplicate finding 'Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — action' on http://localhost:8983/solr/admin/cores
+11:08:06 clinkz.agents.base.ExploitAgent INFO  Step 3: LLM analyzing 1 findings
+11:08:20 clinkz.agents.base.ExploitAgent INFO  Step 4: No retry targets — skipping
+11:08:20 clinkz.agents.base.ExploitAgent INFO  Step 3b: no false-positive suspects to mark
+11:08:20 clinkz.agents.base.ExploitAgent INFO  Step 5: 1 technique results recorded to KB (incremental)
+11:08:20 clinkz.agents.base.ExploitAgent INFO  Step 6: Building result
+11:08:20 clinkz.agents.base.ReportAgent INFO  ReportAgent starting (simple mode) for 'Capability-learning A' (ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8)
+11:08:20 clinkz.agents.base.ReportAgent INFO  Loaded 1 findings, 0 targets
+11:08:20 clinkz.agents.base.ReportAgent INFO  JSON report written to outputs\ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8\report_ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8.json
+11:08:20 clinkz.agents.base.ReportAgent INFO  Markdown report written to outputs\ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8\report_ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8.md
+11:08:20 clinkz.agents.base.ReportAgent INFO  Report complete: 1 findings, risk_rating=Critical
+11:08:20 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+11:08:20 clinkz.agents.base.ExploitAgent INFO  Skipping duplicate finding 'Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress — action' on http://localhost:8983/solr/admin/cores
+11:08:20 clinkz.oob.collaborator      INFO  OOB collaborator stopped and event log cleared
+11:08:20 clinkz.knowledge.persistent_kb INFO  PersistentKB: closed C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-learning\capability_kb.db
+
+==============================================================================
+PRE-FLIGHT (keys + Solr 8.11.0/log4j-core 2.14.1 + collaborator health)
+==============================================================================
+Solr http://localhost:8983/solr/admin/cores -> HTTP 200; TOOL_EXEC_MODE=local
+capability KB (fresh): C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-learning\capability_kb.db
+  capability_facts BEFORE: 0 rows
+  capability_observations BEFORE: 0 rows
+OOB collaborator healthy: dns_authority=host.docker.internal:15353 (jndi:dns:// target)
+
+==============================================================================
+DISCOVERY — log-sink channels at heuristic grade (manifest-gated)
+==============================================================================
+manifest verdict: log4j-core 2.14.1 (< 2.15.0) declared in pom.xml → JNDI message-lookup egress un-gated (CVE-2021-44228)
+manifest structured: technology_key='log4j-core' observed_version='2.14.1'
+channels surfaced: ['action', 'core', 'name', 'instanceDir', 'property.instanceDir', 'other', 'requestid', 'op']
+task provenance: technology_key='log4j-core' version='2.14.1' sink_shape_id='log4j.log_sink' class='log_interpolation' confirm='P6' grade='static_heuristic'
+
+==============================================================================
+ENGAGEMENT A — real run() seam confirms + writes the capability fact
+==============================================================================
+  exploit summary: Exploit phase complete. 9 tests run, 1 findings. By severity: {'critical': 1}. 1 results recorded to KB.
+  Log4Shell findings persisted via real run() seam: 1
+  (per-task dispatch confirms the 'action' channel — only an action-bearing request reaches Solr's CREATE-command log line; the write-back fires through the genuine _execute_task→_persist_finding chokepoint)
+
+==============================================================================
+(b) EMISSION A/B — identical findings with the write-back ON vs OFF
+==============================================================================
+  findings with write-back OFF (persistent_kb=None): 8
+  findings with write-back ON  (persistent_kb=kb)  : 8
+  emission identical ON vs OFF: True
+  baseline distinct findings: 8
+  warm finding SET == baseline SET: True
+    in warm not baseline: (none)
+    in baseline not warm: (none)
+
+==============================================================================
+(a) CATALOG-STATE DIFF — capability_facts before(0) vs after
+==============================================================================
+  capability_facts AFTER: 1 row(s)
+    fact: technology_key='log4j-core' version_predicate='=2.14.1' primitive_class='log_interpolation' sink_shape_id='log4j.log_sink' evidence_grade='confirmed' confidence=0.5 first_seen='ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8'
+  capability_observations AFTER: 8 row(s)
+    obs: outcome='confirmed' sink='log4j.log_sink' P='P6' grade='static_heuristic' evidence_ref='finding:d81e7ef8-3548-4d91-85d6-0d7c49c51821:P6'
+    obs: outcome='confirmed' sink='log4j.log_sink' P='P6' grade='static_heuristic' evidence_ref='finding:680979d9-b408-46a0-8f57-9ef569e758cf:P6'
+    obs: outcome='confirmed' sink='log4j.log_sink' P='P6' grade='static_heuristic' evidence_ref='finding:c6018672-b35a-488d-96ae-cdf3ef80b297:P6'
+    obs: outcome='confirmed' sink='log4j.log_sink' P='P6' grade='static_heuristic' evidence_ref='finding:7dcaaaa6-8d5f-4c05-8c93-8258fd6258bc:P6'
+    obs: outcome='confirmed' sink='log4j.log_sink' P='P6' grade='static_heuristic' evidence_ref='finding:b5d35d74-109f-4aa5-8791-c5dbac58963a:P6'
+    obs: outcome='confirmed' sink='log4j.log_sink' P='P6' grade='static_heuristic' evidence_ref='finding:d9664dee-9567-47d4-b557-f3ad90ee1f4b:P6'
+    obs: outcome='confirmed' sink='log4j.log_sink' P='P6' grade='static_heuristic' evidence_ref='finding:84a8747b-b901-44f3-a4e9-2bfc6720adf5:P6'
+    obs: outcome='confirmed' sink='log4j.log_sink' P='P6' grade='static_heuristic' evidence_ref='finding:e060d269-5b3a-4757-9fed-e2d3bfdc9685:P6'
+  target log4j-core fact present + confirmed: True
+  >=1 confirmed observation, evidence_ref a LINK: True
+
+==============================================================================
+(c) CONFIDENCE — a number, provably UNUSED in any emission decision
+==============================================================================
+  confidence value on the fact: 0.5
+  src modules that READ capability facts: (none)
+
+engagement_id : ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8
+report (json) : outputs\ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8\report_ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8.json
+report (md)   : outputs\ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8\report_ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8.md
+trace (jsonl) : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8\trace.jsonl
+KB dumps      : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-learning
+
+==============================================================================
+VERDICT
+==============================================================================
+  (a) capability_facts 0→confirmed log4j-core fact + observations : True
+  (b) emission unchanged (finding SET identical to baseline)      : True
+  (c) confidence present as a number, provably unused in emission : True
+
+  RESULT: PASS

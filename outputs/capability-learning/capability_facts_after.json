@@ -1,0 +1,19 @@
+[
+  {
+    "id": 1,
+    "technology_key": "log4j-core",
+    "version_predicate": "=2.14.1",
+    "primitive_class": "log_interpolation",
+    "sink_shape_id": "log4j.log_sink",
+    "input_carriers": null,
+    "confirmation_primitive": "P6",
+    "gating_config": null,
+    "evidence_grade": "confirmed",
+    "confidence": 0.5,
+    "first_seen_engagement": "ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8",
+    "last_seen_engagement": "ee5bfe4c-a8b2-4e22-ad6b-ddf5081d1bf8",
+    "last_outcome": "confirmed",
+    "created_at": "2026-07-21 05:38:04",
+    "updated_at": "2026-07-21 05:38:20"
+  }
+]

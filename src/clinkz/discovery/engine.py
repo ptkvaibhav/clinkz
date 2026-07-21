@@ -72,7 +72,9 @@ class DiscoveryEngine:
         active_primitives = match_primitives(source_model, fingerprint)
         deltas = compute_delta(source_model, active_primitives)
         edges = compute_reachability(source_model, deltas)
-        hypotheses = generate_hypotheses(source_model, active_primitives, deltas, edges, base_url)
+        hypotheses = generate_hypotheses(
+            source_model, active_primitives, deltas, edges, base_url, fingerprint
+        )
         logger.info(
             "discovery: %d active primitives, %d Δ, %d reachability edges, %d hypotheses",
             len(active_primitives),

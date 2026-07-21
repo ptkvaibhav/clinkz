@@ -108,6 +108,37 @@ def test_lowered_task_targets_the_action_query_param() -> None:
     assert not task.carrier_constraints
 
 
+def test_sink_shape_tagged_on_log_call_site() -> None:
+    """The recognizer tags each log-sink call site with its fixed vocabulary id (§S1.3)."""
+    sm = JavaSourceIngestor().ingest_path(FIXTURE)
+    log_sites = [c for c in sm.call_sites if c.primitive_class is PrimitiveClass.LOG_INTERPOLATION]
+    assert log_sites and all(c.sink_shape_id == "log4j.log_sink" for c in log_sites)
+
+
+def test_manifest_exposes_structured_technology_key_and_version() -> None:
+    """The manifest scan structures the carrying dependency + exact version (§S1.3)."""
+    sm = JavaSourceIngestor().ingest_path(FIXTURE)
+    assert sm.manifest_technology_key == "log4j-core"
+    assert sm.manifest_observed_version == "2.14.1"
+
+
+def test_lowered_task_carries_capability_provenance() -> None:
+    """The lowered ExploitTask carries the Layer-2 provenance the write-back keys on
+    (source → hypothesis → task), so a confirmed finding writes a capability fact."""
+    result = DiscoveryEngine().discover(str(FIXTURE), ["Java", "Apache Solr 8.11.0"], BASE_URL)
+    task = next(t for t in result.exploit_tasks() if "action" in t.endpoint_params)
+    prov = task.discovery_provenance
+    assert prov is not None
+    assert prov.technology_key == "log4j-core"  # keyed on the carrying dependency (§2.4)
+    assert prov.observed_version == "2.14.1"  # exact manifest point version
+    assert prov.sink_shape_id == "log4j.log_sink"
+    assert prov.primitive_class == "log_interpolation"
+    assert prov.primitive_id == "log_interpolation.log4j_jndi"
+    assert prov.confirmation_primitive == "P6"
+    assert prov.reachability_grade == "static_heuristic"
+    assert prov.gating_config == "log4j2.formatMsgNoLookups"
+
+
 def test_patched_is_na_by_construction() -> None:
     """Patched log4j-core (identical source) yields no active primitive, no hypothesis."""
     result = DiscoveryEngine().discover(str(PATCHED), ["Java", "Solr"], BASE_URL)
