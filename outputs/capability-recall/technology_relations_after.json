@@ -1,0 +1,10 @@
+[
+  {
+    "id": 1,
+    "tech_a": "apache-solr@8.11.0",
+    "tech_b": "log4j-core@2.14.1",
+    "relation_type": "bundles",
+    "similarity_score": 1.0,
+    "notes": null
+  }
+]

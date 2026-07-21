@@ -1,0 +1,78 @@
+16:32:46 clinkz.knowledge.persistent_kb INFO  PersistentKB: opened C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-recall\capability_kb.db
+16:32:46 clinkz.oob.collaborator      INFO  OOB collaborator started: zone=host.docker.internal:18080 shape=path http=0.0.0.0:18080 dns=0.0.0.0:15353
+16:32:46 clinkz.oob.collaborator      INFO  OOB collaborator health-check: http=True dns=True recorded=['dns', 'http'] → healthy=True
+16:32:46 clinkz.llm.factory           INFO  Initializing LLM client: provider=anthropic agent_role=-
+16:32:46 clinkz.state                 INFO  State store connected (WAL mode): C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-recall\engagement_state.db
+16:32:46 clinkz.state                 INFO  Created engagement: Capability-recall A (6b7df62d-a4d7-49ca-b425-55206f403930)
+16:32:46 clinkz.discovery.source_ingest INFO  source ingest: 3 files → 2 entrypoints, 5 call-sites, 0 guards (48 consts, 0 wrappers, 0 path-param keys, 0 routes) manifest=log4j-core 2.14.1 (< 2.15.0) declared in pom.xml → JNDI message-lookup egress un-gated (CVE-2021-44228)
+16:32:46 clinkz.discovery.engine      INFO  discovery: 1 active primitives, 5 Δ, 8 reachability edges, 0 recalls, 8 hypotheses
+16:32:46 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+16:32:47 clinkz.state                 INFO  Created engagement: Capability-recall B cold (874f879d-54c6-490a-ac3c-68881519ec75)
+16:32:47 clinkz.discovery.source_ingest INFO  source ingest: 2 files → 1 entrypoints, 0 call-sites, 0 guards (48 consts, 0 wrappers, 0 path-param keys, 0 routes) manifest=(none)
+16:32:47 clinkz.discovery.engine      INFO  discovery: 0 active primitives, 0 Δ, 0 reachability edges, 0 recalls, 0 hypotheses
+16:32:47 clinkz.state                 INFO  Created engagement: Capability-recall B warm (50b5dbb3-f687-4bdf-afcf-6bed1dca4c97)
+16:32:47 clinkz.discovery.source_ingest INFO  source ingest: 2 files → 1 entrypoints, 0 call-sites, 0 guards (48 consts, 0 wrappers, 0 path-param keys, 0 routes) manifest=(none)
+16:32:47 clinkz.discovery.engine      INFO  discovery: 0 active primitives, 0 Δ, 0 reachability edges, 1 recalls, 3 hypotheses
+16:32:47 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+16:32:47 clinkz.agents.base.ReportAgent INFO  ReportAgent starting (simple mode) for 'Capability-recall B warm' (50b5dbb3-f687-4bdf-afcf-6bed1dca4c97)
+16:32:47 clinkz.agents.base.ReportAgent INFO  Loaded 3 findings, 0 targets
+16:32:47 clinkz.agents.base.ReportAgent INFO  JSON report written to outputs\50b5dbb3-f687-4bdf-afcf-6bed1dca4c97\report_50b5dbb3-f687-4bdf-afcf-6bed1dca4c97.json
+16:32:47 clinkz.agents.base.ReportAgent INFO  Markdown report written to outputs\50b5dbb3-f687-4bdf-afcf-6bed1dca4c97\report_50b5dbb3-f687-4bdf-afcf-6bed1dca4c97.md
+16:32:47 clinkz.agents.base.ReportAgent INFO  Report complete: 3 findings, risk_rating=Critical
+16:32:47 clinkz.knowledge.persistent_kb INFO  PersistentKB: closed C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-recall\capability_kb.db
+
+==============================================================================
+PRE-FLIGHT (keys + Solr 8.11.0/log4j-core 2.14.1 + collaborator health)
+==============================================================================
+Solr http://localhost:8983/solr/admin/cores -> HTTP 200; TOOL_EXEC_MODE=local
+capability KB (fresh): C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-recall\capability_kb.db
+  capability_facts BEFORE: 0 rows
+  technology_relations BEFORE: 0 rows
+OOB collaborator healthy: dns_authority=host.docker.internal:15353 (jndi:dns:// target)
+
+==============================================================================
+ENGAGEMENT A (cold) — cold-derive, LIVE P6 confirm, write fact + bundles edge
+==============================================================================
+A manifest: log4j-core 2.14.1 (< 2.15.0) declared in pom.xml → JNDI message-lookup egress un-gated (CVE-2021-44228)
+A cold LOG_INTERPOLATION hypotheses: 8 (prior_source={'cold_derivation'})
+A LIVE Log4Shell confirmations: 8
+  capability_facts AFTER A: 1 row(s); confirmed log4j fact: True
+  technology_relations AFTER A: 1 row(s); bundles edge: True
+
+==============================================================================
+ENGAGEMENT B — COLD-CONTROL (empty store, PARTIAL source) → 0 hypotheses
+==============================================================================
+  cold-control recalls: 0; LOG_INTERPOLATION hypotheses: 0
+
+==============================================================================
+ENGAGEMENT B — WARM (capability_kb from A, SAME partial source) → recall-seeded + LIVE confirm
+==============================================================================
+  warm recalls: 1 (match_kind=['bundles'])
+  warm recall-seeded LOG_INTERPOLATION hypotheses: 3 (prior_source={'capability_recall'}, grade={'hypothesized'})
+  warm-B LIVE P6 confirmations (recall changed the PATH, proof confirms): 3
+
+==============================================================================
+RAW METRIC — trace diff (warm B vs cold-control B, SAME partial source)
+==============================================================================
+  cold-control trace LOG_INTERPOLATION hypotheses : 0
+  warm trace LOG_INTERPOLATION hypotheses         : 3 (3 prior_source=capability_recall)
+    warm hyp: id=hyp:recall:log_interpolation.log4j_jndi:action prior=capability_recall rank=0.225 channel=action grade=hypothesized tech=log4j-core
+    warm hyp: id=hyp:recall:log_interpolation.log4j_jndi:core prior=capability_recall rank=0.225 channel=core grade=hypothesized tech=log4j-core
+    warm hyp: id=hyp:recall:log_interpolation.log4j_jndi:name prior=capability_recall rank=0.225 channel=name grade=hypothesized tech=log4j-core
+
+engagement A (cold)      : 6b7df62d-a4d7-49ca-b425-55206f403930
+engagement B cold-control: 874f879d-54c6-490a-ac3c-68881519ec75
+engagement B warm        : 50b5dbb3-f687-4bdf-afcf-6bed1dca4c97
+report (warm json)       : outputs\50b5dbb3-f687-4bdf-afcf-6bed1dca4c97\report_50b5dbb3-f687-4bdf-afcf-6bed1dca4c97.json
+trace (cold-control)     : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\874f879d-54c6-490a-ac3c-68881519ec75\trace.jsonl
+trace (warm)             : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\50b5dbb3-f687-4bdf-afcf-6bed1dca4c97\trace.jsonl
+KB dumps                 : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\capability-recall
+
+==============================================================================
+VERDICT
+==============================================================================
+  (1) catalog-state diff: confirmed log4j fact + real bundles edge  : True
+  (2) trace diff: cold-control 0 hyps, warm >=1 recall-seeded hyp   : True
+  (3) warm-B confirmed by the LIVE P1-P6 proof (recall changed path): True
+
+  RESULT: PASS

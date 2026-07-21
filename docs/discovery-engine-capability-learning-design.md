@@ -690,3 +690,30 @@ and **no** technique result (the loop is retired) — exactly the deprecate-repl
 - **Zero-FP is structural**: Layer 2 stores no negative fact (so it cannot suppress a hypothesis) and
   holds no path to emission (so it cannot manufacture one). Confidence is a number, provably unused in
   any slice-1 emission decision.
+
+---
+
+# Slice 2 build addendum — the READ side (recall + transfer)
+
+**Status: BUILT + live-validated.** Slice 2 is the load-as-prior half. As built:
+
+- **`version_satisfies`** (`discovery/versions.py`) — the §2.4 predicate grammar, deterministic, on
+  the shared `parse_version` tuple idiom `source_ingest._parse_semver` now delegates to.
+- **`bundles` / `successor` edge writers** (`discovery/relations.py`) — the dormant
+  `technology_relations` table's first production writers (deterministic only; `similar` deferred).
+- **`capability_recall`** (`discovery/recall.py`) — a **pure READ** over KB-dumped fact + relation rows;
+  expands the fingerprint over transfer edges, filters by `version_satisfies`, yields `CapabilityRecall`.
+- **Load-as-prior seam** — `DiscoveryEngine.discover(capability_facts=…, technology_relations=…)` computes
+  recalls before `generate_hypotheses(seeded_by=…)`, which **boosts** (case a) or **seeds** (case b, at
+  `HYPOTHESIZED` reachability, capped). The async orchestrator seam dumps the store as the prior and
+  writes the transfer edges back. Trace records `prior_source` + `rank_score` + dispatch ordinal (§6.2).
+- **Zero-FP / scope fence held** — recall never emits; emission stays the unchanged P1–P6 proof (§5).
+
+The §6 two-engagement experiment ran for real (Vulhub Solr 8.11.0 / log4j-core 2.14.1, live collaborator +
+live Anthropic): `capability_facts`+`technology_relations` 0→1; under identical partial source the
+cold-control produced 0 `log_interpolation` hypotheses while the warm run recalled via the `bundles` edge
+and seeded 3 (`prior_source=capability_recall`) that the live P6 callback confirmed. As-built + RAW evidence:
+[`discovery-engine-capability-recall-slice2-validation.md`](./discovery-engine-capability-recall-slice2-validation.md).
+
+**Still deferred:** `similar` (heuristic/LLM) transfer edges, the offline catalog-population / CVE-abstraction
+grower, and cross-service reachability.
