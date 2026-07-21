@@ -235,3 +235,164 @@ async def test_get_past_results_for_technology(kb):
     assert results[0]["technique_name"] == "join_test"
     assert results[0]["success"] == 1
     assert results[0]["finding_id"] == "f-join-001"
+
+
+# ---------------------------------------------------------------------------
+# Layer-2 capability memory (discovery learning loop, §2.2 / §3 / §S1.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_capability_tables_exist(tmp_path):
+    """The two Layer-2 tables are created, with NO target-identity column (§5.3)."""
+    kb = await PersistentKnowledgeBase.create(str(tmp_path / "cap.db"))
+    cursor = await kb._db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row["name"] for row in await cursor.fetchall()}
+    assert "capability_facts" in tables
+    assert "capability_observations" in tables
+    # Schema-level exfil guardrail: no host/URL/IP/port/secret column anywhere.
+    forbidden = {"host", "hostname", "url", "ip", "ip_address", "port", "target", "secret", "token"}
+    for table in ("capability_facts", "capability_observations"):
+        cursor = await kb._db.execute(f"PRAGMA table_info({table})")
+        cols = {row["name"].lower() for row in await cursor.fetchall()}
+        assert cols.isdisjoint(forbidden), f"{table} leaks target identity: {cols & forbidden}"
+    await kb.close()
+
+
+@pytest.mark.asyncio
+async def test_capability_confirmed_upsert_and_observation(kb):
+    """A confirmed fact upserts once on its UNIQUE key; a confirming observation
+    links (not copies) the evidence; confidence is a positive PRIOR."""
+    assert await kb.get_capability_facts() == []  # before: 0 rows
+    fid = await kb.upsert_capability_fact(
+        technology_key="log4j-core",
+        version_predicate="=2.14.1",
+        primitive_class="log_interpolation",
+        sink_shape_id="log4j.log_sink",
+        engagement_id="eng-A",
+        confirmation_primitive="P6",
+        evidence_grade="confirmed",
+        last_outcome="confirmed",
+    )
+    await kb.add_capability_observation(
+        engagement_id="eng-A",
+        primitive_class="log_interpolation",
+        outcome="confirmed",
+        capability_fact_id=fid,
+        observed_technology="Apache Solr 8.11.0",
+        observed_version="2.14.1",
+        sink_shape_id="log4j.log_sink",
+        confirmation_primitive="P6",
+        reachability_grade="static_heuristic",
+        evidence_ref="finding:abc-123:P6",
+    )
+    conf = await kb.recompute_capability_confidence(fid)
+
+    facts = await kb.get_capability_facts()
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact["technology_key"] == "log4j-core"
+    assert fact["version_predicate"] == "=2.14.1"
+    assert fact["primitive_class"] == "log_interpolation"
+    assert fact["sink_shape_id"] == "log4j.log_sink"
+    assert fact["evidence_grade"] == "confirmed"
+    assert fact["first_seen_engagement"] == "eng-A"
+    assert conf == 0.5 and fact["confidence"] == 0.5  # one confirm → 0.5
+
+    obs = await kb.get_capability_observations()
+    assert len(obs) == 1
+    assert obs[0]["outcome"] == "confirmed"
+    assert obs[0]["evidence_ref"] == "finding:abc-123:P6"  # a LINK, no response bytes
+
+    # Re-confirming the SAME key is idempotent — one fact, not two.
+    fid2 = await kb.upsert_capability_fact(
+        technology_key="log4j-core",
+        version_predicate="=2.14.1",
+        primitive_class="log_interpolation",
+        sink_shape_id="log4j.log_sink",
+        engagement_id="eng-A",
+        evidence_grade="confirmed",
+    )
+    assert fid2 == fid
+    assert len(await kb.get_capability_facts()) == 1
+
+
+@pytest.mark.asyncio
+async def test_capability_confidence_from_confirming_only(kb):
+    """Non-confirming outcomes NEVER lower confidence; a 2nd distinct confirming
+    engagement raises it (design §S1.2 — the §3.5 firewall)."""
+    fid = await kb.upsert_capability_fact(
+        technology_key="log4j-core",
+        version_predicate="=2.14.1",
+        primitive_class="log_interpolation",
+        sink_shape_id="log4j.log_sink",
+        engagement_id="A",
+        evidence_grade="confirmed",
+    )
+    await kb.add_capability_observation(
+        engagement_id="A", primitive_class="log_interpolation", outcome="confirmed",
+        capability_fact_id=fid,
+    )
+    c1 = await kb.recompute_capability_confidence(fid)
+    assert c1 == 0.5
+
+    # Pile on every non-confirming outcome from a different engagement.
+    for outcome in (
+        "failed_unreachable",
+        "blind_unconfirmed",
+        "collaborator_unavailable",
+        "failed_gated",
+    ):
+        await kb.add_capability_observation(
+            engagement_id="B", primitive_class="log_interpolation", outcome=outcome,
+            capability_fact_id=fid,
+        )
+    c2 = await kb.recompute_capability_confidence(fid)
+    assert c2 == c1, "a non-confirming outcome lowered a real capability's confidence"
+
+    # A second DISTINCT confirming engagement corroborates upward.
+    await kb.add_capability_observation(
+        engagement_id="C", primitive_class="log_interpolation", outcome="confirmed",
+        capability_fact_id=fid,
+    )
+    c3 = await kb.recompute_capability_confidence(fid)
+    assert c3 == 0.75 and c3 > c1
+
+
+@pytest.mark.asyncio
+async def test_capability_upsert_never_lowers_grade(kb):
+    """A confirmed fact stays confirmed even if a later engagement gates it."""
+    fid = await kb.upsert_capability_fact(
+        technology_key="log4j-core", version_predicate="=2.14.1",
+        primitive_class="log_interpolation", sink_shape_id="log4j.log_sink",
+        engagement_id="A", evidence_grade="confirmed",
+    )
+    # A later 'gated' write must not downgrade the confirmed fact.
+    fid2 = await kb.upsert_capability_fact(
+        technology_key="log4j-core", version_predicate="=2.14.1",
+        primitive_class="log_interpolation", sink_shape_id="log4j.log_sink",
+        engagement_id="B", gating_config="log4j2.formatMsgNoLookups",
+        evidence_grade="gated", last_outcome="failed_gated",
+    )
+    assert fid2 == fid
+    fact = (await kb.get_capability_facts())[0]
+    assert fact["evidence_grade"] == "confirmed"  # grade never lowered
+    assert fact["gating_config"] == "log4j2.formatMsgNoLookups"  # but gating refined
+
+
+@pytest.mark.asyncio
+async def test_capability_nonconfirming_observation_no_fact(kb):
+    """A pure non-confirming observation writes a ledger row and NO durable fact (§3.5)."""
+    await kb.add_capability_observation(
+        engagement_id="A",
+        primitive_class="egress_fetch",
+        outcome="blind_unconfirmed",
+        capability_fact_id=None,
+        observed_technology="Apache Solr 8.11.0",
+        sink_shape_id="java.url_openconnection",
+    )
+    assert await kb.get_capability_facts() == []  # no durable negative fact
+    obs = await kb.get_capability_observations()
+    assert len(obs) == 1
+    assert obs[0]["outcome"] == "blind_unconfirmed"
+    assert obs[0]["capability_fact_id"] is None

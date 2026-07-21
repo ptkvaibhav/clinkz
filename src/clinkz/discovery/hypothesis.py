@@ -16,7 +16,13 @@ it the guard rejects the probe and a genuinely exploitable SSRF fails to confirm
 
 from __future__ import annotations
 
-from clinkz.discovery.constants import CARRIER_ALIGN_HOST, CARRIER_PATH_TRAVERSAL
+import re
+
+from clinkz.discovery.constants import (
+    CARRIER_ALIGN_HOST,
+    CARRIER_PATH_TRAVERSAL,
+    LOG4J_VULNERABLE_TOKEN,
+)
 from clinkz.discovery.models import (
     CapabilityDelta,
     CapabilityPrimitive,
@@ -37,6 +43,49 @@ _EVIDENCE_WEIGHT = {
     "bootstrapped-from-source": 0.9,
     "bootstrapped": 0.7,
 }
+
+# A version substring in a recon fingerprint entry ("Apache Solr 8.11.0" → 8.11.0).
+_RE_FINGERPRINT_VERSION = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
+
+
+def _normalize_tech_key(tech: str) -> str:
+    """Slugify a fingerprint entry to a technology key ("Apache Solr 8.11.0" → "apache-solr")."""
+    without_version = _RE_FINGERPRINT_VERSION.sub("", tech)
+    return re.sub(r"[^a-z0-9]+", "-", without_version.lower()).strip("-")
+
+
+def _technology_identity(
+    primitive: CapabilityPrimitive, source_model: SourceModel, fingerprint: list[str]
+) -> tuple[str, str]:
+    """The ``(technology_key, observed_version)`` a Layer-2 fact is keyed on (§S1.3).
+
+    A manifest-derived carrying dependency (``log4j-core`` / its exact version) is
+    the sharpest key when present; otherwise the most specific recon fingerprint
+    entry is normalized to a ``(key, version)`` — general, no target literal. Prefers
+    a versioned specific entry, then any specific key, then the primitive's own name.
+    """
+    if primitive.primitive_class is PrimitiveClass.LOG_INTERPOLATION and (
+        source_model.manifest_technology_key
+    ):
+        return source_model.manifest_technology_key, source_model.manifest_observed_version
+    versioned: tuple[str, str] | None = None
+    generic: str | None = None
+    for tech in [*fingerprint, *source_model.technologies]:
+        if tech == LOG4J_VULNERABLE_TOKEN:
+            continue  # synthetic capability token, not a technology identity
+        key = _normalize_tech_key(tech)
+        if not key:
+            continue
+        match = _RE_FINGERPRINT_VERSION.search(tech)
+        if match and versioned is None:
+            versioned = (key, match.group(1))
+        elif generic is None:
+            generic = key
+    if versioned is not None:
+        return versioned
+    if generic is not None:
+        return generic, ""
+    return primitive.name, ""
 
 
 def _target_url(base_url: str, route: str) -> str:
@@ -113,8 +162,15 @@ def generate_hypotheses(
     deltas: list[CapabilityDelta],
     edges: list[ReachabilityEdge],
     base_url: str,
+    fingerprint: list[str] | None = None,
 ) -> list[DiscoveryHypothesis]:
-    """Generate ranked Tier-A hypotheses from the Δ-set × reachability edges."""
+    """Generate ranked Tier-A hypotheses from the Δ-set × reachability edges.
+
+    ``fingerprint`` (the recon technology list) feeds the Layer-2 capability
+    identity (§S1.3) each hypothesis carries; omitting it falls back to the source
+    model's technologies, so behaviour is unchanged for callers that pass nothing.
+    """
+    fingerprint = list(fingerprint or [])
     primitive_by_id = {p.id: p for p in primitives}
     guard_by_symbol = {g.symbol: g for g in source_model.guards}
     hypotheses: list[DiscoveryHypothesis] = []
@@ -135,6 +191,9 @@ def generate_hypotheses(
             * edge.reach_confidence
             * _EVIDENCE_WEIGHT.get(primitive.evidence_grade, 0.7)
         )
+        technology_key, observed_version = _technology_identity(
+            primitive, source_model, fingerprint
+        )
         carrier_note = (
             f" (carrier: {', '.join(obligation.carrier_constraints)})"
             if obligation.carrier_constraints
@@ -151,6 +210,9 @@ def generate_hypotheses(
                 endpoint_method="POST" if "POST" in edge.entrypoint_methods else "GET",
                 endpoint_params=[edge.channel_param],
                 param_locations={edge.channel_param: edge.channel_location},
+                technology_key=technology_key,
+                observed_version=observed_version,
+                gating_config=primitive.gating_config,
                 rank_score=round(rank, 4),
                 rationale=(
                     f"{primitive.primitive_class.value} EXPOSED ({delta.delta_grade.value}, "

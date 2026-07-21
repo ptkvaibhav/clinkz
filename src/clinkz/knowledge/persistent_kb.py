@@ -78,7 +78,72 @@ CREATE TABLE IF NOT EXISTS technology_relations (
     notes TEXT,
     UNIQUE(tech_a, tech_b, relation_type)
 );
+
+-- Layer-2 capability memory (discovery-engine learning loop, design §2.2). The
+-- ONE cross-engagement learning system after the technique-success loop is
+-- retired (§2.1): a durable, upserted capability FACT plus an append-only
+-- OBSERVATION ledger (its provenance). Deliberately carries NO target identity
+-- (no host / URL / IP / port / secret) — a fact is about a TECHNOLOGY, and the
+-- absence of target identity is the schema-level exfil guardrail (§5.3) that also
+-- lets a fact transfer to a never-seen target.
+CREATE TABLE IF NOT EXISTS capability_facts (
+    id                     INTEGER PRIMARY KEY,
+    technology_key         TEXT NOT NULL,  -- normalized TECH identity (carrying dep), never a host
+    version_predicate      TEXT NOT NULL DEFAULT '*',  -- '<2.15.0' | '=2.14.1' | '*' (recall)
+    primitive_class        TEXT NOT NULL,  -- Layer-1 class: egress_fetch|file_read|log_interp
+    sink_shape_id          TEXT NOT NULL,  -- fixed recognizer vocab: java.file_sink|log4j.log_sink
+    input_carriers         TEXT,  -- json list: ['query','body_field','path','header']
+    confirmation_primitive TEXT,  -- denormalized P-id (authority is the Layer-1 catalog)
+    gating_config          TEXT,  -- config that subtracts it from Δ (e.g. formatMsgNoLookups)
+    evidence_grade         TEXT NOT NULL DEFAULT 'derived_unconfirmed',
+                           -- confirmed | derived_unconfirmed | transferred | gated
+    confidence             REAL NOT NULL DEFAULT 0.0,  -- 0..1 corroboration×recency; PRIOR only
+    first_seen_engagement  TEXT,
+    last_seen_engagement   TEXT,
+    last_outcome           TEXT,
+    created_at             TEXT DEFAULT (datetime('now')),
+    updated_at             TEXT DEFAULT (datetime('now')),
+    UNIQUE(technology_key, version_predicate, primitive_class, sink_shape_id)
+);
+
+CREATE TABLE IF NOT EXISTS capability_observations (
+    id                     INTEGER PRIMARY KEY,
+    capability_fact_id     INTEGER REFERENCES capability_facts(id),
+    engagement_id          TEXT NOT NULL,
+    observed_technology    TEXT,  -- EXACT fingerprint string (a tech, not a host)
+    observed_version       TEXT,  -- EXACT observed point version, e.g. '2.14.1'
+    sink_shape_id          TEXT,
+    primitive_class        TEXT,
+    outcome                TEXT NOT NULL,  -- confirmed | failed_unreachable | failed_gated
+                           --   | blind_unconfirmed | collaborator_unavailable
+    confirmation_primitive TEXT,
+    reachability_grade     TEXT,  -- SoundnessGrade the edge carried this run
+    evidence_ref           TEXT,  -- LINK into the finding's ConfirmationEvidence, never bytes
+    created_at             TEXT DEFAULT (datetime('now'))
+);
 """
+
+# ---------------------------------------------------------------------------
+# Layer-2 capability-confidence formula (design §S1.2 — the §2.2↔§3.5 correction)
+# ---------------------------------------------------------------------------
+# confidence = corroboration × recency, computed from CONFIRMING observations
+# ONLY (WHERE outcome='confirmed'). A non-confirming outcome appends an
+# observation but is structurally excluded from both terms, so it can never lower
+# a real capability's confidence (§3.5). confidence is a PRIOR — it never gates
+# emission.
+_CORR_BASE = 0.5  # corroboration = 1 - 0.5^k → one confirm 0.5, two 0.75, three 0.875
+_RECENCY_FLOOR = 0.3  # a stale fact never decays to 0 (decay never deletes, §7.2)
+_RECENCY_DECAY = 0.5  # half the recency multiplier per half-life
+_RECENCY_HALFLIFE_DAYS = 90.0
+
+# evidence_grade rank — an upsert never LOWERS a fact's grade (a confirmed fact
+# stays confirmed even if a later target gates it).
+_GRADE_RANK = {
+    "derived_unconfirmed": 0,
+    "transferred": 1,
+    "gated": 1,
+    "confirmed": 3,
+}
 
 
 class PersistentKnowledgeBase:
@@ -361,6 +426,203 @@ class PersistentKnowledgeBase:
             (tech_a, tech_b, relation_type, similarity_score, notes),
         )
         await self._db.commit()
+
+    # ------------------------------------------------------------------
+    # Layer-2 capability memory (discovery learning loop, §2.2 / §3 / §S1.5)
+    # ------------------------------------------------------------------
+
+    async def upsert_capability_fact(
+        self,
+        *,
+        technology_key: str,
+        version_predicate: str,
+        primitive_class: str,
+        sink_shape_id: str,
+        engagement_id: str,
+        input_carriers: list[str] | None = None,
+        confirmation_primitive: str = "",
+        gating_config: str | None = None,
+        evidence_grade: str = "confirmed",
+        last_outcome: str = "confirmed",
+    ) -> int:
+        """UPSERT a positive capability fact on its UNIQUE key; return the fact id.
+
+        First sight → INSERT (``first_seen = last_seen = engagement``). Re-sight →
+        bump ``last_seen_engagement`` / ``last_outcome`` / ``updated_at``, RAISE
+        ``evidence_grade`` toward the stronger grade (never lowered — a confirmed
+        fact stays confirmed even if a later target gates it), and refine
+        ``gating_config`` / ``confirmation_primitive`` / ``input_carriers`` only
+        when a non-empty new value is supplied (COALESCE — a confirmed upsert never
+        wipes a prior gating note).
+
+        Confidence is NOT set here; the caller recomputes it from confirming
+        observations (§S1.2) after appending the observation, so a fact created
+        purely from a non-confirming outcome keeps confidence 0.0.
+        """
+        carriers_json = json.dumps(input_carriers) if input_carriers else None
+        await self._db.execute(
+            """INSERT OR IGNORE INTO capability_facts
+               (technology_key, version_predicate, primitive_class, sink_shape_id,
+                input_carriers, confirmation_primitive, gating_config, evidence_grade,
+                first_seen_engagement, last_seen_engagement, last_outcome)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                technology_key,
+                version_predicate,
+                primitive_class,
+                sink_shape_id,
+                carriers_json,
+                confirmation_primitive or None,
+                gating_config,
+                evidence_grade,
+                engagement_id,
+                engagement_id,
+                last_outcome,
+            ),
+        )
+        cursor = await self._db.execute(
+            """SELECT id, evidence_grade FROM capability_facts
+               WHERE technology_key = ? AND version_predicate = ?
+                 AND primitive_class = ? AND sink_shape_id = ?""",
+            (technology_key, version_predicate, primitive_class, sink_shape_id),
+        )
+        row = await cursor.fetchone()
+        if row is None:  # pragma: no cover - INSERT OR IGNORE always leaves a row
+            await self._db.commit()
+            return -1
+        fact_id = int(row["id"])
+        merged_grade = self._higher_grade(row["evidence_grade"], evidence_grade)
+        await self._db.execute(
+            """UPDATE capability_facts
+               SET last_seen_engagement = ?,
+                   last_outcome = ?,
+                   evidence_grade = ?,
+                   gating_config = COALESCE(?, gating_config),
+                   confirmation_primitive = COALESCE(?, confirmation_primitive),
+                   input_carriers = COALESCE(?, input_carriers),
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (
+                engagement_id,
+                last_outcome,
+                merged_grade,
+                gating_config,
+                confirmation_primitive or None,
+                carriers_json,
+                fact_id,
+            ),
+        )
+        await self._db.commit()
+        return fact_id
+
+    async def add_capability_observation(
+        self,
+        *,
+        engagement_id: str,
+        primitive_class: str,
+        outcome: str,
+        capability_fact_id: int | None = None,
+        observed_technology: str = "",
+        observed_version: str = "",
+        sink_shape_id: str = "",
+        confirmation_primitive: str = "",
+        reachability_grade: str = "",
+        evidence_ref: str = "",
+    ) -> int:
+        """Append one row to the append-only observation ledger; return its id.
+
+        Every proof-engine outcome (confirming or not) leaves a provenance row.
+        ``evidence_ref`` is a LINK into the engagement's own ``ConfirmationEvidence``
+        (never a bytes copy — §5.3). A non-confirming outcome passes
+        ``capability_fact_id=None`` (no durable fact, §3.5).
+        """
+        cursor = await self._db.execute(
+            """INSERT INTO capability_observations
+               (capability_fact_id, engagement_id, observed_technology, observed_version,
+                sink_shape_id, primitive_class, outcome, confirmation_primitive,
+                reachability_grade, evidence_ref)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                capability_fact_id,
+                engagement_id,
+                observed_technology or None,
+                observed_version or None,
+                sink_shape_id or None,
+                primitive_class,
+                outcome,
+                confirmation_primitive or None,
+                reachability_grade or None,
+                evidence_ref or None,
+            ),
+        )
+        await self._db.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+    async def recompute_capability_confidence(self, fact_id: int) -> float:
+        """Recompute a fact's confidence from its CONFIRMING observations ONLY.
+
+        ``corroboration = 1 - _CORR_BASE^k`` (``k`` = distinct confirming
+        engagements); ``recency = floor + (1-floor)·decay^(age_days/halflife)``
+        with ``age_days`` from the most recent confirming observation. The
+        ``WHERE outcome='confirmed'`` clause excludes every non-confirming
+        observation, so none can lower confidence (§S1.2 — the §3.5 firewall).
+        Returns the new value (also written to the fact).
+        """
+        cursor = await self._db.execute(
+            """SELECT COUNT(DISTINCT engagement_id) AS k,
+                      julianday('now') - MAX(julianday(created_at)) AS age_days
+               FROM capability_observations
+               WHERE capability_fact_id = ? AND outcome = 'confirmed'""",
+            (fact_id,),
+        )
+        row = await cursor.fetchone()
+        k = int(row["k"] or 0)
+        if k <= 0:
+            confidence = 0.0
+        else:
+            age_days = max(0.0, float(row["age_days"] or 0.0))
+            corroboration = 1.0 - _CORR_BASE**k
+            recency = _RECENCY_FLOOR + (1.0 - _RECENCY_FLOOR) * (
+                _RECENCY_DECAY ** (age_days / _RECENCY_HALFLIFE_DAYS)
+            )
+            confidence = round(corroboration * recency, 4)
+        await self._db.execute(
+            "UPDATE capability_facts SET confidence = ?, updated_at = datetime('now') WHERE id = ?",
+            (confidence, fact_id),
+        )
+        await self._db.commit()
+        return confidence
+
+    async def get_capability_facts(self, technology_key: str | None = None) -> list[dict[str, Any]]:
+        """Return capability facts (all, or one ``technology_key``). Read-only dump/query helper."""
+        if technology_key is None:
+            cursor = await self._db.execute("SELECT * FROM capability_facts ORDER BY id")
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM capability_facts WHERE technology_key = ? ORDER BY id",
+                (technology_key,),
+            )
+        return [self._row_to_dict(r) for r in await cursor.fetchall()]
+
+    async def get_capability_observations(
+        self, capability_fact_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Return observation-ledger rows (all, or one fact). Read-only dump/query helper."""
+        if capability_fact_id is None:
+            cursor = await self._db.execute("SELECT * FROM capability_observations ORDER BY id")
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM capability_observations WHERE capability_fact_id = ? ORDER BY id",
+                (capability_fact_id,),
+            )
+        return [self._row_to_dict(r) for r in await cursor.fetchall()]
+
+    @staticmethod
+    def _higher_grade(current: str | None, candidate: str) -> str:
+        """The stronger of two evidence grades (an upsert never lowers a grade)."""
+        cur_rank = _GRADE_RANK.get(current or "", 0)
+        cand_rank = _GRADE_RANK.get(candidate, 0)
+        return candidate if cand_rank > cur_rank else (current or candidate)
 
     # ------------------------------------------------------------------
     # Engagements

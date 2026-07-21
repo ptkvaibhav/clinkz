@@ -21,6 +21,8 @@ from clinkz.discovery.intent import compute_delta
 from clinkz.discovery.models import (
     CallSite,
     CapabilityDelta,
+    CapabilityFact,
+    CapabilityObservation,
     CapabilityPrimitive,
     CoverageGrade,
     DeltaGrade,
@@ -41,6 +43,8 @@ __all__ = [
     "CATALOG",
     "CallSite",
     "CapabilityDelta",
+    "CapabilityFact",
+    "CapabilityObservation",
     "CapabilityPrimitive",
     "CoverageGrade",
     "DeltaGrade",
