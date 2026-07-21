@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -25,13 +26,16 @@ from clinkz.discovery.intent import compute_delta
 from clinkz.discovery.models import (
     CapabilityDelta,
     CapabilityPrimitive,
+    CapabilityRecall,
     DiscoveryHypothesis,
     ReachabilityEdge,
     SourceModel,
 )
 from clinkz.discovery.reachability import compute_reachability
+from clinkz.discovery.recall import capability_recall
 from clinkz.discovery.source_ingest import JavaSourceIngestor
 from clinkz.models.finding import ExploitTask
+from clinkz.observability.trace import get_active_trace_writer
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,9 @@ class DiscoveryResult(BaseModel):
     deltas: list[CapabilityDelta] = Field(default_factory=list)
     edges: list[ReachabilityEdge] = Field(default_factory=list)
     hypotheses: list[DiscoveryHypothesis] = Field(default_factory=list)
+    # Layer-2 recall priors that applied this run (design §4). For the trace / report;
+    # recalls only re-order + complete the hypotheses, they never emit (§5).
+    recalls: list[CapabilityRecall] = Field(default_factory=list)
 
     def exploit_tasks(self) -> list[ExploitTask]:
         """Lower every hypothesis to a Tier-A ``ExploitTask`` for the plan-union."""
@@ -57,7 +64,13 @@ class DiscoveryEngine:
         self._ingestor = JavaSourceIngestor()
 
     def discover(
-        self, source_dir: str, fingerprint: Iterable[str], base_url: str
+        self,
+        source_dir: str,
+        fingerprint: Iterable[str],
+        base_url: str,
+        *,
+        capability_facts: list[dict[str, Any]] | None = None,
+        technology_relations: list[dict[str, Any]] | None = None,
     ) -> DiscoveryResult:
         """Discover falsifiable hypotheses from *source_dir* against *base_url*.
 
@@ -66,26 +79,92 @@ class DiscoveryEngine:
             fingerprint: recon technology fingerprint (e.g. ``["Java", "GeoServer"]``).
             base_url: the app's context-root URL (e.g. ``http://host:8080/geoserver``)
                 that discovered servlet routes are joined onto.
+            capability_facts: Layer-2 ``capability_facts`` rows dumped from the KB (the
+                load-as-prior input, §4). ``None``/empty ⇒ cold start (unchanged).
+            technology_relations: Layer-2 ``technology_relations`` rows dumped from the
+                KB, over which recall expands the fingerprint (bundles / successor).
+
+        Recall (§4) runs after ingest + fingerprint, before ``generate_hypotheses``:
+        the recalls RANK cold-derived hypotheses and COMPLETE the set with seeded ones
+        where this run's source was too partial to derive the sink — but never emit
+        (§5). With no facts the behaviour is exactly the cold, black-box-plus-source
+        pipeline.
         """
         fingerprint = list(fingerprint)
         source_model = self._ingestor.ingest_path(source_dir)
         active_primitives = match_primitives(source_model, fingerprint)
+        recalls = capability_recall(
+            fingerprint, source_model, capability_facts or [], technology_relations or []
+        )
         deltas = compute_delta(source_model, active_primitives)
         edges = compute_reachability(source_model, deltas)
         hypotheses = generate_hypotheses(
-            source_model, active_primitives, deltas, edges, base_url, fingerprint
+            source_model,
+            active_primitives,
+            deltas,
+            edges,
+            base_url,
+            fingerprint,
+            seeded_by=recalls,
         )
         logger.info(
-            "discovery: %d active primitives, %d Δ, %d reachability edges, %d hypotheses",
+            "discovery: %d active primitives, %d Δ, %d reachability edges, "
+            "%d recalls, %d hypotheses",
             len(active_primitives),
             len(deltas),
             len(edges),
+            len(recalls),
             len(hypotheses),
         )
-        return DiscoveryResult(
+        result = DiscoveryResult(
             source_model=source_model,
             active_primitives=active_primitives,
             deltas=deltas,
             edges=edges,
             hypotheses=hypotheses,
+            recalls=recalls,
         )
+        _emit_discovery_trace(result)
+        return result
+
+
+def _emit_discovery_trace(result: DiscoveryResult) -> None:
+    """Emit the §6.2 "gets smarter" metric — one trace line, gradeable from raw.
+
+    Records, per hypothesis in rank order, ``prior_source`` (``capability_recall`` vs
+    ``cold_derivation``), ``rank_score``, and the rank ordinal (the dispatch-order
+    proxy, since discovery tasks are unioned + dispatched in rank order). The
+    warm-vs-cold diff is then a direct read: a cold-control produces zero
+    ``log_interpolation`` hypotheses, a warm run one ``capability_recall`` one. No-op
+    when no engagement is tracing (the keyless tests set no active writer).
+    """
+    writer = get_active_trace_writer()
+    if writer is None:
+        return
+    ranked = sorted(result.hypotheses, key=lambda h: h.rank_score, reverse=True)
+    rows = [
+        {
+            "rank_ordinal": ordinal,
+            "hypothesis_id": h.id,
+            "prior_source": h.prior_source,
+            "rank_score": h.rank_score,
+            "primitive_class": h.delta.call_site.primitive_class.value,
+            "sink_shape_id": h.delta.call_site.sink_shape_id,
+            "channel_param": h.edge.channel_param,
+            "reachability_grade": h.edge.soundness_grade.value,
+            "technology_key": h.technology_key,
+            "observed_version": h.observed_version,
+        }
+        for ordinal, h in enumerate(ranked)
+    ]
+    recall_count = sum(1 for h in ranked if h.prior_source == "capability_recall")
+    writer.data_handoff(
+        from_agent="discovery",
+        to_agent="exploit",
+        data_summary=(
+            f"{len(rows)} hypotheses ({recall_count} recall-seeded/-boosted, "
+            f"{len(result.recalls)} recalls)"
+        ),
+        message_type="discovery_hypotheses",
+        extra={"discovery_hypotheses": rows, "recall_count": recall_count},
+    )
