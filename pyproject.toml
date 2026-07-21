@@ -42,7 +42,7 @@ Issues = "https://github.com/ptkvaibhav/clinkz/issues"
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.4.0",
+    "ruff==0.15.22",
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
 ]

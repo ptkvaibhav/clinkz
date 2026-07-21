@@ -330,7 +330,9 @@ async def test_capability_confidence_from_confirming_only(kb):
         evidence_grade="confirmed",
     )
     await kb.add_capability_observation(
-        engagement_id="A", primitive_class="log_interpolation", outcome="confirmed",
+        engagement_id="A",
+        primitive_class="log_interpolation",
+        outcome="confirmed",
         capability_fact_id=fid,
     )
     c1 = await kb.recompute_capability_confidence(fid)
@@ -344,7 +346,9 @@ async def test_capability_confidence_from_confirming_only(kb):
         "failed_gated",
     ):
         await kb.add_capability_observation(
-            engagement_id="B", primitive_class="log_interpolation", outcome=outcome,
+            engagement_id="B",
+            primitive_class="log_interpolation",
+            outcome=outcome,
             capability_fact_id=fid,
         )
     c2 = await kb.recompute_capability_confidence(fid)
@@ -352,7 +356,9 @@ async def test_capability_confidence_from_confirming_only(kb):
 
     # A second DISTINCT confirming engagement corroborates upward.
     await kb.add_capability_observation(
-        engagement_id="C", primitive_class="log_interpolation", outcome="confirmed",
+        engagement_id="C",
+        primitive_class="log_interpolation",
+        outcome="confirmed",
         capability_fact_id=fid,
     )
     c3 = await kb.recompute_capability_confidence(fid)
@@ -363,16 +369,23 @@ async def test_capability_confidence_from_confirming_only(kb):
 async def test_capability_upsert_never_lowers_grade(kb):
     """A confirmed fact stays confirmed even if a later engagement gates it."""
     fid = await kb.upsert_capability_fact(
-        technology_key="log4j-core", version_predicate="=2.14.1",
-        primitive_class="log_interpolation", sink_shape_id="log4j.log_sink",
-        engagement_id="A", evidence_grade="confirmed",
+        technology_key="log4j-core",
+        version_predicate="=2.14.1",
+        primitive_class="log_interpolation",
+        sink_shape_id="log4j.log_sink",
+        engagement_id="A",
+        evidence_grade="confirmed",
     )
     # A later 'gated' write must not downgrade the confirmed fact.
     fid2 = await kb.upsert_capability_fact(
-        technology_key="log4j-core", version_predicate="=2.14.1",
-        primitive_class="log_interpolation", sink_shape_id="log4j.log_sink",
-        engagement_id="B", gating_config="log4j2.formatMsgNoLookups",
-        evidence_grade="gated", last_outcome="failed_gated",
+        technology_key="log4j-core",
+        version_predicate="=2.14.1",
+        primitive_class="log_interpolation",
+        sink_shape_id="log4j.log_sink",
+        engagement_id="B",
+        gating_config="log4j2.formatMsgNoLookups",
+        evidence_grade="gated",
+        last_outcome="failed_gated",
     )
     assert fid2 == fid
     fact = (await kb.get_capability_facts())[0]
