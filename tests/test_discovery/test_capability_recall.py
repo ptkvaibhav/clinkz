@@ -113,9 +113,7 @@ def test_bundles_transfer_hit_partial_source() -> None:
     """
     facts = [_fact_row()]
     relations = [_bundles_row("apache-solr@8.11.0", "log4j-core@2.14.1")]
-    recalls = capability_recall(
-        ["Java", "Apache Solr 8.11.0"], SourceModel(), facts, relations
-    )
+    recalls = capability_recall(["Java", "Apache Solr 8.11.0"], SourceModel(), facts, relations)
     assert len(recalls) == 1
     recall = recalls[0]
     assert recall.match_kind == RELATION_BUNDLES
