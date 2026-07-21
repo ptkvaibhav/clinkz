@@ -552,3 +552,141 @@ proof engine does.
   by *confirmed hypotheses + source ingestion*, the on-engagement write-back; the offline grower is
   the parent doc's Capability Agent, out of scope.
 - Any implementation, stub, or live run — this is a design pass, graded as a document first.
+
+---
+
+# Slice 1 build addendum — the WRITE side (persist + retire)
+
+**Status: BUILT.** This section is the *as-built* record for slice 1 of 2. Slice 1 **writes**
+capability facts + observations and **retires** the technique-success learning loop; it does **not**
+read facts back. The read-as-prior half — `capability_recall`, `version_satisfies`, the
+`technology_relations` edge writers, and rank-seeding in `DiscoveryEngine.discover` — is **slice 2**
+(scope fence held: none of those exist in slice 1).
+
+## S1.1 Scope split (what slice 1 does / defers)
+
+| Built in slice 1 (WRITE) | Deferred to slice 2 (READ) |
+|---|---|
+| `capability_facts` + `capability_observations` tables (§2.2) | `version_satisfies()` predicate matcher (§2.4) |
+| `CapabilityFact` / `CapabilityObservation` models (§2.3) | `CapabilityRecall` model + `capability_recall()` (§2.3/§4) |
+| Write-back per the §3 outcome table (re-pointed chokepoint) | load-as-prior seam in `DiscoveryEngine.discover` (§4) |
+| Provenance fields ExploitTask → Finding (§S1.3) | `technology_relations` `bundles`/`similar`/`successor` writers (§2.4) |
+| Retire the technique-success loop (§2.1) — clean cutover | rank-seeding / transfer / decay-in-ranking (§7) |
+| Confidence recompute (confirming-only; §S1.2 — the correction) | — |
+
+A confirmed fact is persisted with a real `version_predicate` STRING (`=2.14.1`); that string is only
+*parsed* at recall time — so writing it now is in-scope and reading it back (the matcher) is slice 2.
+
+## S1.2 The confidence formula — resolving §2.2 ↔ §3.5 (a required correction)
+
+§2.2 says confidence is "recomputed … reusing the exact `update_success_rates()` recompute mechanic."
+§3.5 says a per-engagement failure must **never** lower a real technology capability's confidence.
+These are **inconsistent**: `update_success_rates()` is `SUM(success)/COUNT(*)` — a succ/tried ratio
+that a failure *does* lower. Reusing it for `capability_facts` would let an *engagement-local* failure
+(unreachable / egress-filtered / gated **here**) drag down a capability that is real and live on a
+**different** target — the exact §3.5 poisoning. **Resolution (binding): confidence is computed from
+CONFIRMING observations ONLY, with recency decay.** It is NOT a succ/tried ratio.
+
+```
+confidence = corroboration × recency
+  corroboration = 1 − CORR_BASE ** k        # k = COUNT(DISTINCT engagement_id) WHERE outcome='confirmed'
+  recency       = RECENCY_FLOOR + (1 − RECENCY_FLOOR) × RECENCY_DECAY ** (age_days / RECENCY_HALFLIFE_DAYS)
+                                             # age_days = days since MAX(created_at) WHERE outcome='confirmed'
+  constants: CORR_BASE=0.5, RECENCY_FLOOR=0.3, RECENCY_DECAY=0.5, RECENCY_HALFLIFE_DAYS=90
+```
+
+- **Corroboration saturates toward 1** with distinct confirming engagements: one confirm → 0.5, two → 0.75,
+  three → 0.875. A single confirmation is a solid-but-not-certain prior; independent re-confirmation on
+  another target corroborates upward. `k ≥ 1` always (a fact only exists after a confirm).
+- **Recency decays but never to zero** (floor 0.30): a fact not re-confirmed for a half-life (90 d)
+  loses half its *recency* multiplier, lowering rank so a tight budget skips it first (§7.2) — decay
+  never deletes and never flips negative.
+
+**Why this cannot penalize a real capability for engagement-local failure (the §3.5 defense, enforced
+in SQL, not by convention):** both terms read **only** rows with `outcome='confirmed'` — the
+corroboration `COUNT(DISTINCT engagement_id)` and the recency `MAX(created_at)` each carry a
+`WHERE outcome='confirmed'` clause. Every non-confirming outcome (`failed_unreachable` /
+`blind_unconfirmed` / `collaborator_unavailable` / `failed_gated`) appends an **observation** row that
+is *structurally excluded* from both aggregates. Therefore confidence is **monotone non-decreasing in
+non-confirming observations**: it can only rise on a new confirmation, or decay with wall-clock time —
+never fall because a target filtered egress or gated a config *here*. The recompute runs on each
+confirmed UPSERT; non-confirming writes touch the ledger (and engagement-local budget hints) only, and
+**never call the recompute**.
+
+**Confidence is a PRIOR only — it never gates emission, structurally.** Slice 1 has no reader of
+`capability_facts.confidence` at all (recall is slice 2), and Layer 2 holds no reference to
+`_persist_finding`. The emitted finding set is identical whether the fact store is empty or full
+(§5.1) — validated by diffing `report.json` against the in-repo baseline (§6.2) and by a grep proving
+no emission path reads the column.
+
+## S1.3 Provenance fields — new vs already present (§4 enumeration)
+
+A discovery-originated hypothesis must carry enough provenance for the write-back to key a fact and
+build an observation, threaded **hypothesis → `ExploitTask` → `Finding`** (and onto `PageAnalysis` for
+the non-confirming ledger path). Bundled as one `DiscoveryProvenance` model (in `models/finding.py`,
+plain-`str` enum values to avoid the `discovery/models.py ↔ models/finding.py` import cycle) rather than
+scattering flat fields:
+
+| Field | Status | Source |
+|---|---|---|
+| `primitive_class` | **new** on the bundle | `CallSite.primitive_class` (already existed on the call site) |
+| `sink_shape_id` | **new field on `CallSite`** + on the bundle | recognizer vocabulary tag (§1.3) — `java.url_openconnection` / `java.file_sink` / `log4j.log_sink` |
+| `observed_version` | **new** on the bundle + `SourceModel.manifest_observed_version` | manifest scan (`_scan_log4j_manifest`) point version, else `""` |
+| `technology_key` | **new** on the bundle + `SourceModel.manifest_technology_key` + `DiscoveryHypothesis.technology_key` | manifest carrying-dependency (`log4j-core`), else normalized fingerprint |
+| `reachability_grade` | **new** on the bundle | `ReachabilityEdge.soundness_grade` (already existed on the edge) |
+| `confirmation_primitive` | **new** on the bundle | `ProofObligation.confirmation_primitives` (already existed) |
+| `primitive_id` | **new** on the bundle | `CapabilityPrimitive.id` (already existed) |
+| `gating_config` | **new** on the bundle | `CapabilityPrimitive.gating_config` (already existed) |
+| `discovery_provenance` | **new** field on `ExploitTask` and on `Finding` | the bundle above; `None` for LLM/deterministic/black-box tasks |
+
+So the only genuinely new *storage* surfaces are: the `DiscoveryProvenance` bundle, `CallSite.sink_shape_id`,
+`SourceModel.manifest_technology_key`/`manifest_observed_version`, `DiscoveryHypothesis.technology_key`/
+`observed_version`, and `discovery_provenance` on `ExploitTask`/`Finding`/`PageAnalysis`. Everything the
+bundle reads from (`primitive_class`, `soundness_grade`, `confirmation_primitives`, `id`, `gating_config`)
+already existed — the plumbing is *tagging + threading*, not new detection (§1.3).
+
+## S1.4 KB reconciliation — the clean cutover (§2.1)
+
+- **`record_technique_result` is no longer CALLED** by `exploit::_record_finding_to_kb`. The method,
+  `update_success_rates`, and `get_past_results_for_technology` **remain** (the report/research
+  historical view still reads `technique_results`); `success_rate` is **frozen** — no new writes as a
+  prior. This is a cutover, not a dual-write: the learning role moved entirely to Layer 2.
+- **`playbook_entries` stays a static content library** — `_log_playbook_matches` and
+  `get_tier2_tests` still read it; its feedback columns are frozen.
+- **`technology_relations` is untouched in slice 1** (its first writer is slice 2's transfer edges).
+- Net: **one** learning system (Layer 2 `capability_facts`), one static content library, one dormant
+  relation table awaiting slice 2. No two conflicting learning loops.
+
+## S1.5 Write-back mechanism (per §3, as built)
+
+The re-pointed chokepoint is `exploit::_persist_finding → _record_finding_to_kb`:
+
+- **confirmed** — the finding carries `discovery_provenance` (stamped from its `ExploitTask` at the
+  `_execute_task` seam). `_record_finding_to_kb` UPSERTs a positive fact (`evidence_grade='confirmed'`,
+  `version_predicate='=<observed_version>'` or `'*'`, confidence recomputed) and appends a `confirmed`
+  observation whose `evidence_ref` is a **link** (`engagement:<id>:finding:<fid>:<Pn>`) into the
+  engagement's own `ConfirmationEvidence` — never a bytes copy (§5.3).
+- **failed_gated** — refine the fact's `gating_config` (positive knowledge: present-but-gated), grade
+  `gated`; append a `failed_gated` observation. (No live methodology surfaces a "gated" verdict yet, so
+  this path is unit-exercised via the KB primitive; wiring a gate-detection signal is slice-2+.)
+- **failed_unreachable / blind_unconfirmed / collaborator_unavailable** — observation-ledger only, **no
+  durable fact** (§3.5). Recorded by `_test_log4shell` / `_test_ssrf` at their terminal non-confirming
+  states, **gated on `page.discovery_provenance`** so a *black-box* invocation of the same methodology
+  writes nothing (generality: N/A by construction off the discovery path).
+
+A black-box finding (DVWA SQLi, …) has `discovery_provenance=None` → it writes **no** capability fact
+and **no** technique result (the loop is retired) — exactly the deprecate-replace end-state.
+
+## S1.6 Honesty / security review of the store (as built)
+
+- **No target identity in the schema** (§5.3): `capability_facts` and `capability_observations` have
+  no host/URL/IP/port/secret column. `observed_technology` is a fingerprint *string* (`Apache Solr
+  8.11.0`), a tech, not a target. Verified by the DDL and a schema-shape test.
+- **`evidence_ref` is a link, not bytes**: it points into the finding's own `ConfirmationEvidence`;
+  recalling a fact on a later engagement never surfaces engagement-A response bytes.
+- **Controlled-vocabulary only**: no raw source snippet, no response bytes, no payload string is stored
+  in any fact or observation — nothing in a fact can be interpolated into a probe (the P6-template
+  discipline, at the memory layer).
+- **Zero-FP is structural**: Layer 2 stores no negative fact (so it cannot suppress a hypothesis) and
+  holds no path to emission (so it cannot manufacture one). Confidence is a number, provably unused in
+  any slice-1 emission decision.
