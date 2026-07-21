@@ -274,6 +274,13 @@ class DiscoveryHypothesis(BaseModel):
     param_locations: dict[str, ParamLocation] = Field(default_factory=dict)
     rank_score: float = 0.0
     rationale: str = ""
+    # Where this hypothesis came from — the raw §6.2 "gets smarter" metric field.
+    # ``cold_derivation`` when the source ingestor derived it this run;
+    # ``capability_recall`` when a Layer-2 recall boosted (case a) or SEEDED (case b)
+    # it (design §4). A recall never emits — it only changes WHICH hypotheses are
+    # tested and their order (§5) — so this labels the PATH to a finding, never the
+    # finding.
+    prior_source: str = "cold_derivation"
     # Capability-learning provenance (§S1.3), populated by ``generate_hypotheses``
     # from the manifest/fingerprint. ``technology_key`` is the carrying dependency
     # the Layer-2 fact keys on (``log4j-core``) or a normalized fingerprint;
@@ -327,6 +334,8 @@ class DiscoveryHypothesis(BaseModel):
             technique_name=f"discovery:{self.primitive_id}",
             priority=0,
             discovery_provenance=self._discovery_provenance(),
+            prior_source=self.prior_source,
+            rank_score=self.rank_score,
         )
 
 

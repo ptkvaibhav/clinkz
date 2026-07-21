@@ -162,6 +162,13 @@ class ExploitTask(BaseModel):
     priority: int = 0
     carrier_constraints: list[str] = Field(default_factory=list)
     discovery_provenance: DiscoveryProvenance | None = None
+    # Discovery-hypothesis ranking metadata, for the §6.2 "gets smarter" trace.
+    # ``prior_source`` is ``capability_recall`` when a Layer-2 recall boosted/seeded
+    # the hypothesis, else ``cold_derivation``; ``rank_score`` is the hypothesis
+    # rank. Defaults suit every non-discovery (LLM / deterministic / black-box) task.
+    # Ranking metadata only — never an emission gate (emission stays the proof, §5).
+    prior_source: str = "cold_derivation"
+    rank_score: float = 0.0
 
 
 class ExploitPlan(BaseModel):
