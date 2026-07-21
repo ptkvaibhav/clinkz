@@ -49,7 +49,7 @@ Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamicall
 6. **Exploit** plans tests with an LLM and executes deterministic `_test_*` skills (all are adaptive multi-phase methodologies — the injection family spans SQLi, NoSQL, SSTI, XSS, CMDi, LFI, …)
 7. **Critic** validates findings; **Report** emits JSON + Markdown
 
-Phase agents follow **deterministic step sequences with LLM checkpoints** (no free-form ReAct). Every technique result is recorded to the persistent KB so future engagements adapt.
+Phase agents follow **deterministic step sequences with LLM checkpoints** (no free-form ReAct). Confirmed capabilities are recorded to the persistent KB's Layer-2 capability memory so future engagements adapt.
 
 ## Features
 
@@ -59,7 +59,7 @@ Phase agents follow **deterministic step sequences with LLM checkpoints** (no fr
 - **Gray-box discovery engine** — when an engagement supplies a source tree, `src/clinkz/discovery/` ingests it (bounded regex, no whole-program analysis) and derives *Δ-capability × untrusted-channel-reachability × provable-impact* hypotheses that union into the exploit plan alongside the LLM and deterministic plans. A class-generic capability catalog holds three classes today — **SSRF** (`openConnection` egress → `_test_ssrf`), **file read** (`new File(pathParam)` → `_test_lfi`), and **Log4Shell** (`log4j-core` log-sink JNDI egress → `_test_log4shell`) — each learned from the target's own source with no target literal, N/A by construction on a patched/absent instance
 - **Out-of-band (P6) confirmation** — a blind capability is confirmed only when an inbound callback bearing a Clinkz-minted, single-use nonce reaches a Clinkz-owned receive-only DNS+HTTP collaborator (zero-FP by construction: the nonce rides only the one outbound probe). Payloads come from CLINKZ-OWNED nonce-only templates (structural exfil guardrail — target data cannot ride the channel). This is the confirmation oracle for blind SSRF and the **Log4Shell flagship** (CVE-2021-44228), live-validated end-to-end on Vulhub Solr 8.11.0 via a `${jndi:dns://…}` callback. Disabled by default (unchanged black-box floor)
 - **Session hygiene** — recon/scan map the target without changing it; WAF/security toggles and logout links are never followed, so injection payloads aren't silently WAF-blocked in the exploit phase
-- **Cross-engagement learning** — Persistent knowledge base (`clinkz_knowledge.db`) records every technique success/failure; future engagements adapt
+- **Cross-engagement learning (Layer-2 capability memory)** — a confirmed discovery-originated finding writes a per-technology **capability fact** (+ observation ledger) to `clinkz_knowledge.db` so future engagements adapt at the capability level; the store carries **no target identity** (schema-level exfil guardrail) and its confidence is a decayed corroboration PRIOR from confirming observations only that **never gates emission**. The older technique-success learning loop is retired (kept read-only for the report's historical view)
 - **Dynamic tool discovery + fallback chains** — Agents request capabilities (`web_crawling`, `directory_fuzzing`, ...); the resolver walks declared `TOOL_CHAINS` until output meets threshold
 - **Runtime CVE research** — Research Agent live-searches CVEs, bug-bounty writeups, and PoCs per identified technology
 - **Credential chaining** — Discovered credentials are stored and reused across agents for authenticated testing
