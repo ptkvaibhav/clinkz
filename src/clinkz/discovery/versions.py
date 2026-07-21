@@ -52,6 +52,24 @@ def parse_version(raw: str) -> Version | None:
     return (nums[0], nums[1], nums[2])
 
 
+def predicate_point_version(predicate: str) -> str:
+    """The single point version an EXACT predicate names (``'=2.14.1'`` → ``'2.14.1'``).
+
+    Returns the version string for ``'=X'`` or a bare ``'X'`` (the shape a confirmed
+    fact writes); returns ``''`` for a range / inequality / wildcard predicate (no
+    single point). Used by the version-lineage (``successor``) edge writer to collect
+    the concrete versions the store holds facts for.
+    """
+    predicate = (predicate or "").strip()
+    if not predicate or predicate == WILDCARD_PREDICATE:
+        return ""
+    if predicate.startswith("="):
+        predicate = predicate[1:].strip()
+    if any(predicate.startswith(op) for op in ("<", ">", "[")):
+        return ""
+    return predicate if parse_version(predicate) is not None else ""
+
+
 def version_satisfies(observed: str, predicate: str) -> bool:
     """Whether *observed* satisfies the *predicate* over the §2.4 grammar.
 
