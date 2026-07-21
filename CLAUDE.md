@@ -315,6 +315,7 @@ clinkz/
 │   ├── live_flink_discovery.py     # Live SECOND-CLASS validation (Apache Flink path-traversal file read, CVE-2020-17519)
 │   ├── live_oob_ssrf_validation.py # Live P6/OOB isolation validation (GeoServer SSRF confirmed out-of-band)
 │   ├── live_log4shell_p6_validation.py # Live Log4Shell flagship validation (Solr CVE-2021-44228 confirmed via P6 JNDI/DNS callback)
+│   ├── live_capability_learning_validation.py # Live Engagement-A validation of the Layer-2 write-back (Solr log4j-core fact 0→1, emission A/B unchanged)
 │   ├── test_auth_chain.py
 │   └── test_dvwa_exploit_direct.py
 ├── tests/
