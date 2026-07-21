@@ -383,3 +383,44 @@ class CapabilityObservation(BaseModel):
     confirmation_primitive: str = ""
     reachability_grade: SoundnessGrade = SoundnessGrade.HYPOTHESIZED
     evidence_ref: str = ""  # link, not a copy of response bytes
+
+
+class CapabilityRecall(BaseModel):
+    """A fact returned by the load-as-prior query, with WHY it matched (design §2.3).
+
+    Slice 2 — the READ side. The output of :func:`~clinkz.discovery.recall.capability_recall`:
+    a durable :class:`CapabilityFact` whose technology_key was reached from the recon
+    fingerprint (directly, or expanded via a ``technology_relations`` edge) AND whose
+    ``version_predicate`` the *observed* version satisfies. A recall is a **prior** —
+    it re-orders and completes which hypotheses are TESTED; it never emits a finding
+    and never marks a target vulnerable (§5). It carries no engagement-A response
+    bytes / target identity — only the fixed-vocabulary fact, the match reason, and
+    the observed point version (§5.3).
+
+    Attributes:
+        fact: The recalled capability fact (fixed-vocabulary — tech, version
+            predicate, primitive_class, sink_shape_id, grade, confidence).
+        match_kind: WHY it matched — ``'exact_tech'`` (fingerprint key == fact key),
+            ``'bundles'`` (reached via a manifest-derived carrying-dependency edge),
+            or ``'successor'`` (reached via a version-lineage edge). ``'similar'`` is
+            deferred to a later slice (heuristic/LLM edges).
+        match_confidence: ``fact.confidence × relation similarity`` — the ranking
+            weight, never an emission gate (§7).
+        seeds_reachability_grade: ``STATIC_HEURISTIC`` when THIS run's source also
+            found the sink shape (case a — the earned grade is kept from the cold
+            edge; this is only advisory), else ``HYPOTHESIZED`` (case b — recall
+            substitutes for derivation and must NOT fake reachability, §4).
+        observed_version: The EXACT observed point version that satisfied the
+            predicate (from the fingerprint / the carrying-dependency edge) — carried
+            so a seeded hypothesis re-keys the write-back on the right point version.
+        matched_key: The technology key the fact was reached under (the fingerprint
+            key for ``exact_tech``; the carrying-dependency key for ``bundles`` /
+            ``successor``) — for the trace/rationale.
+    """
+
+    fact: CapabilityFact
+    match_kind: str
+    match_confidence: float = 0.0
+    seeds_reachability_grade: SoundnessGrade = SoundnessGrade.HYPOTHESIZED
+    observed_version: str = ""
+    matched_key: str = ""
