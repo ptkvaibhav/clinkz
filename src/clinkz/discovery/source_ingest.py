@@ -92,6 +92,7 @@ from clinkz.discovery.models import (
     PrimitiveClass,
     SourceModel,
 )
+from clinkz.discovery.versions import parse_version
 
 logger = logging.getLogger(__name__)
 
@@ -336,14 +337,13 @@ def _identifier_in(ident: str, text: str) -> bool:
 
 
 def _parse_semver(raw: str) -> tuple[int, int, int] | None:
-    """Parse ``X`` / ``X.Y`` / ``X.Y.Z`` into a 3-tuple; ``None`` if non-numeric."""
-    try:
-        nums = [int(part) for part in raw.split(".")[:3]]
-    except ValueError:
-        return None
-    while len(nums) < 3:
-        nums.append(0)
-    return (nums[0], nums[1], nums[2])
+    """Parse ``X`` / ``X.Y`` / ``X.Y.Z`` into a 3-tuple; ``None`` if non-numeric.
+
+    Delegates to the shared :func:`~clinkz.discovery.versions.parse_version` idiom
+    (the tuple-compare the Layer-2 predicate matcher is built on) so the manifest
+    gate and the recall matcher parse versions identically.
+    """
+    return parse_version(raw)
 
 
 class JavaSourceIngestor:
