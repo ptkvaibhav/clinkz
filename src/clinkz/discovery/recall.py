@@ -81,9 +81,7 @@ def capability_recall(
 
     observed = _observed_identities(fingerprint, source_model)
     reachable = _reachable_keys(observed, technology_relations)
-    source_shapes = {
-        (cs.primitive_class.value, cs.sink_shape_id) for cs in source_model.call_sites
-    }
+    source_shapes = {(cs.primitive_class.value, cs.sink_shape_id) for cs in source_model.call_sites}
 
     recalls: list[CapabilityRecall] = []
     for row in capability_facts:
