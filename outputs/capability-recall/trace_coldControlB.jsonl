@@ -1,0 +1,1 @@
+{"ts": "2026-07-21T11:02:47.552037+00:00", "stage": "discovery->exploit", "category": "data_handoff", "payload": {"from_agent": "discovery", "to_agent": "exploit", "data_summary": "0 hypotheses (0 recall-seeded/-boosted, 0 recalls)", "size_bytes": null, "message_type": "discovery_hypotheses", "discovery_hypotheses": [], "recall_count": 0}}

@@ -274,6 +274,13 @@ class DiscoveryHypothesis(BaseModel):
     param_locations: dict[str, ParamLocation] = Field(default_factory=dict)
     rank_score: float = 0.0
     rationale: str = ""
+    # Where this hypothesis came from — the raw §6.2 "gets smarter" metric field.
+    # ``cold_derivation`` when the source ingestor derived it this run;
+    # ``capability_recall`` when a Layer-2 recall boosted (case a) or SEEDED (case b)
+    # it (design §4). A recall never emits — it only changes WHICH hypotheses are
+    # tested and their order (§5) — so this labels the PATH to a finding, never the
+    # finding.
+    prior_source: str = "cold_derivation"
     # Capability-learning provenance (§S1.3), populated by ``generate_hypotheses``
     # from the manifest/fingerprint. ``technology_key`` is the carrying dependency
     # the Layer-2 fact keys on (``log4j-core``) or a normalized fingerprint;
@@ -327,6 +334,8 @@ class DiscoveryHypothesis(BaseModel):
             technique_name=f"discovery:{self.primitive_id}",
             priority=0,
             discovery_provenance=self._discovery_provenance(),
+            prior_source=self.prior_source,
+            rank_score=self.rank_score,
         )
 
 
@@ -383,3 +392,44 @@ class CapabilityObservation(BaseModel):
     confirmation_primitive: str = ""
     reachability_grade: SoundnessGrade = SoundnessGrade.HYPOTHESIZED
     evidence_ref: str = ""  # link, not a copy of response bytes
+
+
+class CapabilityRecall(BaseModel):
+    """A fact returned by the load-as-prior query, with WHY it matched (design §2.3).
+
+    Slice 2 — the READ side. The output of :func:`~clinkz.discovery.recall.capability_recall`:
+    a durable :class:`CapabilityFact` whose technology_key was reached from the recon
+    fingerprint (directly, or expanded via a ``technology_relations`` edge) AND whose
+    ``version_predicate`` the *observed* version satisfies. A recall is a **prior** —
+    it re-orders and completes which hypotheses are TESTED; it never emits a finding
+    and never marks a target vulnerable (§5). It carries no engagement-A response
+    bytes / target identity — only the fixed-vocabulary fact, the match reason, and
+    the observed point version (§5.3).
+
+    Attributes:
+        fact: The recalled capability fact (fixed-vocabulary — tech, version
+            predicate, primitive_class, sink_shape_id, grade, confidence).
+        match_kind: WHY it matched — ``'exact_tech'`` (fingerprint key == fact key),
+            ``'bundles'`` (reached via a manifest-derived carrying-dependency edge),
+            or ``'successor'`` (reached via a version-lineage edge). ``'similar'`` is
+            deferred to a later slice (heuristic/LLM edges).
+        match_confidence: ``fact.confidence × relation similarity`` — the ranking
+            weight, never an emission gate (§7).
+        seeds_reachability_grade: ``STATIC_HEURISTIC`` when THIS run's source also
+            found the sink shape (case a — the earned grade is kept from the cold
+            edge; this is only advisory), else ``HYPOTHESIZED`` (case b — recall
+            substitutes for derivation and must NOT fake reachability, §4).
+        observed_version: The EXACT observed point version that satisfied the
+            predicate (from the fingerprint / the carrying-dependency edge) — carried
+            so a seeded hypothesis re-keys the write-back on the right point version.
+        matched_key: The technology key the fact was reached under (the fingerprint
+            key for ``exact_tech``; the carrying-dependency key for ``bundles`` /
+            ``successor``) — for the trace/rationale.
+    """
+
+    fact: CapabilityFact
+    match_kind: str
+    match_confidence: float = 0.0
+    seeds_reachability_grade: SoundnessGrade = SoundnessGrade.HYPOTHESIZED
+    observed_version: str = ""
+    matched_key: str = ""
