@@ -1,0 +1,582 @@
+"""JS/TS (Node/Express backend) source ingestion → :class:`SourceModel` (slice A1).
+
+The first cross-language rung of the discovery engine: a deterministic,
+**regex / bounded-scan-only** ingestor (never ``eval``, bounded file count + bytes,
+source treated as untrusted data) — the *same discipline* as
+:class:`~clinkz.discovery.source_ingest.JavaSourceIngestor` and
+``agents/_route_discovery.py``. It surfaces JS *sink shapes* that reduce to the
+**existing** :class:`~clinkz.discovery.models.PrimitiveClass` values
+(``EGRESS_FETCH`` / ``FILE_READ``); it adds no capability class, oracle or proof —
+the JS shapes ride the exact same catalog → intent → reachability → hypothesis →
+proof path a Java shape does.
+
+Deliberately shallow, backend-only, and bounded — a MIRROR of the Java ingestor's
+philosophy, **not** a JS AST / whole-program dataflow engine:
+
+  1. **Entrypoints are Express/router route registrations.** ``app.get('/x', h)`` /
+     ``router.post("/y", h)`` — the HTTP verb + the mounted path literal. The
+     handler body (the balanced ``{ … }`` following the route's arrow/``function``
+     signature) is the intra-handler scope taint is resolved within, mirroring the
+     Java handler's ``doGet``/``doPost`` body.
+  2. **Untrusted channels are ``req.query`` / ``req.body`` / ``req.params`` /
+     ``req.headers`` reads.** A ``const x = req.query.url`` binds a local to a
+     request parameter (the JS analogue of ``String x = request.getParameter("p")``);
+     a ``req.params.id`` read rides the URL *path* (→ ``path_params``).
+  3. **Call sites are JS idioms of the existing primitive classes only.**
+     ``EGRESS_FETCH`` — ``axios(…)`` / ``axios.get/post`` / ``fetch(…)`` /
+     ``http(s).get/request`` / the ``request`` lib — with a request-tainted URL
+     argument (the ``URL.openConnection()`` analogue). ``FILE_READ`` —
+     ``fs.readFile`` / ``fs.readFileSync`` / ``fs.createReadStream`` /
+     ``res.sendFile`` — with a request-tainted path argument (the ``new File(name)``
+     analogue). Each is tagged with a fixed-vocabulary ``sink_shape_id``
+     (``js.http_egress`` / ``js.fs_read``) the Layer-2 write-back keys a fact on.
+  4. **A basename-strip / normalize guard on the tainted file path is a real guard.**
+     ``path.basename(x)`` / ``path.normalize(x)`` applied to the tainted value is
+     the file-read analogue of Flink's ``.getName()`` fix — its presence marks the
+     value sanitized (Intent → SANCTIONED, Δ removed ⇒ no hypothesis); its absence is
+     the intent-gap (EXPOSED). Conservative by design: the safe direction is to
+     over-guard (drop a true positive) rather than emit a phantom.
+  5. **The manifest is ``package.json`` (+ lock).** The JS analogue of the
+     ``pom.xml`` log4j-core scan: the carrying dependency the surfaced capability
+     belongs to (the HTTP-client library an ``EGRESS_FETCH`` used, else the backend
+     framework) + its observed point version — keyed so the Layer-2 write-back (A2)
+     can attach JS capability facts to the carrying dependency.
+
+Angular / any browser-side frontend is **out of scope** (``node_modules`` / build
+output / ``*.min.js`` / ``*.d.ts`` are never ingested). Taint is one hop (request read
+→ local, and a local / inline request read reaching a sink argument); multi-hop
+propagation through an intermediate reassignment, named-handler / controller-module
+indirection, and SSRF host-check guards are documented deferrals — this slice handles
+the inline-handler shape, exactly the deliberately-shallow floor the Java pass sets.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from pathlib import Path
+
+from clinkz.discovery.models import (
+    CallSite,
+    CoverageGrade,
+    Entrypoint,
+    Guard,
+    PrimitiveClass,
+    SourceModel,
+)
+
+logger = logging.getLogger(__name__)
+
+# --- Ingestion bounds (source is untrusted; never unbounded) ----------------
+_MAX_FILES = 2000
+_MAX_FILE_BYTES = 512 * 1024
+# Bounded window (chars) a handler body / balanced brace-or-paren scan may span.
+_MAX_HANDLER_SCAN = 8000
+# Bounded window (chars) after a route registration to find the handler's opening
+# brace (the arrow/`function` signature sits right after the route args).
+_MAX_SIG_SCAN = 800
+
+# Directories never ingested — dependencies, build output, frontend bundles. Keeps
+# the scan bounded and backend-only (Angular/browser code lives under these).
+_SKIP_DIRS = frozenset(
+    {"node_modules", ".git", "dist", "build", "out", "coverage", ".next", ".nuxt", ".cache"}
+)
+_SOURCE_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts")
+
+# --- Express route registration (the entrypoint) ----------------------------
+# ``app.get('/x', …)`` / ``router.post("/y", …)`` — HTTP verb + path literal. The
+# path is captured from a matched quote (single/double/backtick) so a template route
+# is tolerated; ``all`` registers every verb.
+_RE_ROUTE = re.compile(
+    r"\b(?:app|router)\s*\.\s*(get|post|put|patch|delete|all)\s*\(\s*(['\"`])([^'\"`]*)\2"
+)
+# The handler body opens at an arrow ``=> {`` or a ``function (…) {`` signature.
+_RE_HANDLER_OPEN = re.compile(r"=>\s*\{|\bfunction\b[^{;]*\{")
+
+# --- Untrusted request reads (the channel) ----------------------------------
+_REQ_SOURCES = r"query|body|params|headers"
+# ``const x = req.query.name`` / ``let x = req.body['name']`` — a request param bound
+# to a local. group(1)=local var, group(2)=dot-name, group(3)=bracket-name.
+_RE_VAR_FROM_REQ = re.compile(
+    rf"(?:const|let|var)\s+(\w+)\s*=\s*\breq\.(?:{_REQ_SOURCES})"
+    r"(?:\.(\w+)|\[\s*['\"](\w+)['\"]\s*\])"
+)
+# ``const { a, b: alias } = req.query`` — destructured request params. group(1) is
+# the (comma-separated) name list, group(2) is the request source.
+_RE_DESTRUCTURE_REQ = re.compile(
+    rf"(?:const|let|var)\s*\{{\s*([^}}]+?)\s*\}}\s*=\s*\breq\.({_REQ_SOURCES})\b"
+)
+# Any ``req.query.name`` / ``req.params.id`` / ``req.body['x']`` read — used both to
+# collect the entrypoint's read params and to taint a sink argument that reads a
+# request value inline. group(1)=source, group(2)=dot-name, group(3)=bracket-name.
+_RE_REQ_READ = re.compile(rf"\breq\.({_REQ_SOURCES})(?:\.(\w+)|\[\s*['\"](\w+)['\"]\s*\])")
+
+# --- Sinks (JS idioms of the EXISTING primitive classes) --------------------
+# EGRESS_FETCH: a server-side HTTP fetch. ``(?<![\w.])`` rejects a property access
+# (``res.fetch(`` is not ``fetch(``) and a longer identifier. Built-ins (fetch, http,
+# https) and libraries (axios, got, request, superagent, needle) are all covered; the
+# receiver library is recovered from the match for the manifest carrying-dependency.
+_RE_EGRESS_SINK = re.compile(
+    r"(?<![\w.])("
+    r"axios\.(?:get|post|put|patch|delete|request|head)"
+    r"|axios"
+    r"|fetch"
+    r"|https?\.(?:get|request)"
+    r"|got"
+    r"|request"
+    r"|superagent\.(?:get|post)"
+    r"|needle\.(?:get|post|request)"
+    r")\s*\("
+)
+# FILE_READ: a filesystem read whose path may be request-tainted. ``res.sendFile`` is
+# an arbitrary-file-serve sink; ``fs.readFile*`` / ``createReadStream`` are reads.
+_RE_FILE_SINK = re.compile(
+    r"(?<![\w.])(fs\.(?:readFile|readFileSync|createReadStream)|(?:res|response)\.sendFile)\s*\("
+)
+# A basename-strip / normalize guard applied to the tainted path — the file-read
+# analogue of Flink's ``.getName()`` fix (SANCTIONED ⇒ Δ removed).
+_RE_PATH_SANITIZER = re.compile(r"\bpath\s*\.\s*(?:basename|normalize)\s*\(")
+_FILE_READ_GUARD_SYMBOL = "path_basename_strip"
+
+# Stable sink-shape ids — the recognizer's fixed Layer-2 vocabulary (design §S1.3),
+# a *tag on already-existing detection* the capability-learning write-back keys a
+# fact on. The JS analogues of ``java.url_openconnection`` / ``java.file_sink``.
+_SINK_SHAPE_EGRESS = "js.http_egress"
+_SINK_SHAPE_FILE_READ = "js.fs_read"
+
+# --- Manifest (package.json / lock) — the carrying-dependency scan ----------
+# An egress sink's receiver library → its npm package name (built-ins fetch/http/https
+# have no package). The manifest keys the surfaced EGRESS_FETCH capability on whichever
+# of these the app actually bundled — the JS analogue of keying Log4Shell on log4j-core.
+_EGRESS_LIB_PACKAGE: dict[str, str] = {
+    "axios": "axios",
+    "got": "got",
+    "request": "request",
+    "superagent": "superagent",
+    "needle": "needle",
+}
+# Priority when several carrying libraries are bundled (deterministic tie-break).
+_EGRESS_LIB_PRIORITY: tuple[str, ...] = ("axios", "got", "request", "superagent", "needle")
+# Backend frameworks — the fallback carrying identity when no egress library owns the
+# surfaced capability (e.g. only ``fs`` sinks), so a JS SourceModel always carries some
+# manifest key A2 can attach facts to.
+_BACKEND_FRAMEWORKS: tuple[str, ...] = ("express", "koa", "fastify", "@hapi/hapi", "@nestjs/core")
+# A version spec (``^1.6.0`` / ``~4.18.2`` / ``>=1.0.0``) → its point version.
+_RE_VERSION_POINT = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
+_MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+
+
+def _line_of(text: str, index: int) -> int:
+    """1-based line number of *index* within *text*."""
+    return text.count("\n", 0, index) + 1
+
+
+def _balanced_slice(text: str, open_index: int, opener: str, closer: str) -> tuple[str, int]:
+    """Return ``(inner, end_index)`` for the balanced ``opener…closer`` at *open_index*.
+
+    Bounded (never unbounded over untrusted source): scans at most
+    :data:`_MAX_HANDLER_SCAN` chars. ``inner`` is the substring between the delimiters
+    (exclusive); ``end_index`` is the index of the matching closer, or ``-1`` when
+    *open_index* is not *opener* or the delimiters do not balance within the bound.
+    """
+    if open_index >= len(text) or text[open_index] != opener:
+        return "", -1
+    depth = 0
+    end = min(len(text), open_index + _MAX_HANDLER_SCAN)
+    for i in range(open_index, end):
+        char = text[i]
+        if char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1 : i], i
+    return "", -1
+
+
+def _first_arg(arg_slice: str) -> str:
+    """The first argument expression in *arg_slice* (up to the first depth-0 comma)."""
+    depth = 0
+    for i, char in enumerate(arg_slice):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            return arg_slice[:i].strip()
+    return arg_slice.strip()
+
+
+class JsSourceIngestor:
+    """Ingest a JS/TS (Node/Express) source tree into a :class:`SourceModel`.
+
+    Bounded, regex-only, backend-only. Satisfies the
+    :class:`~clinkz.discovery.ingestor.SourceIngestor` protocol structurally (one
+    public ``ingest_path``), so the language-dispatch factory can return it
+    interchangeably with :class:`~clinkz.discovery.source_ingest.JavaSourceIngestor`.
+    """
+
+    def ingest_path(self, root: str | Path) -> SourceModel:
+        """Ingest every backend ``*.js/.mjs/.cjs/.ts`` under *root* (bounded).
+
+        One deterministic pass per file: extract Express route entrypoints, resolve
+        intra-handler taint (request read → local var), and surface the tainted
+        egress / file-read call sites within each handler body. Then read
+        ``package.json`` (+ lock) for the carrying-dependency manifest and the tech
+        fingerprint. Non-route files contribute nothing (no route ⇒ no entrypoint),
+        exactly like the Java pass skips non-entrypoint files.
+        """
+        root = Path(root)
+        model = SourceModel()
+        if not root.exists():
+            logger.warning("js source ingest: path does not exist: %s", root)
+            return model
+
+        texts = self._read_files(root)
+        used_egress_libs: set[str] = set()
+        route_idiom_seen = False
+        for file, text in texts:
+            if _RE_ROUTE.search(text):
+                route_idiom_seen = True
+            self._ingest_text(text, file, model, used_egress_libs)
+
+        model.files_ingested = len(texts)
+        if model.call_sites:
+            model.coverage_grade = CoverageGrade.PARTIAL
+        self._apply_manifest_and_tech(root, model, used_egress_libs, route_idiom_seen)
+        logger.info(
+            "js source ingest: %d files → %d entrypoints, %d call-sites, %d guards; manifest=%s",
+            len(texts),
+            len(model.entrypoints),
+            len(model.call_sites),
+            len(model.guards),
+            model.manifest_evidence or "(none)",
+        )
+        return model
+
+    def _read_files(self, root: Path) -> list[tuple[str, str]]:
+        """Bounded, backend-only list of ``(path, text)`` under *root*."""
+        if root.is_file():
+            candidates = [root] if root.suffix in {".js", ".mjs", ".cjs", ".ts"} else []
+        else:
+            seen: set[Path] = set()
+            for glob in _SOURCE_GLOBS:
+                for path in root.rglob(glob):
+                    if any(part in _SKIP_DIRS for part in path.parts):
+                        continue
+                    if path.name.endswith((".min.js", ".d.ts")):
+                        continue
+                    seen.add(path)
+            candidates = sorted(seen)
+        texts: list[tuple[str, str]] = []
+        for path in candidates[:_MAX_FILES]:
+            try:
+                if path.stat().st_size > _MAX_FILE_BYTES:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                logger.warning("js source ingest: cannot read %s: %s", path, exc)
+                continue
+            texts.append((str(path), text))
+        return texts
+
+    def _ingest_text(
+        self, text: str, file: str, model: SourceModel, used_egress_libs: set[str]
+    ) -> None:
+        """Extract entrypoints / call sites / guards from one file's route handlers."""
+        for match in _RE_ROUTE.finditer(text):
+            verb = match.group(1)
+            route = match.group(3)
+            body, body_start = self._handler_body(text, match.end())
+            if body is None:
+                continue
+            params, path_params, var_to_param = self._collect_channel(body)
+            model.entrypoints.append(
+                Entrypoint(
+                    route=route,
+                    http_methods=self._methods(verb),
+                    handler_symbol=f"{verb.upper()} {route or '/'}",
+                    params=params,
+                    path_params=path_params,
+                    file=file,
+                    line=_line_of(text, match.start()),
+                )
+            )
+            self._sinks_in_body(body, body_start, text, file, var_to_param, model, used_egress_libs)
+
+    @staticmethod
+    def _methods(verb: str) -> list[str]:
+        """Map an Express verb to HTTP methods (``all`` → the common set)."""
+        if verb == "all":
+            return ["GET", "POST", "PUT", "PATCH", "DELETE"]
+        return [verb.upper()]
+
+    @staticmethod
+    def _handler_body(text: str, from_index: int) -> tuple[str | None, int]:
+        """Return ``(body_text, abs_body_start)`` for the route handler after *from_index*.
+
+        Locates the handler's opening brace (an arrow ``=> {`` or a ``function (…) {``
+        signature) within a bounded window, then balanced-brace-slices the body. Returns
+        ``(None, -1)`` for a brace-less arrow-expression handler (a documented deferral —
+        multi-statement sink handlers use a braced body).
+        """
+        sig = _RE_HANDLER_OPEN.search(text, from_index, from_index + _MAX_SIG_SCAN)
+        if sig is None:
+            return None, -1
+        brace_index = text.index("{", sig.start(), sig.end())
+        body, end = _balanced_slice(text, brace_index, "{", "}")
+        if end < 0:
+            return None, -1
+        return body, brace_index + 1
+
+    @staticmethod
+    def _collect_channel(body: str) -> tuple[list[str], list[str], dict[str, str]]:
+        """Collect ``(params, path_params, var_to_param)`` read in a handler body.
+
+        ``params`` is every request parameter the handler reads (ordered, deduped);
+        ``path_params`` is the subset read via ``req.params`` (URL path segments);
+        ``var_to_param`` maps a local bound from a request read to its parameter name,
+        so a sink argument that is that local resolves back to the channel.
+        """
+        params: list[str] = []
+        path_params: list[str] = []
+        var_to_param: dict[str, str] = {}
+
+        def _add(name: str, source: str) -> None:
+            if name and name not in params:
+                params.append(name)
+            if source == "params" and name and name not in path_params:
+                path_params.append(name)
+
+        for match in _RE_REQ_READ.finditer(body):
+            _add(match.group(2) or match.group(3), match.group(1))
+        for match in _RE_DESTRUCTURE_REQ.finditer(body):
+            source = match.group(2)
+            for item in match.group(1).split(","):
+                token = item.strip()
+                if not token:
+                    continue
+                # ``name: alias`` — the request param is ``name``, the local is ``alias``.
+                name, _, alias = token.partition(":")
+                name = name.strip()
+                local = (alias.strip() or name) if ":" in token else name
+                _add(name, source)
+                if local:
+                    var_to_param[local] = name
+        for match in _RE_VAR_FROM_REQ.finditer(body):
+            var_to_param[match.group(1)] = match.group(2) or match.group(3)
+        return params, path_params, var_to_param
+
+    def _sinks_in_body(
+        self,
+        body: str,
+        body_start: int,
+        text: str,
+        file: str,
+        var_to_param: dict[str, str],
+        model: SourceModel,
+        used_egress_libs: set[str],
+    ) -> None:
+        """Surface tainted egress / file-read call sites within one handler body."""
+        for match in _RE_EGRESS_SINK.finditer(body):
+            symbol = match.group(1)
+            tainted_by = self._sink_taint(body, match.end() - 1, var_to_param)
+            if tainted_by is None:
+                continue  # a constant/non-request URL is not attack surface
+            lib = symbol.split(".")[0]
+            if lib in _EGRESS_LIB_PACKAGE:
+                used_egress_libs.add(lib)
+            model.call_sites.append(
+                CallSite(
+                    primitive_class=PrimitiveClass.EGRESS_FETCH,
+                    symbol=symbol,
+                    file=file,
+                    line=_line_of(text, body_start + match.start()),
+                    tainted_by=tainted_by,
+                    sink_shape_id=_SINK_SHAPE_EGRESS,
+                )
+            )
+        for match in _RE_FILE_SINK.finditer(body):
+            symbol = match.group(1)
+            tainted_by = self._sink_taint(body, match.end() - 1, var_to_param)
+            if tainted_by is None:
+                continue
+            guard_symbol = self._file_guard_symbol(body, tainted_by, var_to_param, file, model)
+            model.call_sites.append(
+                CallSite(
+                    primitive_class=PrimitiveClass.FILE_READ,
+                    symbol=symbol,
+                    file=file,
+                    line=_line_of(text, body_start + match.start()),
+                    tainted_by=tainted_by,
+                    guard_symbol=guard_symbol,
+                    sink_shape_id=_SINK_SHAPE_FILE_READ,
+                )
+            )
+
+    @staticmethod
+    def _sink_taint(body: str, open_index: int, var_to_param: dict[str, str]) -> str | None:
+        """The request parameter tainting a sink's first argument, or ``None``.
+
+        The first argument is either a direct request read (``req.query.url``), a local
+        bound from one (``const url = req.query.url``), or an expression embedding such a
+        local (a template literal / concatenation) — in each case the value flows from
+        the named channel.
+        """
+        args, _ = _balanced_slice(body, open_index, "(", ")")
+        arg = _first_arg(args)
+        if not arg:
+            return None
+        inline = _RE_REQ_READ.search(arg)
+        if inline is not None:
+            return inline.group(2) or inline.group(3)
+        for var, param in var_to_param.items():
+            if re.search(rf"(?<![\w.])\b{re.escape(var)}\b", arg):
+                return param
+        return None
+
+    @staticmethod
+    def _file_guard_symbol(
+        body: str,
+        tainted_by: str,
+        var_to_param: dict[str, str],
+        file: str,
+        model: SourceModel,
+    ) -> str | None:
+        """A basename-strip / normalize guard on the tainted path (SANCTIONED), or None.
+
+        Conservative: if the tainted value (or any local bound from it) is ever passed
+        through ``path.basename`` / ``path.normalize`` in the handler, the path is treated
+        as sanitized. Over-guarding drops a true positive (the safe direction) rather than
+        emitting a phantom.
+        """
+        aliases = {v for v, p in var_to_param.items() if p == tainted_by} | {tainted_by}
+        for match in _RE_PATH_SANITIZER.finditer(body):
+            args, _ = _balanced_slice(body, match.end() - 1, "(", ")")
+            if any(re.search(rf"(?<![\w.])\b{re.escape(a)}\b", args) for a in aliases):
+                model.guards.append(
+                    Guard(
+                        symbol=_FILE_READ_GUARD_SYMBOL,
+                        kind="path_basename_strip",
+                        operands=[tainted_by],
+                        bypassable_by_default=False,
+                        file=file,
+                        line=0,
+                    )
+                )
+                return _FILE_READ_GUARD_SYMBOL
+        return None
+
+    def _apply_manifest_and_tech(
+        self,
+        root: Path,
+        model: SourceModel,
+        used_egress_libs: set[str],
+        route_idiom_seen: bool,
+    ) -> None:
+        """Populate ``technologies`` + the carrying-dependency manifest from package.json."""
+        pkg = self._read_package_json(root)
+        deps: dict[str, str] = {}
+        if pkg:
+            deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+
+        technologies = ["Node.js"]
+        if "express" in deps or route_idiom_seen:
+            technologies.append("Express")
+        for framework, display in (
+            ("koa", "Koa"),
+            ("fastify", "Fastify"),
+            ("@nestjs/core", "NestJS"),
+        ):
+            if framework in deps and display not in technologies:
+                technologies.append(display)
+        if model.entrypoints or model.call_sites or pkg is not None:
+            model.technologies = technologies
+
+        key, version = self._carrying_dependency(used_egress_libs, deps, root)
+        if key:
+            model.manifest_technology_key = key
+            model.manifest_observed_version = version
+            model.manifest_evidence = (
+                f"{key}@{version or '?'} declared in package.json"
+                " — carrying dependency of the surfaced capability"
+            )
+
+    def _carrying_dependency(
+        self, used_egress_libs: set[str], deps: dict[str, str], root: Path
+    ) -> tuple[str, str]:
+        """The ``(technology_key, observed_version)`` a Layer-2 fact keys on (§S1.3).
+
+        Prefer the HTTP-client library an ``EGRESS_FETCH`` actually used and the app
+        bundled (the capability's carrying dependency), then the backend framework;
+        version resolved from the lockfile if present, else the package.json spec.
+        """
+        for lib in _EGRESS_LIB_PRIORITY:
+            if lib in used_egress_libs and lib in deps:
+                return lib, self._resolve_version(lib, deps[lib], root)
+        for framework in _BACKEND_FRAMEWORKS:
+            if framework in deps:
+                return framework, self._resolve_version(framework, deps[framework], root)
+        return "", ""
+
+    @staticmethod
+    def _read_package_json(root: Path) -> dict | None:
+        """Parse the nearest ``package.json`` (root, else first found), bounded; None on miss."""
+        search_root = root if root.is_dir() else root.parent
+        candidate = search_root / "package.json"
+        paths: list[Path] = []
+        if candidate.exists():
+            paths.append(candidate)
+        else:
+            for path in search_root.rglob("package.json"):
+                if any(part in _SKIP_DIRS for part in path.parts):
+                    continue
+                paths.append(path)
+                break
+        for path in paths:
+            try:
+                if path.stat().st_size > _MAX_MANIFEST_BYTES:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, ValueError) as exc:
+                logger.warning("js source ingest: cannot parse %s: %s", path, exc)
+                continue
+            if isinstance(data, dict):
+                return data
+        return None
+
+    def _resolve_version(self, name: str, spec: str, root: Path) -> str:
+        """Resolve *name*'s observed point version — lockfile first, then the spec."""
+        locked = self._lockfile_version(name, root)
+        if locked:
+            return locked
+        match = _RE_VERSION_POINT.search(spec or "")
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _lockfile_version(name: str, root: Path) -> str:
+        """The resolved version of *name* from ``package-lock.json`` (v1/v2/v3), or ``""``."""
+        search_root = root if root.is_dir() else root.parent
+        lock = search_root / "package-lock.json"
+        if not lock.exists():
+            return ""
+        try:
+            if lock.stat().st_size > _MAX_MANIFEST_BYTES:
+                return ""
+            data = json.loads(lock.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        packages = data.get("packages")
+        if isinstance(packages, dict):
+            entry = packages.get(f"node_modules/{name}")
+            if isinstance(entry, dict) and isinstance(entry.get("version"), str):
+                return entry["version"]
+        dependencies = data.get("dependencies")
+        if isinstance(dependencies, dict):
+            entry = dependencies.get(name)
+            if isinstance(entry, dict) and isinstance(entry.get("version"), str):
+                return entry["version"]
+        return ""
