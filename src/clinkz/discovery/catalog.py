@@ -3,10 +3,13 @@
 The general Capability Agent (re-scoped Research, CVE/CWE/source ingestion to grow
 a cross-engagement catalog) is out of scope. Here we **seed primitives** — each
 payload-free and technology-invariant, so the same catalog entry transfers to any
-Java target with the matching sink shape (the point of primitive-not-payload,
-§3.1). Each ``proof_obligation`` reduces to confirmation primitives Clinkz already
-has (P3 content-we-never-sent / P1 differential), so a hypothesis built from a
-primitive inherits zero-FP by construction (§6.1).
+target with the matching sink shape (the point of primitive-not-payload, §3.1). The
+class-agnostic ``EGRESS_FETCH`` / ``FILE_READ`` primitives are also *language*-agnostic
+(discovery slice A1): their ``technology_pattern`` matches Node/JS as well as Java, so a
+JS sink shape the ``JsSourceIngestor`` surfaces activates the same primitive as its Java
+twin. Each ``proof_obligation`` reduces to confirmation primitives Clinkz already has
+(P3 content-we-never-sent / P1 differential), so a hypothesis built from a primitive
+inherits zero-FP by construction (§6.1).
 
 Three capability classes are catalogued, and the catalog is **class-generic**: the
 matcher, intent, reachability, hypothesis and proof-reduction layers are keyed on
@@ -44,12 +47,28 @@ from clinkz.discovery.models import (
     SourceModel,
 )
 
+# Language-generalized stack match for the class-agnostic EGRESS_FETCH (SSRF) and
+# FILE_READ (path-traversal) primitives — discovery slice A1. These two capabilities
+# are language-AGNOSTIC: the sink shape differs per language (Java
+# ``URL.openConnection`` / JS ``axios.get``; Java ``new File`` / JS ``fs.readFile``)
+# but the capability, its Δ-adjudication, its reachability and its proof oracle are the
+# same, and each ingestor surfaces the sink as the *same* ``PrimitiveClass``. The
+# original Java-only gate (``\bjava\b|servlet``) wrongly made these primitives N/A on a
+# Node/Express target that genuinely has them, so the match is widened to the JS/TS
+# stack. This is the ONE Layer-1 touch slice A1 makes: it adds no PrimitiveClass,
+# oracle or proof — it only lets an EXISTING primitive apply to a new language.
+# ``LOG_INTERPOLATION`` is deliberately NOT widened — Log4Shell is a Java/log4j-core
+# property, manifest-version-gated, and a JS log-injection would be a different class.
+_MULTILANG_FETCH_FILE_TECH = (
+    r"(?i)\bjava\b|servlet|\bnode\b|node\.?js|express|javascript|typescript"
+)
+
 # The single seeded primitive for this slice. Note the deliberate absence of any
 # GeoServer-, endpoint-, or payload-specificity: this is the generic SSRF-egress
 # capability that already underpins the existing ``_test_ssrf`` methodology.
 EGRESS_FETCH_JAVA_OPENCONNECTION = CapabilityPrimitive(
     id="egress_fetch.java_openconnection",
-    technology_pattern=r"(?i)\bjava\b|servlet",
+    technology_pattern=_MULTILANG_FETCH_FILE_TECH,
     name="java-http-fetch-openconnection",
     primitive_class=PrimitiveClass.EGRESS_FETCH,
     trigger_shape=(
@@ -92,7 +111,7 @@ EGRESS_FETCH_JAVA_OPENCONNECTION = CapabilityPrimitive(
 # location, exactly like the Host carrier is discoverable only from the guard).
 FILE_READ_JAVA_FILE_SINK = CapabilityPrimitive(
     id="file_read.java_file_sink",
-    technology_pattern=r"(?i)\bjava\b|servlet",
+    technology_pattern=_MULTILANG_FETCH_FILE_TECH,
     name="java-tainted-path-file-read",
     primitive_class=PrimitiveClass.FILE_READ,
     trigger_shape=(

@@ -13,10 +13,14 @@ from pathlib import Path
 
 import pytest
 
+from clinkz.discovery.catalog import match_primitives
+from clinkz.discovery.engine import DiscoveryEngine
 from clinkz.discovery.js_source_ingest import JsSourceIngestor
 from clinkz.discovery.models import CoverageGrade, PrimitiveClass
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "js_express_ssrf"
+NODE_FINGERPRINT = ["Node.js", "Express"]
+BASE_URL = "http://target:3000"
 
 
 @pytest.fixture(scope="module")
@@ -119,3 +123,62 @@ def test_empty_tree_is_absent(tmp_path):
     assert model.entrypoints == []
     assert model.call_sites == []
     assert model.coverage_grade is CoverageGrade.ABSENT
+
+
+# --- Full JS-source → engine → hypothesis path (no Layer-1 fork) -------------
+
+
+def test_engine_activates_primitives_on_js_stack(model):
+    # The widened (language-generalized) catalog match activates the EXISTING
+    # EGRESS_FETCH + FILE_READ primitives on a Node/Express fingerprint — the same
+    # primitives a Java target uses, no new class.
+    active = {p.primitive_class for p in match_primitives(model, NODE_FINGERPRINT)}
+    assert PrimitiveClass.EGRESS_FETCH in active
+    assert PrimitiveClass.FILE_READ in active
+
+
+def test_engine_yields_egress_fetch_hypothesis_from_js_source():
+    result = DiscoveryEngine().discover(str(FIXTURE), NODE_FINGERPRINT, BASE_URL)
+    egress = [
+        h
+        for h in result.hypotheses
+        if h.delta.call_site.primitive_class is PrimitiveClass.EGRESS_FETCH
+    ]
+    assert len(egress) == 1
+    hyp = egress[0]
+    assert hyp.edge.channel_param == "url"
+    assert hyp.target_url == f"{BASE_URL}/fetch"
+    assert hyp.endpoint_method == "GET"
+    assert hyp.obligation.test_method == "_test_ssrf"
+    assert hyp.delta.call_site.sink_shape_id == "js.http_egress"
+    # The lowered ExploitTask rides the existing plan-union unchanged.
+    task = hyp.to_exploit_task()
+    assert task.test_method == "_test_ssrf"
+    assert "url" in task.endpoint_params
+
+
+def test_engine_yields_file_read_hypothesis_from_js_source():
+    result = DiscoveryEngine().discover(str(FIXTURE), NODE_FINGERPRINT, BASE_URL)
+    reads = [
+        h
+        for h in result.hypotheses
+        if h.delta.call_site.primitive_class is PrimitiveClass.FILE_READ
+    ]
+    assert len(reads) == 1
+    hyp = reads[0]
+    assert hyp.edge.channel_param == "file"
+    assert hyp.target_url == f"{BASE_URL}/download"
+    assert hyp.obligation.test_method == "_test_lfi"
+    assert hyp.delta.call_site.sink_shape_id == "js.fs_read"
+
+
+def test_result_carries_carrying_dependency_manifest_for_a2():
+    # A1 boundary: the ingestor EMITS the carrying-dependency manifest on the
+    # SourceModel; the manifest survives through discover() to the result so A2's
+    # write-back can key JS capability facts on the carrying dependency (axios @ the
+    # locked version). Consuming the manifest as the fact key is A2's job — for
+    # EGRESS_FETCH the hypothesis still keys on the fingerprint today, unchanged from
+    # the existing Java flow (only LOG_INTERPOLATION reads the manifest key).
+    result = DiscoveryEngine().discover(str(FIXTURE), NODE_FINGERPRINT, BASE_URL)
+    assert result.source_model.manifest_technology_key == "axios"
+    assert result.source_model.manifest_observed_version == "1.6.7"
