@@ -24,6 +24,7 @@ from clinkz.discovery.models import (
     CapabilityFact,
     CapabilityObservation,
     CapabilityPrimitive,
+    CapabilityRecall,
     CoverageGrade,
     DeltaGrade,
     DiscoveryHypothesis,
@@ -36,7 +37,19 @@ from clinkz.discovery.models import (
     SourceModel,
 )
 from clinkz.discovery.reachability import compute_reachability
+from clinkz.discovery.recall import capability_recall
+from clinkz.discovery.relations import (
+    RelationEdge,
+    derive_bundles_edges,
+    derive_successor_edges,
+    normalize_tech_identity,
+)
 from clinkz.discovery.source_ingest import JavaSourceIngestor
+from clinkz.discovery.versions import (
+    parse_version,
+    predicate_point_version,
+    version_satisfies,
+)
 
 __all__ = [
     "CARRIER_ALIGN_HOST",
@@ -46,6 +59,7 @@ __all__ = [
     "CapabilityFact",
     "CapabilityObservation",
     "CapabilityPrimitive",
+    "CapabilityRecall",
     "CoverageGrade",
     "DeltaGrade",
     "DiscoveryEngine",
@@ -57,11 +71,19 @@ __all__ = [
     "PrimitiveClass",
     "ProofObligation",
     "ReachabilityEdge",
+    "RelationEdge",
     "SoundnessGrade",
     "SourceModel",
+    "capability_recall",
     "compute_delta",
     "compute_reachability",
+    "derive_bundles_edges",
+    "derive_successor_edges",
     "generate_hypotheses",
     "match_primitives",
+    "normalize_tech_identity",
+    "parse_version",
+    "predicate_point_version",
     "primitive_by_class",
+    "version_satisfies",
 ]

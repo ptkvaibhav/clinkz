@@ -70,12 +70,19 @@ CI proves this:
 - `tests/test_skills_juiceshop/` — same shape against Juice Shop
 
 Cross-engagement learning now lives in the discovery catalog's **Layer-2
-capability memory** (`capability_facts` + `capability_observations` in
-`clinkz_knowledge.db`; see `docs/discovery-engine-capability-learning-design.md`).
-A confirmed discovery-originated finding UPSERTs a per-technology capability fact.
-The older technique-success loop (`record_technique_result(...)` updating
-`times_tried` / `times_succeeded` / `success_rate`) is **retired** — kept
-read-only for the report's historical view; `success_rate` is frozen.
+capability memory** (`capability_facts` + `capability_observations` +
+`technology_relations` transfer edges in `clinkz_knowledge.db`; see
+`docs/discovery-engine-capability-learning-design.md`). The **WRITE side** (slice 1):
+a confirmed discovery-originated finding UPSERTs a per-technology capability fact.
+The **READ side** (slice 2, `discovery/{versions,relations,recall}.py`): deterministic
+version predicates (`version_satisfies`) + `bundles`/`successor` transfer edges let
+`capability_recall` (a pure READ) reach that fact on a later engagement and **seed a
+proof hypothesis** the recognizer could not derive from partial source — recall changes
+the path to a finding, never the finding (emission stays the unchanged P1–P6 proof;
+live-validated in `docs/discovery-engine-capability-recall-slice2-validation.md`). The
+older technique-success loop (`record_technique_result(...)` updating `times_tried` /
+`times_succeeded` / `success_rate`) is **retired** — kept read-only for the report's
+historical view; `success_rate` is frozen.
 
 ### 4. Claude Code workflow — **DONE**
 Repository ships with:

@@ -415,7 +415,9 @@ class PersistentKnowledgeBase:
         Args:
             tech_a: First technology.
             tech_b: Second technology.
-            relation_type: "similar_stack", "commonly_paired", or "successor".
+            relation_type: "bundles" / "successor" (Layer-2 transfer edges,
+                deterministic writers, design §2.4), or a legacy
+                "similar_stack" / "commonly_paired".
             similarity_score: 0.0 to 1.0.
             notes: Optional notes.
         """
@@ -426,6 +428,18 @@ class PersistentKnowledgeBase:
             (tech_a, tech_b, relation_type, similarity_score, notes),
         )
         await self._db.commit()
+
+    async def get_technology_relations(self) -> list[dict[str, Any]]:
+        """Return every technology-relation edge. Read-only dump / recall-input helper.
+
+        Layer-2 transfer (design §2.4) expands the recon fingerprint over these edges
+        (``bundles`` / ``successor``) to reach a capability fact keyed on a carrying
+        dependency. The full edge set is loaded once per engagement and handed to the
+        pure :func:`~clinkz.discovery.recall.capability_recall` — recall performs NO
+        I/O and NEVER writes an edge (it is a READ).
+        """
+        cursor = await self._db.execute("SELECT * FROM technology_relations ORDER BY id")
+        return [self._row_to_dict(r) for r in await cursor.fetchall()]
 
     # ------------------------------------------------------------------
     # Layer-2 capability memory (discovery learning loop, §2.2 / §3 / §S1.5)

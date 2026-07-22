@@ -39,7 +39,13 @@ from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.config import settings
 from clinkz.credentials.store import CredentialStore
-from clinkz.discovery import DiscoveryEngine
+from clinkz.discovery import (
+    DiscoveryEngine,
+    SourceModel,
+    derive_bundles_edges,
+    derive_successor_edges,
+    predicate_point_version,
+)
 from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
@@ -659,7 +665,7 @@ class OrchestratorAgent:
         # crawl missed (the unlinked GeoServer TestWfsPost servlet; Solr's shared
         # stream.url request parser) is still tested. Inert when no source_dir is
         # configured — the default pipeline is unchanged.
-        discovery_tasks = self._build_discovery_tasks(technologies, targets_str)
+        discovery_tasks = await self._build_discovery_tasks(technologies, targets_str)
         if discovery_tasks:
             exploit_content["discovery_tasks"] = [
                 t.model_dump(mode="json") for t in discovery_tasks
@@ -729,7 +735,7 @@ class OrchestratorAgent:
     # Discovery engine (gray-box) — the third exploit-plan source
     # ------------------------------------------------------------------
 
-    def _build_discovery_tasks(
+    async def _build_discovery_tasks(
         self, technologies: list[str], targets_str: str
     ) -> list[ExploitTask]:
         """Run the discovery engine over the engagement source tree, if any.
@@ -743,6 +749,14 @@ class OrchestratorAgent:
         request parser with no source route, like Solr, supplies the reflecting
         handler here), falling back to the primary target URL. Failures degrade to
         black-box — discovery never breaks the engagement.
+
+        Layer-2 (design §4): the persistent capability store is dumped and handed to
+        ``discover`` as the load-as-prior input — a confirmed-before capability RANKS
+        earlier and, on partial source, SEEDS a hypothesis the recognizer could not
+        derive. After discovery, the manifest-derived ``bundles`` and version-lineage
+        ``successor`` transfer edges are written back (the dormant table's first
+        production writers), so the NEXT engagement's recall can transfer. Recall
+        NEVER emits — emission stays the unchanged live proof (§5).
         """
         scope = self._scope
         if scope is None or not scope.source_dir:
@@ -754,22 +768,99 @@ class OrchestratorAgent:
         if not base_url:
             self._logger.warning("Discovery: no base URL for %s — skipping", targets_str)
             return []
+        capability_facts, technology_relations = await self._load_capability_store()
         try:
-            result = DiscoveryEngine().discover(scope.source_dir, technologies, base_url)
+            result = DiscoveryEngine().discover(
+                scope.source_dir,
+                technologies,
+                base_url,
+                capability_facts=capability_facts,
+                technology_relations=technology_relations,
+            )
         except Exception as exc:  # noqa: BLE001 — discovery must never break the run
             self._logger.error("Discovery engine failed (proceeding black-box): %s", exc)
             return []
+        await self._write_transfer_edges(result.source_model, technologies)
         tasks = result.exploit_tasks()
+        recall_seeded = sum(1 for h in result.hypotheses if h.prior_source == "capability_recall")
         self._logger.info(
             "Discovery: %d hypothesis task(s) from source "
-            "(%d entrypoints, %d Δ, %d reachability edges) base=%s",
+            "(%d entrypoints, %d Δ, %d edges, %d recalls, %d recall-seeded/-boosted) base=%s",
             len(tasks),
             len(result.source_model.entrypoints),
             len(result.deltas),
             len(result.edges),
+            len(result.recalls),
+            recall_seeded,
             base_url,
         )
         return tasks
+
+    async def _load_capability_store(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Dump ``capability_facts`` + ``technology_relations`` for the recall prior.
+
+        Read-only. With no persistent KB (or on any read error) returns empty dumps,
+        so discovery degrades to a cold start — never breaks the engagement.
+        """
+        kb = self._persistent_kb
+        if kb is None:
+            return [], []
+        try:
+            facts = await kb.get_capability_facts()
+            relations = await kb.get_technology_relations()
+        except Exception as exc:  # noqa: BLE001 — a KB read must never break the run
+            self._logger.warning("Discovery: capability-store read failed (cold start): %s", exc)
+            return [], []
+        return facts, relations
+
+    async def _write_transfer_edges(
+        self, source_model: SourceModel, technologies: list[str]
+    ) -> None:
+        """Write the deterministic Layer-2 transfer edges (design §2.4).
+
+        ``bundles`` — the manifest-derived edge from each specific app in the
+        fingerprint to the carrying dependency (``apache-solr@8.11.0 →
+        log4j-core@2.14.1``); ``successor`` — version-lineage edges across the
+        versions the store already has facts for. Both are pure-derived then persisted
+        via the generic relation writer. Best-effort: a write failure is logged, never
+        raised (transfer is an optimisation, not a correctness dependency).
+        """
+        kb = self._persistent_kb
+        if kb is None or not source_model.manifest_technology_key:
+            return
+        try:
+            bundles = derive_bundles_edges(
+                source_model.manifest_technology_key,
+                source_model.manifest_observed_version,
+                technologies,
+            )
+            for edge in bundles:
+                await kb.add_technology_relation(
+                    edge.tech_a, edge.tech_b, edge.relation_type, edge.similarity
+                )
+            # Version lineage over the versions the store now holds for this dep.
+            dep_facts = await kb.get_capability_facts(source_model.manifest_technology_key)
+            versions = [predicate_point_version(f.get("version_predicate", "")) for f in dep_facts]
+            if source_model.manifest_observed_version:
+                versions.append(source_model.manifest_observed_version)
+            successors = derive_successor_edges(
+                source_model.manifest_technology_key, [v for v in versions if v]
+            )
+            for edge in successors:
+                await kb.add_technology_relation(
+                    edge.tech_a, edge.tech_b, edge.relation_type, edge.similarity
+                )
+            if bundles or successors:
+                self._logger.info(
+                    "Discovery: wrote %d bundles + %d successor transfer edge(s) for %s",
+                    len(bundles),
+                    len(successors),
+                    source_model.manifest_technology_key,
+                )
+        except Exception as exc:  # noqa: BLE001 — transfer edges are best-effort
+            self._logger.warning("Discovery: transfer-edge write failed: %s", exc)
 
     # ------------------------------------------------------------------
     # P6 out-of-band collaborator provisioning (docs/p6-oob-design.md §P6.1.3)
