@@ -1,7 +1,7 @@
 """Anthropic Claude LLM client.
 
 Uses the anthropic Python SDK with:
-- claude-sonnet-4-6 as default model, configurable via ANTHROPIC_MODEL env var
+- claude-sonnet-5 as default model, configurable via ANTHROPIC_MODEL env var
 - Native tool_use content blocks for reason()
 - LLM-based research for research() (falls back to Gemini search grounding when available)
 - Sliding-window rate limiting

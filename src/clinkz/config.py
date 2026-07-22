@@ -37,7 +37,7 @@ class Settings(BaseModel):
     # Model selection
     orchestrator_model: str = Field(default="gpt-4o")
     agent_model: str = Field(default="gpt-4o-mini")
-    anthropic_model: str = Field(default="claude-sonnet-4-6")
+    anthropic_model: str = Field(default="claude-sonnet-5")
     # All Gemini-backed agents (Recon / Scan / Report, and Exploit's Gemini
     # fallback) run on Gemini 3.1 Flash-Lite (GA). Never set this to the
     # deprecated gemini-3.1-flash-lite-preview (shut down 2026-05-25).
@@ -240,7 +240,7 @@ class Settings(BaseModel):
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             orchestrator_model=os.getenv("ORCHESTRATOR_MODEL", "gpt-4o"),
             agent_model=os.getenv("AGENT_MODEL", "gpt-4o-mini"),
-            anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+            anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
             gemini_exploit_model=os.getenv("GEMINI_EXPLOIT_MODEL", "gemini-3.1-flash-lite"),
             gemini_research_model=os.getenv("GEMINI_RESEARCH_MODEL", "gemini-3.1-flash-lite"),
