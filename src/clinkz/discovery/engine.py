@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from clinkz.discovery.catalog import match_primitives
 from clinkz.discovery.hypothesis import generate_hypotheses
+from clinkz.discovery.ingestor import select_ingestor
 from clinkz.discovery.intent import compute_delta
 from clinkz.discovery.models import (
     CapabilityDelta,
@@ -33,7 +34,6 @@ from clinkz.discovery.models import (
 )
 from clinkz.discovery.reachability import compute_reachability
 from clinkz.discovery.recall import capability_recall
-from clinkz.discovery.source_ingest import JavaSourceIngestor
 from clinkz.models.finding import ExploitTask
 from clinkz.observability.trace import get_active_trace_writer
 
@@ -58,10 +58,11 @@ class DiscoveryResult(BaseModel):
 
 
 class DiscoveryEngine:
-    """Run source-ingestion → capability → intent → reachability → hypothesis."""
+    """Run source-ingestion → capability → intent → reachability → hypothesis.
 
-    def __init__(self) -> None:
-        self._ingestor = JavaSourceIngestor()
+    The ingestor is selected per source tree by :func:`select_ingestor` (Java / JS),
+    so the same engine drives Java and non-Java targets with no other change.
+    """
 
     def discover(
         self,
@@ -91,7 +92,7 @@ class DiscoveryEngine:
         pipeline.
         """
         fingerprint = list(fingerprint)
-        source_model = self._ingestor.ingest_path(source_dir)
+        source_model = select_ingestor(source_dir).ingest_path(source_dir)
         active_primitives = match_primitives(source_model, fingerprint)
         recalls = capability_recall(
             fingerprint, source_model, capability_facts or [], technology_relations or []
