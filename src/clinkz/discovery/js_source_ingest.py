@@ -14,10 +14,14 @@ Deliberately shallow, backend-only, and bounded — a MIRROR of the Java ingesto
 philosophy, **not** a JS AST / whole-program dataflow engine:
 
   1. **Entrypoints are Express/router route registrations.** ``app.get('/x', h)`` /
-     ``router.post("/y", h)`` — the HTTP verb + the mounted path literal. The
-     handler body (the balanced ``{ … }`` following the route's arrow/``function``
-     signature) is the intra-handler scope taint is resolved within, mirroring the
-     Java handler's ``doGet``/``doPost`` body.
+     ``router.post("/y", h)`` / ``app.use('/x', h)`` — the HTTP verb + the mounted path
+     literal. The handler body is either **inline** (an arrow/``function`` body in the
+     registration args) or, for the dominant real-world ESM/TS shape, a **factory
+     imported from a separate routes file** (``app.post('/x', asyncHandler(make()))``
+     with ``export function make () { return (req, res) => {…} }`` elsewhere) — resolved
+     cross-file by a two-pass handler registry (the JS analogue of the Java pass's
+     cross-file resolution). That body is the intra-handler scope taint is resolved
+     within, mirroring the Java handler's ``doGet``/``doPost`` body.
   2. **Untrusted channels are ``req.query`` / ``req.body`` / ``req.params`` /
      ``req.headers`` reads.** A ``const x = req.query.url`` binds a local to a
      request parameter (the JS analogue of ``String x = request.getParameter("p")``);
@@ -44,10 +48,13 @@ philosophy, **not** a JS AST / whole-program dataflow engine:
 
 Angular / any browser-side frontend is **out of scope** (``node_modules`` / build
 output / ``*.min.js`` / ``*.d.ts`` are never ingested). Taint is one hop (request read
-→ local, and a local / inline request read reaching a sink argument); multi-hop
-propagation through an intermediate reassignment, named-handler / controller-module
-indirection, and SSRF host-check guards are documented deferrals — this slice handles
-the inline-handler shape, exactly the deliberately-shallow floor the Java pass sets.
+→ local, and a local / inline request read reaching a sink argument). Documented
+deferrals (the deliberately-shallow floor): a request destructured in the arrow *param
+signature* (``({ params }) =>``) rather than via ``req.``; a handler referenced *bare*
+(not called) in the args; multi-hop propagation through an intermediate reassignment or
+an inner helper function; and SSRF host-check guards. Slice A2b added cross-file
+factory-handler resolution so the ingestor reaches real-world Express/TS backends
+(OWASP Juice Shop) whose handler bodies live outside the ``server.ts`` route table.
 """
 
 from __future__ import annotations
@@ -56,6 +63,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 from clinkz.discovery.models import (
     CallSite,
@@ -73,9 +81,6 @@ _MAX_FILES = 2000
 _MAX_FILE_BYTES = 512 * 1024
 # Bounded window (chars) a handler body / balanced brace-or-paren scan may span.
 _MAX_HANDLER_SCAN = 8000
-# Bounded window (chars) after a route registration to find the handler's opening
-# brace (the arrow/`function` signature sits right after the route args).
-_MAX_SIG_SCAN = 800
 
 # Directories never ingested — dependencies, build output, frontend bundles. Keeps
 # the scan bounded and backend-only (Angular/browser code lives under these).
@@ -87,12 +92,33 @@ _SOURCE_GLOBS = ("*.js", "*.mjs", "*.cjs", "*.ts")
 # --- Express route registration (the entrypoint) ----------------------------
 # ``app.get('/x', …)`` / ``router.post("/y", …)`` — HTTP verb + path literal. The
 # path is captured from a matched quote (single/double/backtick) so a template route
-# is tolerated; ``all`` registers every verb.
+# is tolerated; ``all`` registers every verb; ``use('/path', handler)`` is a mounted
+# handler (a bare ``use(mw)`` without a path literal never matches — the regex requires
+# a quoted first arg — so global middleware is not mistaken for a route).
 _RE_ROUTE = re.compile(
-    r"\b(?:app|router)\s*\.\s*(get|post|put|patch|delete|all)\s*\(\s*(['\"`])([^'\"`]*)\2"
+    r"\b(?:app|router)\s*\.\s*(get|post|put|patch|delete|all|use)\s*\(\s*(['\"`])([^'\"`]*)\2"
 )
 # The handler body opens at an arrow ``=> {`` or a ``function (…) {`` signature.
 _RE_HANDLER_OPEN = re.compile(r"=>\s*\{|\bfunction\b[^{;]*\{")
+
+# --- Cross-file factory-handler resolution (the real-world ESM/TS pattern) ---
+# Idiomatic Express/TS apps (OWASP Juice Shop et al.) register a handler FACTORY
+# imported from another module — ``app.post('/x', asyncHandler(makeHandler()))`` —
+# whose body lives in ``export function makeHandler () { return (req, res) => {…} }``
+# in a SEPARATE routes file. A1 assumed an inline body immediately after the route, so
+# it never reached these bodies (the ``named-handler / controller-module indirection``
+# A1 deferred). Pass 1 indexes every exported handler function by name; pass 2 links a
+# route registration to a referenced factory's body across files. Still bounded /
+# regex-only (the JS analogue of the Java pass's 2-pass cross-file resolution) — no AST,
+# no call-graph, no dataflow engine.
+_RE_EXPORT_HANDLER = re.compile(r"\bexport\s+(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(")
+# A ``name(`` call inside a route registration's argument list — the candidate factory
+# reference resolved against the pass-1 registry (a bare, un-called reference is a
+# documented deferral).
+_RE_HANDLER_REF = re.compile(r"\b(\w+)\s*\(")
+# Max chars between a handler function's params ``)`` and its body ``{`` (skips a TS
+# return-type annotation); bounds the body-brace search.
+_MAX_SIG_TO_BODY = 300
 
 # --- Untrusted request reads (the channel) ----------------------------------
 _REQ_SOURCES = r"query|body|params|headers"
@@ -167,6 +193,21 @@ _RE_VERSION_POINT = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 _MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 
 
+class _HandlerDef(NamedTuple):
+    """A resolved route-handler body + the file/offset it was defined in.
+
+    ``text`` is the defining file's full text (so sink line numbers resolve against
+    the file the sink actually lives in — the routes file for a cross-file factory,
+    not the ``server.ts`` where the route is registered). ``body_start`` is the
+    absolute offset of ``body`` within ``text``.
+    """
+
+    file: str
+    text: str
+    body: str
+    body_start: int
+
+
 def _line_of(text: str, index: int) -> int:
     """1-based line number of *index* within *text*."""
     return text.count("\n", 0, index) + 1
@@ -220,12 +261,14 @@ class JsSourceIngestor:
     def ingest_path(self, root: str | Path) -> SourceModel:
         """Ingest every backend ``*.js/.mjs/.cjs/.ts`` under *root* (bounded).
 
-        One deterministic pass per file: extract Express route entrypoints, resolve
-        intra-handler taint (request read → local var), and surface the tainted
-        egress / file-read call sites within each handler body. Then read
-        ``package.json`` (+ lock) for the carrying-dependency manifest and the tech
-        fingerprint. Non-route files contribute nothing (no route ⇒ no entrypoint),
-        exactly like the Java pass skips non-entrypoint files.
+        Two deterministic passes (the JS analogue of the Java pass's cross-file
+        resolution). Pass 1 indexes every exported handler *factory* by name (the
+        real-world ESM/TS shape where the handler body lives in a separate routes
+        file). Pass 2 walks Express route registrations, resolves each to its handler
+        body — inline, or a pass-1 factory referenced across files — resolves the
+        intra-handler taint (request read → local var), and surfaces the tainted
+        egress / file-read call sites in that body. Then read ``package.json`` (+
+        lock) for the carrying-dependency manifest and the tech fingerprint.
         """
         root = Path(root)
         model = SourceModel()
@@ -234,12 +277,13 @@ class JsSourceIngestor:
             return model
 
         texts = self._read_files(root)
+        registry = self._build_handler_registry(texts)
         used_egress_libs: set[str] = set()
         route_idiom_seen = False
         for file, text in texts:
             if _RE_ROUTE.search(text):
                 route_idiom_seen = True
-            self._ingest_text(text, file, model, used_egress_libs)
+            self._ingest_text(text, file, model, registry, used_egress_libs)
 
         model.files_ingested = len(texts)
         if model.call_sites:
@@ -281,17 +325,50 @@ class JsSourceIngestor:
             texts.append((str(path), text))
         return texts
 
+    @staticmethod
+    def _build_handler_registry(texts: list[tuple[str, str]]) -> dict[str, _HandlerDef]:
+        """Pass 1: index every ``export function <Name> (...) { … }`` by name.
+
+        The registry lets pass 2 resolve a route registered against a factory
+        referenced across files (``app.post('/x', asyncHandler(makeHandler()))``) to
+        the handler body defined in another module. First definition wins (deterministic
+        on duplicate names). Bounded: balanced-brace over each function body only.
+        """
+        registry: dict[str, _HandlerDef] = {}
+        for file, text in texts:
+            for match in _RE_EXPORT_HANDLER.finditer(text):
+                name = match.group(1)
+                if name in registry:
+                    continue
+                paren_open = match.end() - 1  # the '(' of the params list
+                _, paren_close = _balanced_slice(text, paren_open, "(", ")")
+                if paren_close < 0:
+                    continue
+                brace = text.find("{", paren_close, paren_close + _MAX_SIG_TO_BODY)
+                if brace < 0:
+                    continue
+                body, end = _balanced_slice(text, brace, "{", "}")
+                if end < 0:
+                    continue
+                registry[name] = _HandlerDef(file=file, text=text, body=body, body_start=brace + 1)
+        return registry
+
     def _ingest_text(
-        self, text: str, file: str, model: SourceModel, used_egress_libs: set[str]
+        self,
+        text: str,
+        file: str,
+        model: SourceModel,
+        registry: dict[str, _HandlerDef],
+        used_egress_libs: set[str],
     ) -> None:
-        """Extract entrypoints / call sites / guards from one file's route handlers."""
+        """Pass 2: extract entrypoints / call sites / guards from route handlers."""
         for match in _RE_ROUTE.finditer(text):
             verb = match.group(1)
             route = match.group(3)
-            body, body_start = self._handler_body(text, match.end())
-            if body is None:
+            handler = self._resolve_handler(text, file, match, registry)
+            if handler is None:
                 continue
-            params, path_params, var_to_param = self._collect_channel(body)
+            params, path_params, var_to_param = self._collect_channel(handler.body)
             model.entrypoints.append(
                 Entrypoint(
                     route=route,
@@ -303,7 +380,50 @@ class JsSourceIngestor:
                     line=_line_of(text, match.start()),
                 )
             )
-            self._sinks_in_body(body, body_start, text, file, var_to_param, model, used_egress_libs)
+            self._sinks_in_body(
+                handler.body,
+                handler.body_start,
+                handler.text,
+                handler.file,
+                var_to_param,
+                model,
+                used_egress_libs,
+            )
+
+    @staticmethod
+    def _resolve_handler(
+        text: str, file: str, match: re.Match[str], registry: dict[str, _HandlerDef]
+    ) -> _HandlerDef | None:
+        """Resolve a route registration to its handler body (inline, or cross-file).
+
+        The full registration argument list is balanced-sliced from the call's ``(``
+        (so the scan is confined to THIS registration, never spilling into the next
+        route). An inline arrow/function body within the args is used directly (the A1
+        shape); otherwise the first referenced factory ``name(`` present in the pass-1
+        registry supplies the body from its defining file. Returns ``None`` when neither
+        resolves (a bare middleware, or an un-indexed handler — a documented deferral).
+        """
+        call_open = text.find("(", match.start(), match.end())
+        if call_open < 0:
+            return None
+        arglist, arglist_end = _balanced_slice(text, call_open, "(", ")")
+        if arglist_end < 0:
+            return None
+        arglist_abs = call_open + 1
+        sig = _RE_HANDLER_OPEN.search(arglist)
+        if sig is not None:
+            brace_local = arglist.find("{", sig.start(), sig.end())
+            if brace_local >= 0:
+                body, end = _balanced_slice(arglist, brace_local, "{", "}")
+                if end >= 0:
+                    return _HandlerDef(
+                        file=file, text=text, body=body, body_start=arglist_abs + brace_local + 1
+                    )
+        for ref in _RE_HANDLER_REF.finditer(arglist):
+            handler = registry.get(ref.group(1))
+            if handler is not None:
+                return handler
+        return None
 
     @staticmethod
     def _methods(verb: str) -> list[str]:
@@ -311,24 +431,6 @@ class JsSourceIngestor:
         if verb == "all":
             return ["GET", "POST", "PUT", "PATCH", "DELETE"]
         return [verb.upper()]
-
-    @staticmethod
-    def _handler_body(text: str, from_index: int) -> tuple[str | None, int]:
-        """Return ``(body_text, abs_body_start)`` for the route handler after *from_index*.
-
-        Locates the handler's opening brace (an arrow ``=> {`` or a ``function (…) {``
-        signature) within a bounded window, then balanced-brace-slices the body. Returns
-        ``(None, -1)`` for a brace-less arrow-expression handler (a documented deferral —
-        multi-statement sink handlers use a braced body).
-        """
-        sig = _RE_HANDLER_OPEN.search(text, from_index, from_index + _MAX_SIG_SCAN)
-        if sig is None:
-            return None, -1
-        brace_index = text.index("{", sig.start(), sig.end())
-        body, end = _balanced_slice(text, brace_index, "{", "}")
-        if end < 0:
-            return None, -1
-        return body, brace_index + 1
 
     @staticmethod
     def _collect_channel(body: str) -> tuple[list[str], list[str], dict[str, str]]:
