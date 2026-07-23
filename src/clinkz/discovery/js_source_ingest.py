@@ -40,11 +40,23 @@ philosophy, **not** a JS AST / whole-program dataflow engine:
      value sanitized (Intent → SANCTIONED, Δ removed ⇒ no hypothesis); its absence is
      the intent-gap (EXPOSED). Conservative by design: the safe direction is to
      over-guard (drop a true positive) rather than emit a phantom.
-  5. **The manifest is ``package.json`` (+ lock).** The JS analogue of the
-     ``pom.xml`` log4j-core scan: the carrying dependency the surfaced capability
-     belongs to (the HTTP-client library an ``EGRESS_FETCH`` used, else the backend
-     framework) + its observed point version — keyed so the Layer-2 write-back (A2)
-     can attach JS capability facts to the carrying dependency.
+  5. **The manifest is ``package.json`` (+ lock).** The JS analogue of the ``pom.xml``
+     log4j-core scan. Two distinct keying concepts (slice A2a):
+
+       * **Model-level ``manifest_technology_key``** — the HTTP-client library an
+         ``EGRESS_FETCH`` used (else the backend framework) + its version. Used for the
+         ``bundles`` transfer edges and (for a Java target) the ``LOG_INTERPOLATION``
+         fact key. It is NOT the EGRESS_FETCH / FILE_READ fact key.
+       * **Per-sink ``CallSite.carrying_dependency`` (A2a — the correctness core)** — a
+         capability is keyed on a carrying dependency ONLY when the sink is *library-borne*
+         (its source file lives inside a bundled local-path / workspace dependency),
+         attributed from the sink's path + that package's ``package.json``. An **app-code**
+         sink (``routes/`` / ``src/`` / the app root) that merely *calls* a library gets NO
+         carrying dependency and stays fingerprint-keyed — so an app-level capability
+         (Juice Shop's ``fetch``-based SSRF) is never mis-keyed on ``express`` and falsely
+         transferred. Declared local packages are also surfaced as observed technology
+         identities so a package present-per-manifest but source-withheld this engagement
+         stays recall-observable (the JS→JS transfer path).
 
 Angular / any browser-side frontend is **out of scope** (``node_modules`` / build
 output / ``*.min.js`` / ``*.d.ts`` are never ingested). Taint is one hop (request read
@@ -192,6 +204,15 @@ _BACKEND_FRAMEWORKS: tuple[str, ...] = ("express", "koa", "fastify", "@hapi/hapi
 _RE_VERSION_POINT = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
 _MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 
+# --- Per-sink carrying-dependency attribution (slice A2a) --------------------
+# A dependency spec that points at a LOCAL package directory (bundled first-party
+# code whose source IS ingested), not an npm-registry range whose source lives under
+# the skipped ``node_modules``. These are the attribution targets: a sink whose file
+# lives inside one of these directories is library-borne and keyed on that package.
+_LOCAL_SPEC_PREFIXES = ("file:", "link:", "portal:")
+# Bound on indexed local/workspace packages (a monorepo is bounded in practice).
+_MAX_LOCAL_DEPS = 128
+
 
 class _HandlerDef(NamedTuple):
     """A resolved route-handler body + the file/offset it was defined in.
@@ -206,6 +227,22 @@ class _HandlerDef(NamedTuple):
     text: str
     body: str
     body_start: int
+
+
+class _LocalDep(NamedTuple):
+    """A declared local-path / workspace dependency's directory + package identity.
+
+    ``directory`` is the resolved on-disk root of the bundled package; ``name`` /
+    ``version`` come from that package's OWN ``package.json`` (falling back to the
+    declared dependency name when the package has no readable manifest version). A sink
+    whose source file lives under ``directory`` is *library-borne* and keyed on
+    ``name@version`` (slice A2a) — the app's own tree is never indexed, so an app-code
+    sink stays fingerprint-keyed.
+    """
+
+    directory: Path
+    name: str
+    version: str
 
 
 def _line_of(text: str, index: int) -> int:
@@ -277,18 +314,25 @@ class JsSourceIngestor:
             return model
 
         texts = self._read_files(root)
+        pkg = self._read_package_json(root)
+        deps: dict[str, str] = {}
+        if pkg:
+            deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+        dep_index = self._local_dependency_index(root, deps, pkg)
         registry = self._build_handler_registry(texts)
         used_egress_libs: set[str] = set()
         route_idiom_seen = False
         for file, text in texts:
             if _RE_ROUTE.search(text):
                 route_idiom_seen = True
-            self._ingest_text(text, file, model, registry, used_egress_libs)
+            self._ingest_text(text, file, model, registry, used_egress_libs, dep_index)
 
         model.files_ingested = len(texts)
         if model.call_sites:
             model.coverage_grade = CoverageGrade.PARTIAL
-        self._apply_manifest_and_tech(root, model, used_egress_libs, route_idiom_seen)
+        self._apply_manifest_and_tech(
+            model, pkg, deps, dep_index, root, used_egress_libs, route_idiom_seen
+        )
         logger.info(
             "js source ingest: %d files → %d entrypoints, %d call-sites, %d guards; manifest=%s",
             len(texts),
@@ -360,6 +404,7 @@ class JsSourceIngestor:
         model: SourceModel,
         registry: dict[str, _HandlerDef],
         used_egress_libs: set[str],
+        dep_index: list[_LocalDep],
     ) -> None:
         """Pass 2: extract entrypoints / call sites / guards from route handlers."""
         for match in _RE_ROUTE.finditer(text):
@@ -388,6 +433,7 @@ class JsSourceIngestor:
                 var_to_param,
                 model,
                 used_egress_libs,
+                dep_index,
             )
 
     @staticmethod
@@ -479,8 +525,16 @@ class JsSourceIngestor:
         var_to_param: dict[str, str],
         model: SourceModel,
         used_egress_libs: set[str],
+        dep_index: list[_LocalDep],
     ) -> None:
-        """Surface tainted egress / file-read call sites within one handler body."""
+        """Surface tainted egress / file-read call sites within one handler body.
+
+        Every sink is attributed to a carrying dependency ONLY when its defining ``file``
+        lives inside a bundled dependency (slice A2a); a sink in the app's own tree gets
+        no carrying dependency and stays fingerprint-keyed. Attribution is a property of
+        the file, constant across every sink in this body, so it is resolved once.
+        """
+        carrying, carrying_version = self._attribute_carrying_dependency(file, dep_index)
         for match in _RE_EGRESS_SINK.finditer(body):
             symbol = match.group(1)
             tainted_by = self._sink_taint(body, match.end() - 1, var_to_param)
@@ -497,6 +551,8 @@ class JsSourceIngestor:
                     line=_line_of(text, body_start + match.start()),
                     tainted_by=tainted_by,
                     sink_shape_id=_SINK_SHAPE_EGRESS,
+                    carrying_dependency=carrying,
+                    carrying_version=carrying_version,
                 )
             )
         for match in _RE_FILE_SINK.finditer(body):
@@ -514,6 +570,8 @@ class JsSourceIngestor:
                     tainted_by=tainted_by,
                     guard_symbol=guard_symbol,
                     sink_shape_id=_SINK_SHAPE_FILE_READ,
+                    carrying_dependency=carrying,
+                    carrying_version=carrying_version,
                 )
             )
 
@@ -572,17 +630,15 @@ class JsSourceIngestor:
 
     def _apply_manifest_and_tech(
         self,
-        root: Path,
         model: SourceModel,
+        pkg: dict | None,
+        deps: dict[str, str],
+        dep_index: list[_LocalDep],
+        root: Path,
         used_egress_libs: set[str],
         route_idiom_seen: bool,
     ) -> None:
         """Populate ``technologies`` + the carrying-dependency manifest from package.json."""
-        pkg = self._read_package_json(root)
-        deps: dict[str, str] = {}
-        if pkg:
-            deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
-
         technologies = ["Node.js"]
         if "express" in deps or route_idiom_seen:
             technologies.append("Express")
@@ -593,6 +649,16 @@ class JsSourceIngestor:
         ):
             if framework in deps and display not in technologies:
                 technologies.append(display)
+        # Surface each declared local-path / workspace dependency as an observed technology
+        # identity (``<name> <version>``) — slice A2a. A package that is PRESENT PER
+        # MANIFEST but whose source is withheld this engagement is still recall-observable:
+        # recall reaches a package-keyed capability fact via the observed identity and seeds
+        # the hypothesis (the JS→JS transfer path). A registry dependency is never surfaced
+        # this way (its source lives under the skipped ``node_modules``). Bounded + deduped.
+        for dep in dep_index:
+            identity = f"{dep.name} {dep.version}".strip()
+            if identity and identity not in technologies:
+                technologies.append(identity)
         if model.entrypoints or model.call_sites or pkg is not None:
             model.technologies = technologies
 
@@ -605,14 +671,156 @@ class JsSourceIngestor:
                 " — carrying dependency of the surfaced capability"
             )
 
+    # --- Per-sink carrying-dependency attribution (slice A2a) ---------------
+    def _local_dependency_index(
+        self, root: Path, deps: dict[str, str], pkg: dict | None
+    ) -> list[_LocalDep]:
+        """Index the app's declared local-path / workspace dependencies (§S1.3, A2a).
+
+        These are the *bundled first-party* packages whose OWN source is ingested this
+        engagement (unlike a registry dependency, whose source lives under the skipped
+        ``node_modules``). A sink whose file lives under one of these directories is
+        library-borne and keyed on that package. The app's own tree is never indexed, so
+        an app-code sink stays fingerprint-keyed. Deterministic (path + each package's own
+        ``package.json`` — no install/resolution), bounded, deepest-directory-first so a
+        nested package wins attribution.
+        """
+        if not root.is_dir():
+            return []
+        index: dict[Path, _LocalDep] = {}
+        for name, spec in deps.items():
+            directory = self._resolve_local_spec(root, spec)
+            if directory is not None:
+                dep = self._read_local_package(directory, name)
+                if dep is not None:
+                    index.setdefault(dep.directory, dep)
+            if len(index) >= _MAX_LOCAL_DEPS:
+                break
+        for pattern in self._workspace_patterns(pkg):
+            for directory in self._resolve_workspace_glob(root, pattern):
+                if len(index) >= _MAX_LOCAL_DEPS:
+                    break
+                dep = self._read_local_package(directory, "")
+                if dep is not None:
+                    index.setdefault(dep.directory, dep)
+        return sorted(index.values(), key=lambda d: len(str(d.directory)), reverse=True)
+
+    @staticmethod
+    def _resolve_local_spec(root: Path, spec: str) -> Path | None:
+        """A local-path dependency spec → its resolved directory, or ``None``.
+
+        ``file:./pkg`` / ``link:../pkg`` / ``portal:pkg`` and a bare relative/absolute path
+        are local; an npm-registry range (``^1.2.3``) is not (returns ``None``).
+        """
+        if not isinstance(spec, str):
+            return None
+        spec = spec.strip()
+        raw = ""
+        for prefix in _LOCAL_SPEC_PREFIXES:
+            if spec.startswith(prefix):
+                raw = spec[len(prefix) :].strip()
+                break
+        else:
+            if spec.startswith(("./", "../", "/")):
+                raw = spec
+        if not raw:
+            return None
+        try:
+            return (root / raw).resolve()
+        except (OSError, ValueError):
+            return None
+
+    def _read_local_package(self, directory: Path, fallback_name: str) -> _LocalDep | None:
+        """A local package directory → its ``(directory, name, version)`` identity, or None.
+
+        Name/version come from the package's OWN ``package.json``; when that manifest is
+        absent but the directory and a declared name exist (the *source-withheld* case —
+        fixture-B), the dependency is still indexed with an empty version so it remains
+        recall-observable as a technology identity.
+        """
+        try:
+            if not directory.is_dir():
+                return None
+            pkg_path = directory / "package.json"
+            if not pkg_path.exists() or pkg_path.stat().st_size > _MAX_MANIFEST_BYTES:
+                if fallback_name:
+                    return _LocalDep(directory=directory, name=fallback_name, version="")
+                return None
+            data = json.loads(pkg_path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError) as exc:
+            logger.warning("js source ingest: cannot read local package %s: %s", directory, exc)
+            return None
+        if not isinstance(data, dict):
+            return None
+        name = str(data.get("name") or fallback_name or "")
+        if not name:
+            return None
+        return _LocalDep(directory=directory, name=name, version=str(data.get("version") or ""))
+
+    @staticmethod
+    def _workspace_patterns(pkg: dict | None) -> list[str]:
+        """The ``workspaces`` globs declared in package.json (array or ``{packages:[…]}``)."""
+        if not pkg:
+            return []
+        workspaces = pkg.get("workspaces")
+        if isinstance(workspaces, list):
+            return [str(p) for p in workspaces if isinstance(p, str)]
+        if isinstance(workspaces, dict):
+            packages = workspaces.get("packages")
+            if isinstance(packages, list):
+                return [str(p) for p in packages if isinstance(p, str)]
+        return []
+
+    @staticmethod
+    def _resolve_workspace_glob(root: Path, pattern: str) -> list[Path]:
+        """Resolve a workspace glob to package directories that carry a ``package.json``."""
+        directories: list[Path] = []
+        try:
+            for match in root.glob(pattern):
+                if any(part in _SKIP_DIRS for part in match.parts):
+                    continue
+                if match.is_dir() and (match / "package.json").exists():
+                    directories.append(match.resolve())
+        except (OSError, ValueError):
+            return []
+        return directories
+
+    @staticmethod
+    def _attribute_carrying_dependency(file: str, dep_index: list[_LocalDep]) -> tuple[str, str]:
+        """The ``(dependency, version)`` for a library-borne sink, else ``("", "")``.
+
+        Deterministic: the sink's resolved path is tested against each indexed dependency
+        directory (deepest first), so a sink in ``packages/vuln-lib/index.js`` is
+        attributed to ``vuln-lib`` while a sink in the app's own ``routes/`` / ``src/``
+        tree matches no dependency directory and stays fingerprint-keyed (§S1.3 — the
+        app-level case must NOT become library-transferable).
+        """
+        if not dep_index or not file:
+            return "", ""
+        try:
+            resolved = Path(file).resolve()
+        except (OSError, ValueError):
+            return "", ""
+        for dep in dep_index:
+            if resolved == dep.directory or resolved.is_relative_to(dep.directory):
+                return dep.name, dep.version
+        return "", ""
+
     def _carrying_dependency(
         self, used_egress_libs: set[str], deps: dict[str, str], root: Path
     ) -> tuple[str, str]:
-        """The ``(technology_key, observed_version)`` a Layer-2 fact keys on (§S1.3).
+        """The model-level ``(technology_key, observed_version)`` for the manifest note.
 
         Prefer the HTTP-client library an ``EGRESS_FETCH`` actually used and the app
         bundled (the capability's carrying dependency), then the backend framework;
         version resolved from the lockfile if present, else the package.json spec.
+
+        This is the MODEL-level manifest key (used for the ``bundles`` transfer edges and
+        the ``LOG_INTERPOLATION`` fact key). It is deliberately NOT the EGRESS_FETCH /
+        FILE_READ fact key — those are keyed *per sink* by
+        :meth:`_attribute_carrying_dependency`, so an app-code sink that merely *calls* a
+        library (Juice Shop's ``fetch``-based SSRF) is never mis-keyed on that library
+        and falsely transferred (slice A2a).
         """
         for lib in _EGRESS_LIB_PRIORITY:
             if lib in used_egress_libs and lib in deps:
