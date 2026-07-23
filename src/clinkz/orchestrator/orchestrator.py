@@ -42,6 +42,7 @@ from clinkz.credentials.store import CredentialStore
 from clinkz.discovery import (
     DiscoveryEngine,
     SourceModel,
+    TopologyContext,
     derive_bundles_edges,
     derive_successor_edges,
     predicate_point_version,
@@ -769,6 +770,7 @@ class OrchestratorAgent:
             self._logger.warning("Discovery: no base URL for %s — skipping", targets_str)
             return []
         capability_facts, technology_relations = await self._load_capability_store()
+        topology_context = self._build_topology_context(base_url)
         try:
             result = DiscoveryEngine().discover(
                 scope.source_dir,
@@ -776,6 +778,7 @@ class OrchestratorAgent:
                 base_url,
                 capability_facts=capability_facts,
                 technology_relations=technology_relations,
+                topology_context=topology_context,
             )
         except Exception as exc:  # noqa: BLE001 — discovery must never break the run
             self._logger.error("Discovery engine failed (proceeding black-box): %s", exc)
@@ -914,6 +917,39 @@ class OrchestratorAgent:
             collab.callback_shape.value,
         )
         return collab
+
+    def _build_topology_context(self, base_url: str) -> TopologyContext | None:
+        """Build the cross-service :class:`TopologyContext` from scope (design §2b).
+
+        Service A is the discovery ``base_url``; the candidate B set is every OTHER
+        in-scope target (distinct bare hostname from A). This is the recon-adjacency
+        prior — in scope ⇒ reachable from A's segment (the scope declares the wire
+        open, incl. internal-only metadata/admin surfaces). The SOURCE upgrade (§2a,
+        A statically references B) is computed inside the discovery engine by matching
+        A's static egress hosts against these candidates. Returns ``None`` (no
+        cross-service composition) when there is no distinct second in-scope service —
+        a single-service engagement, unchanged behaviour.
+        """
+        from urllib.parse import urlparse
+
+        scope = self._scope
+        if scope is None or not scope.targets:
+            return None
+        origin_bare = urlparse(base_url if "://" in base_url else f"//{base_url}").hostname or ""
+        origin_bare = origin_bare.lower()
+        services: list[str] = []
+        seen: set[str] = set()
+        for entry in scope.targets:
+            value = entry.value
+            url = value if "://" in value else f"http://{value}"
+            bare = (urlparse(url).hostname or "").lower()
+            if not bare or bare == origin_bare or bare in seen:
+                continue
+            seen.add(bare)
+            services.append(url)
+        if not services:
+            return None
+        return TopologyContext(origin_host=origin_bare, internal_services=services)
 
     def _primary_target_url(self) -> str:
         """A base URL for discovery from the first in-scope target (best effort)."""
