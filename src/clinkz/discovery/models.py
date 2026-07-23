@@ -72,11 +72,55 @@ class DeltaGrade(StrEnum):
 
 
 class SoundnessGrade(StrEnum):
-    """Reachability-edge soundness (§4.2)."""
+    """Reachability-edge soundness (§4.2).
+
+    Ordered strongest → weakest. ``CROSS_SERVICE_TOPOLOGY`` (cross-service
+    reachability design §1) is strictly the WEAKEST grade: the A→B boundary hop
+    is the least certain link in any chain (A's static source alone cannot prove a
+    *runtime* topology fact), and because a chain's grade is the MINIMUM over its
+    hops (:func:`compose_soundness`), a cross-service path can never out-rank a
+    single-service hypothesis no matter how strong its A-side egress edge is.
+    """
 
     STATIC_CONFIRMED = "static_confirmed"
     STATIC_HEURISTIC = "static_heuristic"
     HYPOTHESIZED = "hypothesized"
+    CROSS_SERVICE_TOPOLOGY = "cross_service_topology"
+
+
+# Strongest → weakest. Lower rank == stronger soundness. The composite grade of a
+# multi-hop chain is the WEAKEST hop (max rank), so this table is the single source
+# of truth for "which grade dominates a chain" (cross-service design §1).
+_SOUNDNESS_RANK: dict[SoundnessGrade, int] = {
+    SoundnessGrade.STATIC_CONFIRMED: 0,
+    SoundnessGrade.STATIC_HEURISTIC: 1,
+    SoundnessGrade.HYPOTHESIZED: 2,
+    SoundnessGrade.CROSS_SERVICE_TOPOLOGY: 3,
+}
+
+
+def compose_soundness(grades: list[SoundnessGrade]) -> SoundnessGrade:
+    """Compose a chain's soundness grade as the MINIMUM (weakest) over its hops.
+
+    A chain is no stronger than its weakest link (cross-service design §1): a
+    ``STATIC_CONFIRMED`` A-side egress composed with a ``CROSS_SERVICE_TOPOLOGY``
+    A→B boundary hop grades ``CROSS_SERVICE_TOPOLOGY`` — never the strongest hop.
+    This is implemented explicitly (return the highest-rank == weakest grade) so it
+    is *structurally impossible* to grade a cross-service chain by its strongest hop.
+
+    Args:
+        grades: The per-hop soundness grades of the composed chain. Must be
+            non-empty (a chain has at least one hop).
+
+    Returns:
+        The weakest (highest-rank) grade among *grades*.
+
+    Raises:
+        ValueError: If *grades* is empty (a chain must have at least one hop).
+    """
+    if not grades:
+        raise ValueError("compose_soundness requires at least one hop grade")
+    return max(grades, key=lambda g: _SOUNDNESS_RANK[g])
 
 
 class CoverageGrade(StrEnum):
@@ -254,7 +298,16 @@ class CapabilityDelta(BaseModel):
 
 
 class ReachabilityEdge(BaseModel):
-    """An untrusted channel → Δ-capability edge (§2.5/§4)."""
+    """An untrusted channel → Δ-capability edge (§2.5/§4).
+
+    Single-service by default (the entrypoint and the sink both belong to one
+    ``SourceModel``). The two cross-service fields are populated ONLY for a
+    composed A→B chain (cross-service design §1/§2): ``cross_service_target`` is
+    B's in-scope internal URL (the confirmation target — the sink lives in B, not
+    A), and ``topology_source`` names how the A→B boundary hop was discovered
+    (``source`` / ``recon``). Both empty for a single-service edge, so a
+    single-service edge is byte-identical to before this design.
+    """
 
     channel_param: str
     channel_location: ParamLocation = ParamLocation.QUERY
@@ -264,6 +317,9 @@ class ReachabilityEdge(BaseModel):
     path_evidence: str = ""
     soundness_grade: SoundnessGrade = SoundnessGrade.HYPOTHESIZED
     reach_confidence: float = 0.0
+    # Cross-service composition (design §1/§2). Empty ⇒ a single-service edge.
+    cross_service_target: str = ""
+    topology_source: str = ""  # "source" | "recon" — how the A→B hop was found
 
 
 class DiscoveryHypothesis(BaseModel):
@@ -347,6 +403,11 @@ class DiscoveryHypothesis(BaseModel):
             discovery_provenance=self._discovery_provenance(),
             prior_source=self.prior_source,
             rank_score=self.rank_score,
+            # Cross-service target (design §3): B's internal URL, carried ONLY when
+            # the reaching edge crossed the A→B boundary. Empty for single-service
+            # hypotheses, so the normal ``_test_ssrf`` dispatch is unchanged.
+            cross_service_target=self.edge.cross_service_target,
+            cross_service_source=self.edge.topology_source,
         )
 
 
