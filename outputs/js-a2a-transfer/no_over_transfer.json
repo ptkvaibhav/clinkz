@@ -1,0 +1,30 @@
+{
+  "js_express_ssrf": [
+    {
+      "id": "hyp:egress_fetch.java_openconnection:url",
+      "primitive_class": "egress_fetch",
+      "sink_shape_id": "js.http_egress",
+      "channel_param": "url",
+      "technology_key": "node-js",
+      "observed_version": "",
+      "prior_source": "cold_derivation",
+      "reachability_grade": "static_confirmed",
+      "rank_score": 0.6075,
+      "carrying_dependency": ""
+    }
+  ],
+  "js_express_esm_factory": [
+    {
+      "id": "hyp:egress_fetch.java_openconnection:imageUrl",
+      "primitive_class": "egress_fetch",
+      "sink_shape_id": "js.http_egress",
+      "channel_param": "imageUrl",
+      "technology_key": "node-js",
+      "observed_version": "",
+      "prior_source": "cold_derivation",
+      "reachability_grade": "static_confirmed",
+      "rank_score": 0.6075,
+      "carrying_dependency": ""
+    }
+  ]
+}

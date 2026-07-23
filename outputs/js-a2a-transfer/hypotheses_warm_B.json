@@ -1,0 +1,14 @@
+[
+  {
+    "id": "hyp:recall:egress_fetch.java_openconnection:url",
+    "primitive_class": "egress_fetch",
+    "sink_shape_id": "js.http_egress",
+    "channel_param": "url",
+    "technology_key": "vuln-fetch-lib",
+    "observed_version": "2.3.1",
+    "prior_source": "capability_recall",
+    "reachability_grade": "hypothesized",
+    "rank_score": 0.225,
+    "carrying_dependency": ""
+  }
+]

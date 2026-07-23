@@ -1,0 +1,18 @@
+{
+  "engagement_id": "c0fe946a-81b0-4176-bea2-c64497198050",
+  "source": "live OWASP Juice Shop (running container TS source) + live collaborator + live Anthropic",
+  "finding": {
+    "title": "Server-Side Request Forgery (SSRF) ? blind_oob_confirmed",
+    "severity": "high",
+    "discovery_provenance": {
+      "technology_key": "node-js",
+      "observed_version": "",
+      "sink_shape_id": "js.http_egress",
+      "primitive_class": "egress_fetch",
+      "primitive_id": "egress_fetch.java_openconnection",
+      "confirmation_primitive": "P6",
+      "reachability_grade": "static_confirmed",
+      "gating_config": "ProxyBaseUrl"
+    }
+  }
+}

