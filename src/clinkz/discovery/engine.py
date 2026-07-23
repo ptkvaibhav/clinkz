@@ -29,11 +29,17 @@ from clinkz.discovery.models import (
     CapabilityPrimitive,
     CapabilityRecall,
     DiscoveryHypothesis,
+    PrimitiveClass,
     ReachabilityEdge,
     SourceModel,
 )
 from clinkz.discovery.reachability import compute_reachability
 from clinkz.discovery.recall import capability_recall
+from clinkz.discovery.topology import (
+    TopologyContext,
+    discover_cross_service_edges,
+    scan_static_egress_hosts,
+)
 from clinkz.models.finding import ExploitTask
 from clinkz.observability.trace import get_active_trace_writer
 
@@ -72,6 +78,7 @@ class DiscoveryEngine:
         *,
         capability_facts: list[dict[str, Any]] | None = None,
         technology_relations: list[dict[str, Any]] | None = None,
+        topology_context: TopologyContext | None = None,
     ) -> DiscoveryResult:
         """Discover falsifiable hypotheses from *source_dir* against *base_url*.
 
@@ -84,12 +91,21 @@ class DiscoveryEngine:
                 load-as-prior input, §4). ``None``/empty ⇒ cold start (unchanged).
             technology_relations: Layer-2 ``technology_relations`` rows dumped from the
                 KB, over which recall expands the fingerprint (bundles / successor).
+            topology_context: Cross-service topology (design §1/§2, slice B1): A's
+                origin + the in-scope B set. ``None`` ⇒ single-service engagement,
+                no cross-service composition (unchanged behaviour).
 
         Recall (§4) runs after ingest + fingerprint, before ``generate_hypotheses``:
         the recalls RANK cold-derived hypotheses and COMPLETE the set with seeded ones
         where this run's source was too partial to derive the sink — but never emit
         (§5). With no facts the behaviour is exactly the cold, black-box-plus-source
         pipeline.
+
+        Cross-service topology (design §1/§2) composes A's ``EGRESS_FETCH`` edges with
+        the A→B boundary hop, appending ``CROSS_SERVICE_TOPOLOGY``-graded edges — the
+        weakest grade, so they rank below every single-service hypothesis and change
+        none of their grades or ranks. Additive: with no ``topology_context`` the edge
+        set is exactly the single-service set.
         """
         fingerprint = list(fingerprint)
         source_model = select_ingestor(source_dir).ingest_path(source_dir)
@@ -99,6 +115,9 @@ class DiscoveryEngine:
         )
         deltas = compute_delta(source_model, active_primitives)
         edges = compute_reachability(source_model, deltas)
+        edges = self._append_cross_service_edges(
+            edges, active_primitives, source_dir, topology_context
+        )
         hypotheses = generate_hypotheses(
             source_model,
             active_primitives,
@@ -127,6 +146,32 @@ class DiscoveryEngine:
         )
         _emit_discovery_trace(result)
         return result
+
+    @staticmethod
+    def _append_cross_service_edges(
+        edges: list[ReachabilityEdge],
+        active_primitives: list[CapabilityPrimitive],
+        source_dir: str,
+        topology_context: TopologyContext | None,
+    ) -> list[ReachabilityEdge]:
+        """Append cross-service A→B edges (design §1/§2), or return *edges* unchanged.
+
+        Composes only A's ``EGRESS_FETCH`` edges (a cross-service SSRF needs A's egress
+        channel). With no ``topology_context`` this is a no-op, so the single-service
+        edge set — and therefore every single-service hypothesis's grade and rank — is
+        byte-identical to before this design.
+        """
+        if topology_context is None:
+            return edges
+        egress_ids = {
+            p.id for p in active_primitives if p.primitive_class is PrimitiveClass.EGRESS_FETCH
+        }
+        egress_edges = [e for e in edges if e.primitive_id in egress_ids]
+        if not egress_edges:
+            return edges
+        static_hosts = scan_static_egress_hosts(source_dir)
+        cross = discover_cross_service_edges(egress_edges, topology_context, static_hosts)
+        return [*edges, *cross]
 
 
 def _emit_discovery_trace(result: DiscoveryResult) -> None:

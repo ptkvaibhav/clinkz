@@ -47,6 +47,7 @@ from clinkz.discovery.relations import (
     normalize_tech_identity,
 )
 from clinkz.discovery.source_ingest import JavaSourceIngestor
+from clinkz.discovery.topology import TopologyContext
 from clinkz.discovery.versions import (
     parse_version,
     predicate_point_version,
@@ -78,6 +79,7 @@ __all__ = [
     "SoundnessGrade",
     "SourceIngestor",
     "SourceModel",
+    "TopologyContext",
     "capability_recall",
     "compute_delta",
     "compute_reachability",

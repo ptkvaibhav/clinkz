@@ -162,6 +162,17 @@ class ExploitTask(BaseModel):
     priority: int = 0
     carrier_constraints: list[str] = Field(default_factory=list)
     discovery_provenance: DiscoveryProvenance | None = None
+    # Cross-service reachability (design §3): B's in-scope INTERNAL URL — the
+    # confirmation target of a cross-service SSRF hypothesis (an ``EGRESS_FETCH`` Δ
+    # whose reaching edge crossed the A→B boundary). Set ONLY on a cross-service
+    # discovery task; empty on every single-service / black-box task, so the normal
+    # ``_test_ssrf`` dispatch is unchanged. Its presence is what routes the task to
+    # the cross-service confirmation driver (co-location gate + research-lead), which
+    # reuses the P6 machinery — no new oracle, no new ``_test_*`` method.
+    cross_service_target: str = ""
+    # How the A→B boundary hop was discovered (``source`` / ``recon``, design §2) —
+    # carried onto the finding/research-lead for provenance. Empty for non-cross-service.
+    cross_service_source: str = ""
     # Discovery-hypothesis ranking metadata, for the §6.2 "gets smarter" trace.
     # ``prior_source`` is ``capability_recall`` when a Layer-2 recall boosted/seeded
     # the hypothesis, else ``cold_derivation``; ``rank_score`` is the hypothesis
@@ -240,6 +251,72 @@ class ExploitAnalysis(BaseModel):
         return coerced
 
 
+class CrossServiceResearchLead(BaseModel):
+    """A plausible-but-unproven cross-service A→B chain (design §5).
+
+    The first-class, **structurally distinct** home for every cross-service chain
+    that could not be *proven* by an unchanged zero-FP oracle co-located with B.
+    It is deliberately **NOT** a :class:`Finding` and holds **no** path to
+    ``_persist_finding``: emission stays the P1–P6 proof on the live target, so a
+    topology prior can only ever surface a lead here, never manufacture a finding
+    (§4/§7). Because it is a different *type* than :class:`Finding`, "never rendered
+    as a confirmed finding / never counted in coverage" is a type-system property,
+    not a convention — the report renderer takes ``list[CrossServiceResearchLead]``
+    in a separate argument and renders it in a dedicated section.
+
+    The hard line (§5): a research-lead is never a finding, never counted in
+    coverage, never marked confirmed, never rendered in the confirmed-findings
+    section, never written to the capability KB as a positive fact.
+
+    Attributes:
+        candidate_chain: Human-readable ``channel(A) → egress(A) → A→B edge →
+            (impact at B)`` description of the unproven chain.
+        why_unconfirmed: WHY it stayed a lead — one of
+            :data:`CROSS_SERVICE_WHY_UNCONFIRMED` (e.g.
+            ``egress_confirmed_but_B_reach_not_observed`` — the rung-3 trap: a
+            callback landed at a collaborator NOT co-located with B, proving only
+            "A egresses somewhere", never "A reaches B").
+        a_endpoint: A's endpoint URL the probe was sent to.
+        a_channel: A's egress channel param the probe rode.
+        b_target: B's in-scope internal URL the chain was hypothesised to reach.
+        topology_source: How the A→B edge was discovered (``source`` / ``recon``).
+        reachability_grade: The composed edge grade (always
+            ``cross_service_topology``).
+        reach_confidence: The composed edge's ``reach_confidence`` (ranking only).
+        raw_probe: The exact probe sent from A (carrying the nonce / B's URL) — the
+            raw null-result half so the operator sees exactly what was tried.
+        raw_null_observation: The null observation (no B-marker / no co-located
+            callback) — the other half of the raw null result.
+        discovered_at: When the lead was recorded.
+    """
+
+    candidate_chain: str
+    why_unconfirmed: str
+    a_endpoint: str = ""
+    a_channel: str = ""
+    b_target: str = ""
+    topology_source: str = ""
+    reachability_grade: str = "cross_service_topology"
+    reach_confidence: float = 0.0
+    raw_probe: str = ""
+    raw_null_observation: str = ""
+    discovered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# The closed vocabulary of WHY a cross-service chain stayed a research-lead (§5).
+# ``egress_confirmed_but_B_reach_not_observed`` is the rung-3 trap (a callback at a
+# collaborator NOT co-located with B); the others cover "cannot instrument B",
+# "OOB sent, no callback in window", and "topology prior only, never probed".
+CROSS_SERVICE_WHY_UNCONFIRMED: frozenset[str] = frozenset(
+    {
+        "egress_confirmed_but_B_reach_not_observed",
+        "B_not_instrumentable",
+        "blind_unconfirmed_within_window",
+        "topology_prior_only",
+    }
+)
+
+
 class ExploitResult(BaseModel):
     """Final output of the v2 exploit agent.
 
@@ -268,4 +345,9 @@ class ExploitResult(BaseModel):
     by_severity: dict[str, int] = Field(default_factory=dict)
     kb_results_recorded: int = 0
     stopped_early: bool = False
+    # Cross-service research-leads (design §5): plausible-but-unproven A→B chains.
+    # NOT findings — never counted in ``total_findings`` / ``by_severity`` / coverage;
+    # surfaced in the report's dedicated "Cross-service research leads (UNCONFIRMED)"
+    # section, structurally separate from ``findings``.
+    research_leads: list[CrossServiceResearchLead] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
