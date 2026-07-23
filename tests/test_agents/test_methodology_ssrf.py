@@ -39,7 +39,12 @@ from clinkz.agents.exploit import (
 )
 from clinkz.discovery.constants import CARRIER_ALIGN_HOST
 from clinkz.llm.base import LLMClient, LLMMessage
-from clinkz.models.methodology import SSRFCapability, SSRFExploitationType
+from clinkz.models.finding import DiscoveryProvenance
+from clinkz.models.methodology import (
+    SSRFCapability,
+    SSRFExploitationType,
+    SSRFMethodologyResult,
+)
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.state import StateStore
 from clinkz.tools.http_client import HTTPClientTool
@@ -578,3 +583,74 @@ def test_scope_blocks_direct_internal_connection():
     tool = HTTPClientTool(scope=SCOPE, engagement_id="scope-test")
     with pytest.raises(ValueError, match="outside the engagement scope"):
         tool.validate_input({"method": "GET", "url": "http://169.254.169.254/latest/meta-data/"})
+
+
+# ---------------------------------------------------------------------------
+# Provenance truth — the ACTUAL confirming primitive on the finding (A2a)
+# ---------------------------------------------------------------------------
+
+
+def _oob_confirmed_result() -> SSRFMethodologyResult:
+    """A blind-SSRF result confirmed out-of-band (P6), as _ssrf_oob_confirm_batch sets it."""
+    return SSRFMethodologyResult(
+        candidate_param="url",
+        capability=SSRFCapability(fetch_confirmed=True, content_reflected=False),
+        exploitation_type=SSRFExploitationType.BLIND_OOB_CONFIRMED,
+        synthesized_payload="http://collab.test/deadbeefnonce",
+        indicator_type="oob_callback",
+        indicator_observed="out-of-band callback bearing the probe nonce received (dns)",
+        verified=True,
+        verification_strength="verified-oob",
+        phases_completed=6,
+    )
+
+
+def _discovery_page() -> PageAnalysis:
+    """An SSRF page carrying discovery provenance whose obligation DECLARES in-band P3/P1."""
+    page = PageAnalysis(url="http://example.com/fetch", body="", status=200, input_params=["url"])
+    page.discovery_provenance = DiscoveryProvenance(
+        technology_key="node-js",
+        observed_version="",
+        sink_shape_id="js.http_egress",
+        primitive_class="egress_fetch",
+        primitive_id="egress_fetch.java_openconnection",
+        confirmation_primitive="P3/P1",  # the DECLARED obligation primitive
+        reachability_grade="static_confirmed",
+    )
+    return page
+
+
+def test_oob_confirmed_finding_provenance_reads_p6_not_declared():
+    # A blind_oob_confirmed SSRF finding must record the ACTUAL confirming primitive (P6),
+    # NOT the EGRESS_FETCH obligation's declared in-band P3/P1 — a grader reads the
+    # finding's provenance to know what confirmed it.
+    agent = _make_agent()
+    page = _discovery_page()
+    finding = agent._ssrf_phase6_emit(page, "url", _oob_confirmed_result())
+    assert finding.discovery_provenance is not None
+    assert finding.discovery_provenance.confirmation_primitive == "P6"
+    # The rest of the provenance is preserved (a per-finding copy, not a fresh object).
+    assert finding.discovery_provenance.technology_key == "node-js"
+    assert finding.discovery_provenance.sink_shape_id == "js.http_egress"
+    # The shared page/task provenance is NOT mutated — only the finding's copy changed.
+    assert page.discovery_provenance.confirmation_primitive == "P3/P1"
+
+
+def test_inband_finding_leaves_declared_primitive_for_the_seam():
+    # An IN-BAND confirmation (declared == actual == P3/P1) is a no-op: the finding's
+    # provenance stays None so the _execute_task seam stamps the declared value unchanged.
+    agent = _make_agent()
+    page = _discovery_page()
+    inband = SSRFMethodologyResult(
+        candidate_param="url",
+        capability=SSRFCapability(fetch_confirmed=True, content_reflected=True),
+        exploitation_type=SSRFExploitationType.CLOUD_METADATA,
+        synthesized_payload="http://169.254.169.254/latest/meta-data/",
+        indicator_type="metadata_signature",
+        indicator_observed="ami-id reflected",
+        verified=True,
+        verification_strength="verified-inband",
+        phases_completed=6,
+    )
+    finding = agent._ssrf_phase6_emit(page, "url", inband)
+    assert finding.discovery_provenance is None
