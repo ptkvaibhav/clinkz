@@ -328,10 +328,13 @@ class TestFactory:
 # ---------------------------------------------------------------------------
 
 
-# Currently-supported Anthropic model IDs as of the Claude 4.x family.
+# Currently-supported Anthropic model IDs (Claude 5 family + late Claude 4.x).
 # Update this list when Anthropic publishes new aliases or retires old ones.
 _SUPPORTED_ANTHROPIC_MODEL_IDS: frozenset[str] = frozenset(
     {
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-fable-5",
         "claude-opus-4-7",
         "claude-sonnet-4-6",
         "claude-haiku-4-5-20251001",
