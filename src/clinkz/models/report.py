@@ -12,7 +12,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from clinkz.models.finding import Finding, Severity
+from clinkz.models.finding import CrossServiceResearchLead, Finding, Severity
 from clinkz.models.target import Host
 
 
@@ -113,6 +113,12 @@ class PentestReport(BaseModel):
     executive_summary: ExecutiveSummary | None = None
     hosts: list[Host] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
+    # Cross-service research-leads (design §5): plausible-but-unproven A→B chains.
+    # A DIFFERENT type than :class:`Finding`, held in a SEPARATE field, so it is
+    # structurally impossible to render one as a confirmed finding or count it in
+    # ``finding_counts`` — the type-system + storage-level separation the design
+    # requires (§5 the hard line).
+    research_leads: list[CrossServiceResearchLead] = Field(default_factory=list)
     methodology: str = ""
     appendices: dict[str, str] = Field(default_factory=dict)
 
