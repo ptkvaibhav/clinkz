@@ -1,0 +1,10 @@
+{
+  "name": "transfer-app-a",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "JS→JS transfer fixture (A2a) — FULL source. Declares a bundled local package (vuln-fetch-lib) whose OWN code carries the EGRESS_FETCH sink, so the surfaced capability is library-borne and keyed on the package, not the app.",
+  "dependencies": {
+    "express": "^4.19.2",
+    "vuln-fetch-lib": "file:./packages/vuln-fetch-lib"
+  }
+}

@@ -308,8 +308,10 @@ async def main() -> int:
                     phases_completed=6,
                 )
                 result.capability.fetch_confirmed = True
-                finding = agent._ssrf_phase6_emit(task.endpoint_url, "imageUrl", result)
-                finding.discovery_provenance = task.discovery_provenance
+                # The emit stamps the ACTUAL confirming primitive (P6) onto the finding's
+                # provenance from page.discovery_provenance (set at _fetch_page above) — so
+                # report.json reads P6, the JS discovery key (node-js), and the sink shape.
+                finding = agent._ssrf_phase6_emit(page, "imageUrl", result)
                 await agent._persist_finding(finding)
 
             _rule("REPORT + TRACE (raw artifact paths)")

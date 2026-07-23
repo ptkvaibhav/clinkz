@@ -105,6 +105,53 @@ def test_basename_guard_makes_file_read_sanctioned(tmp_path):
     assert any(g.symbol == "path_basename_strip" for g in model.guards)
 
 
+def test_workspace_package_sink_is_library_borne(tmp_path):
+    # A sink in a workspace package (declared via `workspaces` globs, not a file: dep)
+    # is library-borne and attributed to that package@version from its own package.json.
+    (tmp_path / "package.json").write_text(
+        '{"name":"root","workspaces":["packages/*"],"dependencies":{"express":"4.19.2"}}'
+    )
+    (tmp_path / "server.js").write_text(
+        "import { proxy } from 'net-lib';\n"
+        "const app = require('express')();\n"
+        "app.get('/p', proxy());\n"
+    )
+    pkgdir = tmp_path / "packages" / "net-lib"
+    pkgdir.mkdir(parents=True)
+    (pkgdir / "package.json").write_text('{"name":"net-lib","version":"3.1.4"}')
+    (pkgdir / "index.js").write_text(
+        "export function proxy () {\n"
+        "  return (req, res) => { const u = req.query.u; fetch(u).then(r => res.send(r)); };\n"
+        "}\n"
+    )
+    model = JsSourceIngestor().ingest_path(tmp_path)
+    egress = [c for c in model.call_sites if c.primitive_class is PrimitiveClass.EGRESS_FETCH]
+    assert len(egress) == 1
+    assert egress[0].carrying_dependency == "net-lib"
+    assert egress[0].carrying_version == "3.1.4"
+    # The workspace package is also surfaced as an observed technology identity.
+    assert "net-lib 3.1.4" in model.technologies
+
+
+def test_app_code_sink_in_subdir_is_not_attributed(tmp_path):
+    # A sink in the app's OWN src/ tree (not a declared dependency directory) carries no
+    # carrying dependency — it stays fingerprint-keyed. Only bundled packages are indexed.
+    (tmp_path / "package.json").write_text(
+        '{"name":"app","dependencies":{"axios":"1.6.0","express":"4.19.2"}}'
+    )
+    src = tmp_path / "src" / "routes"
+    src.mkdir(parents=True)
+    (src / "proxy.js").write_text(
+        "const axios = require('axios');\n"
+        "app.get('/p', (req, res) => { const u = req.query.u; axios.get(u); });\n"
+    )
+    model = JsSourceIngestor().ingest_path(tmp_path)
+    egress = [c for c in model.call_sites if c.primitive_class is PrimitiveClass.EGRESS_FETCH]
+    assert len(egress) == 1
+    assert egress[0].carrying_dependency == ""
+    assert egress[0].carrying_version == ""
+
+
 def test_constant_url_is_not_egress_surface(tmp_path):
     # A fetch to a constant (non-request) URL is not attack surface — no call site.
     (tmp_path / "package.json").write_text('{"dependencies": {"axios": "1.6.0"}}')
@@ -173,12 +220,19 @@ def test_engine_yields_file_read_hypothesis_from_js_source():
 
 
 def test_result_carries_carrying_dependency_manifest_for_a2():
-    # A1 boundary: the ingestor EMITS the carrying-dependency manifest on the
-    # SourceModel; the manifest survives through discover() to the result so A2's
-    # write-back can key JS capability facts on the carrying dependency (axios @ the
-    # locked version). Consuming the manifest as the fact key is A2's job — for
-    # EGRESS_FETCH the hypothesis still keys on the fingerprint today, unchanged from
-    # the existing Java flow (only LOG_INTERPOLATION reads the manifest key).
+    # The ingestor emits the MODEL-level carrying-dependency manifest (axios @ the locked
+    # version) — used for the bundles transfer edges, NOT the EGRESS_FETCH fact key. This
+    # app calls axios from its OWN server.js (an app-code sink), so per slice A2a the
+    # EGRESS_FETCH hypothesis keys on the fingerprint (node-js), NOT axios — the app-level
+    # capability is not library-transferable. (Library-borne keying is covered in
+    # test_js_transfer.py.)
     result = DiscoveryEngine().discover(str(FIXTURE), NODE_FINGERPRINT, BASE_URL)
     assert result.source_model.manifest_technology_key == "axios"
     assert result.source_model.manifest_observed_version == "1.6.7"
+    egress = next(
+        h
+        for h in result.hypotheses
+        if h.delta.call_site.primitive_class is PrimitiveClass.EGRESS_FETCH
+    )
+    assert egress.technology_key == "node-js"
+    assert egress.delta.call_site.carrying_dependency == ""
