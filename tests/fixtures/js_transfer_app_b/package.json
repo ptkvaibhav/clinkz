@@ -1,0 +1,10 @@
+{
+  "name": "transfer-app-b",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "JS→JS transfer fixture (A2a) — PARTIAL source. A DIFFERENT app that also bundles vuln-fetch-lib; the package is present per manifest (its package.json is here) but its sink SOURCE is withheld this engagement (no index.js). Cold ⇒ no egress hypothesis; warm ⇒ the vuln-fetch-lib fact is recalled and the capability is SEEDED on this app's channel.",
+  "dependencies": {
+    "express": "^4.19.2",
+    "vuln-fetch-lib": "file:./packages/vuln-fetch-lib"
+  }
+}

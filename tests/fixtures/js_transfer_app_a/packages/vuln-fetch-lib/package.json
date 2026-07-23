@@ -1,0 +1,6 @@
+{
+  "name": "vuln-fetch-lib",
+  "version": "2.3.1",
+  "description": "A bundled local package whose OWN code carries the EGRESS_FETCH sink. Discovery-ingestor fixture ONLY.",
+  "main": "index.js"
+}
