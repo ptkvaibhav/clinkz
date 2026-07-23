@@ -17,7 +17,9 @@ from clinkz.discovery.catalog import CATALOG, match_primitives, primitive_by_cla
 from clinkz.discovery.constants import CARRIER_ALIGN_HOST
 from clinkz.discovery.engine import DiscoveryEngine, DiscoveryResult
 from clinkz.discovery.hypothesis import generate_hypotheses
+from clinkz.discovery.ingestor import SourceIngestor, select_ingestor
 from clinkz.discovery.intent import compute_delta
+from clinkz.discovery.js_source_ingest import JsSourceIngestor
 from clinkz.discovery.models import (
     CallSite,
     CapabilityDelta,
@@ -68,11 +70,13 @@ __all__ = [
     "Entrypoint",
     "Guard",
     "JavaSourceIngestor",
+    "JsSourceIngestor",
     "PrimitiveClass",
     "ProofObligation",
     "ReachabilityEdge",
     "RelationEdge",
     "SoundnessGrade",
+    "SourceIngestor",
     "SourceModel",
     "capability_recall",
     "compute_delta",
@@ -85,5 +89,6 @@ __all__ = [
     "parse_version",
     "predicate_point_version",
     "primitive_by_class",
+    "select_ingestor",
     "version_satisfies",
 ]

@@ -81,19 +81,38 @@ def _normalize_tech_key(tech: str) -> str:
 
 
 def _technology_identity(
-    primitive: CapabilityPrimitive, source_model: SourceModel, fingerprint: list[str]
+    primitive: CapabilityPrimitive,
+    source_model: SourceModel,
+    fingerprint: list[str],
+    call_site: CallSite | None = None,
 ) -> tuple[str, str]:
     """The ``(technology_key, observed_version)`` a Layer-2 fact is keyed on (§S1.3).
 
-    A manifest-derived carrying dependency (``log4j-core`` / its exact version) is
-    the sharpest key when present; otherwise the most specific recon fingerprint
-    entry is normalized to a ``(key, version)`` — general, no target literal. Prefers
-    a versioned specific entry, then any specific key, then the primitive's own name.
+    Keying precedence:
+
+      * ``LOG_INTERPOLATION`` — the manifest-derived carrying dependency
+        (``log4j-core`` / its exact version), the sharpest key, unchanged.
+      * ``EGRESS_FETCH`` / ``FILE_READ`` — the sink's **per-instance** carrying
+        dependency when the sink is *library-borne* (its source file lives inside a
+        bundled dependency; slice A2a), so a capability confirmed in a shared library
+        keys on and transfers by the library. An **app-code** sink carries no
+        attribution and falls through to the fingerprint — so an app-level capability
+        (Juice Shop's ``fetch``-based SSRF, whose sink merely calls the framework) is
+        never mis-keyed on the framework and falsely transferred.
+      * otherwise — the most specific recon fingerprint entry normalized to a
+        ``(key, version)`` (general, no target literal): a versioned specific entry,
+        then any specific key, then the primitive's own name.
     """
     if primitive.primitive_class is PrimitiveClass.LOG_INTERPOLATION and (
         source_model.manifest_technology_key
     ):
         return source_model.manifest_technology_key, source_model.manifest_observed_version
+    if (
+        call_site is not None
+        and call_site.carrying_dependency
+        and primitive.primitive_class in (PrimitiveClass.EGRESS_FETCH, PrimitiveClass.FILE_READ)
+    ):
+        return call_site.carrying_dependency, call_site.carrying_version
     versioned: tuple[str, str] | None = None
     generic: str | None = None
     for tech in [*fingerprint, *source_model.technologies]:
@@ -233,7 +252,7 @@ def generate_hypotheses(
             * _EVIDENCE_WEIGHT.get(primitive.evidence_grade, 0.7)
         )
         technology_key, observed_version = _technology_identity(
-            primitive, source_model, fingerprint
+            primitive, source_model, fingerprint, delta.call_site
         )
         carrier_note = (
             f" (carrier: {', '.join(obligation.carrier_constraints)})"

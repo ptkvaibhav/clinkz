@@ -134,6 +134,17 @@ class CallSite(BaseModel):
     tainted_by: str | None = None
     guard_symbol: str | None = None
     sink_shape_id: str = ""
+    # Per-sink carrying-dependency attribution (slice A2a): set ONLY when this sink's
+    # ``file`` lives inside a bundled dependency (a declared local-path / workspace
+    # package) rather than the app's own tree — the *library-borne* case, where the
+    # vulnerable code belongs to the dependency, not the app. Empty for an app-code sink
+    # (``routes/`` / ``src/`` / the app root), which stays fingerprint-keyed. This keeps
+    # an app-level capability (e.g. Juice Shop's ``fetch``-based SSRF, whose sink is app
+    # code that merely calls the framework) from being mis-keyed on a shared library and
+    # thus falsely transferred; the Layer-2 fact keys on the carrying dependency ONLY
+    # when the sink genuinely lives in it (§S1.3).
+    carrying_dependency: str = ""
+    carrying_version: str = ""
 
 
 class Guard(BaseModel):
