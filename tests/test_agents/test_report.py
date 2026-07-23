@@ -22,7 +22,7 @@ from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage
-from clinkz.models.finding import Finding, FindingStatus, Severity
+from clinkz.models.finding import CrossServiceResearchLead, Finding, FindingStatus, Severity
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.models.target import Host
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
@@ -221,6 +221,79 @@ async def test_empty_findings_no_crash(tmp_path: Path) -> None:
     assert result["status"] == "complete"
     assert result["report"]["findings"] == []
     assert result["report"]["executive_summary"]["risk_rating"] == "Informational"
+
+
+@pytest.mark.asyncio
+async def test_cross_service_research_leads_render_separately_never_counted(
+    tmp_path: Path,
+) -> None:
+    """A research-lead (design §5) renders in its OWN section, never among findings.
+
+    Structural separation, end-to-end through the state store: a lead is written to
+    the ``research_leads`` table, read into ``report.research_leads`` (a different
+    field than ``findings``), rendered under the dedicated UNCONFIRMED heading, and
+    NOT counted in the finding totals / severity counts.
+    """
+    async with StateStore(tmp_path / "test.db") as state:
+        eid = await state.create_engagement("Test", SCOPE.model_dump())
+        await _seed_state(state, eid)  # 2 real findings (1 critical, 1 high)
+        lead = CrossServiceResearchLead(
+            candidate_chain="url@A(http://a/fetch) → egress(A) → A→B[recon] → SSRF at http://b/admin",
+            why_unconfirmed="egress_confirmed_but_B_reach_not_observed",
+            a_endpoint="http://a/fetch",
+            a_channel="url",
+            b_target="http://b/admin",
+            topology_source="recon",
+            raw_probe="GET http://a/fetch — url=http://collab/NONCE",
+            raw_null_observation="callback at generic collaborator, not co-located with B",
+        )
+        await state.add_research_lead(eid, lead.model_dump(mode="json"))
+
+        llm = MockReportLLM()
+        agent = ReportAgent(llm=llm, tools=[], scope=SCOPE, state=state, engagement_id=eid)
+        result = await agent.run({})
+
+    report = result["report"]
+    # Findings totals are UNCHANGED by the lead (never counted in coverage).
+    assert len(report["findings"]) == 2
+    assert report["executive_summary"]["critical_count"] == 1
+    assert report["executive_summary"]["high_count"] == 1
+    # The lead lives in its own field, structurally separate from findings.
+    assert len(report["research_leads"]) == 1
+    assert report["research_leads"][0]["why_unconfirmed"] == (
+        "egress_confirmed_but_B_reach_not_observed"
+    )
+    # The markdown carries the dedicated UNCONFIRMED section, and the lead's chain is
+    # under it — NOT in any confirmed-finding heading.
+    md_path = Path(result["markdown_path"])
+    md = md_path.read_text(encoding="utf-8")
+    assert "Cross-service research leads (candidate chains — UNCONFIRMED)" in md
+    assert "**NOT findings**" in md
+    lead_heading_idx = md.index("Cross-service research leads")
+    # Every confirmed-finding heading precedes the research-leads section.
+    assert md.index("SQL Injection") < lead_heading_idx
+    assert md.index("Reflected XSS") < lead_heading_idx
+
+
+@pytest.mark.asyncio
+async def test_research_leads_render_even_with_no_findings(tmp_path: Path) -> None:
+    """A research-lead surfaces even when there are zero confirmed findings."""
+    async with StateStore(tmp_path / "test.db") as state:
+        eid = await state.create_engagement("Test", SCOPE.model_dump())
+        lead = CrossServiceResearchLead(
+            candidate_chain="chain-x", why_unconfirmed="blind_unconfirmed_within_window"
+        )
+        await state.add_research_lead(eid, lead.model_dump(mode="json"))
+
+        llm = MockReportLLM()
+        agent = ReportAgent(llm=llm, tools=[], scope=SCOPE, state=state, engagement_id=eid)
+        result = await agent.run({})
+
+    assert result["report"]["findings"] == []
+    md = Path(result["markdown_path"]).read_text(encoding="utf-8")
+    assert "No validated findings." in md
+    assert "Cross-service research leads (candidate chains — UNCONFIRMED)" in md
+    assert "chain-x" in md
 
 
 @pytest.mark.asyncio
