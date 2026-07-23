@@ -1,0 +1,43 @@
+{
+  "id": "32030626-3b3b-46ac-bcea-9cb903c28229",
+  "engagement_name": "Cross-service B1 arm c",
+  "target_scope": [
+    "localhost",
+    "127.0.0.1",
+    "host.docker.internal",
+    "internal-metadata"
+  ],
+  "test_start": "2026-07-23T16:34:12.059723Z",
+  "test_end": "2026-07-23T16:34:12.059723Z",
+  "generated_at": "2026-07-23T16:34:12.060600Z",
+  "executive_summary": {
+    "overview": "Penetration test of localhost, 127.0.0.1, host.docker.internal, internal-metadata. 0 findings identified.",
+    "risk_rating": "Informational",
+    "critical_count": 0,
+    "high_count": 0,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0,
+    "key_findings": [],
+    "recommendations": []
+  },
+  "hosts": [],
+  "findings": [],
+  "research_leads": [
+    {
+      "candidate_chain": "imageUrl@A(http://localhost:3000/profile/image/url) \u2192 egress(A) \u2192 A\u2192B[recon] \u2192 SSRF impact at http://internal-metadata:80/latest/meta-data/",
+      "why_unconfirmed": "egress_confirmed_but_B_reach_not_observed",
+      "a_endpoint": "http://localhost:3000/profile/image/url",
+      "a_channel": "imageUrl",
+      "b_target": "http://internal-metadata:80/latest/meta-data/",
+      "topology_source": "recon",
+      "reachability_grade": "cross_service_topology",
+      "reach_confidence": 0.25,
+      "raw_probe": "POST http://localhost:3000/profile/image/url \u2014 imageUrl=http://host.docker.internal:18082/qrjchkyshwahqz23lr3oa55a3y",
+      "raw_null_observation": "callback landed at collaborator 'host.docker.internal:18082' which is NOT co-located with B (http://internal-metadata:80/latest/meta-data/) \u2014 proves A egresses somewhere, NOT that A reaches internal service B",
+      "discovered_at": "2026-07-23T16:34:12.055262Z"
+    }
+  ],
+  "methodology": "",
+  "appendices": {}
+}

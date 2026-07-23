@@ -1,0 +1,26 @@
+[
+  {
+    "hypothesis_id": "hyp:xsvc:egress_fetch.java_openconnection:imageUrl:http://host.docker.internal:18082/",
+    "a_endpoint": "http://localhost:3000/profile/image/url",
+    "a_channel": "imageUrl",
+    "b_target": "http://host.docker.internal:18082/",
+    "reachability_grade": "cross_service_topology",
+    "topology_source": "recon",
+    "reach_confidence": 0.25,
+    "rank_score": 0.1688,
+    "test_method": "_test_ssrf",
+    "sink_shape_id": "js.http_egress"
+  },
+  {
+    "hypothesis_id": "hyp:xsvc:egress_fetch.java_openconnection:imageUrl:http://internal-metadata:80/latest/meta-data/",
+    "a_endpoint": "http://localhost:3000/profile/image/url",
+    "a_channel": "imageUrl",
+    "b_target": "http://internal-metadata:80/latest/meta-data/",
+    "reachability_grade": "cross_service_topology",
+    "topology_source": "recon",
+    "reach_confidence": 0.25,
+    "rank_score": 0.1688,
+    "test_method": "_test_ssrf",
+    "sink_shape_id": "js.http_egress"
+  }
+]

