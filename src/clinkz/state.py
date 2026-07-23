@@ -50,6 +50,13 @@ CREATE TABLE IF NOT EXISTS findings (
     created_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS research_leads (
+    id              TEXT PRIMARY KEY,
+    engagement_id   TEXT NOT NULL REFERENCES engagements(id),
+    lead_json       TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS actions (
     id              TEXT PRIMARY KEY,
     engagement_id   TEXT NOT NULL REFERENCES engagements(id),
@@ -374,6 +381,48 @@ class StateStore:
         async with self._conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
         return [json.loads(row["finding_json"]) for row in rows]
+
+    async def add_research_lead(
+        self,
+        engagement_id: str,
+        lead_data: dict[str, Any],
+    ) -> str:
+        """Persist one cross-service research-lead (design §5).
+
+        A research-lead is **not** a finding: it lives in its own table, is read
+        into a separate report section, and never enters the findings query — so it
+        is structurally impossible to render it as a confirmed finding or count it
+        in coverage.
+
+        Args:
+            engagement_id: Parent engagement UUID.
+            lead_data: Serialized :class:`~clinkz.models.finding.CrossServiceResearchLead` dict.
+
+        Returns:
+            The lead's row UUID.
+        """
+        lid = self._new_id()
+        await self._conn.execute(
+            "INSERT INTO research_leads (id, engagement_id, lead_json, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (lid, engagement_id, json.dumps(lead_data), self._now()),
+        )
+        await self._conn.commit()
+        return lid
+
+    async def get_research_leads(self, engagement_id: str) -> list[dict[str, Any]]:
+        """Return the cross-service research-leads recorded for an engagement.
+
+        Deliberately a **separate** query from :meth:`get_findings` so a lead can
+        never leak into the confirmed-findings set (design §5 — the type-level +
+        storage-level separation).
+        """
+        async with self._conn.execute(
+            "SELECT lead_json FROM research_leads WHERE engagement_id=?",
+            (engagement_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [json.loads(row["lead_json"]) for row in rows]
 
     async def mark_finding_validated(self, finding_id: str) -> None:
         """Mark a finding as validated by the Critic Agent.

@@ -138,6 +138,37 @@ class EngagementScope(BaseModel):
             return False
         return self._matches_any(host, port, self.targets)
 
+    def addresses_equivalent(self, host_a: str, host_b: str) -> bool:
+        """Whether two host/URL strings refer to the same network address.
+
+        The cross-service **co-location oracle** (cross-service design §3/§4): a
+        cross-service SSRF finding is emitted only when the confirming callback's
+        destination is co-located with service B — i.e. the collaborator's callback
+        host and B's in-scope endpoint resolve to the same address. A generic
+        collaborator NOT at B fails this check, so its callback proves only "A
+        egresses somewhere" (plain SSRF) and the outcome is a research-lead, never a
+        cross-service finding. A literal host match short-circuits; otherwise the two
+        hosts are resolved (system DNS + docker-network fallback) and compared for
+        IP-set overlap. Resolution failure ⇒ ``False`` (not co-located — the honest
+        default, never a phantom co-location).
+
+        Args:
+            host_a: A host or URL string.
+            host_b: A host or URL string.
+
+        Returns:
+            ``True`` iff both resolve to (or literally are) the same address.
+        """
+        a_host, a_port = self._extract_host_port(host_a)
+        b_host, b_port = self._extract_host_port(host_b)
+        if not a_host or not b_host:
+            return False
+        if a_host.lower() == b_host.lower():
+            return True
+        a_addrs = self._resolved_addresses(a_host, a_port)
+        b_addrs = self._resolved_addresses(b_host, b_port)
+        return bool(a_addrs and b_addrs and (a_addrs & b_addrs))
+
     @staticmethod
     def _extract_host(target: str) -> str:
         """Extract the bare hostname/IP from a target string.
