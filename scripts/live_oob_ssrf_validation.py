@@ -264,7 +264,7 @@ async def main() -> int:
                     phases_completed=6,
                 )
                 oob_result.capability.fetch_confirmed = True
-                oob_finding = agent._ssrf_phase6_emit(twp_url, "url", oob_result)
+                oob_finding = agent._ssrf_phase6_emit(page, "url", oob_result)
                 await agent._persist_finding(oob_finding)
 
             # ---- REPORT ------------------------------------------------------
