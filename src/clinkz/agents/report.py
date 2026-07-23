@@ -21,7 +21,7 @@ from clinkz.agents.base import BaseAgent
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
 from clinkz.llm.base import LLMClient
-from clinkz.models.finding import Finding, FindingStatus, Severity
+from clinkz.models.finding import CrossServiceResearchLead, Finding, FindingStatus, Severity
 from clinkz.models.report import ExecutiveSummary, PentestReport
 from clinkz.models.scope import EngagementScope
 from clinkz.models.target import Host
@@ -123,11 +123,15 @@ class ReportAgent(BaseAgent):
         # Pull engagement data from state store
         findings_raw = await self.state.get_findings(engagement_id, validated_only=False)
         targets_raw = await self.state.get_targets(engagement_id)
+        # Cross-service research-leads live in their OWN table (design §5), read into
+        # a separate section — never merged into findings, never counted in coverage.
+        leads_raw = await self.state.get_research_leads(engagement_id)
 
         self._logger.info(
-            "Loaded %d findings, %d targets",
+            "Loaded %d findings, %d targets, %d cross-service research-leads",
             len(findings_raw),
             len(targets_raw),
+            len(leads_raw),
         )
 
         # Parse Finding models
@@ -145,6 +149,15 @@ class ReportAgent(BaseAgent):
                 host_models.append(Host.model_validate(td))
             except Exception as exc:
                 self._logger.warning("Could not parse host '%s': %s", td.get("id"), exc)
+
+        # Parse CrossServiceResearchLead models (design §5) — a DIFFERENT type than
+        # Finding, so they cannot be rendered in the confirmed-findings section.
+        lead_models: list[CrossServiceResearchLead] = []
+        for ld in leads_raw:
+            try:
+                lead_models.append(CrossServiceResearchLead.model_validate(ld))
+            except Exception as exc:
+                self._logger.warning("Could not parse research-lead: %s", exc)
 
         # Build severity counts for executive summary (no LLM)
         severity_counts = {s: 0 for s in Severity}
@@ -179,6 +192,7 @@ class ReportAgent(BaseAgent):
             executive_summary=exec_summary,
             hosts=host_models,
             findings=finding_models,
+            research_leads=lead_models,
         )
 
         report_dict = report.model_dump(mode="json")
@@ -246,6 +260,7 @@ class ReportAgent(BaseAgent):
 
         if not findings:
             lines.append("No validated findings.")
+            ReportAgent._render_research_leads(lines, report.research_leads)
             return "\n".join(lines)
 
         for i, f in enumerate(findings, 1):
@@ -277,4 +292,51 @@ class ReportAgent(BaseAgent):
             lines.append(f"**Remediation:** {f.remediation or 'N/A'}")
             lines.extend(["", "---", ""])
 
+        ReportAgent._render_research_leads(lines, report.research_leads)
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_research_leads(lines: list[str], leads: list[CrossServiceResearchLead]) -> None:
+        """Render the dedicated 'Cross-service research leads (UNCONFIRMED)' section.
+
+        Kept **structurally separate** from the confirmed-findings loop above
+        (design §5): research-leads are a different type, rendered under their own
+        heading, explicitly marked UNCONFIRMED and never counted in the finding
+        totals. Each lead carries the candidate chain, why it stayed unconfirmed,
+        and the RAW null result (the probe that was sent and the null observation)
+        so the operator sees exactly what was tried.
+        """
+        if not leads:
+            return
+        lines.extend(
+            [
+                "## Cross-service research leads (candidate chains — UNCONFIRMED)",
+                "",
+                "> These are **plausible-but-unproven** A→B cross-service chains. They "
+                "are **NOT findings**, are **not counted** in the totals above, and were "
+                "**not confirmed** by an oracle co-located with service B. Each is an "
+                "operator worklist item — investigate with credentials / network access.",
+                "",
+            ]
+        )
+        for i, lead in enumerate(leads, 1):
+            lines.extend(
+                [
+                    f"### L{i}. {lead.candidate_chain}",
+                    "",
+                    f"- **Why unconfirmed:** {lead.why_unconfirmed}",
+                    f"- **A endpoint:** {lead.a_endpoint}  (channel: {lead.a_channel})",
+                    f"- **B target:** {lead.b_target}",
+                    f"- **Topology source:** {lead.topology_source} "
+                    f"(grade: {lead.reachability_grade}, conf: {lead.reach_confidence})",
+                    "",
+                    "**Raw null result:**",
+                    "```",
+                    f"probe: {lead.raw_probe}",
+                    f"observation: {lead.raw_null_observation}",
+                    "```",
+                    "",
+                    "---",
+                    "",
+                ]
+            )
