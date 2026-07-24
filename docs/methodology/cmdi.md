@@ -10,7 +10,7 @@ echo-canary reflected in a 4xx/5xx / stack trace.
 Phase-1 candidacy runs a reflection-guarded **echo-canary** probe
 (`<sep>echo <canary>`) so command injection surfaces even when the base command
 writes only to stderr (e.g. DVWA's `ping <bad-host>`, dropped by `shell_exec`)
-and bare-separator probes look inert (LESSONS #2/#15 — the CMDi premise miss).
+and bare-separator probes look inert (LESSONS #15 — the CMDi premise miss).
 
 ## Reflection-honest verification (phase 5)
 
