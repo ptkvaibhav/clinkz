@@ -301,12 +301,15 @@ class ReachabilityEdge(BaseModel):
     """An untrusted channel → Δ-capability edge (§2.5/§4).
 
     Single-service by default (the entrypoint and the sink both belong to one
-    ``SourceModel``). The two cross-service fields are populated ONLY for a
-    composed A→B chain (cross-service design §1/§2): ``cross_service_target`` is
-    B's in-scope internal URL (the confirmation target — the sink lives in B, not
-    A), and ``topology_source`` names how the A→B boundary hop was discovered
-    (``source`` / ``recon``). Both empty for a single-service edge, so a
-    single-service edge is byte-identical to before this design.
+    ``SourceModel``). The cross-service fields are populated ONLY for a composed A→B
+    chain (cross-service design §1/§2): ``cross_service_target`` is B's in-scope
+    internal URL (the confirmation target — the sink lives in B, not A),
+    ``topology_source`` names how the A→B boundary hop was discovered
+    (``source`` / ``recon`` / ``catalog``), and ``cross_service_b_identity`` is B's
+    abstracted role/tech-class (slice B2 — recon-derived, NEVER B's URL; empty when B
+    is un-abstractable, in which case a confirmed reach stays engagement-local, §6.4).
+    All empty for a single-service edge, so a single-service edge is byte-identical to
+    before this design.
     """
 
     channel_param: str
@@ -319,7 +322,16 @@ class ReachabilityEdge(BaseModel):
     reach_confidence: float = 0.0
     # Cross-service composition (design §1/§2). Empty ⇒ a single-service edge.
     cross_service_target: str = ""
-    topology_source: str = ""  # "source" | "recon" — how the A→B hop was found
+    topology_source: str = ""  # "source" | "recon" | "catalog" — how the A→B hop was found
+    # A's + B's abstracted role/tech-class (slice B2 §6.4), recon-derived — carried
+    # onto the task so the CONFIRMED-reach write-back can key an abstracted ``reaches``
+    # edge WITHOUT ever reading a URL/host. A's identity is the SPECIFIC service role
+    # (``owasp-juice-shop``, ``apache-solr``) — deliberately distinct from the
+    # capability fact's key (which may be a broad app-code ``node-js``): a topology
+    # reach is a property of the specific service, not the language. Empty ⇒
+    # un-abstractable ⇒ engagement-local only (no durable edge).
+    cross_service_a_identity: str = ""
+    cross_service_b_identity: str = ""
 
 
 class DiscoveryHypothesis(BaseModel):
@@ -408,6 +420,10 @@ class DiscoveryHypothesis(BaseModel):
             # hypotheses, so the normal ``_test_ssrf`` dispatch is unchanged.
             cross_service_target=self.edge.cross_service_target,
             cross_service_source=self.edge.topology_source,
+            # A's + B's abstracted role/tech-class (slice B2 §6.4) — for the YES-only
+            # ``reaches`` write-back on a confirmed reach. Never a URL/host.
+            cross_service_a_identity=self.edge.cross_service_a_identity,
+            cross_service_b_identity=self.edge.cross_service_b_identity,
         )
 
 

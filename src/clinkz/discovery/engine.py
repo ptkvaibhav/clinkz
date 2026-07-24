@@ -40,6 +40,7 @@ from clinkz.discovery.topology import (
     discover_cross_service_edges,
     scan_static_egress_hosts,
 )
+from clinkz.discovery.topology_recall import recall_cross_service_edges
 from clinkz.models.finding import ExploitTask
 from clinkz.observability.trace import get_active_trace_writer
 
@@ -116,7 +117,7 @@ class DiscoveryEngine:
         deltas = compute_delta(source_model, active_primitives)
         edges = compute_reachability(source_model, deltas)
         edges = self._append_cross_service_edges(
-            edges, active_primitives, source_dir, topology_context
+            edges, active_primitives, source_dir, topology_context, technology_relations or []
         )
         hypotheses = generate_hypotheses(
             source_model,
@@ -153,13 +154,24 @@ class DiscoveryEngine:
         active_primitives: list[CapabilityPrimitive],
         source_dir: str,
         topology_context: TopologyContext | None,
+        technology_relations: list[dict[str, Any]],
     ) -> list[ReachabilityEdge]:
-        """Append cross-service A→B edges (design §1/§2), or return *edges* unchanged.
+        """Append cross-service A→B edges (design §1/§2/§6), or return *edges* unchanged.
 
         Composes only A's ``EGRESS_FETCH`` edges (a cross-service SSRF needs A's egress
-        channel). With no ``topology_context`` this is a no-op, so the single-service
-        edge set — and therefore every single-service hypothesis's grade and rank — is
-        byte-identical to before this design.
+        channel). Two composition sources, both graded ``CROSS_SERVICE_TOPOLOGY``:
+
+          * the DETERMINISTIC source/recon edges (slice B1); then
+          * the LEARNED ``catalog`` edges (slice B2) — a SEPARATE topology recall over
+            the KB's ``reaches`` rows, seeding ONLY B candidates the deterministic pass
+            did not already cover (so a learned edge never duplicates nor out-ranks a
+            recon/source edge for the same B). This is what lets a withheld-adjacency
+            run test a reach a prior engagement confirmed (§6/§8).
+
+        With no ``topology_context`` this is a no-op, so the single-service edge set —
+        and therefore every single-service hypothesis's grade and rank — is
+        byte-identical to before this design. With an empty KB the catalog pass yields
+        nothing, so behaviour is exactly the deterministic B1 set (cold start).
         """
         if topology_context is None:
             return edges
@@ -171,7 +183,11 @@ class DiscoveryEngine:
             return edges
         static_hosts = scan_static_egress_hosts(source_dir)
         cross = discover_cross_service_edges(egress_edges, topology_context, static_hosts)
-        return [*edges, *cross]
+        covered = {e.cross_service_target for e in cross}
+        catalog = recall_cross_service_edges(
+            egress_edges, topology_context, technology_relations, covered
+        )
+        return [*edges, *cross, *catalog]
 
 
 def _emit_discovery_trace(result: DiscoveryResult) -> None:

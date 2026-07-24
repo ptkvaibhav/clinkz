@@ -43,6 +43,7 @@ from clinkz.discovery import (
     DiscoveryEngine,
     SourceModel,
     TopologyContext,
+    abstract_reaches_identity,
     derive_bundles_edges,
     derive_successor_edges,
     predicate_point_version,
@@ -770,7 +771,7 @@ class OrchestratorAgent:
             self._logger.warning("Discovery: no base URL for %s — skipping", targets_str)
             return []
         capability_facts, technology_relations = await self._load_capability_store()
-        topology_context = self._build_topology_context(base_url)
+        topology_context = self._build_topology_context(base_url, technologies)
         try:
             result = DiscoveryEngine().discover(
                 scope.source_dir,
@@ -918,8 +919,10 @@ class OrchestratorAgent:
         )
         return collab
 
-    def _build_topology_context(self, base_url: str) -> TopologyContext | None:
-        """Build the cross-service :class:`TopologyContext` from scope (design §2b).
+    def _build_topology_context(
+        self, base_url: str, technologies: list[str]
+    ) -> TopologyContext | None:
+        """Build the cross-service :class:`TopologyContext` from scope (design §2b/§6).
 
         Service A is the discovery ``base_url``; the candidate B set is every OTHER
         in-scope target (distinct bare hostname from A). This is the recon-adjacency
@@ -929,6 +932,15 @@ class OrchestratorAgent:
         A's static egress hosts against these candidates. Returns ``None`` (no
         cross-service composition) when there is no distinct second in-scope service —
         a single-service engagement, unchanged behaviour.
+
+        Slice B2 (§6.4): ``origin_identity`` is A's abstracted SPECIFIC role/tech-class
+        from the recon fingerprint (:func:`_abstract_origin_identity`) — matched against
+        a learned ``reaches`` edge's A-end and carried into a confirmed reach's edge
+        write-back. ``service_identities`` (B-URL → B's role/tech-class) is left EMPTY
+        here: the black-box multi-target orchestrator does not deeply fingerprint a
+        secondary in-scope service, so B is typically un-abstractable and a confirmed
+        reach stays engagement-local (the honest §9 default). A gray-box driver that
+        DOES know B's role supplies ``service_identities`` directly.
         """
         from urllib.parse import urlparse
 
@@ -949,7 +961,28 @@ class OrchestratorAgent:
             services.append(url)
         if not services:
             return None
-        return TopologyContext(origin_host=origin_bare, internal_services=services)
+        return TopologyContext(
+            origin_host=origin_bare,
+            internal_services=services,
+            origin_identity=self._abstract_origin_identity(technologies),
+        )
+
+    @staticmethod
+    def _abstract_origin_identity(technologies: list[str]) -> str:
+        """A's most-specific abstractable role/tech-class from the fingerprint (§6.4).
+
+        Runs each fingerprint entry through the write-boundary abstraction fence
+        (:func:`~clinkz.discovery.abstract_reaches_identity`) — which drops hosts, bare
+        versions, and over-broad bare languages — and keeps the MOST specific survivor
+        (the longest normalized key, a proxy for specificity: ``owasp-juice-shop`` over
+        ``express``). ``""`` when nothing abstracts (⇒ no learned transfer keys on A).
+        """
+        best = ""
+        for tech in technologies:
+            key = abstract_reaches_identity(tech)
+            if key and len(key) > len(best):
+                best = key
+        return best
 
     def _primary_target_url(self) -> str:
         """A base URL for discovery from the first in-scope target (best effort)."""

@@ -50,12 +50,18 @@ from clinkz.discovery.models import (
 logger = logging.getLogger(__name__)
 
 # Discovery-source sub-ordering WITHIN the cross-service grade (design §1 table).
-# source (A statically calls B) > recon (open wire, no proven call). These order
-# candidate chains only — never an emission gate.
+# source (A statically calls B) > recon (open wire, no proven call) > catalog (a
+# LEARNED reaches topology prior, slice B2 — the WEAKEST source, strictly below
+# observing the adjacency now). These order candidate chains only — never an
+# emission gate.
 TOPOLOGY_SOURCE_STATIC = "source"
 TOPOLOGY_SOURCE_RECON = "recon"
+TOPOLOGY_SOURCE_CATALOG = "catalog"
 _REACH_CONFIDENCE_SOURCE = 0.35
 _REACH_CONFIDENCE_RECON = 0.25
+# A learned topology (§2c / §6) is the weakest discovery source: strictly below recon
+# (0.25) — a cross-engagement prior never out-ranks observing the wire open now.
+_REACH_CONFIDENCE_CATALOG = 0.15
 
 # Bounds — a loose topology prior must never flood the plan or the scanner.
 _MAX_B_CANDIDATES = 8
@@ -91,24 +97,40 @@ class TopologyContext(BaseModel):
             the SOURCE upgrade (§2a) is computed here by matching A's static egress
             hosts against these. Order is the caller's ranking; the first
             :data:`_MAX_B_CANDIDATES` are considered.
+        origin_identity: Service A's abstracted role/tech-class (recon-derived, slice
+            B2 §6.4) — matched against a learned ``reaches`` edge's A-end for the
+            catalog recall, and carried into the CONFIRMED-reach write-back as the
+            edge's A-end. NEVER A's URL/host. Empty ⇒ A un-abstractable (no learned
+            transfer, no durable edge).
+        service_identities: ``B-URL → B's abstracted role/tech-class`` (recon-derived,
+            slice B2 §6.4). Two uses, both keeping B's URL out of the KB: (1) it stamps
+            each cross-service edge's ``cross_service_b_identity`` so the write-back
+            keys an abstracted ``reaches`` edge without ever reading B's URL; (2) it is
+            the B-candidate set the SEPARATE catalog recall matches a learned
+            ``reaches`` edge's B-end against — independent of ``internal_services`` so
+            a run whose recon adjacency is WITHHELD can still recall a learned reach
+            (the §6/§8 two-engagement transfer). A URL absent from this map ⇒ B
+            un-abstractable ⇒ engagement-local only.
     """
 
     origin_host: str = ""
     internal_services: list[str] = Field(default_factory=list)
+    origin_identity: str = ""
+    service_identities: dict[str, str] = Field(default_factory=dict)
 
 
 def topology_reach_confidence(topology_source: str) -> float:
     """The composed edge's ``reach_confidence`` for a discovery source (design §1).
 
-    source (A statically calls B) 0.35 > recon (open wire) 0.25. Ranking weight
-    only — never an emission gate. An unknown source falls to the recon prior (the
-    weakest of the two built sources).
+    source (A statically calls B) 0.35 > recon (open wire) 0.25 > catalog (a learned
+    ``reaches`` prior, slice B2) 0.15. Ranking weight only — never an emission gate.
+    An unknown source falls to the recon prior.
     """
-    return (
-        _REACH_CONFIDENCE_SOURCE
-        if topology_source == TOPOLOGY_SOURCE_STATIC
-        else _REACH_CONFIDENCE_RECON
-    )
+    if topology_source == TOPOLOGY_SOURCE_STATIC:
+        return _REACH_CONFIDENCE_SOURCE
+    if topology_source == TOPOLOGY_SOURCE_CATALOG:
+        return _REACH_CONFIDENCE_CATALOG
+    return _REACH_CONFIDENCE_RECON
 
 
 def _host_of(url_or_host: str) -> str:
@@ -221,31 +243,22 @@ def discover_cross_service_edges(
         is_static = b_host in static_bare
         topology_source = TOPOLOGY_SOURCE_STATIC if is_static else TOPOLOGY_SOURCE_RECON
         reach_confidence = _REACH_CONFIDENCE_SOURCE if is_static else _REACH_CONFIDENCE_RECON
+        # B's recon-derived identity (slice B2 §6.4) — carried for the write-back's
+        # abstraction fence; the fence normalizes/validates it at write time, so a
+        # missing or un-abstractable identity simply yields no durable edge. NEVER B's
+        # URL: an absent entry stays "" and the reach stays engagement-local.
+        b_identity = topology_context.service_identities.get(service, "")
         for egress in egress_edges:
             if len(edges) >= _MAX_CROSS_SERVICE_EDGES:
                 break
-            composed = compose_soundness(
-                [egress.soundness_grade, SoundnessGrade.CROSS_SERVICE_TOPOLOGY]
-            )
             edges.append(
-                ReachabilityEdge(
-                    channel_param=egress.channel_param,
-                    channel_location=egress.channel_location,
-                    primitive_id=egress.primitive_id,
-                    entrypoint_route=egress.entrypoint_route,
-                    entrypoint_methods=list(egress.entrypoint_methods),
-                    path_evidence=(
-                        f"cross-service ({topology_source}): A's egress channel "
-                        f"{egress.channel_param!r} on {egress.entrypoint_methods} "
-                        f"{egress.entrypoint_route or '/'} → in-scope internal service {service} "
-                        f"(A-side {egress.soundness_grade.value}, boundary hop "
-                        f"{SoundnessGrade.CROSS_SERVICE_TOPOLOGY.value} — composite is the "
-                        "weakest hop; the co-located P3/P6 proof at B confirms)"
-                    ),
-                    soundness_grade=composed,
-                    reach_confidence=reach_confidence,
-                    cross_service_target=service,
-                    topology_source=topology_source,
+                build_cross_service_edge(
+                    egress,
+                    service,
+                    topology_source,
+                    reach_confidence,
+                    b_identity,
+                    topology_context.origin_identity,
                 )
             )
     if edges:
@@ -256,3 +269,47 @@ def discover_cross_service_edges(
             len(static_bare),
         )
     return edges
+
+
+def build_cross_service_edge(
+    egress: ReachabilityEdge,
+    service: str,
+    topology_source: str,
+    reach_confidence: float,
+    b_identity: str,
+    a_identity: str = "",
+) -> ReachabilityEdge:
+    """Compose one A-egress edge with the A→B boundary hop into a cross-service edge.
+
+    The single source of truth for a cross-service ``ReachabilityEdge`` — used by both
+    the deterministic discovery (:func:`discover_cross_service_edges`) and the learned
+    catalog recall (:func:`~clinkz.discovery.topology_recall.recall_cross_service_edges`),
+    so a ``recon`` / ``source`` / ``catalog`` edge is byte-identical apart from its
+    ``topology_source`` + ``reach_confidence``. The ``soundness_grade`` is
+    :func:`compose_soundness` over ``[egress.grade, CROSS_SERVICE_TOPOLOGY]`` — always
+    ``CROSS_SERVICE_TOPOLOGY`` (the weakest hop dominates, §1), never the egress grade.
+    ``a_identity`` / ``b_identity`` are A's + B's abstracted role identities (slice B2)
+    threaded for the write-back — never a URL/host.
+    """
+    composed = compose_soundness([egress.soundness_grade, SoundnessGrade.CROSS_SERVICE_TOPOLOGY])
+    return ReachabilityEdge(
+        channel_param=egress.channel_param,
+        channel_location=egress.channel_location,
+        primitive_id=egress.primitive_id,
+        entrypoint_route=egress.entrypoint_route,
+        entrypoint_methods=list(egress.entrypoint_methods),
+        path_evidence=(
+            f"cross-service ({topology_source}): A's egress channel "
+            f"{egress.channel_param!r} on {egress.entrypoint_methods} "
+            f"{egress.entrypoint_route or '/'} → in-scope internal service {service} "
+            f"(A-side {egress.soundness_grade.value}, boundary hop "
+            f"{SoundnessGrade.CROSS_SERVICE_TOPOLOGY.value} — composite is the "
+            "weakest hop; the co-located P3/P6 proof at B confirms)"
+        ),
+        soundness_grade=composed,
+        reach_confidence=reach_confidence,
+        cross_service_target=service,
+        topology_source=topology_source,
+        cross_service_a_identity=a_identity,
+        cross_service_b_identity=b_identity,
+    )

@@ -41,13 +41,21 @@ from clinkz.discovery.models import (
 from clinkz.discovery.reachability import compute_reachability
 from clinkz.discovery.recall import capability_recall
 from clinkz.discovery.relations import (
+    RELATION_REACHES,
     RelationEdge,
+    abstract_reaches_identity,
     derive_bundles_edges,
+    derive_reaches_edge,
     derive_successor_edges,
     normalize_tech_identity,
 )
 from clinkz.discovery.source_ingest import JavaSourceIngestor
-from clinkz.discovery.topology import TopologyContext
+from clinkz.discovery.topology import (
+    TOPOLOGY_SOURCE_CATALOG,
+    TopologyContext,
+    topology_reach_confidence,
+)
+from clinkz.discovery.topology_recall import recall_cross_service_edges
 from clinkz.discovery.versions import (
     parse_version,
     predicate_point_version,
@@ -57,6 +65,8 @@ from clinkz.discovery.versions import (
 __all__ = [
     "CARRIER_ALIGN_HOST",
     "CATALOG",
+    "RELATION_REACHES",
+    "TOPOLOGY_SOURCE_CATALOG",
     "CallSite",
     "CapabilityDelta",
     "CapabilityFact",
@@ -80,10 +90,12 @@ __all__ = [
     "SourceIngestor",
     "SourceModel",
     "TopologyContext",
+    "abstract_reaches_identity",
     "capability_recall",
     "compute_delta",
     "compute_reachability",
     "derive_bundles_edges",
+    "derive_reaches_edge",
     "derive_successor_edges",
     "generate_hypotheses",
     "match_primitives",
@@ -91,6 +103,8 @@ __all__ = [
     "parse_version",
     "predicate_point_version",
     "primitive_by_class",
+    "recall_cross_service_edges",
     "select_ingestor",
+    "topology_reach_confidence",
     "version_satisfies",
 ]
