@@ -1,5 +1,28 @@
 #!/bin/bash
-echo "Running ruff check..."
-ruff check src/ --fix || exit 1
-echo "Running ruff format..."
-ruff format src/ || exit 1
+# Clinkz enforcement pre-commit hook (active via: git config core.hooksPath .githooks).
+#
+# Runs three guards against the staged index; any non-zero blocks the commit:
+#   1. outputs_guard  — refuse any staged path under outputs/ (even `git add -f`)
+#   2. secret_guard   — refuse credential shapes and .env files
+#   3. gates          — ruff check + format --check on src/ tests/ (when code is staged)
+#
+# These encode failures that actually happened (a 44-artifact outputs/ leak to a
+# public repo; a CI format miss). Never bypass with --no-verify — CLAUDE.md's
+# pre-push gates forbid it.
+set -u
+
+ROOT="$(git rev-parse --show-toplevel)"
+HOOKS_DIR="$ROOT/.claude/hooks"
+PYTHON="${CLINKZ_PYTHON:-python}"
+
+fail=0
+"$PYTHON" "$HOOKS_DIR/outputs_guard.py" || fail=1
+"$PYTHON" "$HOOKS_DIR/secret_guard.py" || fail=1
+"$PYTHON" "$HOOKS_DIR/gates.py" || fail=1
+
+if [ "$fail" -ne 0 ]; then
+  echo "" >&2
+  echo "pre-commit: BLOCKED — resolve the guard failures above (never use --no-verify)." >&2
+  exit 1
+fi
+exit 0
