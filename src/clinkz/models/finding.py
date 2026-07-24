@@ -170,9 +170,18 @@ class ExploitTask(BaseModel):
     # the cross-service confirmation driver (co-location gate + research-lead), which
     # reuses the P6 machinery — no new oracle, no new ``_test_*`` method.
     cross_service_target: str = ""
-    # How the A→B boundary hop was discovered (``source`` / ``recon``, design §2) —
-    # carried onto the finding/research-lead for provenance. Empty for non-cross-service.
+    # How the A→B boundary hop was discovered (``source`` / ``recon`` / ``catalog``,
+    # design §2) — carried onto the finding/research-lead for provenance. Empty for
+    # non-cross-service. ``catalog`` = a learned ``reaches`` topology prior (slice B2).
     cross_service_source: str = ""
+    # A's + B's abstracted role/tech-class (slice B2 §6.4), recon-derived — the two
+    # ends of the ``reaches`` edge written back on a CONFIRMED reach. NEVER a URL/host,
+    # so a deployment-specific identifier cannot enter the cross-engagement KB. A's is
+    # the SPECIFIC service role (``owasp-juice-shop``), distinct from the capability
+    # fact key. Empty (either end) ⇒ un-abstractable ⇒ the confirmed reach stays
+    # engagement-local (no durable edge).
+    cross_service_a_identity: str = ""
+    cross_service_b_identity: str = ""
     # Discovery-hypothesis ranking metadata, for the §6.2 "gets smarter" trace.
     # ``prior_source`` is ``capability_recall`` when a Layer-2 recall boosted/seeded
     # the hypothesis, else ``cold_derivation``; ``rank_score`` is the hypothesis
