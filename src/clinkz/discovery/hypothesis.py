@@ -259,9 +259,22 @@ def generate_hypotheses(
             if obligation.carrier_constraints
             else ""
         )
+        # A cross-service edge reuses A's egress channel, so its hypothesis id would
+        # collide with the single-service egress hypothesis on the same param —
+        # disambiguate by B's target (and note the A→B chain in the rationale).
+        if edge.cross_service_target:
+            hyp_id = f"hyp:xsvc:{primitive.id}:{edge.channel_param}:{edge.cross_service_target}"
+            cross_note = (
+                f" | cross-service ({edge.topology_source}): A→B target "
+                f"{edge.cross_service_target} — confirmed only by a P3/P6 oracle "
+                "co-located with B, else a research-lead (design §3/§5)"
+            )
+        else:
+            hyp_id = f"hyp:{primitive.id}:{edge.channel_param}"
+            cross_note = ""
         hypotheses.append(
             DiscoveryHypothesis(
-                id=f"hyp:{primitive.id}:{edge.channel_param}",
+                id=hyp_id,
                 primitive_id=primitive.id,
                 delta=delta,
                 edge=edge,
@@ -280,7 +293,7 @@ def generate_hypotheses(
                     f"conf={delta.delta_confidence}) reachable {edge.soundness_grade.value} via "
                     f"{edge.channel_param!r} on {edge.entrypoint_methods} {edge.entrypoint_route} "
                     f"→ {obligation.test_method} confirming "
-                    f"{'/'.join(obligation.confirmation_primitives)}{carrier_note}"
+                    f"{'/'.join(obligation.confirmation_primitives)}{carrier_note}{cross_note}"
                 ),
             )
         )
