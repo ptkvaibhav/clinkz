@@ -23,9 +23,9 @@ This is the most important rule. Most failures on this project came from acting 
 - LLM calls go through the agent's client. Never import openai/anthropic/gemini SDKs outside llm/.
 - Agents never talk to each other directly — everything routes through the Orchestrator.
 - All data models Pydantic v2. All methods async. Structured logging at step boundaries.
-- _test_* methods are contracts: if the vuln is present, the method MUST find it. All 16 are adaptive methodologies.
+- _test_* methods are contracts: if the vuln is present, the method MUST find it. All 19 are adaptive methodologies.
 - Record every technique result (hit or miss) to the persistent KB.
-- Per-agent LLM: Gemini for Recon/Scan/Report, Anthropic for Exploit/Research (Exploit pinned, no fallback for methodology checkpoints).
+- Per-agent LLM: Gemini for Recon/Scan/Report/Research, Anthropic for Exploit (pinned, no fallback for methodology checkpoints).
 
 ## Testing — real targets gate, not mocks
 
