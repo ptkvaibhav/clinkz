@@ -86,7 +86,7 @@ A finding is a claim that we exploited something. **Emit only when your own evid
 - **Correct-and-stop:** if the premise is wrong or two instructions conflict, say so and stop — don't proceed on a bad premise or pick a side silently.
 
 **Architecture invariants (from `CLAUDE.md` — non-negotiable; they are what make "general" possible):**
-- LLM only through `llm/` (never import openai/anthropic/gemini in agent code); per-agent providers (Gemini recon/scan/report, Anthropic exploit/research; Exploit pinned).
+- LLM only through `llm/` (never import openai/anthropic/gemini in agent code); per-agent providers (Gemini recon/scan/report/research, Anthropic exploit; Exploit pinned).
 - Tools only through `ToolResolver.find_tool(capability=...)` — never a tool name, never a direct import. Every tool **validates scope before any network activity**.
 - Agents never talk directly — **all comms route through the Orchestrator.**
 - **Deterministic steps + LLM at named checkpoints.** No free-form ReAct.
