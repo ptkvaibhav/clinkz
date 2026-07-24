@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "claude-security@claude-plugins-official": true
+  }
+}
