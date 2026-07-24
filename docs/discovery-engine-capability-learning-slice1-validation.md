@@ -1,5 +1,7 @@
 # Capability-learning loop — slice 1 (WRITE side) live validation
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 Engagement-A validation of the Layer-2 capability memory, run for real (no harness,
 live Anthropic LLM, live OOB collaborator) against the exact CVE fixture. Driver:
 [`scripts/live_capability_learning_validation.py`](../scripts/live_capability_learning_validation.py).

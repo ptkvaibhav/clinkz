@@ -1,5 +1,7 @@
 # Discovery engine — slice 2 transfer validation (Apache Solr RemoteStreaming SSRF)
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **Status:** live-validated, **PASS** (engagement `fb606cbc-f442-4dec-967f-069185358195`).
 **Scope:** the SECOND vertical slice of the discovery engine. Slice 1 proved one CVE
 (GeoServer TestWfsPost SSRF, CVE-2021-40822) end-to-end and left the four layers
