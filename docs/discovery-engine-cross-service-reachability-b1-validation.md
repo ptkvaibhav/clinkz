@@ -1,5 +1,7 @@
 # Cross-service reachability — slice B1 live validation (the §8 two-service experiment)
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **Status: BUILT + LIVE-VALIDATED.** This is the live proof of `docs/discovery-engine-cross-service-reachability-design.md` §8 for the built slice B1 (the reach itself). Run for REAL against a live target + a live OOB collaborator + a live Anthropic exploit LLM, no harness (`scripts/live_cross_service_ssrf_validation.py`). Every claim below is re-derivable from the raw artifacts in `outputs/cross-service-b1/` — no self-graded summary.
 
 ## The topology

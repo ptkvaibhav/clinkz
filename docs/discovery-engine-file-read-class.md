@@ -1,5 +1,7 @@
 # Discovery engine — the SECOND capability class (file read)
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **The thesis test.** Slices 1–2 proved the discovery engine finds and confirms two
 different-codebase **SSRF**s (GeoServer CVE-2021-40822, Solr RemoteStreaming) from one
 `EGRESS_FETCH` catalog entry. That is transfer *within a class*. This slice is the
