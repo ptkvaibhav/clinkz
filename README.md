@@ -132,7 +132,7 @@ All configuration is via environment variables in `.env`. The defaults below are
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LLM_PROVIDER` | Legacy global provider: `openai`, `anthropic`, `gemini`, `ollama` | `openai` |
+| `LLM_PROVIDER` | Legacy top-level provider (last-resort fallback; `openai`/`anthropic`/`gemini`/`ollama`) | `gemini` |
 | `LLM_PROVIDER_DEFAULT` | Default for any agent without an explicit override | `gemini` |
 | `LLM_PROVIDER_RECON` | Recon agent provider | `gemini` |
 | `LLM_PROVIDER_SCAN` | Scan agent provider | `gemini` |

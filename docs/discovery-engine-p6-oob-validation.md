@@ -1,5 +1,7 @@
 # P6 — out-of-band confirmation: live isolation validation
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 Raw writeup of the P6 build against `docs/p6-oob-design.md`. Scope is the design's
 **isolation-first** cut (§P6.6): build the *collaborator + P6 confirmation* and
 validate them on a **known-real SSRF we already confirm in-band** — one new variable

@@ -1,5 +1,7 @@
 # Discovery engine — slice 1 validation (GeoServer CVE-2021-40822)
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **Status:** live-validated, PASS.
 **Scope:** the FIRST vertical slice of the discovery engine (`docs/discovery-engine-design.md`) —
 a thin end-to-end path for ONE real CVE, deliberately concrete-first so the abstractions are

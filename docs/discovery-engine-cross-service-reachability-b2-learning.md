@@ -1,5 +1,7 @@
 # Cross-service reachability — slice B2 (topology LEARNING, the loop half)
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **Status: BUILT.** B1 built *the reach* (compose A's egress with an A→B boundary hop,
 grade `CROSS_SERVICE_TOPOLOGY`, confirm ONLY at a collaborator co-located with B).
 B2 makes that reach **compound across engagements**: a CONFIRMED A→B reach writes an

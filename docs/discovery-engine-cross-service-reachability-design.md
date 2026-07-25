@@ -1,5 +1,7 @@
 # Discovery engine — cross-service reachability (design pass)
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **Status: DESIGN ONLY.** No implementation, no stub, no live run. This is the
 frontier prior: extend the middle factor of the Δ-model from single-service to
 *across a service boundary*. The whole point of the pass is honesty about

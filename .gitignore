@@ -86,6 +86,10 @@ report_*.md
 # Claude Code local scheduler lock
 .claude/scheduled_tasks.lock
 
+# Claude Code per-developer settings (*.local.* is a personal override — never tracked;
+# shared project settings live in the tracked .claude/settings.json)
+.claude/settings.local.json
+
 # Docker
 docker/volumes/
 
