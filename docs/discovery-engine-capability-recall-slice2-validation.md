@@ -1,5 +1,7 @@
 # Capability-learning loop — slice 2 (READ side) live validation
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **Status: BUILT + live-validated.** Slice 2 is the **read / load-as-prior** half of the
 Layer-2 capability-learning loop designed in
 [`discovery-engine-capability-learning-design.md`](./discovery-engine-capability-learning-design.md)

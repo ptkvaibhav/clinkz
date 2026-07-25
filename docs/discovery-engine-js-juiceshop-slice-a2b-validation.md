@@ -1,5 +1,7 @@
 # Discovery engine — slice A2b: JS-source generalization, live-proven on OWASP Juice Shop
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **Status:** live-validated end-to-end (real Juice Shop v19.1.1 + live OOB collaborator +
 live Anthropic exploit LLM, no harness). Generalization claim **only** — the
 carrying-dependency write-back keying and JS→JS transfer are a separate follow-up (A2a).

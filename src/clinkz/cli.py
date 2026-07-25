@@ -1,16 +1,19 @@
 """Typer CLI entry point for Clinkz.
 
 Commands:
-    scan    — Full pipeline (recon → crawl → exploit → report)
-    recon   — Reconnaissance phase only
-    crawl   — Crawling / fuzzing phase only
-    exploit — Exploitation phase only
-    report  — Generate report from completed engagement
+    scan          — Full pipeline (recon → scan/research/exploit → report)
+    trace inspect — Render an engagement execution trace
+    tool-invoke   — Inspect or replay one recorded tool invocation
+    step-replay   — Re-run one recorded agent step in isolation
+
+The pipeline runs end-to-end via ``scan``; there are no single-phase run
+commands (the Orchestrator owns phase sequencing). ``trace inspect`` /
+``tool-invoke`` / ``step-replay`` are post-run inspectors over ``outputs/<id>/``.
 
 Usage::
 
     clinkz scan --target example.com --scope scope.json
-    python -m clinkz recon --target 10.10.10.1
+    python -m clinkz trace inspect <engagement_id>
 """
 
 from __future__ import annotations
@@ -109,97 +112,6 @@ def scan(
     status = result.get("status", "unknown")
     summary = result.get("summary", "No summary.")
     typer.echo(f"Engagement {status}: {summary}")
-
-
-# ---------------------------------------------------------------------------
-# recon
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def recon(
-    target: Annotated[str, typer.Option("--target", "-t", help="Target domain or IP address")],
-    provider: Annotated[str, typer.Option("--provider", "-p")] = "openai",
-    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
-) -> None:
-    """Run only the reconnaissance phase (nmap, subfinder, httpx, whatweb)."""
-    _setup_logging(verbose)
-    logging.getLogger("cli.recon").info("Recon — target: %s", target)
-    # TODO: instantiate ReconAgent and run
-    typer.echo(f"[TODO] Recon not yet implemented. Target: {target}")
-    raise typer.Exit(code=1)
-
-
-# ---------------------------------------------------------------------------
-# crawl
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def crawl(
-    target: Annotated[str, typer.Option("--target", "-t", help="Target domain or IP address")],
-    provider: Annotated[str, typer.Option("--provider", "-p")] = "openai",
-    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
-) -> None:
-    """Run only the crawling and directory fuzzing phase (katana, ffuf)."""
-    _setup_logging(verbose)
-    logging.getLogger("cli.crawl").info("Crawl — target: %s", target)
-    # TODO: instantiate CrawlAgent and run
-    typer.echo(f"[TODO] Crawl not yet implemented. Target: {target}")
-    raise typer.Exit(code=1)
-
-
-# ---------------------------------------------------------------------------
-# exploit
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def exploit(
-    target: Annotated[str, typer.Option("--target", "-t", help="Target domain or IP address")],
-    provider: Annotated[str, typer.Option("--provider", "-p")] = "openai",
-    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
-) -> None:
-    """Run only the exploitation phase (nuclei, sqlmap, nikto, manual PoCs)."""
-    _setup_logging(verbose)
-    logging.getLogger("cli.exploit").info("Exploit — target: %s", target)
-    # TODO: instantiate ExploitAgent and run
-    typer.echo(f"[TODO] Exploit not yet implemented. Target: {target}")
-    raise typer.Exit(code=1)
-
-
-# ---------------------------------------------------------------------------
-# report
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def report(
-    engagement_id: Annotated[
-        str, typer.Option("--engagement-id", "-e", help="Engagement UUID from state store")
-    ],
-    fmt: Annotated[
-        str,
-        typer.Option(
-            "--format",
-            "-f",
-            help="Output format: html | pdf | json | markdown",
-        ),
-    ] = "html",
-    output: Annotated[
-        Path,
-        typer.Option("--output", "-o", help="Output file path"),
-    ] = Path("report.html"),
-    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
-) -> None:
-    """Generate a report from a completed engagement."""
-    _setup_logging(verbose)
-    logging.getLogger("cli.report").info(
-        "Report — engagement: %s, format: %s, output: %s", engagement_id, fmt, output
-    )
-    # TODO: instantiate ReportGenerator and render
-    typer.echo(f"[TODO] Report generation not yet implemented. Engagement: {engagement_id}")
-    raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------

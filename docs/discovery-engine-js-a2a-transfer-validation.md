@@ -1,5 +1,7 @@
 # Discovery engine — slice A2a: JS carrying-dependency keying + JS→JS transfer
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **Status:** deterministically proven (present-vs-absent transfer + no-over-transfer),
 with the keying and provenance stamp **live-confirmed** on real OWASP Juice Shop
 (engagement `c0fe946a`, live OOB collaborator + live Anthropic exploit LLM). Closes

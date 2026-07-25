@@ -1,5 +1,7 @@
 # Discovery engine — the THIRD capability class (Log4Shell), the payoff of P6
 
+> **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
+
 **The thesis test.** Slices 1–2 proved the engine finds + confirms two different-codebase
 **SSRF**s from one `EGRESS_FETCH` catalog entry (in-band, P3/P1). The file-read slice
 proved the catalog holds a **second class** reducing to an already-built **in-band**

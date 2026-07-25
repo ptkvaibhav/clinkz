@@ -22,8 +22,13 @@ LLMProvider = Literal["openai", "anthropic", "gemini", "ollama"]
 class Settings(BaseModel):
     """Validated settings loaded from environment variables."""
 
-    # LLM provider
-    llm_provider: LLMProvider = Field(default="openai")
+    # Top-level LLM provider. Defaults to gemini to reflect the actual runtime:
+    # every per-agent default below is gemini/anthropic and no agent defaults to
+    # openai — openai is retained only as the terminal fallback in the resilient
+    # chains (llm/fallback.py). This is the last-resort provider the Orchestrator's
+    # own reasoning LLM resolves to when neither ORCHESTRATOR_LLM_PROVIDER nor an
+    # explicit --provider is set.
+    llm_provider: LLMProvider = Field(default="gemini")
 
     # API keys
     openai_api_key: str | None = Field(default=None)
@@ -229,10 +234,10 @@ class Settings(BaseModel):
                 or fallback
             )
 
-        global_default = os.getenv("LLM_PROVIDER_DEFAULT") or os.getenv("LLM_PROVIDER", "openai")
+        global_default = os.getenv("LLM_PROVIDER_DEFAULT") or os.getenv("LLM_PROVIDER", "gemini")
 
         return cls(
-            llm_provider=os.getenv("LLM_PROVIDER", "openai"),  # type: ignore[arg-type]
+            llm_provider=os.getenv("LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
             gemini_api_key=os.getenv("GEMINI_API_KEY"),
