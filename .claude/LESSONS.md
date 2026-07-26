@@ -5,7 +5,7 @@ A small, append-only archive so the same error is not made twice.
 - **Consulted** during planning ONLY when a task resembles a past failure. Not
   read by default — do not open it for unrelated work.
 - **Appended to** ONLY after an error worth not repeating.
-- Each lesson has a **stable id** (`#14`–`#33`) cited elsewhere as `LESSONS #N`.
+- Each lesson has a **stable id** (`#14`–`#34`) cited elsewhere as `LESSONS #N`.
   Ids are historical — do NOT renumber (the sequence begins at #14; earlier ids
   are retired). Full narratives live in
   [`docs/lessons/README.md`](../docs/lessons/README.md); this file is the index
@@ -34,3 +34,4 @@ A small, append-only archive so the same error is not made twice.
 - **#31 — The live Log4Shell OOB channel is `jndi:dns://<collab>:<dns_port>/<nonce>`, not `ldap://`.** Empirically probe which callback fires from the live target's runtime before coding the OOB channel; `host.docker.internal` can resolve IPv6-first inside a container. → [narrative](../docs/lessons/README.md#lesson-31)
 - **#32 — A driver's verdict logic can report a real PASS as INCOMPLETE.** Read where the methodology actually put the confirmation (`finding.evidence`), not an assumed attribute; read the raw finding output before trusting a verdict line. → [narrative](../docs/lessons/README.md#lesson-32)
 - **#33 — Prove "X changes nothing emitted" with an A/B that holds structure constant.** Vary ONLY X, never diff two differently-structured runs; a "nothing reads Y" grep must match the READER symbol only (a write/recompute call is not a read). → [narrative](../docs/lessons/README.md#lesson-33)
+- **#34 — A guard whose activation is per-clone local config does not exist.** `core.hooksPath` is never committed, so a fresh clone is inert and `--no-verify` skips what is configured — only a server-side (CI) check is bypass-proof; bootstrap the local layer in one command and make the setup command *report* whether it is active; and match a guard fail-CLOSED (tokenize, never pattern-match an open-ended option run). → [narrative](../docs/lessons/README.md#lesson-34)
