@@ -5,11 +5,19 @@
 ```bash
 git clone https://github.com/ptkvaibhav/clinkz.git
 cd clinkz
+python scripts/bootstrap.py   # FIRST — activates this clone's enforcement hooks
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 cp .env.example .env       # Add your API key
 ```
+
+Run `scripts/bootstrap.py` before anything else. `core.hooksPath` is per-clone
+local config that is never committed, so a fresh clone has no active pre-commit
+hook and a `git add -f outputs/… && git commit` lands the leak in HEAD. The
+bootstrap needs nothing but git and the standard library, so it runs before the
+virtualenv exists. See [`.claude/hooks/README.md`](.claude/hooks/README.md) for
+the three enforcement layers and which of them can be bypassed.
 
 ## Adding a New Tool Wrapper
 

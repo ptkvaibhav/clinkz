@@ -80,10 +80,16 @@ Phase agents follow **deterministic step sequences with LLM checkpoints** (no fr
 ```bash
 git clone https://github.com/ptkvaibhav/clinkz.git
 cd clinkz
+python scripts/bootstrap.py   # FIRST — activates this clone's enforcement hooks
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ```
+
+`scripts/bootstrap.py` sets `core.hooksPath` so `.githooks/pre-commit` runs the
+leak guards. It is **per clone**: that config is never committed, so until you run
+it a `git add -f outputs/… && git commit` succeeds locally. CI's `leak-guard` job
+is the fail-closed backstop — see [`.claude/hooks/README.md`](.claude/hooks/README.md).
 
 ### Configuration
 
