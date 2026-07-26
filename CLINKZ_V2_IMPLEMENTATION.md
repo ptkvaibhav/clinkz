@@ -94,8 +94,10 @@ Repository ships with:
   (Command Injection is N/A on the Node stack)
 - `.claude/skills/phase-work/SKILL.md` — loads v2 rules of engagement for
   any phase-implementation or fix task
-- `.githooks/pre-commit` — runs the lint + test gates before every commit
-- `.github/workflows/ci.yml` — matching CI gates
+- `.githooks/pre-commit` — runs the outputs / secret / lint guards before every
+  commit; activated per clone by `python scripts/bootstrap.py`
+- `.github/workflows/ci.yml` — matching CI gates, plus the `leak-guard` job (the
+  fail-closed `outputs/` + credential layer that no local flag can skip)
 
 ### 5. Agent flow — **DONE (with adaptive layer partially in)**
 
@@ -243,7 +245,7 @@ REPORT                                                           [partial]
 - Skill smoke tests for Juice Shop SPA-style targets — done
 - 5-consecutive-engagement consistency drill — pending
 - Claude Code commands + hooks — done (`run-dvwa`, `run-juiceshop`,
-  `phase-work`, `pre-commit`, `ci.yml`)
+  `phase-work`, `pre-commit`, `ci.yml` incl. `leak-guard`, `scripts/bootstrap.py`)
 - CLAUDE.md / README / docs alignment with v2 — done (this pass)
 
 ### Phase 5: Expansion — **partial**

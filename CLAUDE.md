@@ -16,9 +16,12 @@ LLM-mediated Orchestrator, discovering and running tools dynamically.
 **ENVIRONMENT**
 - Windows machine. Claude Code runs in PowerShell; a Bash tool is also available.
   Use the right syntax per shell and Windows-aware paths.
-- The git pre-commit hook (`.githooks/pre-commit`, active via
-  `git config core.hooksPath .githooks`) runs the outputs/secret/gates guards on
-  every commit. Use foreground commands only — no background scripts/polling.
+- Run `python scripts/bootstrap.py` once per clone — it sets `core.hooksPath` so
+  `.githooks/pre-commit` runs the outputs/secret/gates guards. That config is
+  per-clone and never committed, so a fresh clone is unprotected until it runs
+  (`/gates` reports `GATE0_hooksPath`). CI's `leak-guard` job is the only
+  fail-closed layer: no local config or `--no-verify` skips it.
+  Use foreground commands only — no background scripts/polling.
 
 **PLAN-FIRST WORKFLOW**
 - Every task begins with a brief implementation plan before any code, folding in
