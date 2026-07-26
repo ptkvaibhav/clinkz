@@ -10,6 +10,26 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # The fail-closed leak layer. Every other guard is local and therefore
+  # skippable: `core.hooksPath` is per-clone config a fresh clone does not have
+  # until `python scripts/bootstrap.py` runs, and `--no-verify` skips the git
+  # hook outright. This job runs server-side on the resulting tree, so no local
+  # config, no flag, and no un-bootstrapped clone can get past it. It shares no
+  # setup with lint-and-test (no package install, no system deps) so it stays
+  # fast and reports independently.
+  leak-guard:
+    name: Leak guard (outputs/ · .env · credentials)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse run artifacts under outputs/
+        run: python3 .claude/hooks/outputs_guard.py --tree HEAD
+
+      - name: Refuse credential material and .env files
+        run: python3 .claude/hooks/secret_guard.py --tree HEAD
+
   lint-and-test:
     runs-on: ubuntu-latest
 
