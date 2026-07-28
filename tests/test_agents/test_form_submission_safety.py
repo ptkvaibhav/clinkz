@@ -562,3 +562,79 @@ class TestDestructiveEndpointRegistry:
         key = agent._endpoint_key("http://EXAMPLE.com/a/b/?x=1#frag")
         assert key == "http://example.com/a/b"
         assert agent._endpoint_key("http://example.com/a/b") == key
+
+    @pytest.mark.asyncio
+    async def test_multipart_carrier_cannot_reach_a_registered_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The FOURTH carrier — found by the gate-3 review of D1 batch 2.
+
+        ``_http_post_multipart`` builds its own ``HTTPClientTool`` and never
+        asked the endpoint guard, so an upload point that also mutates
+        credentials would still have been submitted to — and phase-2 upload
+        fingerprinting drives ~20 probes through this carrier per upload point.
+        Same class as the three closed in f8ce94d.
+        """
+        agent = _make_agent()
+        monkeypatch.setattr(
+            "clinkz.tools.http_client.HTTPClientTool",
+            _exploding_http_client,
+        )
+        self._register(
+            agent,
+            "http://example.com/vulnerabilities/upload/",
+            _password_change_form(),
+        )
+        resp = await agent._http_post_multipart(
+            "http://example.com/vulnerabilities/upload/",
+            filename="clinkz_probe.php",
+            content="<?php echo 1; ?>",
+            content_type="image/jpeg",
+        )
+        assert resp.status == 0
+
+    @pytest.mark.asyncio
+    async def test_xml_body_carrier_cannot_reach_a_registered_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The FIFTH carrier: the XXE raw-XML body helper had no guard either."""
+        agent = _make_agent()
+        monkeypatch.setattr(
+            "clinkz.tools.http_client.HTTPClientTool",
+            _exploding_http_client,
+        )
+        self._register(
+            agent,
+            "http://example.com/services/import",
+            _password_change_form(),
+        )
+        resp = await agent._http_post_xml(
+            "http://example.com/services/import",
+            xml="<?xml version='1.0'?><x/>",
+        )
+        assert resp.status == 0
+
+    @pytest.mark.asyncio
+    async def test_the_boobytrap_fires_on_an_unregistered_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The proof above is not vacuous: on a benign endpoint both carriers
+        DO construct the transport, so ``status=0`` there means "guard fired",
+        not "this code path never sends anything"."""
+        agent = _make_agent()
+        monkeypatch.setattr(
+            "clinkz.tools.http_client.HTTPClientTool",
+            _exploding_http_client,
+        )
+        with pytest.raises(AssertionError, match="transport was reached"):
+            await agent._http_post_multipart(
+                "http://example.com/vulnerabilities/upload/",
+                filename="a.txt",
+                content="x",
+                content_type="text/plain",
+            )
+        with pytest.raises(AssertionError, match="transport was reached"):
+            await agent._http_post_xml(
+                "http://example.com/services/import",
+                xml="<x/>",
+            )
