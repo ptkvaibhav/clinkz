@@ -105,6 +105,35 @@ class TestG4CrawlNoise:
         assert all(not u.endswith(".css") and not u.endswith(".md") for u in top)
 
 
+class TestG4DirectoryNamesAreNotEvidence:
+    """A low-value marker must identify the PAGE, never a directory it sits under.
+
+    A bare ``/source/`` entry cost real coverage the moment class-relevance
+    ordering started reading the list: an app that mounts a live handler under a
+    ``source`` directory (``/open_redirect/source/low.php?redirect=``) had that
+    endpoint graded as crawl noise and sorted to the back of every bucket, so
+    ``_test_open_redirect`` never dispatched against it — engagement
+    ``441c5728`` lost the finding its baseline emitted.
+    """
+
+    LIVE_HANDLER = "http://t/app/open_redirect/source/low.php?redirect=info.php"
+    SOURCE_VIEWER = "http://t/app/view_source_all.php?id=mod"
+
+    def test_a_live_handler_under_a_source_directory_ranks_top(self) -> None:
+        ep = Endpoint(url=self.LIVE_HANDLER, method="GET", params=["redirect"])
+        assert _endpoint_class_relevance("_test_open_redirect", ep) == 0
+
+    def test_the_source_viewer_page_is_still_demoted(self) -> None:
+        """Removing the directory entry must not readmit the viewer family — it
+        is matched by filename, which is what actually names the page."""
+        ep = Endpoint(url=self.SOURCE_VIEWER, method="GET", params=["id"])
+        assert _endpoint_class_relevance("_test_cmdi", ep) == 3
+
+    def test_doubled_paths_are_still_demoted(self) -> None:
+        ep = Endpoint(url="http://t/app/app/x/source/low.php", method="GET", params=["id"])
+        assert _endpoint_class_relevance("_test_cmdi", ep) == 3
+
+
 class TestG4ClassRelevance:
     def test_command_parameter_outranks_a_source_viewer_for_cmdi(self) -> None:
         cmd_ep = Endpoint(url="http://t/app/exec/", method="POST", params=["ip", "Submit"])
