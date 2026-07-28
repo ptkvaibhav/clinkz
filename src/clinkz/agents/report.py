@@ -142,13 +142,33 @@ class ReportAgent(BaseAgent):
             len(leads_raw),
         )
 
-        # Parse Finding models
+        # Parse Finding models. A finding the engagement itself flagged as a
+        # suspected false positive is NOT rendered as a finding: the Exploit
+        # phase already demotes those to unproven leads (the G10 emission
+        # inversion), and this is the second, independent layer at the report
+        # chokepoint — so a row written by an older build, a replay, or any
+        # future path that sets the status cannot reach ``findings[]`` and be
+        # counted in the totals.
         finding_models: list[Finding] = []
+        suppressed = 0
         for fd in findings_raw:
             try:
-                finding_models.append(Finding.model_validate(fd))
+                finding = Finding.model_validate(fd)
             except Exception as exc:
                 self._logger.warning("Could not parse finding '%s': %s", fd.get("id"), exc)
+                continue
+            if finding.status == FindingStatus.FALSE_POSITIVE:
+                suppressed += 1
+                self._logger.warning(
+                    "Excluding finding '%s' (%s) from the report — status=false_positive; "
+                    "a finding the engagement believes is a false positive is never emitted",
+                    finding.id,
+                    finding.title,
+                )
+                continue
+            finding_models.append(finding)
+        if suppressed:
+            self._logger.info("Report: %d false-positive finding(s) excluded", suppressed)
 
         # Parse Host models
         host_models: list[Host] = []
@@ -283,12 +303,9 @@ class ReportAgent(BaseAgent):
 
         for i, f in enumerate(findings, 1):
             cvss_str = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "N/A"
-            fp_flag = (
-                " [SUSPECTED FALSE POSITIVE]" if f.status == FindingStatus.FALSE_POSITIVE else ""
-            )
             lines.extend(
                 [
-                    f"## {i}. {f.title}{fp_flag}",
+                    f"## {i}. {f.title}",
                     "",
                     f"- **Severity:** {f.severity.value.upper()}",
                     f"- **CVSS:** {cvss_str}",

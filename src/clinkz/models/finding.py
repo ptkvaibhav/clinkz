@@ -373,6 +373,11 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         "blind_unconfirmed_within_window",
         # The confirming observation needs credentials/access we do not hold.
         "not_instrumentable",
+        # The post-run analysis flagged the candidate as a false positive and no
+        # deterministic signal contradicted it. The system does not believe its
+        # own claim, so the claim is demoted here rather than emitted with a
+        # caveat attached (the G10 emission inversion).
+        "suspected_false_positive_no_deterministic_signal",
     }
 )
 
