@@ -24,6 +24,7 @@ import pytest
 
 from clinkz.agents._url_safety import is_destructive_form_submission
 from clinkz.agents.exploit import ExploitAgent, PageAnalysis, _HTTPResponse
+from clinkz.models.scan import ParamLocation
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
@@ -272,3 +273,138 @@ class TestSubmitChokepointRefusal:
             assert resp.status == 0
         assert posted == [], "the password-change form was submitted by a probe"
         assert got == [], "the password-change form was submitted by a probe"
+
+
+# ===========================================================================
+# The carriers that route AROUND a form-shaped guard
+#
+# Found by the gate-3 security review of the first G8 fix: three submission
+# paths did not pass through ``_submit_form_fields``, so the guard did not
+# cover them. Each is the same destructive shape by a different carrier.
+# ===========================================================================
+
+
+class TestNonFormCarriersAreGuarded:
+    @pytest.mark.asyncio
+    async def test_weak_session_never_submits_a_credential_form(self) -> None:
+        """Phase 1 accepts ANY generic POST form, and phase 2 submits it 8x.
+
+        Unguarded, that is eight live password changes — worse than the
+        per-parameter fuzzer that motivated the guard.
+        """
+        agent = _make_agent()
+        posted: list[dict[str, str]] = []
+
+        async def fake_post(url: str, data: dict[str, str], **_kw: Any) -> _HTTPResponse:
+            posted.append(data)
+            return _HTTPResponse(status=200, body="", headers={"Set-Cookie": "sid=1"})
+
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        samples, _flags = await agent._weak_session_phase2_observation(
+            "http://example.com/vulnerabilities/csrf/", _password_change_form()
+        )
+        assert posted == [], "weak-session probing submitted a credential form"
+        assert samples == {}
+
+    @pytest.mark.asyncio
+    async def test_weak_session_still_probes_a_benign_generator_form(self) -> None:
+        agent = _make_agent()
+        posted: list[dict[str, str]] = []
+
+        async def fake_post(url: str, data: dict[str, str], **_kw: Any) -> _HTTPResponse:
+            posted.append(data)
+            return _HTTPResponse(status=200, body="", headers={"Set-Cookie": "dvwaSession=1"})
+
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        form = {
+            "action": "",
+            "method": "POST",
+            "fields": [{"name": "Generate", "type": "submit", "value": "Generate"}],
+        }
+        samples, _flags = await agent._weak_session_phase2_observation(
+            "http://example.com/vulnerabilities/weak_id/", form
+        )
+        assert len(posted) == 8
+        assert posted[0] == {"Generate": "Generate"}
+        assert samples["dvwaSession"]
+
+    @pytest.mark.asyncio
+    async def test_json_body_probe_never_reaches_a_change_password_api(self) -> None:
+        """A JSON API has no parsed <form>, so the form guard cannot see it."""
+        agent = _make_agent()
+        sent: list[dict[str, Any]] = []
+
+        async def fake_post_json(
+            url: str, obj: dict[str, Any], method: str = "POST"
+        ) -> _HTTPResponse:
+            sent.append(obj)
+            return _HTTPResponse(status=200, body="ok")
+
+        agent._http_post_json = fake_post_json  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://example.com/rest/user/change-password",
+            body="",
+            status=200,
+            input_params=["current", "new", "repeat"],
+            request_method="POST",
+            content_type="application/json",
+            param_locations={
+                "current": ParamLocation.JSON_BODY,
+                "new": ParamLocation.JSON_BODY,
+                "repeat": ParamLocation.JSON_BODY,
+            },
+        )
+        resp = await agent._send_probe(page, "new", "PAYLOAD")
+        assert sent == [], "a change-password JSON API was fuzzed"
+        assert resp.status == 0
+
+    @pytest.mark.asyncio
+    async def test_json_body_probe_still_reaches_a_benign_api(self) -> None:
+        agent = _make_agent()
+        sent: list[dict[str, Any]] = []
+
+        async def fake_post_json(
+            url: str, obj: dict[str, Any], method: str = "POST"
+        ) -> _HTTPResponse:
+            sent.append(obj)
+            return _HTTPResponse(status=201, body="ok")
+
+        agent._http_post_json = fake_post_json  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://example.com/api/Feedbacks",
+            body="",
+            status=200,
+            input_params=["comment", "rating"],
+            request_method="POST",
+            content_type="application/json",
+            param_locations={
+                "comment": ParamLocation.JSON_BODY,
+                "rating": ParamLocation.JSON_BODY,
+            },
+        )
+        resp = await agent._send_probe(page, "comment", "PAYLOAD")
+        assert len(sent) == 1
+        assert sent[0]["comment"] == "PAYLOAD"
+        assert resp.status == 201
+
+    @pytest.mark.asyncio
+    async def test_form_body_probe_is_guarded(self) -> None:
+        agent = _make_agent()
+        posted: list[dict[str, str]] = []
+
+        async def fake_post(url: str, data: dict[str, str], **_kw: Any) -> _HTTPResponse:
+            posted.append(data)
+            return _HTTPResponse(status=200, body="ok")
+
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://example.com/account/password/update",
+            body="",
+            status=200,
+            input_params=["password"],
+            request_method="POST",
+            param_locations={"password": ParamLocation.FORM_BODY},
+        )
+        resp = await agent._send_probe(page, "password", "PAYLOAD")
+        assert posted == []
+        assert resp.status == 0
