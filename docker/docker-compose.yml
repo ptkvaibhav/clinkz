@@ -62,7 +62,11 @@ services:
       - DB_DATABASE=dvwa
       - DB_USER=dvwa
       - DB_PASSWORD=p@ssw0rd
-      - DEFAULT_SECURITY_LEVEL=low
+      # Per-run difficulty. DVWA seeds a session's `security` cookie from this on
+      # first page load, so recreating the container is the whole level switch —
+      # nothing in src/ ever sets it. Override per run:
+      #   DVWA_SECURITY_LEVEL=high docker compose ... up -d --force-recreate dvwa
+      - DEFAULT_SECURITY_LEVEL=${DVWA_SECURITY_LEVEL:-low}
     depends_on:
       dvwa-db:
         condition: service_healthy
