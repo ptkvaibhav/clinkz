@@ -310,6 +310,71 @@ class CrossServiceResearchLead(BaseModel):
     raw_probe: str = ""
     raw_null_observation: str = ""
     discovered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # Discriminator for the shared ``research_leads`` table, which now holds two
+    # structurally different lead types. Defaulted so rows written before the
+    # second type existed still validate.
+    lead_kind: str = "cross_service"
+
+
+class UnprovenExploitLead(BaseModel):
+    """A vulnerability whose DEFINING effect was never witnessed (the general form).
+
+    The single-service sibling of :class:`CrossServiceResearchLead`, and the same
+    hard line: it is **NOT** a :class:`Finding` and holds **no** path to
+    ``_persist_finding``. "Never rendered as confirmed, never counted in
+    coverage" is a property of the *type*, not a convention — the report renderer
+    takes these in a separate argument and renders them under their own heading.
+
+    This is where a methodology puts a *reachability* observation that stops
+    short of exploitation. The motivating case is DOM-XSS: static analysis can
+    prove an attacker-controlled DOM source flows into a dangerous sink, but
+    confirming that the payload *executes* needs a client-side execution oracle
+    (a headless browser) the engine does not yet have. Engagement ``913fecee``
+    emitted that observation as a ``high``/``confirmed`` finding whose evidence
+    string asserted "payload executed by client-side JS" — an observation nobody
+    made. The honest shape is a lead: the reachability evidence is real and
+    worth an operator's time, the exploitation claim is not made at all.
+
+    Attributes:
+        claim: What would be true IF the lead were proven — the candidate
+            vulnerability, stated as a candidate.
+        why_unconfirmed: WHY it stayed a lead — one of
+            :data:`UNPROVEN_WHY_UNCONFIRMED`.
+        technique: The WSTG / technique id the lead belongs to.
+        endpoint: The endpoint the observation was made on.
+        parameter: The parameter / channel involved, when there is one.
+        raw_observation: What WAS actually observed, verbatim (e.g. the
+            source→sink pair and the script excerpt) — the auditable half.
+        missing_observation: What was NOT observed and would be required to
+            confirm — stated so the gap is explicit rather than implied.
+        discovered_at: When the lead was recorded.
+    """
+
+    claim: str
+    why_unconfirmed: str
+    technique: str = ""
+    endpoint: str = ""
+    parameter: str = ""
+    raw_observation: str = ""
+    missing_observation: str = ""
+    discovered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    lead_kind: str = "unproven_exploit"
+
+
+# The closed vocabulary of WHY a single-service candidate stayed a lead. Kept
+# closed for the same reason as :data:`CROSS_SERVICE_WHY_UNCONFIRMED`: a free-text
+# reason drifts into a justification, and a justification reads like a finding.
+UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
+    {
+        # Reachability proven statically; execution never witnessed because the
+        # engine has no client-side execution oracle (a headless browser).
+        "execution_not_witnessed_requires_client_side_oracle",
+        # The effect is only observable out-of-band and no callback landed.
+        "blind_unconfirmed_within_window",
+        # The confirming observation needs credentials/access we do not hold.
+        "not_instrumentable",
+    }
+)
 
 
 # The closed vocabulary of WHY a cross-service chain stayed a research-lead (§5).
@@ -359,4 +424,8 @@ class ExploitResult(BaseModel):
     # surfaced in the report's dedicated "Cross-service research leads (UNCONFIRMED)"
     # section, structurally separate from ``findings``.
     research_leads: list[CrossServiceResearchLead] = Field(default_factory=list)
+    # Single-service unproven leads — a candidate whose DEFINING effect was never
+    # witnessed (today: DOM-XSS reachability without a client-side execution
+    # oracle). Same hard line as ``research_leads``: never a finding, never counted.
+    unproven_leads: list[UnprovenExploitLead] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

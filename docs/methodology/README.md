@@ -41,6 +41,7 @@ oracle set.
 | IDOR | [idor.md](idor.md) |
 | Open redirect | [open-redirect.md](open-redirect.md) |
 | CSRF | [csrf.md](csrf.md) |
+| Brute force | [brute-force.md](brute-force.md) |
 | File upload | [file-upload.md](file-upload.md) |
 | Weak session | [weak-session.md](weak-session.md) |
 | JWT (Tier-2) | [jwt.md](jwt.md) |

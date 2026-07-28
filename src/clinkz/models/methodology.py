@@ -1317,6 +1317,16 @@ class XSSStoredMethodologyResult(BaseModel):
     # ``"unverified"`` = the methodology emits a finding with strength=likely
     # based purely on phase-3 + submit-success evidence.
     verification_strength: str = "verified"
+    # Where the payload landed in the read-back body (``html_body`` / ``tag`` /
+    # ``script``). Recorded on confirmation so the emission gate can re-check
+    # the payload's XSS-functional capability against the ACTUAL landing rather
+    # than assuming a context.
+    landing_context: str = ""
+    # The phase-3 synthesis rationale, preserved verbatim for the evidence chain
+    # even when a phase-4 bypass payload replaces the phase-3 one. Kept separate
+    # so the emission gate's no-execution veto judges the payload that is
+    # actually being emitted, never an inherited verdict about a different one.
+    original_synthesis_rationale: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -1373,11 +1383,14 @@ class DOMXSSMethodologyResult(BaseModel):
     ``js_inline``); ``source_sink_pairs`` carries the static-analysis hits
     when the SOURCE_TO_SINK path fires.
 
-    Verification strength is always ``"likely"`` for DOM-XSS findings —
-    confirming execution requires a headless browser, which the skill
-    deliberately does not require. The methodology produces strong static
-    evidence (canary in script context OR source→sink in the same block)
-    that justifies emitting the finding.
+    Verification strength is always ``"likely"`` for DOM-XSS — confirming
+    execution requires a headless browser, which the skill deliberately does not
+    require. The static evidence (canary in script context OR source→sink in the
+    same block) proves **reachability**, never execution, so a ``"likely"``
+    result is recorded as an
+    :class:`~clinkz.models.finding.UnprovenExploitLead` and emits NO finding.
+    ``"verified"`` is reserved for a witnessed execution and is the seam a
+    future client-side execution oracle plugs into.
     """
 
     phases_completed: int = 0
@@ -1697,6 +1710,11 @@ class BruteForceProtectionType(StrEnum):
     - ``RATE_LIMIT``: explicit HTTP rate-limiting signal — ``429``,
       ``Retry-After``, ``X-RateLimit-*``.
     - ``NONE``: no observable protection — the absence is the finding.
+    - ``INCONCLUSIVE``: the attempts never reached the authentication
+      handler, so their uniformity says nothing about protection. NOT a
+      finding — the absence of a lockout marker on a request that was
+      redirected away before authenticating is trivially true and proves
+      nothing.
     """
 
     LOCKOUT = "lockout"
@@ -1704,6 +1722,7 @@ class BruteForceProtectionType(StrEnum):
     CAPTCHA = "captcha"
     RATE_LIMIT = "rate_limit"
     NONE = "none"
+    INCONCLUSIVE = "inconclusive"
 
 
 class BruteForceObservation(BaseModel):
@@ -1712,6 +1731,13 @@ class BruteForceObservation(BaseModel):
     Each attempt records the response signature so phase-3 can decide
     whether the shape changed across attempts (lockout) or stayed
     constant (no protection).
+
+    ``auth_reached`` is the per-attempt POSITIVE CONTROL: whether this
+    known-bad-credential submission actually produced an authentication
+    outcome. An attempt that was bounced (redirected away, rejected for a
+    missing token, refused before the credential check) carries no
+    information about brute-force protection, and a series containing such
+    attempts cannot support a "no protection" conclusion.
     """
 
     attempt: int
@@ -1721,6 +1747,8 @@ class BruteForceObservation(BaseModel):
     retry_after: str = ""
     rate_limit_headers: dict[str, str] = Field(default_factory=dict)
     body_marker: str = ""
+    auth_reached: bool = False
+    auth_reach_reason: str = ""
 
 
 class BruteForceMethodologyResult(BaseModel):
@@ -1739,6 +1767,17 @@ class BruteForceMethodologyResult(BaseModel):
     protected: bool = False
     observed_at_attempt: int | None = None
     rationale: str = ""
+    # THE positive control. ``True`` only when every attempt in the series
+    # produced an authentication outcome. False ⇒ the series is contaminated by
+    # attempts that never authenticated, the verdict is INCONCLUSIVE, and no
+    # finding may be emitted regardless of how uniform the responses looked.
+    auth_reached: bool = False
+    auth_reach_evidence: str = ""
+    # Time of an unauthenticated GET of the login page — the "no penalty"
+    # reference the constant-delay check measures each attempt against. A fixed
+    # per-attempt throttle IS a brute-force control; only comparing attempts to
+    # each other (looking for growth) reads a deliberate flat delay as absence.
+    baseline_ms: float = 0.0
 
 
 # ---------------------------------------------------------------------------
