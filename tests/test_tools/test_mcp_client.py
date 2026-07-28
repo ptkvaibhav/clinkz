@@ -25,7 +25,7 @@ from clinkz.tools.mcp_client import MCPCallResult, MCPClient, MCPToolInfo
 from clinkz.tools.resolver import ToolResolver, _infer_capabilities
 
 # Path to the minimal FastMCP server used for real transport tests
-_SERVER_SCRIPT = Path(__file__).parent.parent / "fixtures" / "test_mcp_server_script.py"
+_SERVER_SCRIPT = Path(__file__).parent.parent / "fixtures" / "mcp_server_script.py"
 
 
 # ---------------------------------------------------------------------------

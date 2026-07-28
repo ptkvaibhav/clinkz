@@ -32,3 +32,26 @@ Fixes:
 
 Low/medium confirm via real RCE; high (image-only, no direct exec) and impossible
 (re-encode + token) emit nothing.
+
+## The image carrier — asking the one remaining question (gap G5)
+
+At the hardened DVWA levels phase-2 fingerprinting probed **only script
+extensions** (`.php`, `.phtml`, `.asp`, …). A store that validates the real
+extension rejects all of them, so `working_extensions` came back empty, every
+ranked execution type declined, and the ladder stopped: **3 verifications / 0
+emissions** at `medium`, **6 / 0** at `high` — even though the store was still
+writable.
+
+When no script extension works, phase 2 now asks the one question left: **will an
+IMAGE extension carry a script body?** (`.jpg` / `.jpeg` / `.png` / `.gif` with a
+`GIF89a` magic prefix and a script payload, recorded as
+`FileUploadRestrictions.image_carrier_extension`). That is the upload half of an
+inclusion chain — the carrier a hardened upload leaves open — and
+`_fallback_file_upload_synthesis` uses it for `INCLUSION_CHAIN` when no script
+extension is available. A store that accepts `.php` still wins; the carrier is
+only probed when nothing else worked, so no extra requests are spent where the
+answer is already known.
+
+The confirmation oracle is unchanged: the artifact must still be fetched back and
+observed executing (or, for the inclusion chain, be reachable through a consumer).
+The carrier extends **reach**, not the definition of a confirmation.

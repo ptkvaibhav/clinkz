@@ -47,6 +47,49 @@ whole test.
   (`_ssrf_signature_match`). Severity **critical** (cloud-metadata / IAM exposure)
   / **high** (internal-service).
 
+## A failed fetch is reachability, not disclosure (gap G12, engagement `cb54495c`)
+
+The run confirmed a **HIGH** "Server-Side Request Forgery (SSRF) — internal_service"
+on a loopback fetch whose reflected "internal content" was the string
+`'403 Forbidden'`:
+
+```
+Response: loopback fetch reflected in-scope internal content ('403 Forbidden')
+confirming_excerpt: <b>Warning</b>: include(http://127.0.0.1:80/vulnerabilities/):
+  Failed to open stream: HTTP request failed! HTTP/1.1 403 Forbidden
+```
+
+**Root cause.** `_ssrf_marker_at_path` harvested the marker from a reference page
+that itself answered **403**, so the "distinctive marker" *was* the HTTP status
+line — the very string the fetching stack prints in its own failure message.
+Matching it could not distinguish *the app returned me the internal resource*
+from *the app told me the fetch failed*, and the non-resolving control could not
+either (that control only proves a request went out, which it did).
+
+**Position.** The fetch is real: a server-side request was issued to an internal
+address and distinguished from a control, so **reachability is proven**. But the
+defining effect of SSRF is *internal content the application should not return*,
+and a 403 error page is not that — nothing was disclosed. So it is not a
+high-severity SSRF finding, and it is not nothing either.
+
+**Three fixes, all general:**
+
+1. A marker is only harvested from a **2xx** reference. A non-2xx reference served
+   an error page, and an error page's chrome is not internal content.
+2. HTTP status boilerplate is rejected as a marker outright
+   (`_SSRF_BOILERPLATE_MARKER_RE`) — a `<title>` of `403 Forbidden` /
+   `404 Not Found` / `Internal Server Error` proves nothing wherever it came from.
+3. A marker appearing **only** inside a fetch-failure message
+   (`_FETCH_FAILURE_MARKERS`) does not confirm; the candidate falls through to the
+   blind branch.
+
+**Where the observation goes.** A proven fetch that discloses nothing is now
+recorded by `_record_ssrf_reach_lead` as an `UnprovenExploitLead`
+(`blind_unconfirmed_within_window` when P6 was sent and no callback landed,
+`not_instrumentable` when no collaborator was wired). The reachability survives
+for the operator; the exploitation claim does not. P6 still promotes it to a
+finding when a callback lands.
+
 ## Blind SSRF — confirmed out-of-band (P6) when a collaborator is wired, else deferred
 
 A confirmed fetch with no in-band reflection is no longer a dead end. When a

@@ -88,9 +88,11 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   chains (`katana→gospider→hakrawler` crawl; `ffuf→gobuster→feroxbuster` fuzz).
   SPA/API route discovery (`agents/_route_discovery.py`) unions static-JS-bundle +
   OpenAPI discoverers into `HTTPScanResult.endpoints` (additive; param structure
-  via `ParamLocation`). **Crawl-safety** (`_url_safety.py::is_state_changing_url`)
-  never visits/persists a link that mutates the target's security posture (WAF
-  toggle, logout) — the shared engagement session must never be poisoned.
+  via `ParamLocation`). **Probe-safety** (`_url_safety.py`) never mutates the
+  target while mapping it: `is_state_changing_url` gates navigation (WAF toggle,
+  logout — the shared engagement session must never be poisoned) and
+  `is_destructive_form_submission` gates submission (credential/account mutation,
+  destructive verbs).
 - **Research (v2)** — Gemini 3.1 Flash-Lite (GA), pinned via
   `GEMINI_RESEARCH_MODEL` (never `-preview`). Live web research via native Gemini
   Search Grounding + NVD structured CVE data. Runs concurrently with Scan/Exploit;
@@ -109,7 +111,10 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
 - **Critic** — validates findings before the report (CVSS, FP elimination,
   evidence, repro); can reject back to Exploit.
 - **Report** — zero LLM calls; emits JSON + a Markdown summary from the state
-  store in <30 s.
+  store in <30 s. Findings and **research-leads are separate types in separate
+  fields**: `CrossServiceResearchLead` (unproven A→B chains) and
+  `UnprovenExploitLead` (single-service, effect not witnessed) render in their own
+  UNCONFIRMED sections and are never counted in the totals.
 
 ## Gray-box Discovery Engine (`src/clinkz/discovery/`)
 
@@ -212,7 +217,11 @@ LESSONS #17).
 - **LLM-agnostic + per-agent providers** — never import a provider SDK outside
   `llm/`.
 - **Crawl-safety / session hygiene** — `is_state_changing_url` is the chokepoint
-  guarding every crawl visit, endpoint emission, and exploit-plan entry.
+  guarding every crawl visit, endpoint emission, and exploit-plan entry; its
+  submission counterpart `is_destructive_form_submission` guards every form
+  submit at `_submit_form_fields`. **A probe never destroys target state**: a
+  credential/account-mutating form is refused, not fuzzed, and a field the
+  methodology did not intend to set is omitted — never sent empty-but-present.
 - **A new injection *shape* gets a DEDICATED carrier**; leave the shared
   string-only `_send_probe` untouched.
 - **Stack-conditioned branches** (`_is_php_stack`, engine fingerprints, dialect)
@@ -220,7 +229,29 @@ LESSONS #17).
   path, a header) — never the flaky LLM tech list alone (LESSONS #28).
 - **Deterministic skills as contracts** — if the vuln is present, the `_test_*`
   method MUST find it. Verification-honest emission: emit only when the evidence
-  proves the DEFINING security effect.
+  proves the DEFINING security effect. **Never write an observation into evidence
+  that was not made**; an effect that was not witnessed is an
+  `UnprovenExploitLead` (a distinct type with no path to `_persist_finding`),
+  never a finding. **A finding that confirms identically across every level of a
+  security-graded control is a phantom by construction** — see
+  `docs/methodology/dvwa-per-level-honesty.md`.
+- **Suppress, never annotate** — a finding the engagement itself believes is a
+  false positive is **demoted** (removed from `findings`, deleted from the store,
+  re-recorded as an `UnprovenExploitLead` with `why_unconfirmed`), never emitted
+  as `confirmed` carrying a caveat. A caveat inside a confirmed finding is still
+  a confirmed finding. Three shapes can never confirm, in any methodology: a
+  **conditional execution claim** (speculation about an unobserved downstream
+  transform), a **reflection inside a framework error page** (reachability, not
+  an executable context), and a **check that determines it is not applicable**
+  (which returns no finding, never one whose title says "not applicable").
+- **A deterministic observation gates the LLM's list, not just its verdict** — a
+  posture/analysis entry contradicted by what we actually observed (a header
+  reported missing that is present) is dropped, and severity is recomputed from
+  the surviving set.
+- **Coverage truncation is never silent** — the plan cap is loud (per class:
+  how many candidates were dropped and the first omitted endpoint), each class's
+  bucket is ordered by relevance to *that* class, and every applicable class is
+  guaranteed one task before the cap applies.
 - **Persistent KB feedback loop (Layer-2)** — a confirmed discovery finding writes
   a per-technology capability fact; confidence is a decayed corroboration PRIOR
   from confirming observations only and never gates emission. The older
@@ -234,7 +265,12 @@ LESSONS #17).
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/
    tests/`. Clean every file the diff touches (dead code, naming, stale comments,
    `None` guards, no hardcoded secrets). CI pins `ruff==0.15.22`.
-2. **Keyless test gate** — `pytest tests/ -q --tb=short
+2. **Keyless test gate** — **clear the provider keys** so the run is actually
+   keyless (`config.py` calls `load_dotenv()` at import, so a present `.env`
+   makes `test_exploit_v2` issue LIVE Anthropic calls and the local number is
+   from a different suite than CI's — LESSONS #35):
+   `ANTHROPIC_API_KEY="" GEMINI_API_KEY="" GOOGLE_API_KEY="" OPENAI_API_KEY=""
+   pytest tests/ -q --tb=short
    --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop
    --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration`. Capture
    pytest's own exit code directly (`… > out.txt 2>&1; echo "EXIT=$?"`) — never

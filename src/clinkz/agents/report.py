@@ -21,7 +21,13 @@ from clinkz.agents.base import BaseAgent
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
 from clinkz.llm.base import LLMClient
-from clinkz.models.finding import CrossServiceResearchLead, Finding, FindingStatus, Severity
+from clinkz.models.finding import (
+    CrossServiceResearchLead,
+    Finding,
+    FindingStatus,
+    Severity,
+    UnprovenExploitLead,
+)
 from clinkz.models.report import ExecutiveSummary, PentestReport
 from clinkz.models.scope import EngagementScope
 from clinkz.models.target import Host
@@ -123,24 +129,46 @@ class ReportAgent(BaseAgent):
         # Pull engagement data from state store
         findings_raw = await self.state.get_findings(engagement_id, validated_only=False)
         targets_raw = await self.state.get_targets(engagement_id)
-        # Cross-service research-leads live in their OWN table (design §5), read into
-        # a separate section — never merged into findings, never counted in coverage.
+        # Research-leads live in their OWN table (design §5), read into separate
+        # sections — never merged into findings, never counted in coverage. The
+        # table holds two structurally different lead types, told apart by the
+        # ``lead_kind`` discriminator.
         leads_raw = await self.state.get_research_leads(engagement_id)
 
         self._logger.info(
-            "Loaded %d findings, %d targets, %d cross-service research-leads",
+            "Loaded %d findings, %d targets, %d research-leads",
             len(findings_raw),
             len(targets_raw),
             len(leads_raw),
         )
 
-        # Parse Finding models
+        # Parse Finding models. A finding the engagement itself flagged as a
+        # suspected false positive is NOT rendered as a finding: the Exploit
+        # phase already demotes those to unproven leads (the G10 emission
+        # inversion), and this is the second, independent layer at the report
+        # chokepoint — so a row written by an older build, a replay, or any
+        # future path that sets the status cannot reach ``findings[]`` and be
+        # counted in the totals.
         finding_models: list[Finding] = []
+        suppressed = 0
         for fd in findings_raw:
             try:
-                finding_models.append(Finding.model_validate(fd))
+                finding = Finding.model_validate(fd)
             except Exception as exc:
                 self._logger.warning("Could not parse finding '%s': %s", fd.get("id"), exc)
+                continue
+            if finding.status == FindingStatus.FALSE_POSITIVE:
+                suppressed += 1
+                self._logger.warning(
+                    "Excluding finding '%s' (%s) from the report — status=false_positive; "
+                    "a finding the engagement believes is a false positive is never emitted",
+                    finding.id,
+                    finding.title,
+                )
+                continue
+            finding_models.append(finding)
+        if suppressed:
+            self._logger.info("Report: %d false-positive finding(s) excluded", suppressed)
 
         # Parse Host models
         host_models: list[Host] = []
@@ -150,14 +178,22 @@ class ReportAgent(BaseAgent):
             except Exception as exc:
                 self._logger.warning("Could not parse host '%s': %s", td.get("id"), exc)
 
-        # Parse CrossServiceResearchLead models (design §5) — a DIFFERENT type than
-        # Finding, so they cannot be rendered in the confirmed-findings section.
+        # Parse the lead models (design §5) — DIFFERENT types than Finding, so they
+        # cannot be rendered in the confirmed-findings section. ``lead_kind``
+        # discriminates the cross-service chains from the single-service unproven
+        # candidates; a row written before the discriminator existed defaults to
+        # ``cross_service``.
         lead_models: list[CrossServiceResearchLead] = []
+        unproven_models: list[UnprovenExploitLead] = []
         for ld in leads_raw:
+            kind = ld.get("lead_kind") or "cross_service"
             try:
-                lead_models.append(CrossServiceResearchLead.model_validate(ld))
+                if kind == "unproven_exploit":
+                    unproven_models.append(UnprovenExploitLead.model_validate(ld))
+                else:
+                    lead_models.append(CrossServiceResearchLead.model_validate(ld))
             except Exception as exc:
-                self._logger.warning("Could not parse research-lead: %s", exc)
+                self._logger.warning("Could not parse research-lead (kind=%s): %s", kind, exc)
 
         # Build severity counts for executive summary (no LLM)
         severity_counts = {s: 0 for s in Severity}
@@ -193,6 +229,7 @@ class ReportAgent(BaseAgent):
             hosts=host_models,
             findings=finding_models,
             research_leads=lead_models,
+            unproven_leads=unproven_models,
         )
 
         report_dict = report.model_dump(mode="json")
@@ -261,16 +298,14 @@ class ReportAgent(BaseAgent):
         if not findings:
             lines.append("No validated findings.")
             ReportAgent._render_research_leads(lines, report.research_leads)
+            ReportAgent._render_unproven_leads(lines, report.unproven_leads)
             return "\n".join(lines)
 
         for i, f in enumerate(findings, 1):
             cvss_str = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "N/A"
-            fp_flag = (
-                " [SUSPECTED FALSE POSITIVE]" if f.status == FindingStatus.FALSE_POSITIVE else ""
-            )
             lines.extend(
                 [
-                    f"## {i}. {f.title}{fp_flag}",
+                    f"## {i}. {f.title}",
                     "",
                     f"- **Severity:** {f.severity.value.upper()}",
                     f"- **CVSS:** {cvss_str}",
@@ -293,7 +328,52 @@ class ReportAgent(BaseAgent):
             lines.extend(["", "---", ""])
 
         ReportAgent._render_research_leads(lines, report.research_leads)
+        ReportAgent._render_unproven_leads(lines, report.unproven_leads)
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_unproven_leads(lines: list[str], leads: list[UnprovenExploitLead]) -> None:
+        """Render the 'Unproven exploitation leads (UNCONFIRMED)' section.
+
+        Structurally separate from the confirmed-findings loop for the same
+        reason as :meth:`_render_research_leads`: these are a different type,
+        rendered under their own heading, explicitly marked UNCONFIRMED, and
+        never counted in the finding totals. Each lead states what WAS observed
+        and what was NOT — so a reader can see exactly where the evidence stops.
+        """
+        if not leads:
+            return
+        lines.extend(
+            [
+                "## Unproven exploitation leads (candidates — UNCONFIRMED)",
+                "",
+                "> These are **reachability observations whose defining security effect "
+                "was never witnessed**. They are **NOT findings**, are **not counted** "
+                "in the totals above, and no exploitation is claimed. Each states what "
+                "was observed and what confirming observation is missing.",
+                "",
+            ]
+        )
+        for i, lead in enumerate(leads, 1):
+            lines.extend(
+                [
+                    f"### U{i}. {lead.claim}",
+                    "",
+                    f"- **Why unconfirmed:** {lead.why_unconfirmed}",
+                    f"- **Endpoint:** {lead.endpoint}"
+                    + (f"  (parameter: {lead.parameter})" if lead.parameter else ""),
+                    f"- **Technique:** {lead.technique}",
+                    "",
+                    "**Raw evidence:**",
+                    "```",
+                    f"observed: {lead.raw_observation}",
+                    f"missing:  {lead.missing_observation}",
+                    "```",
+                    "",
+                    "---",
+                    "",
+                ]
+            )
 
     @staticmethod
     def _render_research_leads(lines: list[str], leads: list[CrossServiceResearchLead]) -> None:
