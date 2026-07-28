@@ -53,6 +53,17 @@ def _make_agent() -> ExploitAgent:
     return agent
 
 
+def _exploding_http_client(*_args: Any, **_kwargs: Any) -> Any:
+    """Stand-in for ``HTTPClientTool`` that fails loudly if anything builds it.
+
+    A refused request and a failed request both surface as ``status=0``, so
+    asserting on the status alone cannot distinguish "guard fired" from "request
+    went out and errored". Constructing the transport at all is the observable
+    that actually separates them.
+    """
+    raise AssertionError("transport was reached — the request was NOT refused")
+
+
 def _password_change_form() -> dict[str, Any]:
     """DVWA's password-change form, verbatim in shape."""
     return {
@@ -408,3 +419,146 @@ class TestNonFormCarriersAreGuarded:
         resp = await agent._send_probe(page, "password", "PAYLOAD")
         assert posted == []
         assert resp.status == 0
+
+
+# ===========================================================================
+# The GET-method credential form (engagement cb54495c — the live failure)
+#
+# The form-shaped guard refused 66 submissions and the run STILL set admin's
+# hash to md5(""). DVWA's password-change form is `<form action="#"
+# method="GET">`, so its fields are ordinary query parameters — and
+# `low.php` gates only on `isset($_GET['Change'])`, taking password_new and
+# password_conf as NULL when absent:
+#
+#     GET /vulnerabilities/csrf/?Change=CLNKZmclhqf   →  NULL == NULL  →  md5("")
+#
+# One unparameterised-looking probe of the submit button. It never touched
+# `_submit_form_fields`: methodologies hand-roll query probes, and the NoSQL
+# carrier sends bracket-notation query params directly. The guard therefore
+# has to bind to the ENDPOINT and be enforced in the _http_* helpers — the
+# only layer every carrier passes through.
+# ===========================================================================
+
+
+class TestDestructiveEndpointRegistry:
+    def _register(self, agent: ExploitAgent, url: str, form: dict[str, Any]) -> None:
+        agent._register_destructive_endpoint(url, [form], [f["name"] for f in form["fields"]])
+
+    def test_get_method_credential_form_registers_the_endpoint(self) -> None:
+        agent = _make_agent()
+        form = {**_password_change_form(), "method": "GET"}
+        self._register(agent, "http://example.com/vulnerabilities/csrf/", form)
+        assert agent._destructive_endpoints == {"http://example.com/vulnerabilities/csrf"}
+
+    @pytest.mark.asyncio
+    async def test_query_carrier_cannot_reach_a_registered_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE regression: `?Change=x` on a GET-method credential form.
+
+        The transport is booby-trapped rather than mocked: a mock returning a
+        response, or a real request failing, both look like ``status=0``, so
+        only "the HTTP client was never even constructed" actually proves the
+        request was not transmitted.
+        """
+        agent = _make_agent()
+        monkeypatch.setattr(
+            "clinkz.tools.http_client.HTTPClientTool",
+            _exploding_http_client,
+        )
+        self._register(
+            agent,
+            "http://example.com/vulnerabilities/csrf/",
+            {**_password_change_form(), "method": "GET"},
+        )
+        page = PageAnalysis(
+            url="http://example.com/vulnerabilities/csrf/",
+            body="",
+            status=200,
+            input_params=["password_new", "password_conf", "Change"],
+            forms=[{**_password_change_form(), "method": "GET"}],
+        )
+        for param in ("Change", "password_new", "password_conf"):
+            resp = await agent._send_probe(page, param, "CLNKZprobe")
+            assert resp.status == 0, f"probe of {param} was transmitted"
+
+    @pytest.mark.asyncio
+    async def test_nosql_bracket_query_carrier_is_also_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`?Change[$ne]=-1` — a carrier that never touches _submit_form_fields."""
+        agent = _make_agent()
+        monkeypatch.setattr(
+            "clinkz.tools.http_client.HTTPClientTool",
+            _exploding_http_client,
+        )
+        self._register(
+            agent,
+            "http://example.com/vulnerabilities/csrf/",
+            {**_password_change_form(), "method": "GET"},
+        )
+        resp = await agent._http_get(
+            "http://example.com/vulnerabilities/csrf/", {"Change[$ne]": "-1"}
+        )
+        assert resp.status == 0
+
+    @pytest.mark.asyncio
+    async def test_a_benign_endpoint_still_reaches_the_transport(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Proves the booby-trap above is load-bearing, not vacuous."""
+        agent = _make_agent()
+        monkeypatch.setattr(
+            "clinkz.tools.http_client.HTTPClientTool",
+            _exploding_http_client,
+        )
+        self._register(
+            agent,
+            "http://example.com/vulnerabilities/csrf/",
+            {**_password_change_form(), "method": "GET"},
+        )
+        with pytest.raises(AssertionError, match="transport was reached"):
+            await agent._http_get("http://example.com/vulnerabilities/sqli/", {"id": "1"})
+
+    @pytest.mark.asyncio
+    async def test_unparameterised_fetch_is_still_allowed(self) -> None:
+        """CSRF analysis must still be able to READ the form it evaluates."""
+        agent = _make_agent()
+        fetched: list[str] = []
+
+        async def fake_exec(url: str, params: dict[str, str], **_kw: Any) -> _HTTPResponse:
+            fetched.append(url)
+            return _HTTPResponse(status=200, body="<form>...</form>")
+
+        self._register(
+            agent,
+            "http://example.com/vulnerabilities/csrf/",
+            {**_password_change_form(), "method": "GET"},
+        )
+        # A no-parameter GET is a read, not a submission — it must pass the
+        # guard. Verified by the guard predicate directly, so no transport is
+        # needed.
+        assert not agent._is_destructive_request(
+            "http://example.com/vulnerabilities/csrf/", has_params=False
+        )
+        assert agent._is_destructive_request(
+            "http://example.com/vulnerabilities/csrf/", has_params=True
+        )
+        assert not fetched
+
+    def test_unrelated_endpoints_are_unaffected(self) -> None:
+        agent = _make_agent()
+        self._register(
+            agent,
+            "http://example.com/vulnerabilities/csrf/",
+            {**_password_change_form(), "method": "GET"},
+        )
+        assert not agent._is_destructive_request(
+            "http://example.com/vulnerabilities/sqli/?id=1", has_params=True
+        )
+
+    def test_endpoint_key_ignores_query_and_trailing_slash(self) -> None:
+        agent = _make_agent()
+        key = agent._endpoint_key("http://EXAMPLE.com/a/b/?x=1#frag")
+        assert key == "http://example.com/a/b"
+        assert agent._endpoint_key("http://example.com/a/b") == key
