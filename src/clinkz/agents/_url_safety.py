@@ -1,4 +1,12 @@
-"""Crawl/probe safety: skip links that mutate the target's security posture.
+"""Probe safety: never mutate the target's security posture while mapping it.
+
+Two guards live here, one per carrier:
+
+  * :func:`is_state_changing_url` — **navigation.** A link that flips server-side
+    state when merely visited.
+  * :func:`is_destructive_form_submission` — **form submission.** A form whose
+    submission would overwrite authentication material, mutate account identity,
+    or destroy/transfer a resource.
 
 A black-box pentest crawler must *map* the application without *changing* it.
 Some links flip server-side state when merely visited (most are GET-triggered):
@@ -20,11 +28,20 @@ session.
 The fix is to never *visit* and never *emit* such links: the crawler skips them
 and the Exploit planner drops them, so the shared session's security posture is
 left exactly as the operator set it.
+
+The submission guard exists for the same reason one rung down. Per-parameter
+fuzzing submits a form once per field per probe; against a credential-mutating
+form that is a live password change repeated tens of times. Engagement
+``e183af87`` submitted DVWA's password-change form ~25 times and left ``admin``'s
+hash as ``md5("")`` — the engagement destroyed the target's credentials and
+blocked every later phase. Mapping an application must never overwrite its
+accounts, so such forms are refused at the submit chokepoint rather than fuzzed.
 """
 
 from __future__ import annotations
 
 import re
+from typing import Any
 from urllib.parse import parse_qs, urljoin, urlparse, urlsplit
 
 # Query-parameter keys whose presence flips a server-side security/session
@@ -84,6 +101,127 @@ def is_state_changing_url(url: str) -> bool:
             return True
 
     return False
+
+
+# ---------------------------------------------------------------------------
+# Form-submission safety (destructive-mutation guard)
+# ---------------------------------------------------------------------------
+
+# Field-name / path tokens naming AUTHENTICATION MATERIAL. Deliberately excludes
+# ``token``: an anti-CSRF ``user_token`` rides along on almost every form and
+# would block the whole form surface.
+_AUTH_MATERIAL_TOKENS = ("password", "passwd", "pwd", "passphrase")
+
+# Tokens naming ACCOUNT IDENTITY — the value an account is recovered/logged in by.
+_IDENTITY_TOKENS = ("email", "e-mail", "username", "user_name", "userid", "user_id")
+
+# What separates a *mutation* of existing auth material from a plain login (submit
+# an existing credential) or a fresh registration (create a new one). A login form
+# carries none of these, so brute-force testing is unaffected; a change/reset form
+# carries at least one in a field name (``password_new``, ``password_current``) or
+# in the resolved path (``/rest/user/change-password``, ``/account/settings``).
+#
+# This is the discriminator, NOT "two password fields": a registration form also
+# has ``password`` + ``passwordRepeat``, and creating an account destroys nothing.
+_MUTATION_QUALIFIERS = (
+    "new",
+    "change",
+    "update",
+    "reset",
+    "current",
+    "old",
+    "confirm",
+    "edit",
+    "modify",
+    "credential",
+    "account",
+    "profile",
+    "settings",
+)
+
+# Verbs whose submission destroys or moves a resource outright. These need no
+# credential signal — the action is the harm.
+_DESTRUCTIVE_ACTION_TOKENS = (
+    "delete",
+    "remove",
+    "destroy",
+    "purge",
+    "deactivate",
+    "transfer",
+    "withdraw",
+    "revoke",
+)
+
+
+def is_destructive_form_submission(form: dict[str, Any], action_url: str = "") -> bool:
+    """Return ``True`` if submitting *form* would destroy or overwrite target state.
+
+    The form-submission counterpart to :func:`is_state_changing_url`: a
+    methodology may *read* such a form (parse it, count its tokens, reason about
+    its shape) but must never *submit* it, because a submission overwrites
+    authentication material, mutates account identity, or destroys/transfers a
+    resource. Per-parameter fuzzing submits a form once per field per probe, so
+    an unguarded credential form is silently changed tens of times per run.
+
+    True when any of:
+
+      1. The declared method is ``DELETE`` (the verb is the harm).
+      2. A destructive verb (:data:`_DESTRUCTIVE_ACTION_TOKENS`) appears in a
+         field name or the resolved path.
+      3. An authentication-material signal (:data:`_AUTH_MATERIAL_TOKENS`, or a
+         ``type="password"`` input) co-occurs with a mutation qualifier
+         (:data:`_MUTATION_QUALIFIERS`) — a password *change/reset*, not a login.
+      4. An account-identity signal (:data:`_IDENTITY_TOKENS`) co-occurs with a
+         mutation qualifier — an email/username change hijacks the account.
+
+    Deliberately NOT destructive: a plain **login** form (credentials submitted,
+    nothing mutated — brute-force testing depends on this) and a plain
+    **registration** form (creates an account, destroys nothing). Both lack a
+    mutation qualifier, which is exactly what rules 3 and 4 key on.
+
+    Conservative by construction: it refuses a submission on a *name* signal, so
+    a form that merely reads as credential-mutating is skipped rather than
+    fuzzed. That trades some coverage for never damaging the target — the right
+    direction for an autonomous engagement.
+
+    Args:
+        form: A parsed ``{action, method, fields:[{name,type,value}]}`` dict (or
+            the synthesized JSON pseudo-form of the same shape).
+        action_url: The form's resolved absolute action URL, when the caller has
+            it. Consulted for the path signal so a JSON pseudo-form — whose
+            ``action`` is empty and whose sensitivity lives in the path — is
+            still classified correctly.
+
+    Returns:
+        ``True`` when the submission would mutate credentials/identity or destroy
+        a resource, else ``False``.
+    """
+    fields = form.get("fields") or []
+    field_names = [str(fld.get("name") or "").lower() for fld in fields]
+    field_types = [str(fld.get("type") or "").lower() for fld in fields]
+    path = ""
+    if action_url:
+        try:
+            path = (urlsplit(action_url).path or "").lower()
+        except ValueError:
+            path = ""
+    haystack = " ".join([str(form.get("action") or "").lower(), path, *field_names])
+
+    if str(form.get("method") or "").upper() == "DELETE":
+        return True
+    if any(tok in haystack for tok in _DESTRUCTIVE_ACTION_TOKENS):
+        return True
+
+    has_mutation_qualifier = any(q in haystack for q in _MUTATION_QUALIFIERS)
+    if not has_mutation_qualifier:
+        return False
+
+    has_auth_material = any(t == "password" for t in field_types) or any(
+        tok in haystack for tok in _AUTH_MATERIAL_TOKENS
+    )
+    if has_auth_material:
+        return True
+    return any(tok in haystack for tok in _IDENTITY_TOKENS)
 
 
 # ---------------------------------------------------------------------------
@@ -151,4 +289,8 @@ def find_session_setter_urls(page_url: str, body: str) -> list[str]:
     return found
 
 
-__all__ = ["find_session_setter_urls", "is_state_changing_url"]
+__all__ = [
+    "find_session_setter_urls",
+    "is_destructive_form_submission",
+    "is_state_changing_url",
+]

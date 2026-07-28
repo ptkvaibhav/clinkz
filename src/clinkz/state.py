@@ -433,6 +433,25 @@ class StateStore:
         await self._conn.execute("UPDATE findings SET validated=1 WHERE id=?", (finding_id,))
         await self._conn.commit()
 
+    async def delete_finding(self, finding_id: str) -> None:
+        """Remove a persisted finding row.
+
+        Used by the Exploit phase when a candidate is **demoted** rather than
+        reported — the post-run analysis flagged it as a false positive, so it
+        must not survive as a confirmed finding anywhere the Report agent reads
+        (the G10 emission inversion). The demoted observation is re-recorded as
+        an ``UnprovenExploitLead`` in the research-leads table, which the report
+        renders in its own UNCONFIRMED section.
+
+        A no-op when the row does not exist (the finding may have been demoted
+        before the incremental write landed).
+
+        Args:
+            finding_id: Finding UUID.
+        """
+        await self._conn.execute("DELETE FROM findings WHERE id=?", (finding_id,))
+        await self._conn.commit()
+
     async def update_finding(self, finding_id: str, finding_data: dict[str, Any]) -> None:
         """Overwrite a persisted finding's JSON blob.
 
