@@ -134,3 +134,32 @@ phantom) alongside cookie `sqli_blind` (boolean) + fi; medium confirms `sqli/`
 (error-based) + `sqli_blind` (boolean), numeric `''`; low confirms `sqli/`
 (error-based) + `sqli_blind` (time-blind SLEEP) + brute `username`; impossible
 emits none (PDO parameterized). N/A by construction at impossible.
+
+## Context adaptation — the ladder tries the OTHER SQL context (gap G5)
+
+At DVWA `medium` the SQLi methodology ran **9 verifications and emitted 0**; at
+`high`, **15 and 0**. Two generic causes, neither about payload quality:
+
+1. **A verification that could not run.** `_normalise_indicator_type` mapped the
+   synthesis LLM's `content_diff` label onto the boolean oracle, which needs BOTH
+   shapes — with no `control_payload` it returned `"boolean_blind missing
+   control_payload"` **having sent nothing**, burning a ladder rung. It happened
+   three times across the medium/high runs, always on a UNION payload the model
+   mislabelled. `content_diff` without a control now falls through to
+   payload-shape inference, which routes the payload to the check it can pass.
+2. **Every rung re-sent the same quoted break.** Phase-4 synthesis defaults to a
+   string-literal break (`1' AND '1'='1`). On a target that escapes quotes, every
+   ranked type sends a variant of the same inert shape and the ladder never asks
+   the other question.
+
+`_sqli_adapt_context` runs after all ranked types fail: the same deterministic
+`content_diff` oracle, in the **numeric / unquoted** context —
+`{v} AND 1=1` vs `{v} AND 1=2`, `OR`, a commented variant, an arithmetic variant,
+and a double-quoted variant, where `{v}` is the parameter's **own observed
+baseline value**, discovered at runtime. These are injection *shapes*, not payloads
+for a particular app: the injection either sits inside a quoted string literal or
+is interpolated as a bare term, and a filter that neutralises one leaves the other
+untouched.
+
+It adds **reach, never a new way to confirm** — the oracle is the unchanged
+boolean differential, so nothing that could not confirm before can confirm now.

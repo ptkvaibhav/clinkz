@@ -12,6 +12,63 @@ fingerprint / synthesize / verify / emit with LLM-driven payload synthesis; see
   executable context, anchored on a benign baseline.
 - **DOM XSS emits nothing today.** Its evidence is *reachability*, never
   execution — see below.
+- **All three classes share one gate** — `_xss_confirmation_gate` (gap G9).
+
+## The escaping-robust gate applies to EVERY class (gap G9, engagement `978d4b3e`)
+
+G1 gave stored XSS an escaping-robust rule. Reflected did not have one, and at
+DVWA `low` the methodology emitted a HIGH **"Reflected XSS in page parameter"**
+whose own evidence read:
+
+```
+character_map=html_encoded='<','>','"','&'; survived=…,'＜','＞'
+payload=＜script＞alert(document.domain)＜/script＞
+```
+
+Its **own character map** proved the functional characters were encoded — the
+payload could not execute — while the phase-5 substring check said "reflected",
+because the payload was built from **fullwidth homoglyphs** (U+FF1C/U+FF1E) that
+round-trip cleanly and are not tag delimiters in any conforming parser.
+
+The rule, now shared by reflected / stored / DOM:
+
+> **If the characters required for the payload to execute in the context it
+> landed in did not survive, confirmation is IMPOSSIBLE.** The deterministic
+> character map GATES emission.
+
+Two halves, both deterministic, both required (`_xss_execution_possible`):
+
+1. The payload carries **every** character of at least one functional set for
+   its landing context (`_xss_functional_char_sets`) — markup needs `<`+`>` or a
+   quote+`=`; `script` needs `'`, `"`, `;`, or `<`+`/` together (neither half of
+   the closer alone: a lone `<` inside a script block is a less-than operator, a
+   lone `/` is a divide — counting them individually is what let the homoglyph
+   payload through in a script landing).
+2. The phase-2 **character map** records none of that set's characters as
+   transformed. A character the map never probed is *unknown*, never *encoded*:
+   absence of evidence cannot veto, which keeps the gate a suppressor and never
+   an authoriser.
+
+Applied at **phase 5 as well as phase 6**, so a rejected candidate falls through
+to the next phase-4 bypass attempt instead of ending the ladder.
+
+## Two shapes that can never confirm (gap G10)
+
+Both are VETOes layered on the deterministic pass — neither can authorise an
+emission, so a miss costs a finding and never a phantom.
+
+- **Conditional execution claims.** An `expected_execution` of the form *"IF the
+  input is later normalized/transformed by some layer, THEN it would execute"* is
+  a hypothesis about an unobserved downstream step, not an observation. Detected
+  **structurally** (`_states_conditional_execution`): a conditional connective
+  co-occurring with a transform verb, rather than a phrase list — so it holds
+  across the wording every provider invents. All four live rationales behind the
+  `978d4b3e` phantom matched.
+- **Reflection in an error page.** A payload echoed only inside a framework
+  error / warning block (`_reflection_only_in_error_block`) is the interpreter
+  reporting what it *refused* to do. That is reachability, not an executable
+  context. Only when **every** occurrence sits in such a block does the veto
+  fire — a payload that also lands in normal markup is still exploitable.
 
 ## Stored-XSS confirmation gate (gap G1, engagement `913fecee`)
 
