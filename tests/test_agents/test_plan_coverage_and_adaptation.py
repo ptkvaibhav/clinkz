@@ -134,6 +134,36 @@ class TestG4ClassRelevance:
         assert first["_test_brute_force"] == "http://t/login.php"
 
 
+class TestG4CsrfOnGetForms:
+    """A state-changing form served over GET must still reach ``_test_csrf``.
+
+    The POST gate cost real coverage: DVWA's password-change form is
+    ``<form action="#" method="GET">``, so the class reached that endpoint only
+    when the LLM plan happened to name it. Engagement ``783fb78b`` — whose plan
+    held 4 tasks — lost the CSRF finding its predecessor emitted. Same shape as
+    the brute-force and upload gates, which were already queued by endpoint
+    shape rather than declared method.
+    """
+
+    def _methods(self, url: str, method: str = "GET") -> list[str]:
+        agent = _agent()
+        return agent._applicable_methods_for_endpoint(Endpoint(url=url, method=method, params=[]))
+
+    def test_get_method_csrf_surface_is_queued(self) -> None:
+        assert "_test_csrf" in self._methods("http://t/vulnerabilities/csrf/")
+
+    def test_get_method_account_surface_is_queued(self) -> None:
+        assert "_test_csrf" in self._methods("http://t/account/password/change")
+
+    def test_an_ordinary_page_is_not_queued_for_csrf(self) -> None:
+        """The gate narrows the queue; phase-1's state-changing hypothesis is
+        still the honest filter, so this must not become "every endpoint"."""
+        assert "_test_csrf" not in self._methods("http://t/app/search/", "GET")
+
+    def test_post_endpoints_keep_their_existing_queue(self) -> None:
+        assert "_test_csrf" in self._methods("http://t/api/items", "POST")
+
+
 class TestG4TruncationIsLoud:
     def test_dropped_tasks_are_logged_per_class(self, caplog: pytest.LogCaptureFixture) -> None:
         """A plan that silently drops nine tenths of its candidates reads exactly
