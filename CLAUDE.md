@@ -265,7 +265,12 @@ LESSONS #17).
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/
    tests/`. Clean every file the diff touches (dead code, naming, stale comments,
    `None` guards, no hardcoded secrets). CI pins `ruff==0.15.22`.
-2. **Keyless test gate** — `pytest tests/ -q --tb=short
+2. **Keyless test gate** — **clear the provider keys** so the run is actually
+   keyless (`config.py` calls `load_dotenv()` at import, so a present `.env`
+   makes `test_exploit_v2` issue LIVE Anthropic calls and the local number is
+   from a different suite than CI's — LESSONS #35):
+   `ANTHROPIC_API_KEY="" GEMINI_API_KEY="" GOOGLE_API_KEY="" OPENAI_API_KEY=""
+   pytest tests/ -q --tb=short
    --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop
    --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration`. Capture
    pytest's own exit code directly (`… > out.txt 2>&1; echo "EXIT=$?"`) — never
