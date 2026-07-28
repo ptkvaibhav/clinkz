@@ -512,3 +512,44 @@ class TestG12SSRFOn403:
             _reflection_only_in_error_block(body, "Internal Admin Console", _FETCH_FAILURE_MARKERS)
             is None
         )
+
+
+# ===========================================================================
+# Evidence must reproduce the request that was actually sent
+# ===========================================================================
+
+
+class TestEvidenceRequestIsTheRealRequest:
+    """A Request evidence line a reader cannot reproduce is not evidence.
+
+    ``_open_redirect_phase6_emit`` rendered ``f"{url}?{param}={payload}"``. On an
+    endpoint whose URL already carries the parameter — DVWA's redirect handler is
+    ``…/source/low.php?redirect=info.php`` — that printed ``redirect=`` TWICE,
+    while ``_build_request_url`` REPLACES a same-named param in place (LESSONS
+    #30). The rendered line described a request that was never sent.
+
+    It is not a cosmetic defect: in engagement ``441c5728`` the post-run analysis
+    read the doubled rendering as a "malformed/duplicated redirect parameter …
+    possible test-harness payload construction artifact" and demoted a
+    cleanly-confirmed finding (302 → ``Location: //evil.example``) on that basis.
+    Bad evidence produced a bad verdict.
+    """
+
+    HANDLER = "http://t/app/open_redirect/source/low.php?redirect=info.php"
+
+    def test_a_param_already_in_the_url_is_replaced_not_doubled(self) -> None:
+        agent = _make_agent()
+        built = agent._build_request_url(self.HANDLER, {"redirect": "//evil.example"})
+        assert built.count("redirect=") == 1
+        assert "info.php" not in built
+
+    def test_the_naive_rendering_is_what_doubled_it(self) -> None:
+        """Pins WHY the old line was wrong, so a future edit back to string
+        concatenation fails here rather than in a live engagement."""
+        naive = f"{self.HANDLER}?redirect=//evil.example"
+        assert naive.count("redirect=") == 2
+
+    def test_a_clean_url_is_unaffected(self) -> None:
+        agent = _make_agent()
+        built = agent._build_request_url("http://t/go", {"redirect": "//evil.example"})
+        assert built.count("redirect=") == 1
