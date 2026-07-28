@@ -196,10 +196,13 @@ class MethodologyResult(BaseModel):
     # placeholder. Empty ⇒ no response was captured, which (per the emit
     # honesty guard) blocks a silently-verified finding.
     verifying_response: str = ""
+    # Where phase-5 observed the payload land ("html_body" / "tag" / "script" /
+    # "js_dom_likely …"). Recorded so the phase-6 emission gate can re-check the
+    # escaping-robust capability rule against the SAME context verification used,
+    # rather than re-deriving (or assuming) one.
+    landing_context: str = ""
 
 
-# ---------------------------------------------------------------------------
-# SQLi methodology types
 # ---------------------------------------------------------------------------
 
 
@@ -1260,6 +1263,13 @@ class FileUploadRestrictions(BaseModel):
     magic_byte_check: bool = False
     filename_injection_works: bool = False
     size_limit_observed: str = ""
+    # An IMAGE extension the server accepted while carrying script content — the
+    # carrier a hardened upload leaves open. When every script extension is
+    # rejected, ``working_extensions`` is empty and synthesis used to give up;
+    # a store that still accepts ``x.jpg`` holding a script body is the upload
+    # half of an inclusion chain, so it is recorded separately. Empty when no
+    # image extension accepted script content.
+    image_carrier_extension: str = ""
 
 
 class FileUploadMethodologyResult(BaseModel):
@@ -1406,6 +1416,9 @@ class DOMXSSMethodologyResult(BaseModel):
     # ``"likely"`` for DOM-XSS because static analysis cannot run the JS to
     # observe execution.
     verification_strength: str = "likely"
+    # Landing context, for symmetry with the reflected/stored results so the
+    # shared XSS confirmation gate reads the same field on every class.
+    landing_context: str = ""
 
 
 # ---------------------------------------------------------------------------
