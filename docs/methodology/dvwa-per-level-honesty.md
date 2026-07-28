@@ -44,3 +44,56 @@ two contained methodology fixes (live-validated across all four levels):
 Re-validated on the **real pipeline** (LESSONS #18 — real pipeline, not a
 harness), not the keyless harness which pins a silent LLM and only exercises the
 deterministic fallback.
+
+## The graded-control-invariance rule (generalised)
+
+**A finding that confirms identically across every level of a security-graded
+control is suspect BY CONSTRUCTION, because the control is designed to vary.**
+Where a graded control is present, uniform confirmation should suppress + flag
+rather than emit.
+
+This generalises the DVWA-specific statement at the top of this file to any app
+that exposes a graded control — a difficulty selector, a "strict mode" toggle, a
+policy tier. The reasoning is structural, not DVWA-specific: if the app changes
+its defence between levels and the oracle's verdict does not change with it, the
+oracle is keying on something the defence does not touch — i.e. on the app's own
+benign response.
+
+The D1 baseline is the canonical instance. `DOM-based XSS via URL fragment /
+location source` confirmed at **low, medium, high, AND impossible** (engagements
+`e183af87`, `48e438e3`, `291617a2`, `913fecee`). It had to: the signal was a
+static scan of an inline `<script>` block that DVWA ships unchanged at every
+level. Uniform confirmation was the diagnosis, arrived at before anyone read the
+code.
+
+### Why the *suppression* half is documented rather than implemented
+
+Not implemented in `src/` in batch 1. Two structural blockers, both worth stating
+plainly rather than papering over with a partial mechanism:
+
+1. **An engagement sees exactly one level.** The graded control is set outside
+   the run (for DVWA, a container env var seeding the session's `security`
+   cookie), and crawl-safety deliberately refuses to touch it —
+   `is_state_changing_url` exists precisely to stop the engine flipping a
+   security toggle mid-run. So "confirms identically across every level" is a
+   **cross-engagement** predicate; no single run can evaluate it. Making it
+   in-engagement would mean re-confirming under a hardened control on a scratch
+   session, which is a design pass of its own.
+2. **There is no replayable oracle at the emission chokepoint.** `_persist_finding`
+   receives a `Finding` — a rendered artifact, not a re-runnable confirmation.
+   Suppressing on invariance requires re-running *the methodology's own oracle*
+   under the varied control, which needs a per-methodology confirmation-replay
+   protocol that does not exist yet. Approximating it by re-matching evidence
+   strings would be a new phantom, in the direction that costs genuine findings.
+
+The honest status: **it stays a documented rule and a diagnostic procedure the
+operator runs across levels** (compare `outputs/<id>/report_<id>.json` per level;
+any exploitation finding present at the hardened level, or present unchanged at
+all levels, is a phantom until proven otherwise). A confirmation-replay protocol
+is the prerequisite for automating it, and belongs with P7 rather than bolted on.
+
+Worth noting for scope: both instances the rule would have caught in D1 are
+killed directly by the batch-1 oracle fixes — the stored-XSS gate ([xss](xss.md)
+G1) and the DOM-XSS lead reclassification ([xss](xss.md) G2). The rule earns its
+keep as the *detector* that finds the next one, not as a substitute for fixing
+the oracle.

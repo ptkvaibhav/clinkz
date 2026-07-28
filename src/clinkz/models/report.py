@@ -12,7 +12,12 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from clinkz.models.finding import CrossServiceResearchLead, Finding, Severity
+from clinkz.models.finding import (
+    CrossServiceResearchLead,
+    Finding,
+    Severity,
+    UnprovenExploitLead,
+)
 from clinkz.models.target import Host
 
 
@@ -119,6 +124,9 @@ class PentestReport(BaseModel):
     # ``finding_counts`` — the type-system + storage-level separation the design
     # requires (§5 the hard line).
     research_leads: list[CrossServiceResearchLead] = Field(default_factory=list)
+    # Single-service unproven leads — same separation, same guarantee: a candidate
+    # whose defining effect was never witnessed is a different TYPE than a finding.
+    unproven_leads: list[UnprovenExploitLead] = Field(default_factory=list)
     methodology: str = ""
     appendices: dict[str, str] = Field(default_factory=dict)
 

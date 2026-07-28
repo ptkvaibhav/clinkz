@@ -225,7 +225,9 @@ class TestPhase6Emission:
                 expected_execution="image error handler",
             ),
             verified=True,
-            verification_strength="likely",
+            # Phase 6 is reachable only once execution has been WITNESSED —
+            # today nothing sets this, and a "likely" result becomes a lead.
+            verification_strength="verified",
         )
         finding = agent._dom_xss_phase6_emit(
             "http://example.com/page",
@@ -235,8 +237,28 @@ class TestPhase6Emission:
         joined = " ".join(finding.evidence)
         assert "path=source_to_sink" in joined
         assert "phases_completed=6" in joined
-        assert "strength=likely" in joined
         assert finding.severity.value == "high"
+        # G2: the evidence must never assert an observation nobody made.
+        assert "executed by client-side JS" not in joined
+
+    def test_phase6_refuses_an_unwitnessed_result(self) -> None:
+        """The emission path is closed to a ``likely`` strength by construction."""
+        agent = _make_agent()
+        result = DOMXSSMethodologyResult(
+            phases_completed=6,
+            detection_path=DOMXSSDetectionPath.SOURCE_TO_SINK,
+            source_sink_pairs=[
+                DOMSourceSinkPair(
+                    source="location.hash",
+                    sink="innerHTML",
+                    script_excerpt="x.innerHTML = location.hash",
+                )
+            ],
+            verified=True,
+            verification_strength="likely",
+        )
+        with pytest.raises(RuntimeError, match="without witnessed execution"):
+            agent._dom_xss_phase6_emit("http://example.com/page", None, result)
 
     def test_canary_finding_includes_param(self) -> None:
         from clinkz.models.methodology import ReflectionContext, ReflectionPoint
@@ -259,7 +281,7 @@ class TestPhase6Emission:
             ),
             candidate_param="q",
             verified=True,
-            verification_strength="likely",
+            verification_strength="verified",
         )
         finding = agent._dom_xss_phase6_emit(
             "http://example.com/search",
@@ -278,7 +300,13 @@ class TestPhase6Emission:
 
 class TestDOMXSSMethodologyIntegration:
     @pytest.mark.asyncio
-    async def test_source_to_sink_path_emits_finding(self) -> None:
+    async def test_source_to_sink_path_records_lead_not_finding(self) -> None:
+        """G2: static source→sink proves REACHABILITY, never execution.
+
+        Without a client-side execution oracle the honest output is an
+        ``UnprovenExploitLead`` — a different type than ``Finding``, never
+        counted in coverage, never rendered as confirmed.
+        """
         agent = _make_agent(_ScriptedLLM(answers=[""] * 4))
         agent._methodology_llm = agent.llm
         agent._http_get = AsyncMock(  # type: ignore[method-assign]
@@ -297,12 +325,16 @@ class TestDOMXSSMethodologyIntegration:
             input_params=[],
         )
         findings = await agent._test_xss_dom(page)
-        assert len(findings) >= 1
-        joined = " ".join(findings[0].evidence)
-        assert "path=source_to_sink" in joined
+        assert findings == []
+        leads = agent._unproven_exploit_leads
+        assert len(leads) == 1
+        assert leads[0].why_unconfirmed == "execution_not_witnessed_requires_client_side_oracle"
+        assert "location.hash" in leads[0].raw_observation
+        assert "innerHTML" in leads[0].raw_observation
+        assert leads[0].claim.startswith("Candidate ")
 
     @pytest.mark.asyncio
-    async def test_canary_script_context_path_emits_finding(self) -> None:
+    async def test_canary_script_context_path_records_lead_not_finding(self) -> None:
         agent = _make_agent(_ScriptedLLM(answers=[""] * 4))
         agent._methodology_llm = agent.llm
 
@@ -323,9 +355,11 @@ class TestDOMXSSMethodologyIntegration:
             input_params=["name"],
         )
         findings = await agent._test_xss_dom(page)
-        assert len(findings) >= 1
-        joined = " ".join(findings[0].evidence)
-        assert "path=canary_script_context" in joined
+        assert findings == []
+        leads = agent._unproven_exploit_leads
+        assert len(leads) == 1
+        assert leads[0].parameter == "name"
+        assert "client-side" in leads[0].missing_observation
 
     @pytest.mark.asyncio
     async def test_no_dom_evidence_yields_no_finding(self) -> None:

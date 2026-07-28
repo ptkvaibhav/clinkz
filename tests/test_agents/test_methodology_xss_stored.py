@@ -454,3 +454,183 @@ class TestXSSStoredVerificationGate:
         page = _make_page()
         findings = await agent._test_xss_stored(page)
         assert findings == []
+
+
+# ===========================================================================
+# G1 — the confirmation gate (the ``impossible``-level phantom)
+#
+# Engagement 913fecee emitted "Stored XSS via user_token in form" at DVWA
+# ``impossible``: the injection point was the anti-CSRF token field, the
+# payload was the bare alphanumeric ``alert1``, ``read_back_url`` was None, and
+# the synthesis LLM's own verdict was "No JavaScript execution occurs". Each
+# condition below independently makes that emission impossible.
+# ===========================================================================
+
+
+class TestStoredXSSConfirmationGate:
+    @pytest.mark.asyncio
+    async def test_missing_read_back_url_cannot_verify(self) -> None:
+        """A confirm with ``read_back_url=None`` must be impossible by construction.
+
+        Previously phase 5 fell back to re-reading the page the payload was
+        submitted to, turning any substring already on that page into a
+        "confirmation".
+        """
+        agent = _make_agent()
+        agent._http_post = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="ok")
+        )
+        get_mock = AsyncMock(
+            return_value=_HTTPResponse(status=200, body="<p><script>alert(1)</script></p>")
+        )
+        agent._http_get = get_mock  # type: ignore[method-assign]
+        page = _make_page()
+        verified, ctx = await agent._xss_stored_phase5_verify(
+            page, _make_form(), "txtName", "<script>alert(1)</script>", None
+        )
+        assert verified is False
+        assert "read-back" in ctx
+        # And it never even fetched — there is nothing to fetch.
+        assert get_mock.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_payload_without_functional_chars_cannot_verify(self) -> None:
+        """``alert1`` survives the round trip but can never execute."""
+        agent = _make_agent()
+        agent._http_post = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="ok")
+        )
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<p>alert1</p>")
+        )
+        page = _make_page()
+        verified, ctx = await agent._xss_stored_phase5_verify(
+            page, _make_form(), "txtName", "alert1", page.url
+        )
+        assert verified is False
+        assert "XSS-functional" in ctx
+
+    def test_functional_capability_is_context_dependent(self) -> None:
+        agent = _make_agent()
+        cap = agent._xss_payload_has_functional_capability
+        assert cap("<script>alert(1)</script>", "html_body") is True
+        assert cap("' onfocus='alert(1)' autofocus='", "html_body") is True
+        assert cap("alert1", "html_body") is False
+        assert cap("ClinkzProbe123", "tag") is False
+        # Inside a <script> block a string/statement breakout is what counts.
+        assert cap("';alert(1);//", "script") is True
+        assert cap("alert1", "script") is False
+
+    @pytest.mark.asyncio
+    async def test_token_field_is_not_an_injection_point(self) -> None:
+        """The anti-CSRF token is the app echoing its own state, not user content."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 8))
+        agent._methodology_llm = agent.llm
+        submitted: list[dict[str, str]] = []
+
+        async def fake_post(_url: str, data: dict[str, str]) -> _HTTPResponse:
+            submitted.append(data)
+            return _HTTPResponse(status=200, body="ok")
+
+        async def fake_get(_url: str, _params: dict[str, str]) -> _HTTPResponse:
+            return _HTTPResponse(status=200, body="<p>nothing</p>")
+
+        agent._http_post = fake_post  # type: ignore[method-assign]
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        form = {
+            "action": "",
+            "method": "POST",
+            "fields": [{"name": "user_token", "type": "hidden", "value": "abc123"}],
+        }
+        findings = await agent._test_xss_stored(_make_page(forms=[form]))
+        assert findings == []
+        assert submitted == [], "the methodology probed an anti-CSRF token field"
+
+    def test_prepopulated_hidden_field_is_not_an_injection_point(self) -> None:
+        agent = _make_agent()
+        assert agent._xss_stored_field_is_app_controlled(
+            {"name": "state", "type": "hidden", "value": "server-issued"}
+        )
+        # A hidden field the app did NOT pre-populate can still be user-driven.
+        assert not agent._xss_stored_field_is_app_controlled(
+            {"name": "comment_html", "type": "hidden", "value": ""}
+        )
+
+    def test_gate_blocks_emission_regardless_of_llm_verdict(self) -> None:
+        """THE emission invariant: deterministic check GATES the LLM — never an OR.
+
+        A positive LLM verdict cannot rescue a result whose deterministic
+        verification failed, and phase 6 refuses to render one.
+        """
+        agent = _make_agent()
+        result = XSSStoredMethodologyResult(
+            phases_completed=5,
+            read_back_url="http://example.com/guestbook",
+            landing_context="html_body",
+            synthesized_payload=SynthesizedPayload(
+                payload="<script>alert(1)</script>",
+                rationale="This will definitely execute and pop an alert.",
+                expected_execution="Script executes in the victim's browser.",
+            ),
+            verified=False,  # the deterministic oracle said no
+        )
+        ok, reason = agent._xss_stored_confirmation_gate(result)
+        assert ok is False
+        assert "deterministic" in reason
+        with pytest.raises(RuntimeError, match="confirmation gate"):
+            agent._xss_stored_phase6_emit("http://example.com/guestbook", "txtName", result)
+
+    def test_gate_vetoes_a_synthesis_that_states_no_execution(self) -> None:
+        """The 'never an OR' half: a negative LLM verdict can only SUPPRESS."""
+        agent = _make_agent()
+        result = XSSStoredMethodologyResult(
+            phases_completed=5,
+            read_back_url="http://example.com/guestbook",
+            landing_context="html_body",
+            synthesized_payload=SynthesizedPayload(
+                payload="<b>alert1</b>",
+                rationale=(
+                    "Every character required to break out is stripped; it is "
+                    "not possible to construct a functional payload."
+                ),
+                expected_execution="No JavaScript execution occurs.",
+            ),
+            verified=True,  # deterministic check passed
+        )
+        ok, reason = agent._xss_stored_confirmation_gate(result)
+        assert ok is False
+        assert "no execution" in reason
+
+    def test_gate_requires_a_read_back_url(self) -> None:
+        agent = _make_agent()
+        result = XSSStoredMethodologyResult(
+            phases_completed=5,
+            read_back_url=None,
+            landing_context="html_body",
+            synthesized_payload=SynthesizedPayload(
+                payload="<script>alert(1)</script>",
+                rationale="breaks out",
+                expected_execution="alert fires",
+            ),
+            verified=True,
+        )
+        ok, reason = agent._xss_stored_confirmation_gate(result)
+        assert ok is False
+        assert "read-back" in reason
+
+    def test_gate_passes_a_genuine_confirmation(self) -> None:
+        agent = _make_agent()
+        result = XSSStoredMethodologyResult(
+            phases_completed=6,
+            read_back_url="http://example.com/guestbook",
+            landing_context="html_body",
+            synthesized_payload=SynthesizedPayload(
+                payload="<script>alert(1)</script>",
+                rationale="Structural characters survive the store.",
+                expected_execution="Script tag executes on render.",
+            ),
+            verified=True,
+        )
+        ok, reason = agent._xss_stored_confirmation_gate(result)
+        assert ok is True
+        assert reason == "confirmed"

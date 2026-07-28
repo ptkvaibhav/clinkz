@@ -202,7 +202,14 @@ def _obs(
     time_ms: float = 50.0,
     body_marker: str = "",
     retry_after: str = "",
+    auth_reached: bool = True,
 ) -> BruteForceObservation:
+    """One observation row.
+
+    ``auth_reached`` defaults to True so the protection-shape tests below
+    exercise the classifier they are about; the positive control itself has
+    dedicated tests in :class:`TestPositiveControl`.
+    """
     return BruteForceObservation(
         attempt=n,
         status=status,
@@ -210,6 +217,8 @@ def _obs(
         time_ms=time_ms,
         body_marker=body_marker,
         retry_after=retry_after,
+        auth_reached=auth_reached,
+        auth_reach_reason="test fixture",
     )
 
 
@@ -392,3 +401,202 @@ class TestBruteForceMethodologyIntegration:
         # Credentials really were submitted as a JSON body, 8 times.
         assert len(posted) == 8
         assert posted[0]["email"] and posted[0]["password"]
+
+
+# ===========================================================================
+# G3 — the positive control and the constant-delay shape
+#
+# Two live misreads motivated these. At DVWA ``high`` the eight attempts came
+# back [200, 302x7] with length=1: seven requests carried a stale anti-CSRF
+# token and were redirected away before authenticating, so "no lockout marker"
+# was trivially true of requests that never reached auth — and the module
+# reported the endpoint unprotected. At DVWA ``medium`` all eight attempts took
+# ~2250 ms against a ~200 ms page load — a deliberate sleep(2) throttle — and
+# the monotonic-growth check read the flat penalty as no protection.
+# ===========================================================================
+
+
+class TestPositiveControl:
+    """Did the bad-credential attempt actually reach the auth handler?"""
+
+    def _agent(self) -> ExploitAgent:
+        return _make_agent()
+
+    def test_bounced_redirect_did_not_reach_auth(self) -> None:
+        """DVWA ``high``: 302 to a different path with a 1-byte body."""
+        agent = self._agent()
+        resp = _HTTPResponse(status=302, body=" ", headers={"Location": "index.php"})
+        reached, reason = agent._brute_force_attempt_reached_auth(
+            resp, "http://t/vulnerabilities/brute/", "the login page baseline"
+        )
+        assert reached is False
+        assert "bounced" in reason
+
+    def test_redirect_back_to_the_auth_endpoint_reached_auth(self) -> None:
+        """A genuine POST-redirect-GET login renders its outcome on the redirect."""
+        agent = self._agent()
+        resp = _HTTPResponse(status=302, body="", headers={"Location": "/login"})
+        reached, _reason = agent._brute_force_attempt_reached_auth(
+            resp, "http://t/login", "baseline"
+        )
+        assert reached is True
+
+    def test_401_reached_auth(self) -> None:
+        agent = self._agent()
+        resp = _HTTPResponse(status=401, body='{"error":"invalid"}')
+        reached, reason = agent._brute_force_attempt_reached_auth(
+            resp, "http://t/rest/user/login", "baseline"
+        )
+        assert reached is True
+        assert "401" in reason
+
+    def test_auth_failure_marker_absent_from_baseline_reached_auth(self) -> None:
+        """DVWA ``low``: 200 rendering 'Username and/or password incorrect.'"""
+        agent = self._agent()
+        body = "<html><body>Username and/or password incorrect.</body></html>"
+        reached, reason = agent._brute_force_attempt_reached_auth(
+            resp=_HTTPResponse(status=200, body=body),
+            login_url="http://t/vulnerabilities/brute/",
+            baseline_body="<html><body>login form only</body></html>",
+        )
+        assert reached is True
+        assert "incorrect" in reason
+
+    def test_response_identical_to_baseline_did_not_reach_auth(self) -> None:
+        agent = self._agent()
+        baseline = "<html><body>login form only, nothing happened here</body></html>"
+        reached, reason = agent._brute_force_attempt_reached_auth(
+            resp=_HTTPResponse(status=200, body=baseline),
+            login_url="http://t/login",
+            baseline_body=baseline,
+        )
+        assert reached is False
+        assert "indistinguishable" in reason
+
+    def test_no_response_did_not_reach_auth(self) -> None:
+        agent = self._agent()
+        reached, _reason = agent._brute_force_attempt_reached_auth(
+            _HTTPResponse(status=0, body=""), "http://t/login", "baseline"
+        )
+        assert reached is False
+
+
+class TestInconclusiveGate:
+    @pytest.mark.asyncio
+    async def test_unreached_attempts_yield_inconclusive_not_unprotected(self) -> None:
+        """The DVWA ``high`` shape: one attempt authenticated, seven bounced."""
+        llm = _ScriptedLLM(
+            answers=[
+                '{"protection_type": "none", "protected": false, '
+                '"observed_at_attempt": null, "rationale": "all responses look alike"}'
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        observations = [_obs(0)] + [
+            _obs(i, status=302, length=1, auth_reached=False) for i in range(1, 8)
+        ]
+        ptype, protected, _attempt, rationale = await agent._brute_force_phase3_analyze(
+            observations, baseline_ms=200.0
+        )
+        assert ptype == BruteForceProtectionType.INCONCLUSIVE
+        assert protected is True, "INCONCLUSIVE must never emit a finding"
+        assert "never reached the authentication handler" in rationale
+
+    @pytest.mark.asyncio
+    async def test_emission_requires_the_positive_control(self) -> None:
+        """End-to-end: the finding gate is ``auth_reached AND not protected``."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 4))
+        agent._methodology_llm = agent.llm
+
+        async def fake_get(_url: str, params: dict[str, str], **_kw: object) -> _HTTPResponse:
+            if not params:  # the unauthenticated baseline fetch
+                return _HTTPResponse(status=200, body="<html>login form</html>")
+            # Every credential submission is bounced away, exactly like high.
+            return _HTTPResponse(status=302, body=" ", headers={"Location": "/index.php"})
+
+        agent._http_get = fake_get  # type: ignore[method-assign]
+        page = PageAnalysis(
+            url="http://example.com/vulnerabilities/brute/",
+            body="",
+            status=200,
+            forms=[{**_login_form(), "method": "GET"}],
+        )
+        findings = await agent._test_brute_force(page)
+        assert findings == []
+
+
+class TestConstantDelayIsProtection:
+    @pytest.mark.asyncio
+    async def test_flat_penalty_classified_as_delay(self) -> None:
+        """DVWA ``medium``: ~2250 ms per attempt against a ~200 ms page load."""
+        llm = _ScriptedLLM(
+            answers=[
+                '{"protection_type": "none", "protected": false, '
+                '"observed_at_attempt": null, "rationale": "times fluctuate narrowly"}'
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        observations = [
+            _obs(0, time_ms=2241.87),
+            _obs(1, time_ms=2257.14),
+            _obs(2, time_ms=2262.88),
+            _obs(3, time_ms=2236.52),
+            _obs(4, time_ms=2244.40),
+            _obs(5, time_ms=2243.21),
+            _obs(6, time_ms=2254.33),
+            _obs(7, time_ms=2259.55),
+        ]
+        ptype, protected, _a, rationale = await agent._brute_force_phase3_analyze(
+            observations, baseline_ms=205.0
+        )
+        assert ptype == BruteForceProtectionType.DELAY
+        assert protected is True
+        assert "consistent penalty" in rationale
+
+    @pytest.mark.asyncio
+    async def test_unthrottled_attempts_still_emit(self) -> None:
+        """DVWA ``low``: ~215 ms attempts against a ~200 ms baseline is no throttle."""
+        llm = _ScriptedLLM(answers=[""])
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        observations = [_obs(i, time_ms=215.0 + i) for i in range(8)]
+        ptype, protected, _a, _r = await agent._brute_force_phase3_analyze(
+            observations, baseline_ms=200.0
+        )
+        assert ptype == BruteForceProtectionType.NONE
+        assert protected is False
+
+
+class TestDeterministicGatesTheLLM:
+    @pytest.mark.asyncio
+    async def test_llm_cannot_clear_a_deterministic_protection(self) -> None:
+        llm = _ScriptedLLM(
+            answers=[
+                '{"protection_type": "none", "protected": false, '
+                '"observed_at_attempt": null, "rationale": "looks unprotected to me"}'
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        observations = [_obs(i, retry_after="60" if i == 5 else "") for i in range(8)]
+        ptype, protected, _a, _r = await agent._brute_force_phase3_analyze(observations)
+        assert ptype == BruteForceProtectionType.RATE_LIMIT
+        assert protected is True
+
+    @pytest.mark.asyncio
+    async def test_llm_may_add_a_protection_the_deterministic_pass_missed(self) -> None:
+        llm = _ScriptedLLM(
+            answers=[
+                '{"protection_type": "lockout", "protected": true, '
+                '"observed_at_attempt": 4, "rationale": "shape shifts at attempt 4"}'
+            ]
+        )
+        agent = _make_agent(llm)
+        agent._methodology_llm = llm
+        observations = [_obs(i) for i in range(8)]
+        ptype, protected, attempt, _r = await agent._brute_force_phase3_analyze(observations)
+        assert ptype == BruteForceProtectionType.LOCKOUT
+        assert protected is True
+        assert attempt == 4
