@@ -235,6 +235,23 @@ LESSONS #17).
   never a finding. **A finding that confirms identically across every level of a
   security-graded control is a phantom by construction** — see
   `docs/methodology/dvwa-per-level-honesty.md`.
+- **Suppress, never annotate** — a finding the engagement itself believes is a
+  false positive is **demoted** (removed from `findings`, deleted from the store,
+  re-recorded as an `UnprovenExploitLead` with `why_unconfirmed`), never emitted
+  as `confirmed` carrying a caveat. A caveat inside a confirmed finding is still
+  a confirmed finding. Three shapes can never confirm, in any methodology: a
+  **conditional execution claim** (speculation about an unobserved downstream
+  transform), a **reflection inside a framework error page** (reachability, not
+  an executable context), and a **check that determines it is not applicable**
+  (which returns no finding, never one whose title says "not applicable").
+- **A deterministic observation gates the LLM's list, not just its verdict** — a
+  posture/analysis entry contradicted by what we actually observed (a header
+  reported missing that is present) is dropped, and severity is recomputed from
+  the surviving set.
+- **Coverage truncation is never silent** — the plan cap is loud (per class:
+  how many candidates were dropped and the first omitted endpoint), each class's
+  bucket is ordered by relevance to *that* class, and every applicable class is
+  guaranteed one task before the cap applies.
 - **Persistent KB feedback loop (Layer-2)** — a confirmed discovery finding writes
   a per-technology capability fact; confidence is a decayed corroboration PRIOR
   from confirming observations only and never gates emission. The older
