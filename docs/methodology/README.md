@@ -54,6 +54,7 @@ oracle set.
 | Out-of-band confirmation (P6) | [out-of-band-p6.md](out-of-band-p6.md) |
 | Carriers / request builder / planning / dispatch / emission integrity | [exploit-engine.md](exploit-engine.md) |
 | DVWA per-level honesty (the phantom control) | [dvwa-per-level-honesty.md](dvwa-per-level-honesty.md) |
+| The SQLi context ladder, measured (110 rungs, 0 confirmations) | [dvwa-sqli-context-ladder.md](dvwa-sqli-context-ladder.md) |
 
 The gray-box discovery engine (Δ-capability model, capability classes, capability
 learning, cross-language, cross-service) lives under `docs/discovery-engine-*.md`.
