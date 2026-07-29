@@ -661,6 +661,92 @@ class TestG5UploadImageCarrier:
         assert synth["magic_prefix"] == ""
 
 
+class TestDirectExecutionWalksTheConfirmedExtensionSet:
+    """Accepted-by-the-store is not executed-by-the-server.
+
+    Phase 2's `working_extensions` records what the upload *accepted*; the server's
+    handler mapping decides what *runs*. On the DVWA image Apache ships
+    `<FilesMatch \\.php$>`, so `.phtml` uploads fine and is then served as inert
+    text. Phase-4 synthesis picks one extension, and at `low` the live model picked
+    `.phtml` on both upload tasks of engagement `ad62e582` — direct execution failed
+    to verify and the CRITICAL finding its three predecessor runs emitted went
+    missing, on a payload choice rather than on the target's posture. A
+    deterministic skill is a contract: if the vuln is present the method MUST find
+    it, not find it when the model guesses well.
+    """
+
+    @staticmethod
+    def _restrictions() -> FileUploadRestrictions:
+        return FileUploadRestrictions(working_extensions=[".php", ".phtml", ".svg"])
+
+    def test_the_llm_pick_is_tried_first_then_the_rest_of_the_set(self) -> None:
+        agent = _agent()
+        llm_pick = {
+            "filename": "shell.phtml",
+            "content": "<?php echo 'x'; ?>",
+            "content_type": "image/jpeg",
+            "magic_prefix": "",
+            "rationale": "the model's choice",
+            "canary": "clinkzupload12345",
+        }
+        candidates = agent._file_upload_execution_candidates(llm_pick, self._restrictions())
+        names = [c["filename"] for c in candidates]
+        assert names[0] == "shell.phtml"  # synthesis still goes first
+        assert any(n.endswith(".php") for n in names[1:])  # the executable one follows
+        # The canary is carried across attempts, so the oracle looks for one token.
+        assert {c["canary"] for c in candidates} == {"clinkzupload12345"}
+
+    def test_the_extension_already_tried_is_not_repeated(self) -> None:
+        agent = _agent()
+        llm_pick = {
+            "filename": "clinkz_pop.php",
+            "content": "<?php echo 'x'; ?>",
+            "content_type": "application/x-php",
+            "magic_prefix": "",
+            "rationale": "",
+            "canary": "c1",
+        }
+        candidates = agent._file_upload_execution_candidates(llm_pick, self._restrictions())
+        suffixes = [c["filename"].rsplit(".", 1)[-1] for c in candidates]
+        assert suffixes.count("php") == 1
+
+    def test_only_confirmed_extensions_are_retried_and_the_walk_is_bounded(self) -> None:
+        """An extension the store rejected is not worth an upload, and the walk
+        never grows past the attempt cap however long the confirmed set is."""
+        agent = _agent()
+        llm_pick = {
+            "filename": "shell.svg",
+            "content": "x",
+            "content_type": "image/svg+xml",
+            "magic_prefix": "",
+            "rationale": "",
+            "canary": "c1",
+        }
+        narrow = FileUploadRestrictions(working_extensions=[".php"])
+        assert [c["filename"] for c in agent._file_upload_execution_candidates(llm_pick, narrow)][
+            1:
+        ] == ["clinkz_pop.php"]
+        wide = FileUploadRestrictions(
+            working_extensions=[".php", ".phtml", ".phar", ".asp", ".aspx", ".jsp"]
+        )
+        assert len(agent._file_upload_execution_candidates(llm_pick, wide)) == 3
+
+    def test_no_confirmed_script_extension_means_no_retry(self) -> None:
+        """Nothing new can confirm: with no confirmed script extension the walk is
+        just the synthesis pick, decided by the unchanged phase-5 oracle."""
+        agent = _agent()
+        llm_pick = {
+            "filename": "shell.jpg",
+            "content": "x",
+            "content_type": "image/jpeg",
+            "magic_prefix": "GIF89a",
+            "rationale": "",
+            "canary": "c1",
+        }
+        empty = FileUploadRestrictions(working_extensions=[], image_carrier_extension=".jpg")
+        assert agent._file_upload_execution_candidates(llm_pick, empty) == [llm_pick]
+
+
 def test_restrictions_default_to_no_carrier() -> None:
     """The new field is additive: an existing caller sees the old behaviour."""
     assert FileUploadRestrictions().image_carrier_extension == ""
