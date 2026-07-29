@@ -25,9 +25,15 @@ from clinkz.agents.exploit import (
     _endpoint_class_relevance,
     _has_repeated_path_block,
     _HTTPResponse,
+    _serves_own_source,
 )
 from clinkz.models.finding import ExploitPlan, ExploitTask
-from clinkz.models.methodology import FileUploadExecutionType, FileUploadRestrictions
+from clinkz.models.methodology import (
+    FileUploadExecutionType,
+    FileUploadRestrictions,
+    SQLDialect,
+    SQLiMethodologyResult,
+)
 from clinkz.models.scan import Endpoint
 
 
@@ -294,6 +300,14 @@ class TestG5IndicatorRouting:
         )
 
 
+def _baselines(body: str = "A" * 500, value: str = "1") -> list[dict[str, object]]:
+    """Phase-1 baseline records in the shape ``_sqli_phase1_injection_point`` returns."""
+    return [
+        {"variant": v, "value": value, "status": 200, "length": len(body), "body": body}
+        for v in ("original", "single_quote", "double_quote")
+    ]
+
+
 class TestG5SQLiContextAdaptation:
     @pytest.mark.asyncio
     async def test_numeric_context_is_tried_when_the_quoted_break_fails(self) -> None:
@@ -306,8 +320,6 @@ class TestG5SQLiContextAdaptation:
         async def fake_probe(page: PageAnalysis, param: str, value: str) -> _HTTPResponse:
             sent.append(value)
             # Only the unquoted boolean shapes produce a differential.
-            if value == "1 AND 1=1":
-                return _HTTPResponse(status=200, body="A" * 500)
             if value == "1 AND 1=2":
                 return _HTTPResponse(status=200, body="A" * 200)
             return _HTTPResponse(status=200, body="A" * 500)
@@ -316,16 +328,15 @@ class TestG5SQLiContextAdaptation:
         agent._original_param_value = lambda page, param: "1"  # type: ignore[method-assign]
         agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
 
-        from clinkz.models.methodology import SQLiMethodologyResult
-
-        result = SQLiMethodologyResult(candidate_param="id")
+        result = SQLiMethodologyResult(candidate_param="id", dialect=SQLDialect.MYSQL)
         page = PageAnalysis(url="http://t/app/records/", body="", status=200, input_params=["id"])
-        await agent._sqli_adapt_context(page, "id", result, {"length": 500, "body": "A" * 500})
+        await agent._sqli_adapt_context(page, "id", result, _baselines())
 
         assert result.verified is True
         assert result.synthesized_payload == "1 AND 1=1"
         assert "context adaptation" in (result.indicator_observed or "")
-        assert "'" not in sent[0]  # the first rung dropped the quote
+        assert "1 AND 1=1" in sent  # the rung dropped the quote
+        assert not any("'" in value for value in sent)
 
     @pytest.mark.asyncio
     async def test_adaptation_stays_silent_when_nothing_differs(self) -> None:
@@ -336,16 +347,287 @@ class TestG5SQLiContextAdaptation:
         agent._original_param_value = lambda page, param: "1"  # type: ignore[method-assign]
         agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
 
-        from clinkz.models.methodology import SQLiMethodologyResult
-
-        result = SQLiMethodologyResult(candidate_param="id")
+        result = SQLiMethodologyResult(candidate_param="id", dialect=SQLDialect.MYSQL)
         page = PageAnalysis(url="http://t/app/records/", body="", status=200, input_params=["id"])
-        await agent._sqli_adapt_context(page, "id", result, {"length": 500, "body": "A" * 500})
+        await agent._sqli_adapt_context(page, "id", result, _baselines())
         assert result.verified is False
 
 
 async def _identical() -> _HTTPResponse:
     return _HTTPResponse(status=200, body="A" * 500)
+
+
+class TestG5LadderIsGatedBoundedAndDiagnosable:
+    """The batch-3 diagnosis, encoded.
+
+    Across the six D1 runs the ladder fired 110 rungs and confirmed nothing, and
+    106 of those rungs reported the true-shape and false-shape bodies
+    byte-identical: it was firing on parameters that reach no query at all. Every
+    SQL confirmation in every run came from phase-4 synthesis or the
+    session-indirection carrier.
+    """
+
+    def test_no_query_context_means_the_ladder_never_fires(self) -> None:
+        """The live shapes it was wasted on: a reflected text field whose only
+        response change was the echoed quote (4767 → 4768 bytes) and a file-include
+        path whose quote variant failed the include (5236 → 4735). Neither has a
+        dialect, a break prefix, or a DB error, so no rung can differentiate."""
+        agent = _agent()
+        result = SQLiMethodologyResult(candidate_param="name")
+        fire, reason = agent._sqli_ladder_precondition(result, _baselines("B" * 4768))
+        assert fire is False
+        assert "no query context demonstrated" in reason
+
+    def test_each_query_context_signal_lets_it_fire(self) -> None:
+        agent = _agent()
+        by_dialect = SQLiMethodologyResult(candidate_param="id", dialect=SQLDialect.MYSQL)
+        assert agent._sqli_ladder_precondition(by_dialect, _baselines())[0] is True
+
+        by_break = SQLiMethodologyResult(candidate_param="id")
+        by_break.primitives.break_prefix = ""
+        fire, reason = agent._sqli_ladder_precondition(by_break, _baselines())
+        assert fire is True and "break prefix" in reason
+
+        with_error = _baselines()
+        with_error[1]["body"] = "You have an error in your SQL syntax near ''' at line 1"
+        fire, reason = agent._sqli_ladder_precondition(
+            SQLiMethodologyResult(candidate_param="id"), with_error
+        )
+        assert fire is True and "DB error signature" in reason
+
+    @pytest.mark.asyncio
+    async def test_ungated_parameter_costs_zero_requests(self) -> None:
+        agent = _agent()
+        sent: list[str] = []
+
+        async def fake_probe(page: PageAnalysis, param: str, value: str) -> _HTTPResponse:
+            sent.append(value)
+            return _HTTPResponse(status=200, body="A" * 500)
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        agent._original_param_value = lambda page, param: "1"  # type: ignore[method-assign]
+        agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
+
+        result = SQLiMethodologyResult(candidate_param="page")
+        page = PageAnalysis(url="http://t/app/fi/", body="", status=200, input_params=["page"])
+        await agent._sqli_adapt_context(page, "page", result, _baselines())
+        assert sent == []
+        assert result.verified is False
+
+    @pytest.mark.asyncio
+    async def test_invariant_response_aborts_the_ladder_early(self) -> None:
+        """Once two consecutive rungs prove the response does not vary with the
+        parameter, the remaining rungs cannot produce a differential. The live runs
+        re-learned that fact five times per parameter."""
+        agent = _agent()
+        rungs: list[str] = []
+
+        async def fake_probe(page: PageAnalysis, param: str, value: str) -> _HTTPResponse:
+            rungs.append(value)
+            return _HTTPResponse(status=200, body="A" * 500)
+
+        traced: list[dict[str, object]] = []
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        agent._original_param_value = lambda page, param: "1"  # type: ignore[method-assign]
+        agent._trace_methodology_phase = lambda **kw: traced.append(kw)  # type: ignore[method-assign]
+
+        result = SQLiMethodologyResult(candidate_param="id", dialect=SQLDialect.MYSQL)
+        page = PageAnalysis(url="http://t/app/records/", body="", status=200, input_params=["id"])
+        await agent._sqli_adapt_context(page, "id", result, _baselines())
+
+        summary = next(t for t in traced if t["phase_name"] == "context_adaptation_summary")
+        assert summary["extra"]["rungs_fired"] == 2  # not all five
+        assert "invariant to the injected predicate" in summary["extra"]["aborted"]
+        assert result.verified is False
+
+    @pytest.mark.asyncio
+    async def test_every_rung_records_a_deterministic_failure_cause(self) -> None:
+        """G5's explicit ask: for each rung, what was attempted, what came back,
+        and WHY it failed — in a closed vocabulary, so a zero-confirmation run is
+        diagnosable from the trace instead of by re-deriving it from byte counts."""
+        agent = _agent()
+
+        async def fake_probe(page: PageAnalysis, param: str, value: str) -> _HTTPResponse:
+            # Every shape returns the same page: the parameter has no influence.
+            return _HTTPResponse(status=200, body="A" * 500)
+
+        traced: list[dict[str, object]] = []
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        agent._original_param_value = lambda page, param: "1"  # type: ignore[method-assign]
+        agent._trace_methodology_phase = lambda **kw: traced.append(kw)  # type: ignore[method-assign]
+
+        result = SQLiMethodologyResult(candidate_param="id", dialect=SQLDialect.MYSQL)
+        page = PageAnalysis(url="http://t/app/records/", body="", status=200, input_params=["id"])
+        await agent._sqli_adapt_context(page, "id", result, _baselines())
+
+        per_rung = [t for t in traced if t["phase_name"] == "context_adaptation"]
+        assert per_rung
+        for event in per_rung:
+            extra = event["extra"]
+            assert extra["cause"] == "response_invariant_to_payload"
+            assert extra["payload"] and extra["control_payload"]
+            assert extra["indicator_observed"]
+
+
+class TestG14SelfEvidencingBooleanDifferential:
+    """A thin-but-real differential must carry its own control.
+
+    Six bytes is deterministic proof when it reproduces exactly against a
+    contemporaneous baseline — and a reviewer that cannot see the repeats calls it
+    variance (``fe234e99``). So the oracle repeats the whole baseline/true/false
+    triple and renders all of it into the evidence.
+    """
+
+    @staticmethod
+    def _agent_with(bodies: dict[str, list[str]]) -> tuple[ExploitAgent, list[str]]:
+        """An agent whose probe replays a per-value queue of response bodies."""
+        agent = _agent()
+        sent: list[str] = []
+        counters: dict[str, int] = {}
+
+        async def fake_probe(page: PageAnalysis, param: str, value: str) -> _HTTPResponse:
+            sent.append(value)
+            queue = bodies[value]
+            index = counters.get(value, 0)
+            counters[value] = index + 1
+            return _HTTPResponse(status=200, body=queue[min(index, len(queue) - 1)])
+
+        agent._send_probe = fake_probe  # type: ignore[method-assign]
+        agent._original_param_value = lambda page, param: "1"  # type: ignore[method-assign]
+        agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
+        return agent, sent
+
+    @pytest.mark.asyncio
+    async def test_a_stable_six_byte_delta_confirms_and_evidences_itself(self) -> None:
+        """The exact live shape: DVWA's blind page swaps "User ID exists in the
+        database." for "User ID is MISSING from the database." — 4842 vs 4848
+        bytes, reproducing every time."""
+        agent, sent = self._agent_with(
+            {
+                "1": ["A" * 4842] * 3,
+                "1 AND 1=1": ["A" * 4842] * 3,
+                "1 AND 1=2": ["B" * 4848] * 3,
+            }
+        )
+        page = PageAnalysis(url="http://t/app/blind/", body="", status=200, input_params=["id"])
+        verified, observed, cause = await agent._sqli_verify_boolean_differential(
+            page, "id", "1 AND 1=1", "1 AND 1=2", {"value": "1", "length": 4842}
+        )
+        assert verified is True
+        assert cause == "confirmed"
+        # The observation IS the control: baseline, true and false per repeat.
+        assert "baseline=[4842, 4842, 4842]B" in observed
+        assert "true=[4842, 4842, 4842]B" in observed
+        assert "false=[4848, 4848, 4848]B" in observed
+        assert "false-minus-true=+6B identical in every repeat" in observed
+        # Three repeats of the triple, baseline re-measured each time.
+        assert sent.count("1") == 3
+        assert sent.count("1 AND 1=1") == 3
+        assert sent.count("1 AND 1=2") == 3
+
+    @pytest.mark.asyncio
+    async def test_a_delta_that_appears_once_no_longer_confirms(self) -> None:
+        """This is the direction the gate moves: STRICTER. A single lucky pair used
+        to be enough; an unreproducible delta is exactly what a thin differential
+        must never be."""
+        agent, _ = self._agent_with(
+            {
+                "1": ["A" * 4842] * 3,
+                "1 AND 1=1": ["A" * 4842] * 3,
+                # Diverges on the first repeat only.
+                "1 AND 1=2": ["B" * 4848, "A" * 4842, "A" * 4842],
+            }
+        )
+        page = PageAnalysis(url="http://t/app/blind/", body="", status=200, input_params=["id"])
+        verified, observed, cause = await agent._sqli_verify_boolean_differential(
+            page, "id", "1 AND 1=1", "1 AND 1=2", {"value": "1", "length": 4842}
+        )
+        assert verified is False
+        assert cause == "differential_not_reproducible"
+        assert "no stable boolean differential" in observed
+
+    @pytest.mark.asyncio
+    async def test_an_invariant_response_names_that_cause(self) -> None:
+        agent, _ = self._agent_with(
+            {
+                "1": ["A" * 500] * 3,
+                "1 AND 1=1": ["A" * 500] * 3,
+                "1 AND 1=2": ["A" * 500] * 3,
+            }
+        )
+        page = PageAnalysis(url="http://t/app/fi/", body="", status=200, input_params=["page"])
+        verified, _observed, cause = await agent._sqli_verify_boolean_differential(
+            page, "page", "1 AND 1=1", "1 AND 1=2", {"value": "1", "length": 500}
+        )
+        assert verified is False
+        assert cause == "response_invariant_to_payload"
+
+    @pytest.mark.asyncio
+    async def test_a_broken_page_is_not_a_differential(self) -> None:
+        """The TRUE shape must reproduce the benign result set. A true response
+        that walks away from its own baseline broke the query instead of
+        satisfying it."""
+        agent, _ = self._agent_with(
+            {
+                "1": ["A" * 4842] * 3,
+                "1 AND 1=1": ["A" * 20] * 3,
+                "1 AND 1=2": ["B" * 30] * 3,
+            }
+        )
+        page = PageAnalysis(url="http://t/app/blind/", body="", status=200, input_params=["id"])
+        verified, _observed, cause = await agent._sqli_verify_boolean_differential(
+            page, "id", "1 AND 1=1", "1 AND 1=2", {"value": "1", "length": 4842}
+        )
+        assert verified is False
+        assert cause == "true_shape_diverged_from_baseline"
+
+
+class TestG15SourceViewPagesAreNotExploitationTargets:
+    """Source listings and live handlers are told apart by the RESPONSE.
+
+    A path fragment is not evidence about a route — grading a bare ``/source/``
+    segment as noise cost a real Open Redirect finding (``ee286e2``). DVWA is the
+    worked example in both directions: ``open_redirect/source/<level>.php`` files
+    ARE the live handlers its module index links to (they run and issue the
+    redirect), while ``view_source.php`` renders them escaped in a code block.
+    """
+
+    def test_raw_php_source_served_instead_of_executed_is_refused(self) -> None:
+        raw = "<?php\n\nheader('location: ' . $_GET['redirect']);\n"
+        assert _serves_own_source(raw) is not None
+        assert _serves_own_source("\n  <?= $x ?>") is not None
+        assert _serves_own_source("#!/usr/bin/env python\nimport os\n") is not None
+
+    def test_a_highlighted_source_viewer_is_refused(self) -> None:
+        body = "<h1>Source</h1><pre><code>&lt;?php echo 1; ?&gt;</code></pre>"
+        assert _serves_own_source(body) is not None
+
+    def test_a_live_handler_response_is_not_refused(self) -> None:
+        """DVWA's ``open_redirect/source/low.php`` executes: on a request with no
+        target it emits its 500 page, and with one it 302s. Neither response
+        carries an un-executed prologue, so the guard leaves it alone."""
+        assert _serves_own_source("<p>Missing redirect target.</p>") is None
+        assert _serves_own_source("") is None
+
+    def test_stored_user_content_mentioning_php_is_not_a_source_listing(self) -> None:
+        """The guard is anchored at the start of the body, so a guestbook holding a
+        previous engagement's stored probe is not mistaken for a listing — that
+        would silently drop the stored-XSS surface."""
+        stored = "<div>Message: <?php echo 1; ?></div>"
+        body = f"<html><body><div>Name: tester</div>{stored}</body></html>"
+        assert _serves_own_source(body) is None
+
+    def test_a_live_handler_under_a_source_directory_is_never_graded_as_noise(self) -> None:
+        """The other direction G15 asks for, held against every class that could
+        plausibly claim the endpoint."""
+        ep = Endpoint(
+            url="http://t/app/open_redirect/source/low.php?redirect=info.php?id=2",
+            method="GET",
+            params=["redirect"],
+        )
+        assert _endpoint_class_relevance("_test_open_redirect", ep) == 0
+        assert _endpoint_class_relevance("_test_sqli", ep) < 3
+        assert _endpoint_class_relevance("_test_cmdi", ep) < 3
 
 
 class TestG5UploadImageCarrier:
