@@ -252,7 +252,10 @@ LESSONS #17).
   error-page reflection, or an observation that merely restates the rationale). "The
   differential is small" and "this looks like a false positive" name no
   contradiction and demote nothing. Emission-side and suppression-side are the same
-  rule: **a deterministic signal decides, in both directions.**
+  rule: **a deterministic signal decides, in both directions.** The mechanism ground
+  is additionally applied at the emission chokepoint (`_persist_finding`), so a
+  candidate whose observation merely restates its own rationale is a lead whether or
+  not a reviewer noticed it.
 - **A thin-but-real measurement carries its own control** — a differential is
   proof when it is *reproducible*, not when it is large. The boolean-blind oracle
   sends baseline/true/false as one interleaved triple, repeats it, requires the

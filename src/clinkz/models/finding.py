@@ -378,6 +378,12 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # own claim, so the claim is demoted here rather than emitted with a
         # caveat attached (the G10 emission inversion).
         "suspected_false_positive_no_deterministic_signal",
+        # The candidate's only "observation" restates the rationale it was derived
+        # from: it describes a MECHANISM and never demonstrates the effect. Caught
+        # at the emission chokepoint rather than left to a post-run reviewer to
+        # notice, because whether it is demoted must not depend on whether an LLM
+        # happened to flag it.
+        "observation_restates_rationale_mechanism_not_effect",
     }
 )
 
