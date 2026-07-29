@@ -103,3 +103,48 @@ bounded and instrumented:
 shows the ladder at 0 confirmations, delete it. The instrumentation above is what
 makes that judgement possible from a trace instead of from a re-derivation, and the
 `context_adaptation_summary` event is where to look.
+
+## Batch-3 validation, and the one lever deliberately left alone
+
+Live re-runs on the branch (LOW `1f9a0932`, MEDIUM `c07de2ab`, IMPOSSIBLE
+`539237af`), against the same three levels the batch-2 runs covered:
+
+| Level | Rungs before | Rungs after | Confirmed | Causes recorded |
+|---|---|---|---|---|
+| low | 10 | **0** | 0 | — (`page`, `name` skipped: no query context) |
+| medium | 15 | **0** | 0 | — (`page`, `name` skipped) |
+| impossible | 25 | **10** | 0 | 9× `false_shape_not_divergent_from_baseline`, 1× `differential_not_reproducible` |
+| **total** | **50** | **10** | **0** | every rung names its cause |
+
+The precondition did the work it was designed for: at low and medium the ladder
+fired **zero** rungs and said why for each parameter it declined.
+
+**The 10 that remain, and why the abort does not catch them.** Both are CSRF-token
+parameters at `impossible` (`token`, `user_token`), admitted by the break-prefix
+signal — phase 2 recorded `break_prefix=''` for each. Their rungs report
+`false_shape_not_divergent_from_baseline` with `baseline=[4855, 4855, 4855]B
+true=[4855, 4855, 4855]B false=[4855, 4855, 4855]B`: the bodies **differ** (a
+per-request token differs on every fetch) while the lengths are identical, so
+`response_invariant_to_payload` cannot fire and the two-consecutive-invariant abort
+never triggers. The oracle's rejection is correct — nothing here is a differential.
+
+**Why the abort was NOT widened to cover it.** Nine of the ten rungs share one
+cause, so "abort after two consecutive rungs with the same cause" would cut 10 → 4.
+That was considered and rejected: `response_invariant_to_payload` licences an abort
+because proven invariance to the *parameter* kills every rung, whereas
+`false_shape_not_divergent_from_baseline` only says *this predicate shape* did not
+govern the result set — a different context break (the double-quoted rung) could
+still. Widening the abort would trade a real confirmation on some other target for
+six requests here. Suppressing a probe is cheap; suppressing a finding is not.
+
+**The actual lever, named and left for a later slice.** `break_prefix` is what let
+these two parameters through, and `_sqli_discover_break_prefix` accepts a closer
+when the TRUE and FALSE forms both parse **and differ** — which a page carrying a
+per-request token satisfies unconditionally, because the token differs on every
+fetch. So the break-prefix signal has a false-positive shape on any token-bearing
+page, and that is the real reason the ladder still fires at `impossible`. It is not
+fixed here on purpose: `_sqli_discover_break_prefix` also feeds the UNION column
+counter and phase-4 synthesis, so changing its criterion has emission blast radius
+across every level and needs its own re-run of the whole family. Tightening it
+should make `impossible` fire zero rungs, at which point the standing
+delete-it-if-still-zero commitment above is the next decision.
