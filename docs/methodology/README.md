@@ -56,6 +56,7 @@ oracle set.
 | Carriers / request builder / planning / dispatch / emission integrity | [exploit-engine.md](exploit-engine.md) |
 | DVWA per-level honesty (the phantom control) | [dvwa-per-level-honesty.md](dvwa-per-level-honesty.md) |
 | The SQLi context ladder, measured (110 rungs, 0 confirmations) | [dvwa-sqli-context-ladder.md](dvwa-sqli-context-ladder.md) |
+| D1 Phase-3 consistency + the honest per-level baseline | [d1-consistency-and-baseline.md](d1-consistency-and-baseline.md) |
 
 The gray-box discovery engine (Δ-capability model, capability classes, capability
 learning, cross-language, cross-service) lives under `docs/discovery-engine-*.md`.
