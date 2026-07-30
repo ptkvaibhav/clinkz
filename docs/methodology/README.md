@@ -44,6 +44,7 @@ oracle set.
 | Brute force | [brute-force.md](brute-force.md) |
 | File upload | [file-upload.md](file-upload.md) |
 | Weak session | [weak-session.md](weak-session.md) |
+| Client-side security logic (WSTG-CLNT-11) | [client-side-logic.md](client-side-logic.md) |
 | JWT (Tier-2) | [jwt.md](jwt.md) |
 | SSRF (Tier-2) | [ssrf.md](ssrf.md) |
 
