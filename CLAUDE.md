@@ -239,11 +239,17 @@ LESSONS #17).
   false positive is **demoted** (removed from `findings`, deleted from the store,
   re-recorded as an `UnprovenExploitLead` with `why_unconfirmed`), never emitted
   as `confirmed` carrying a caveat. A caveat inside a confirmed finding is still
-  a confirmed finding. Three shapes can never confirm, in any methodology: a
+  a confirmed finding. Four shapes can never confirm, in any methodology: a
   **conditional execution claim** (speculation about an unobserved downstream
   transform), a **reflection inside a framework error page** (reachability, not
-  an executable context), and a **check that determines it is not applicable**
-  (which returns no finding, never one whose title says "not applicable").
+  an executable context), a **check that determines it is not applicable**
+  (which returns no finding, never one whose title says "not applicable"), and a
+  **description of a client-side control** — that the page computes a token in
+  JS is reachability; the effect is the server ACCEPTING a value we rebuilt from
+  the page's own chain while rejecting an equal-shaped control. **Whether the
+  confirming attempt runs is never the LLM's call** — gate it on a deterministic
+  signal, or the class's only reachable outcome is the description
+  ([client-side-logic](docs/methodology/client-side-logic.md)).
 - **The suppression runs the same direction as emission: an LLM never overrules a
   deterministic oracle.** The FP cross-check may demote ONLY by naming a
   deterministic **contradiction in the evidence** that the code itself verified

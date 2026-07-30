@@ -384,6 +384,11 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # notice, because whether it is demoted must not depend on whether an LLM
         # happened to flag it.
         "observation_restates_rationale_mechanism_not_effect",
+        # A client-side security control was DESCRIBED (a hidden field computed
+        # by the page's own JS, a validation gate) but the server was never
+        # observed accepting a value that control alone was holding back.
+        # Describing the mechanism is reachability; acceptance is the effect.
+        "client_side_control_described_server_acceptance_not_witnessed",
     }
 )
 
