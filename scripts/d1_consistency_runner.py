@@ -148,7 +148,16 @@ def admin_password_hash() -> str:
 
 
 def newest_engagement_dirs() -> set[str]:
-    return {p.name for p in OUTPUTS.iterdir() if p.is_dir()} if OUTPUTS.exists() else set()
+    """Engagement directories only — a dir is one when it holds its own report.
+
+    The runner writes its results under ``outputs/`` too, so "any new directory"
+    would pick up the harness's own output as the engagement.
+    """
+    if not OUTPUTS.exists():
+        return set()
+    return {
+        p.name for p in OUTPUTS.iterdir() if p.is_dir() and (p / f"report_{p.name}.json").is_file()
+    }
 
 
 def run_pipeline(level: str, index: int) -> tuple[str | None, int, float]:
