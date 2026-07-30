@@ -163,3 +163,44 @@ untouched.
 
 It adds **reach, never a new way to confirm** — the oracle is the unchanged
 boolean differential, so nothing that could not confirm before can confirm now.
+
+**Batch 3 measured it and the premise did not hold.** Across six D1 runs the ladder
+fired 110 rungs and confirmed **nothing**, while phase-4 synthesis produced the
+bare-numeric shape by itself wherever one applied. It is now gated, bounded and
+instrumented rather than trusted — full record and the decision in
+[dvwa-sqli-context-ladder.md](dvwa-sqli-context-ladder.md).
+
+## The boolean-blind oracle carries its own control (gap G14)
+
+`_sqli_verify_boolean_differential` is the `content_diff` oracle for both the ranked
+types and the ladder. It sends **`baseline → true → false` as one interleaved
+triple** and repeats the whole triple `_SQLI_BOOLEAN_REPEATS` (3) times. A repeat
+confirms when the true body differs from the false body, the true shape sits within
+`_SQLI_BOOLEAN_TRUE_TOLERANCE` (10 B) of **its own** baseline, and the false shape
+diverges from that baseline by more than the true shape and by at least
+`_SQLI_BOOLEAN_FALSE_MIN_DELTA` (3 B). The confirmation additionally requires the
+signed `false − true` size to be **identical in every repeat**.
+
+This is strictly **stronger** than the single pair it replaces — a delta that
+appeared once no longer confirms, and each repeat is judged against a
+contemporaneous baseline, which removes page drift as a confound instead of
+tolerating it. Why strengthen rather than loosen: a thin differential's problem was
+never the gate, it was that the evidence did not *show* the delta was stable.
+Engagement `fe234e99` demoted a real `boolean_blind` SQLi on a six-byte delta
+(`true=4842B false=4848B`) called "normal response variance". The evidence now reads
+
+```
+stable boolean differential: baseline=[4842, 4842, 4842]B true=[4842, 4842, 4842]B
+false=[4848, 4848, 4848]B over 3 controlled repeats; true-vs-baseline=0B (<=10),
+false-vs-baseline=6B (>=3), false-minus-true=+6B identical in every repeat
+```
+
+and there is nothing left for a suspicion to grab: **a stable, reproducible,
+controlled differential is deterministic proof regardless of its size in bytes.**
+The string is threaded into both the `Response:` line and `indicator_observed=`, so
+the finding answers "is this delta stable?" without a reader trusting a summary.
+
+Every failure names a deterministic cause from a closed vocabulary —
+`response_invariant_to_payload`, `true_shape_diverged_from_baseline`,
+`false_shape_not_divergent_from_baseline`, `differential_not_reproducible`,
+`missing_control_payload` — which the ladder reuses for its per-rung diagnosis.
