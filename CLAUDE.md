@@ -239,11 +239,39 @@ LESSONS #17).
   false positive is **demoted** (removed from `findings`, deleted from the store,
   re-recorded as an `UnprovenExploitLead` with `why_unconfirmed`), never emitted
   as `confirmed` carrying a caveat. A caveat inside a confirmed finding is still
-  a confirmed finding. Three shapes can never confirm, in any methodology: a
+  a confirmed finding. Four shapes can never confirm, in any methodology: a
   **conditional execution claim** (speculation about an unobserved downstream
   transform), a **reflection inside a framework error page** (reachability, not
-  an executable context), and a **check that determines it is not applicable**
-  (which returns no finding, never one whose title says "not applicable").
+  an executable context), a **check that determines it is not applicable**
+  (which returns no finding, never one whose title says "not applicable"), and a
+  **description of a client-side control** — that the page computes a token in
+  JS is reachability; the effect is the server ACCEPTING a value we rebuilt from
+  the page's own chain while rejecting an equal-shaped control. **Whether the
+  confirming attempt runs is never the LLM's call** — gate it on a deterministic
+  signal, or the class's only reachable outcome is the description
+  ([client-side-logic](docs/methodology/client-side-logic.md)).
+- **The suppression runs the same direction as emission: an LLM never overrules a
+  deterministic oracle.** The FP cross-check may demote ONLY by naming a
+  deterministic **contradiction in the evidence** that the code itself verified
+  (`_fp_deterministic_contradiction` — an encoded character the payload needed,
+  malformed/self-inconsistent evidence, a speculative execution claim, an
+  error-page reflection, or an observation that merely restates the rationale). "The
+  differential is small" and "this looks like a false positive" name no
+  contradiction and demote nothing. Emission-side and suppression-side are the same
+  rule: **a deterministic signal decides, in both directions.** The mechanism ground
+  is additionally applied at the emission chokepoint (`_persist_finding`), so a
+  candidate whose observation merely restates its own rationale is a lead whether or
+  not a reviewer noticed it.
+- **A thin-but-real measurement carries its own control** — a differential is
+  proof when it is *reproducible*, not when it is large. The boolean-blind oracle
+  sends baseline/true/false as one interleaved triple, repeats it, requires the
+  signed delta identical in every repeat, and renders all of it into the evidence.
+  Strengthen the proof rather than loosen the gate.
+- **Attack the handler, not the listing** — an endpoint whose response is its own
+  script source is refused as an exploitation target at the dispatch chokepoint
+  (`_serves_own_source` in `_execute_task`). Decided on **what came back**, never
+  on the path: a path fragment is not evidence about a route, and grading a bare
+  `/source/` segment as noise once cost a real finding.
 - **A deterministic observation gates the LLM's list, not just its verdict** — a
   posture/analysis entry contradicted by what we actually observed (a header
   reported missing that is present) is dropped, and severity is recomputed from

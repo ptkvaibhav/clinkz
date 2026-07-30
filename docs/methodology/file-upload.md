@@ -55,3 +55,38 @@ answer is already known.
 The confirmation oracle is unchanged: the artifact must still be fetched back and
 observed executing (or, for the inclusion chain, be reachable through a consumer).
 The carrier extends **reach**, not the definition of a confirmation.
+
+## Accepted-by-the-store is not executed-by-the-server
+
+Phase 2's `working_extensions` records which extensions the upload **accepted**;
+only the server's handler mapping decides which ones **run**. On the DVWA image
+Apache ships
+
+```apache
+<FilesMatch \.php$>
+	SetHandler application/x-httpd-php
+</FilesMatch>
+```
+
+so `.phtml` uploads fine and is then served as inert text (`Content-Type` empty,
+body unchanged).
+
+Phase-4 synthesis picks ONE extension, and at DVWA `low` the live model picked
+`.phtml` on both upload tasks of engagement `ad62e582`: direct execution failed to
+verify, and the CRITICAL finding its three predecessor runs emitted went missing —
+on a payload choice, not on the target's posture. That is a contract violation, not
+variance: a deterministic skill must find a present vuln every run, not when the
+model guesses well.
+
+`_file_upload_execution_candidates` therefore walks the confirmed set for
+`direct_execution` — synthesis's pick first, then the remaining confirmed script
+extensions in `_FILE_UPLOAD_EXEC_EXT_PREFERENCE` order, bounded at
+`_FILE_UPLOAD_MAX_EXEC_ATTEMPTS` (3). The confirmed set is the empirically grounded
+artifact; walking it is what makes the single pick stop mattering. The preference
+order is only a heuristic — a target could filter `.php` at the handler while
+running `.phtml`, which is exactly why the set is walked rather than reordered.
+
+Every attempt is still decided by the **unchanged phase-5 execution oracle** (the
+canary echoed without its source), and the canary is carried across attempts so the
+oracle looks for one token. It adds **reach, never a new way to confirm**: with no
+confirmed script extension the walk is just synthesis's pick, unchanged.

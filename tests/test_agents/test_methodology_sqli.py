@@ -608,9 +608,16 @@ class TestPhase5Verification:
 
     @pytest.mark.asyncio
     async def test_content_diff_paired_payloads(self) -> None:
-        """Boolean-blind: true ≈ baseline, false diverges."""
+        """Boolean-blind: true ≈ baseline, false diverges — in every repeat.
+
+        G14 made the oracle carry its own control: it re-sends the benign value
+        alongside each true/false pair and repeats the whole triple, so the
+        baseline the comparison uses is contemporaneous rather than a number
+        measured earlier in the phase.
+        """
         agent = _make_agent()
         responses = {
+            "1": _HTTPResponse(status=200, body="x" * 100),  # the benign baseline
             "1' AND '1'='1": _HTTPResponse(status=200, body="x" * 102),  # ≈ baseline
             "1' AND '1'='2": _HTTPResponse(status=200, body="x" * 50),
         }
@@ -626,10 +633,11 @@ class TestPhase5Verification:
             "expected_indicator": "true ≈ baseline",
         }
         verified, observed = await agent._sqli_phase5_verify(
-            _make_page(), "id", synth, {"length": 100}
+            _make_page(), "id", synth, {"length": 100, "value": "1"}
         )
         assert verified is True
-        assert "true=" in observed and "false=" in observed
+        assert "baseline=" in observed and "true=" in observed and "false=" in observed
+        assert "identical in every repeat" in observed
 
     @pytest.mark.asyncio
     async def test_content_diff_no_difference_rejected(self) -> None:

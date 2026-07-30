@@ -1457,10 +1457,11 @@ class JSAttacksMethodologyResult(BaseModel):
     complete audit trail of form discovery, JS pattern collection, the
     LLM-picked classification, and any attempted bypass.
 
-    Severity is ``medium`` by default (static detection) and upgrades to
-    ``high`` when ``bypass_succeeded`` is True — proven by replaying the
-    form submission with the JS-bypassed values and observing a success
-    marker in the response.
+    Observing that a hidden field is JS-controlled is REACHABILITY, not
+    exploitation, so it emits nothing on its own. A finding requires
+    ``forge_confirmed``: the server accepted a value rebuilt by replaying the
+    page's own transform chain while rejecting an equal-shaped control, both
+    arms repeated and stable. Everything else is an ``UnprovenExploitLead``.
     """
 
     phases_completed: int = 0
@@ -1468,14 +1469,24 @@ class JSAttacksMethodologyResult(BaseModel):
     hidden_fields_set_by_js: list[str] = Field(default_factory=list)
     validation_patterns: list[str] = Field(default_factory=list)
     pattern_type: JSAttackPatternType = JSAttackPatternType.NONE
-    bypass_attempted: bool = False
-    bypass_succeeded: bool = False
-    bypass_payload: dict[str, str] = Field(default_factory=dict)
-    bypass_marker: str = ""
     form_action: str = ""
     form_method: str = "GET"
     severity_inferred: str = "medium"
     rationale: str = ""
+
+    # --- Forge-and-accept confirmation (the only path to a finding) ---------
+    forge_attempted: bool = False
+    forge_confirmed: bool = False
+    forge_field: str = ""
+    forge_chain: str = ""
+    forge_inputs: dict[str, str] = Field(default_factory=dict)
+    forged_value: str = ""
+    control_values: list[str] = Field(default_factory=list)
+    control_stable: bool = False
+    forged_stable: bool = False
+    control_excerpt: str = ""
+    forged_excerpt: str = ""
+    forge_unconfirmed_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
