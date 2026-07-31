@@ -826,9 +826,17 @@ class TestPhase1JSDOMClassification:
 
 
 class TestXSSReflectedJSDOMIntegration:
-    """End-to-end: SPA shell + fragment route + reachable sink → finding."""
+    """End-to-end: SPA shell + fragment route + reachable sink → an unproven LEAD.
 
-    async def test_spa_search_with_innerhtml_sink_emits_finding(self) -> None:
+    This used to assert a high-severity CONFIRMED finding carrying
+    ``strength=likely`` in its own evidence, which is the DOM-XSS phantom
+    re-entering through the reflected class: what is actually witnessed is an
+    SPA shell plus a sink NAME found by static analysis of a bundle, and nothing
+    was observed executing. ``_dom_xss_dispatch_result`` demotes exactly that
+    evidence; the reflected class now takes the same exit.
+    """
+
+    async def test_spa_search_with_innerhtml_sink_records_a_lead_not_a_finding(self) -> None:
         """Juice-Shop-style flow: fragment search route, bundle uses innerHTML."""
         agent = _make_agent(_ScriptedLLM(answers=[""]))  # LLM silent → fallback
         agent._methodology_llm = agent.llm
@@ -864,10 +872,17 @@ class TestXSSReflectedJSDOMIntegration:
             input_params=["q"],
         )
         findings = await agent._test_xss_reflected(page)
-        assert len(findings) == 1
-        joined = " ".join(findings[0].evidence)
-        assert "js_dom" in joined
-        assert "strength=likely" in joined
+        assert findings == []
+
+        leads = agent._unproven_exploit_leads
+        assert len(leads) == 1
+        lead = leads[0]
+        assert lead.why_unconfirmed == "execution_not_witnessed_requires_client_side_oracle"
+        assert "q" in lead.parameter
+        # The reachability evidence is preserved verbatim — demoting the claim
+        # must not discard what was actually seen.
+        assert "strength=likely" in lead.raw_observation
+        assert "JavaScript engine" in lead.missing_observation
 
     async def test_spa_search_without_sinks_does_not_verify(self) -> None:
         """SPA shell + fragment but bundle has no dangerous sinks → no finding."""
