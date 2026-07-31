@@ -35,6 +35,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -205,11 +206,138 @@ def finding_key(finding: dict[str, Any]) -> str:
     return f"{finding.get('title', '')} @ {finding.get('target', '')}"
 
 
-def audit(report: dict[str, Any]) -> dict[str, Any]:
+def _strip_query(url: str) -> str:
+    """``scheme://host/path`` — the module's address, without its arguments."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}" if parsed.scheme else url
+
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s,)\]]+")
+
+
+def module_path_key(finding: dict[str, Any]) -> str:
+    """Identity for the cross-run diff: the MODULE and the PATH it fired on.
+
+    ``title @ target`` counts a query-string difference as a different finding.
+    Batch 4 measured that directly: the open-redirect module fired in all three
+    LOW runs, but the crawl surfaced ``…/low.php?redirect=info.php?id=1`` in one
+    run and ``?id=2`` in the others, so a stable module read as two flaky ones.
+    Same handler, same bypass type, same proof — one finding.
+
+    Query strings are dropped from the target AND from any URL embedded in the
+    title (several titles carry the endpoint inline). Everything else in the
+    title is kept, so the five distinct missing-header findings on one origin
+    stay five keys rather than collapsing into one.
+    """
+    title = _URL_IN_TEXT.sub(lambda m: _strip_query(m.group()), finding.get("title", ""))
+    return f"{title} @ {_strip_query(finding.get('target', ''))}"
+
+
+# Which ``_test_*`` class a finding came from, read off the technique id its
+# emitter stamps. Used only by the G18 assertion below, which has to ask "did
+# THIS class fire?" of a report that records techniques rather than methods.
+_TECHNIQUE_TO_CLASS: dict[str, str] = {
+    "WSTG-INPV-05": "_test_sqli",
+    "WSTG-INPV-05 (NoSQL)": "_test_nosqli",
+    "WSTG-INPV-01": "_test_xss_reflected",
+    "WSTG-INPV-02": "_test_xss_stored",
+    "WSTG-CLNT-01": "_test_xss_dom",
+    "WSTG-INPV-11": "_test_lfi",
+    "WSTG-INPV-12": "_test_cmdi",
+    "WSTG-INPV-07 (XXE)": "_test_xxe",
+    "WSTG-INPV-18 (SSTI)": "_test_ssti",
+    "WSTG-INPV-19": "_test_ssrf",
+    "WSTG-INPV-19 (SSRF)": "_test_ssrf",
+    "WSTG-BUSL-08": "_test_file_upload",
+    "WSTG-SESS-05": "_test_csrf",
+    "WSTG-SESS-02": "_test_weak_session",
+    "WSTG-ATHN-03": "_test_brute_force",
+    "WSTG-ATHN-09 (JWT)": "_test_jwt",
+    "WSTG-ATHZ-01": "_test_lfi",
+    "WSTG-ATHZ-04": "_test_idor",
+    "WSTG-CLNT-04": "_test_open_redirect",
+    "WSTG-CLNT-11": "_test_javascript_attacks",
+    "WSTG-CONF-07": "_test_security_headers",
+}
+
+_TECHNIQUE_RE = re.compile(r"Technique:\s*(.+?)\.\s*Parameter:")
+
+
+def classes_that_fired(report: dict[str, Any]) -> set[str]:
+    """The ``_test_*`` classes that emitted at least one finding this run."""
+    fired: set[str] = set()
+    for finding in report.get("findings", []):
+        match = _TECHNIQUE_RE.search(finding.get("description", ""))
+        if match:
+            klass = _TECHNIQUE_TO_CLASS.get(match.group(1).strip())
+            if klass:
+                fired.add(klass)
+    return fired
+
+
+def dropped_primary_targets(engagement: str) -> list[dict[str, Any]]:
+    """Plan tasks the cap dropped ON THE CLASS'S OWN PRIMARY TARGET (grade 0).
+
+    Read from the engagement's own trace, which records the per-class dropped
+    list and the relevance grade each entry was dropped at. Grade 0 means the
+    class's attack surface — a parameter of the shape it attacks, or the
+    precondition it measures — was OBSERVED on that endpoint. Dropping one of
+    those is the ordering failing, not the budget: it is the exact shape that
+    cost D1 its weak-session and HIGH SQLi findings.
+
+    Only the LAST truncation record per stage is read; the union stage is the
+    plan that actually dispatched.
+    """
+    path = OUTPUTS / engagement / "trace.jsonl"
+    if not path.exists():
+        return []
+    latest: dict[str, dict[str, Any]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                payload = json.loads(line).get("payload") or {}
+            except json.JSONDecodeError:
+                continue
+            if payload.get("phase_name") == "truncation":
+                latest[payload.get("stage", "?")] = payload
+    record = latest.get("union") or latest.get("deterministic")
+    if not record:
+        return []
+    dropped: list[dict[str, Any]] = []
+    grades = record.get("dropped_grades_by_class", {})
+    for klass, urls in (record.get("dropped_by_class") or {}).items():
+        for url, grade in zip(urls, grades.get(klass, []), strict=False):
+            if grade == 0:
+                dropped.append({"test_method": klass, "endpoint_url": url, "grade": grade})
+    return dropped
+
+
+def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
     """Every VALIDATION assertion the brief asks for, evaluated from raw."""
     findings = report.get("findings", [])
     leads = report.get("unproven_leads", [])
     violations: list[str] = []
+
+    # G17: a non-confirming strength must never carry a confirmed status. The
+    # batch-4 HIGH run emitted `verified=True strength=likely` as a confirmed
+    # medium; nothing weaker than a raw scan of the emitted evidence will do.
+    for finding in findings:
+        for line in finding.get("evidence", []):
+            match = re.search(r"\bstrength=([\w-]+)", line)
+            if match and match.group(1) == "likely":
+                violations.append(f"likely->confirmed emitted: {finding_key(finding)}")
+                break
+
+    # G18: a task dropped on a class's OWN primary target, for a class that then
+    # emitted nothing, is the ranking failing rather than the budget.
+    fired = classes_that_fired(report)
+    dropped_primary = dropped_primary_targets(engagement)
+    for entry in dropped_primary:
+        if entry["test_method"] not in fired:
+            violations.append(
+                f"RANKING: {entry['test_method']} primary target dropped "
+                f"({entry['endpoint_url']}) and the class emitted nothing"
+            )
 
     for finding in findings:
         blob = " ".join(
@@ -241,11 +369,18 @@ def audit(report: dict[str, Any]) -> dict[str, Any]:
             violations.append(f"demotion states no missing observation: {lead.get('claim')}")
 
     return {
-        "confirmed": sorted(finding_key(f) for f in findings if f.get("status") == "confirmed"),
-        "all_findings": sorted(finding_key(f) for f in findings),
-        "severities": sorted(f"{finding_key(f)} [{f.get('severity')}]" for f in findings),
+        # The diff key: MODULE + PATH, so a query-string difference in the URL
+        # the crawl happened to surface is not counted as a different finding.
+        "confirmed": sorted(module_path_key(f) for f in findings if f.get("status") == "confirmed"),
+        "confirmed_by_title_and_target": sorted(
+            finding_key(f) for f in findings if f.get("status") == "confirmed"
+        ),
+        "all_findings": sorted(module_path_key(f) for f in findings),
+        "severities": sorted(f"{module_path_key(f)} [{f.get('severity')}]" for f in findings),
         "leads": sorted(f"{lead.get('why_unconfirmed')}: {lead.get('claim')}" for lead in leads),
         "research_leads": len(report.get("research_leads", [])),
+        "classes_fired": sorted(fired),
+        "dropped_primary_targets": dropped_primary,
         "violations": violations,
     }
 
@@ -283,7 +418,7 @@ def main() -> int:
         if engagement is None:
             record["error"] = "no engagement directory was produced"
         else:
-            record.update(audit(read_report(engagement)))
+            record.update(audit(read_report(engagement), engagement))
         if damaged:
             record.setdefault("violations", []).append(
                 "TARGET DAMAGED: admin password hash changed during the run"
