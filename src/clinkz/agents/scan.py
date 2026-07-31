@@ -29,6 +29,7 @@ from clinkz.agents._route_discovery import (
     run_route_discovery,
 )
 from clinkz.agents._url_safety import find_session_setter_urls, is_state_changing_url
+from clinkz.agents._url_shape import crawl_visit_priority
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
 from clinkz.models.recon import (
@@ -378,6 +379,7 @@ class ScanAgent(BaseAgent):
         # family against an otherwise param-less cross-request trigger (DVWA SQLi
         # ``high``, whose ``$_SESSION['id']`` is set via ``session-input.php``).
         self._session_setter_refs: dict[str, list[str]] = {}
+        self._response_features: dict[str, dict[str, Any]] = {}
 
         # Crawl using fallback chain
         try:
@@ -468,6 +470,12 @@ class ScanAgent(BaseAgent):
         # a param-less trigger endpoint if the crawl produced none) so the
         # cross-request injection point is queued downstream.
         self._apply_session_setter_annotations(endpoints)
+
+        # Stamp the response features the crawl observed (cookie names set, form
+        # present) onto their endpoints, so the Exploit planner can rank a class
+        # by whether its precondition is actually present rather than by a path
+        # substring.
+        self._apply_response_feature_annotations(endpoints)
 
         return HTTPScanResult(
             endpoints=endpoints,
@@ -618,6 +626,90 @@ class ScanAgent(BaseAgent):
             if u not in existing:
                 existing.append(u)
 
+    @staticmethod
+    def _response_feature_key(url: str) -> str:
+        """Normalised identity a response-feature record is filed under.
+
+        The crawl visits ``/vulnerabilities/csrf/`` while the endpoint the
+        planner ranks is often that page's form action — ``.../csrf/#``, an
+        ``action="#"`` resolved against the page. Same page, two spellings, so
+        the annotation is keyed on the URL with its fragment and trailing slash
+        removed and both spellings land on one record.
+        """
+        return url.split("#", 1)[0].rstrip("/")
+
+    def _record_response_features(self, page_url: str, headers: dict[str, str], body: str) -> None:
+        """Record the observable response features of a page the crawl fetched.
+
+        Two features, both of which decide whether a whole vuln-class can fire
+        at an endpoint at all:
+
+        * **cookie names the response set** — a session-token test measures the
+          entropy of tokens a page issues; on a page that issues none it records
+          an empty sample and can never confirm. Only the NAMES are kept: a
+          cookie value is authentication material and has no business in the
+          endpoint inventory, the message bus, or the report.
+        * **whether the page rendered a form** — the CSRF, stored-XSS, upload,
+          brute-force and client-side-logic classes all evaluate a submission.
+
+        Failure here is silent by design (a malformed ``Set-Cookie`` should not
+        abort a crawl); the absence of a record simply means "not observed",
+        which ranks the endpoint no worse than it did before the feature existed.
+
+        Args:
+            page_url: The URL that was fetched.
+            headers: Response headers, lowercased keys.
+            body: Response body.
+        """
+        features = getattr(self, "_response_features", None)
+        if features is None:
+            return
+        raw_cookies = headers.get("set-cookie", "") if headers else ""
+        names: list[str] = []
+        for chunk in raw_cookies.split("\n"):
+            name = chunk.split("=", 1)[0].strip()
+            # A comma-joined multi-cookie header keeps only whole name=... pairs.
+            if not name or "," in name or " " in name or ";" in name:
+                continue
+            if name not in names:
+                names.append(name)
+        record = features.setdefault(
+            self._response_feature_key(page_url), {"sets_cookies": [], "has_form": False}
+        )
+        for name in names:
+            if name not in record["sets_cookies"]:
+                record["sets_cookies"].append(name)
+        if "<form" in body.lower():
+            record["has_form"] = True
+
+    def _apply_response_feature_annotations(self, endpoints: list[Endpoint]) -> None:
+        """Stamp recorded response features onto the endpoints they were seen on.
+
+        Purely additive and never destructive: an endpoint the crawl never
+        opened keeps its defaults, so a target where enrichment could not run
+        ranks exactly as it did before this signal existed.
+        """
+        features = getattr(self, "_response_features", None)
+        if not features:
+            return
+        annotated = 0
+        for endpoint in endpoints:
+            record = features.get(self._response_feature_key(endpoint.url))
+            if record is None:
+                continue
+            cookies = [c for c in record["sets_cookies"] if c not in endpoint.sets_cookies]
+            if cookies:
+                endpoint.sets_cookies = [*endpoint.sets_cookies, *cookies]
+            if record["has_form"]:
+                endpoint.has_form = True
+            annotated += 1
+        self._logger.info(
+            "Response features: annotated %d of %d endpoint(s) from %d observed page(s)",
+            annotated,
+            len(endpoints),
+            len(features),
+        )
+
     def _apply_session_setter_annotations(self, endpoints: list[Endpoint]) -> None:
         """Stamp recorded session-setter refs onto their trigger endpoints.
 
@@ -702,16 +794,39 @@ class ScanAgent(BaseAgent):
         # Cap the visit count so a giant katana run doesn't make scan O(n).
         max_visits = 80
         visited: set[str] = set()
-        ordered_urls: list[str] = []
+        candidates: list[str] = []
         for u in urls:
             if is_state_changing_url(u):
                 continue
             norm = u.split("#", 1)[0].rstrip("/")
             if norm and norm not in visited:
                 visited.add(norm)
-                ordered_urls.append(u)
-                if len(ordered_urls) >= max_visits:
-                    break
+                candidates.append(u)
+
+        # WHICH urls the budget covers is decided by relevance, not by the order
+        # the crawler happened to emit them. A concurrent crawler's output order
+        # varies run to run, so "the first 80" was a different 80 each time: the
+        # DVWA brute-force page's login form was enriched in 2 of 3 identical
+        # runs, which is a form endpoint appearing and disappearing from the
+        # engagement for no reason on the target's side. Ordering by
+        # :func:`crawl_visit_priority` (with the normalised URL as the
+        # tie-break) makes the visited set a deterministic function of the
+        # discovered set — and spends the budget on application pages before
+        # static assets, doc files, source viewers and doubled-path artifacts.
+        # The budget itself is unchanged; only the order is.
+        prioritised = sorted(
+            candidates, key=lambda u: (crawl_visit_priority(u), u.split("#", 1)[0])
+        )
+        ordered_urls = prioritised[:max_visits]
+        if len(prioritised) > max_visits:
+            self._logger.info(
+                "Endpoint enrichment: %d of %d candidate URL(s) exceed the %d-visit budget and "
+                "were not opened (lowest-priority dropped first) — first omitted: %s",
+                len(prioritised) - max_visits,
+                len(prioritised),
+                max_visits,
+                prioritised[max_visits],
+            )
 
         enriched: list[Endpoint] = []
         seen_keys: set[tuple[str, str, tuple[str, ...]]] = set()
@@ -727,6 +842,11 @@ class ScanAgent(BaseAgent):
                 # Record any session-value setter this page references (DVWA SQLi
                 # ``high``'s ``session-input.php``) for cross-request injection.
                 self._record_session_setters(current_url, body)
+
+                # Record what the RESPONSE showed (a cookie issued, a form
+                # rendered) so the exploit planner can rank a class by whether
+                # its precondition is present rather than by a path substring.
+                self._record_response_features(current_url, res.headers, body)
 
                 # Extract forms — Endpoint per form action.
                 for action_url, method, param_names in self._extract_forms(body, current_url):
@@ -831,6 +951,16 @@ class ScanAgent(BaseAgent):
                 # Record any session-value setter this page references (DVWA SQLi
                 # ``high``'s ``session-input.php``) for cross-request injection.
                 self._record_session_setters(current_url, body)
+
+                # Same response-feature capture as the enrichment path, so the
+                # planner's class preconditions do not depend on which crawler
+                # the resolver happened to find.
+                raw_headers = getattr(parsed, "response_headers", {}) or {}
+                self._record_response_features(
+                    current_url,
+                    {str(k).lower(): str(v) for k, v in raw_headers.items()},
+                    body,
+                )
 
                 # Extract forms and their parameters
                 forms = self._extract_forms(body, current_url)
