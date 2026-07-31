@@ -206,6 +206,32 @@ def finding_key(finding: dict[str, Any]) -> str:
     return f"{finding.get('title', '')} @ {finding.get('target', '')}"
 
 
+_STRUCTURED_EVIDENCE_TOKEN = re.compile(r"^[A-Za-z_][\w.-]*=\S*$")
+
+
+def evidence_strength(evidence: list[str]) -> str:
+    """The ``strength=`` value the ENGINE stamped into *evidence*, or ``""``.
+
+    Only entries made entirely of whitespace-separated ``key=value`` tokens are
+    read. A finding's evidence begins ``["Request: …", "Response: …"]``, and the
+    ``Response:`` entry holds raw unescaped bytes from the target, ahead of the
+    engine's own verdict line — so a bare search for ``strength=`` reads what
+    the TARGET said before what the engine measured. A host echoing the literal
+    ``strength=likely`` beside its reflection would otherwise fabricate an audit
+    violation here, and (before the matching fix in ``exploit.py``) suppress a
+    genuine finding in the engine itself.
+    """
+    for entry in evidence:
+        tokens = entry.split()
+        if not tokens or not all(_STRUCTURED_EVIDENCE_TOKEN.match(t) for t in tokens):
+            continue
+        for token in tokens:
+            key, _, value = token.partition("=")
+            if key == "strength":
+                return value
+    return ""
+
+
 def _strip_query(url: str) -> str:
     """``scheme://host/path`` — the module's address, without its arguments."""
     parsed = urlparse(url)
@@ -322,11 +348,8 @@ def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
     # batch-4 HIGH run emitted `verified=True strength=likely` as a confirmed
     # medium; nothing weaker than a raw scan of the emitted evidence will do.
     for finding in findings:
-        for line in finding.get("evidence", []):
-            match = re.search(r"\bstrength=([\w-]+)", line)
-            if match and match.group(1) == "likely":
-                violations.append(f"likely->confirmed emitted: {finding_key(finding)}")
-                break
+        if evidence_strength(finding.get("evidence", [])) == "likely":
+            violations.append(f"likely->confirmed emitted: {finding_key(finding)}")
 
     # G18: a task dropped on a class's OWN primary target, for a class that then
     # emitted nothing, is the ranking failing rather than the budget.

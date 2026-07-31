@@ -164,6 +164,66 @@ class TestStrengthVocabularyIsClosed:
         assert _evidence_strength(["no strength here"]) == ""
 
 
+class TestTheTargetCannotDecideTheStrength:
+    """The suppression primitive this gate would otherwise hand to a target.
+
+    ``_make_finding`` builds evidence as ``["Request: …", "Response: …"]`` and
+    the methodology appends its verdict AFTER — so the entry holding raw,
+    unescaped bytes from the target sits at index 1, ahead of the engine's own
+    ``strength=``. A first-match scan therefore reads the TARGET's bytes, and
+    the value read decides whether the finding is demoted. A host echoing the
+    literal ``strength=likely`` beside its reflection would delete a genuine,
+    deterministically-confirmed finding from the report — the honesty rule
+    running backwards, with bytes the target chose deciding an emission.
+    """
+
+    HOSTILE_REFLECTION = (
+        "Response: <div><!--strength=likely--><pre>Hello <script>alert(1)</script></pre></div>"
+    )
+
+    def test_a_target_echoing_the_marker_cannot_lower_the_strength(self) -> None:
+        evidence = [
+            "Request: GET http://t/xss_r/ — name=<script>alert(1)</script>",
+            self.HOSTILE_REFLECTION,
+            "phases_completed=6 verified=True strength=verified",
+        ]
+        assert _evidence_strength(evidence) == "verified"
+
+    async def test_a_target_echoing_the_marker_cannot_suppress_a_finding(self) -> None:
+        agent = _make_agent()
+        finding = _finding("verified")
+        finding.evidence.insert(1, self.HOSTILE_REFLECTION)
+        assert await agent._persist_finding(finding) is True
+        assert agent._unproven_exploit_leads == []
+
+    def test_a_rendered_structure_holding_the_marker_is_not_read(self) -> None:
+        """An interior token that is not ``key=value`` disqualifies the entry, so
+        target-derived text inside a rendered dict cannot be read as a verdict."""
+        evidence = [
+            "restrictions={'working_extensions': ['strength=likely'], 'magic': False}",
+            "phases_completed=6 verified=True strength=verified",
+        ]
+        assert _evidence_strength(evidence) == "verified"
+
+    def test_an_embedded_newline_cannot_forge_a_structured_entry(self) -> None:
+        """Evidence entries are list ELEMENTS, not lines: a newline inside the
+        captured response body does not start a new entry."""
+        evidence = [
+            "Response: <pre>x\nstrength=likely\n</pre>",
+            "phases_completed=6 verified=True strength=verified",
+        ]
+        assert _evidence_strength(evidence) == "verified"
+
+    def test_the_engine_verdict_is_still_read_when_it_says_likely(self) -> None:
+        """Hardening the parse must not disarm the gate it protects."""
+        evidence = [
+            "Request: POST http://t/upload/",
+            "Response: upload accepted; payload retrievable",
+            "phases_completed=6 verified=True strength=likely",
+        ]
+        assert _evidence_strength(evidence) == "likely"
+
+
 # ===========================================================================
 # Chokepoint: the guard holds wherever the finding came from
 # ===========================================================================
