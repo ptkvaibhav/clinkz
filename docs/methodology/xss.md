@@ -139,3 +139,23 @@ Response evidence — never the old hardcoded `(response unavailable)` placehold
 (verification ran blind — never a silently-verified finding), the same "reject on
 missing evidence, not on a label" discipline as CMDi/LFI phase-5; this stopped the
 FP-suppression pass from flagging a genuine Low reflected XSS.
+
+## A JS/DOM-context reflection is a LEAD, not a reflected-XSS finding (G17, batch 5)
+
+`_run_xss_reflected_methodology` grades a reflection that lands in JS/DOM context
+`likely` — *because* confirming it needs a JavaScript engine this system does not
+have. The dispatch read only `result.verified`, so it emitted a high-severity
+CONFIRMED finding anyway. That is the DOM-XSS phantom re-entering through the
+reflected class: what is actually witnessed on that path is an SPA shell plus a
+sink NAME found by static analysis of a bundle, which is exactly the evidence
+`_dom_xss_dispatch_result` was built to demote.
+
+The reflected class now takes the same exit — an `UnprovenExploitLead` with
+`why_unconfirmed="execution_not_witnessed_requires_client_side_oracle"`, carrying
+the landing context, the payload and the captured response verbatim, so nothing
+observed is lost when the claim is dropped.
+
+DVWA is unaffected: every XSS finding across the batch-4 runs recorded
+`reflection_contexts=['html_body']` and `strength=verified`. The path this closes
+fires on SPA targets (Juice Shop shape), where it was the difference between a
+reported high-severity finding and an honest lead.
