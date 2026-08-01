@@ -40,6 +40,7 @@ from clinkz.agents.exploit import (
     _endpoint_class_relevance,
     _endpoint_class_sort_key,
     _param_name_tokens,
+    _path_names_class_surface,
 )
 from clinkz.models.finding import ExploitTask
 from clinkz.models.scan import Endpoint
@@ -177,11 +178,44 @@ class TestPreconditionsAreObservations:
 
     def test_response_features_default_to_not_observed(self) -> None:
         """A target where enrichment never ran must rank exactly as it did
-        before the signal existed — additive, never destructive."""
-        bare = Endpoint(url="http://t/app/weak_id/", method="GET")
+        before the signal existed — additive, never destructive. Uses a path
+        that names no class surface, so the default is the only thing measured."""
+        bare = Endpoint(url="http://t/app/dashboard/", method="GET")
         assert bare.sets_cookies == []
         assert bare.has_form is False
         assert _endpoint_class_relevance("_test_weak_session", bare) == 2
+
+    def test_a_post_gated_token_issuer_is_still_reachable(self) -> None:
+        """The precondition this class most needs is the one a read-only crawl
+        cannot see: DVWA issues ``dvwaSession`` inside
+        ``if REQUEST_METHOD == "POST"``, so a GET observes no cookie and mapping
+        an application must not submit forms to find out. The form the
+        submission would go through, plus a path naming an id-issuing route, is
+        what remains observable — and it must be enough to rank the endpoint."""
+        issuer = Endpoint(url="http://t/app/weak_id/", method="GET", has_form=True)
+        assert issuer.sets_cookies == []
+        assert _endpoint_class_relevance("_test_weak_session", issuer) == 0
+
+    @pytest.mark.parametrize(
+        ("tokens", "path", "expected"),
+        [
+            # Short tokens match a whole WORD: "a route that issues an id" is a
+            # real signal, and /video/ is not one.
+            (("id",), "/app/weak_id/", True),
+            (("id",), "/app/video/", False),
+            (("id",), "/app/idea/", False),
+            (("id",), "/app/user/id", True),
+            # Longer tokens keep substring matching, so a run-together path
+            # still resolves.
+            (("file",), "/app/fileupload/", True),
+            (("session",), "/app/mysessions/", True),
+            ((), "/app/anything/", False),
+        ],
+    )
+    def test_a_short_path_token_matches_a_word_not_a_substring(
+        self, tokens: tuple[str, ...], path: str, expected: bool
+    ) -> None:
+        assert _path_names_class_surface(tokens, path) is expected
 
 
 class TestParameterNamesMatchTheWordsInside:
