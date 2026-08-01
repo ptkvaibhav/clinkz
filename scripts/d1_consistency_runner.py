@@ -233,9 +233,16 @@ def evidence_strength(evidence: list[str]) -> str:
 
 
 def _strip_query(url: str) -> str:
-    """``scheme://host/path`` — the module's address, without its arguments."""
+    """``scheme://host/path`` — the module's address, without its arguments.
+
+    An empty path normalises to ``/``: an origin-level finding's target came
+    back as ``http://host`` in one run and ``http://host/`` in the next, which
+    split one stable finding into two flaky keys.
+    """
     parsed = urlparse(url)
-    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}" if parsed.scheme else url
+    if not parsed.scheme:
+        return url
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path or '/'}"
 
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s,)\]]+")
@@ -311,8 +318,13 @@ def dropped_primary_targets(engagement: str) -> list[dict[str, Any]]:
     those is the ordering failing, not the budget: it is the exact shape that
     cost D1 its weak-session and HIGH SQLi findings.
 
-    Only the LAST truncation record per stage is read; the union stage is the
-    plan that actually dispatched.
+    Only the LAST truncation record per stage is read, and ONLY the union stage
+    counts — that is the plan that actually dispatched. The deterministic stage
+    is the union's *source*: it drops ~500 candidates by design, so reading it
+    as the plan reports every class's tail as a coverage failure. (It reported
+    exactly one such spurious violation before this was fixed.) The union stage
+    always writes a record, including when it truncated nothing, so an absent
+    one means the union never ran rather than that nothing was dropped.
     """
     path = OUTPUTS / engagement / "trace.jsonl"
     if not path.exists():
@@ -326,7 +338,7 @@ def dropped_primary_targets(engagement: str) -> list[dict[str, Any]]:
                 continue
             if payload.get("phase_name") == "truncation":
                 latest[payload.get("stage", "?")] = payload
-    record = latest.get("union") or latest.get("deterministic")
+    record = latest.get("union")
     if not record:
         return []
     dropped: list[dict[str, Any]] = []
