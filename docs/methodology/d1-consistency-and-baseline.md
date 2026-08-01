@@ -133,3 +133,89 @@ synthesis intends: phase-4 substituted a `.jpg`, so at HIGH this records DVWA's
 upload feature *working as designed* as a finding. Left open deliberately —
 it is a shared upload-methodology change and the contract requires re-running the
 whole upload family across all four levels to validate it.
+
+---
+
+# Batch 5 — the ranking fix, measured
+
+Two LOW ladders were run (N=3 each): one on the first cut of the fix, one after
+the four defects that ladder exposed were repaired.
+
+## Ladder A — the first cut
+
+| run | engagement | confirmed | violations |
+|---|---|---|---|
+| 1 | `890424e8` | 21 | 0 |
+| 2 | `255b74aa` | 18 | 1 |
+| 3 | `fe1c0b1b` | 19 | 0 |
+
+15 stable, 9 flaky. It exposed four defects **in the fix itself**, all found by
+replaying the ranking over the endpoint sets those runs actually produced:
+
+1. **The precondition chosen for the session class is not observable.** Verified
+   against the running container: a GET to `/vulnerabilities/weak_id/` returns no
+   `Set-Cookie` — DVWA issues `dvwaSession` inside `if REQUEST_METHOD == "POST"`.
+   A read-only crawl cannot see a POST-gated issuer, and mapping an application
+   must not submit forms to find out.
+2. **The parameter vocabulary was never consulted.** `_param_name_tokens` was
+   written and not wired in, and the caller lowercased names before tokenising,
+   erasing the camelCase boundary (`txtName` → one word `txtname`). The guestbook
+   form sorted LAST of its class's ten candidates — a regression against batch 4.
+3. **The class floor got stricter, not looser.** Reserving only when the
+   deterministic head outranked the LLM's pick meant any grade-0 LLM pick
+   satisfied the floor.
+4. **A stage that truncated nothing wrote no trace event**, so the harness could
+   not tell it from a stage that never ran and fell back to the deterministic
+   stage — which drops ~500 candidates by design — reporting one class's ordinary
+   tail as a coverage failure. (The single "violation" above is that artifact.)
+
+## Ladder B — after the repairs
+
+| run | engagement | confirmed | admin hash | violations |
+|---|---|---|---|---|
+| 1 | `01b8e683` | 21 | unchanged | 0 |
+| 2 | `43c813ba` | 21 | unchanged | 0 |
+| 3 | `f8d9a7bc` | 21 | unchanged | 0 |
+
+**Every exploitation module is now stable across all three runs** — including all
+three that batch 4 measured as flaky:
+
+| module | endpoint | batch 4 | ladder B |
+|---|---|---|---|
+| `_test_weak_session` | `/vulnerabilities/weak_id/` | 1 of 3 | **3 of 3** |
+| `_test_sqli` | `/vulnerabilities/brute/` | 1 of 3 | **3 of 3** |
+| `_test_xss_stored` | `/vulnerabilities/xss_s/` | 3 of 3 | **3 of 3** |
+
+The 13 stable modules: SQLi (`sqli/`), SQLi (`sqli_blind/`), SQLi (`brute/`),
+Command Injection, LFI, Stored XSS, Unrestricted File Upload, CSRF x2,
+No Brute-Force Protection, Open Redirect, the G16 forge-and-accept, and Weak
+Session ID.
+
+**Zero VALIDATION violations on every run**: no FP-annotated finding, no evidence
+restating its own rationale, no `likely` under a confirmed status anywhere, every
+demotion naming a deterministic contradiction, `admin`'s hash byte-identical, and
+no plan task dropped on a class's own primary target for a class that then
+emitted nothing.
+
+Offline replay over all three runs' real endpoint sets: eleven watched classes
+rank their own target inside the floor, **identically in every run**.
+
+## Residual flake — LOW is NOT yet stable
+
+Three causes remain, so per the brief the ladder was **not** extended to MEDIUM
+and HIGH.
+
+1. **Security-header target (12 of 16 flaky entries; FIXED, not yet re-measured).**
+   `_test_security_headers` emits one finding per `(origin, header)` and the first
+   URL to reach it wins the dedup — but the finding recorded *that URL* as its
+   target. Runs 1 and 3 reached `/` first, run 2 reached `/hackable/uploads/`, so
+   the same seven origin-level findings changed address. The target is now the
+   origin (the measured page stays in the evidence as provenance). This needs a
+   third ladder to confirm.
+2. **`Reflected XSS in name parameter` absent in run 2** (present 1 and 3). Not a
+   ranking miss — the class was planned and dispatched. Cause not yet isolated;
+   it is the next thing to diagnose.
+3. **`File Upload Validation Gap (inclusion_chain)` present only in run 2**, on
+   the same endpoint whose `Unrestricted File Upload` finding is stable in all
+   three. A second upload finding appearing in one run of three; the
+   `verified-stored` branch introduced in this batch is the place to look.

@@ -90,3 +90,56 @@ Every attempt is still decided by the **unchanged phase-5 execution oracle** (th
 canary echoed without its source), and the canary is carried across attempts so the
 oracle looks for one token. It adds **reach, never a new way to confirm**: with no
 confirmed script extension the walk is just synthesis's pick, unchanged.
+
+## A negative fingerprint can never confirm (G17, batch 5)
+
+The batch-4 HIGH run emitted, as **confirmed/medium**:
+
+```
+File Upload Validation Gap (client_side_only)
+verified=True strength=likely
+restrictions={'working_extensions': [], 'content_type_check': False,
+              'magic_byte_check': False, 'filename_injection_works': False}
+```
+
+Every probe that could have distinguished a gap came back negative, and the
+finding was emitted for a `profile_pic.jpg` accepted exactly as DVWA `high` is
+designed to accept it (it validates the real extension *and* the image
+dimensions). The `rationale=` was a conditional execution claim — "will execute
+only if the application later renders this uploaded 'image' inline in an HTML
+context" — which is a shape that can never confirm.
+
+Two independent gates now, both generic:
+
+1. **`client_side_only` never verifies on retrievability.** Phase 5 returned
+   `verified=True` on `fetch_resp.status == 200` alone for the branches with
+   `requires_execution == False`. Accepted-and-retrievable is the upload feature
+   working; client-side execution needs an oracle this engine does not have,
+   which is the same gap that makes every DOM-XSS result a lead.
+2. **No upload finding without a witnessed BYPASS** — `_file_upload_bypass_observed`:
+   a script/interpreter extension the store accepted, or a filename injection
+   that survived. Deliberately *not* positives: `content_type_check` and
+   `magic_byte_check` record a defence the server was seen **enforcing**, and
+   `image_carrier_extension` means the store takes images, which is the feature.
+   Counting the carrier is what produced a finding on the one level whose upload
+   control is doing its job.
+
+The gate runs **before** the phase-3 LLM ranking, so which execution type the
+model picks cannot decide whether the class may confirm — type selection is an
+LLM checkpoint, and leaving "may this confirm?" downstream of it puts the honesty
+decision in the model's hands (LESSONS #39).
+
+The two surviving outcomes are both witnessed, and they witness different things:
+`strength="verified"` is the canary echoing as interpreter output, and
+`strength="verified-stored"` is a bypassed restriction plus a stored, retrievable
+artifact — which is what an inclusion-chain finding actually claims. `"likely"`
+is no longer assigned by this class at all.
+
+**Per-level expectation.** LOW/MEDIUM accept `.php` under a declared image MIME →
+`working_extensions` non-empty → the gate passes and DIRECT_EXECUTION confirms on
+the canary. HIGH/IMPOSSIBLE reject every script extension and every filename
+injection → the fingerprint is negative → the upload point is recorded as an
+`UnprovenExploitLead` (`upload_accepted_but_no_restriction_bypass_observed`) and
+**nothing is emitted**. That per-level split is the honesty control: a class that
+confirmed identically at every level of a graded control was matching the app's
+benign response.
