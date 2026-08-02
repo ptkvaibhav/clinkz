@@ -76,6 +76,18 @@ class Endpoint(BaseModel):
     family against an otherwise param-less page — without it the cross-request
     session-indirection injection point is never reached. Empty by default, so
     the field is fully backward-compatible. See :class:`SessionVector`.
+
+    ``sets_cookies`` and ``has_form`` are **observed response features**: what
+    the crawl actually saw when it fetched this URL, as opposed to what its path
+    or parameters merely suggest. They exist so the Exploit planner can rank an
+    endpoint by whether a vuln-class's *precondition* is present there — a
+    session-token test can only measure a page that hands out a cookie, and a
+    CSRF test can only evaluate a page that renders a form. Ranking those
+    classes on a path substring instead put ``/vulnerabilities/weak_id/`` (which
+    sets ``dvwaSession`` on every visit) in the same tie bucket as
+    ``/security.php`` (which sets nothing), and the tie was broken by crawl
+    order. Only cookie *names* are recorded — never a value, which is
+    authentication material.
     """
 
     url: str
@@ -86,6 +98,8 @@ class Endpoint(BaseModel):
     content_type: str | None = None
     param_locations: dict[str, ParamLocation] = Field(default_factory=dict)
     session_setters: list[str] = Field(default_factory=list)
+    sets_cookies: list[str] = Field(default_factory=list)
+    has_form: bool = False
 
 
 class SessionVector(BaseModel):

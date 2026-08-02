@@ -136,3 +136,24 @@ The confirmed finding's `Response:` line carries measurements
 (`control_stable`/`forged_stable` plus the divergence excerpt), so
 `_fp_ground_observation_is_rationale` does **not** fire on it — held by a
 regression test, since that is precisely the ground the old shape tripped.
+
+## The rationale must reflect the outcome reached (G19, batch 5)
+
+The emitted forged-token finding carried
+`rationale="Hidden field(s) ['token'] populated by client-side JS. Bypass not
+feasible — non-literal write."` while its own evidence read
+`forge_confirmed=True`.
+
+Both statements were produced honestly, in this order: phase 3's classifier
+*predicts* feasibility from the shape of the JS write, and the deterministic
+confirmation then runs **without consulting that prediction** (that independence
+is the G16/#39 fix — whether the confirming attempt runs is never the LLM's
+call). So a prediction the attempt falsified was left standing as the finding's
+stated reasoning, which is the self-inconsistent-evidence shape the FP detector
+hunts for.
+
+`_js_attacks_reconciled_rationale` now composes both halves explicitly —
+`Classifier prediction: … Outcome: …` — with the last word belonging to the
+deterministic arm, in all three outcomes (accepted / attempted-and-rejected /
+not attempted). The prediction is preserved rather than overwritten: it is part
+of the audit trail, it just no longer reads as the conclusion.

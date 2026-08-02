@@ -14,6 +14,7 @@ Coverage:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1030,3 +1031,75 @@ def test_crawl_merge_appends_new_and_keeps_existing_params() -> None:
     assert by_url[(f"{base}sqli/", "GET")].params == ["id"]
     assert by_url[(f"{base}fi/?page=x", "GET")].params == ["page"]
     assert len(endpoints) == 2
+
+
+# ===========================================================================
+# D1 batch-5 (G18) — observed response features, and a deterministic visit set
+# ===========================================================================
+
+
+def _feature_agent() -> ScanAgent:
+    agent = ScanAgent.__new__(ScanAgent)
+    agent._logger = logging.getLogger("test.scan.features")
+    agent._response_features = {}
+    return agent
+
+
+def test_response_features_record_cookie_names_but_never_values() -> None:
+    """A cookie value is authentication material and has no business in the
+    endpoint inventory, the message bus, or the report — only the NAME is the
+    ranking signal (does this page issue a session token at all?)."""
+    agent = _feature_agent()
+    agent._record_response_features(
+        "http://t/vulnerabilities/weak_id/",
+        {"set-cookie": "dvwaSession=8; path=/\nPHPSESSID=deadbeefcafe; path=/"},
+        "<html><body>no form here</body></html>",
+    )
+    record = agent._response_features["http://t/vulnerabilities/weak_id"]
+    assert record["sets_cookies"] == ["dvwaSession", "PHPSESSID"]
+    assert record["has_form"] is False
+    blob = json.dumps(agent._response_features)
+    assert "deadbeefcafe" not in blob
+    assert "dvwaSession=8" not in blob
+
+
+def test_response_features_record_a_rendered_form() -> None:
+    agent = _feature_agent()
+    agent._record_response_features(
+        "http://t/vulnerabilities/csrf/",
+        {},
+        '<html><FORM action="#" method="GET"><input name="password_new"></FORM></html>',
+    )
+    assert agent._response_features["http://t/vulnerabilities/csrf"]["has_form"] is True
+
+
+def test_a_form_action_fragment_lands_on_the_page_that_rendered_it() -> None:
+    """The crawl visits ``/csrf/`` while the endpoint the planner ranks is that
+    page's form action, ``/csrf/#`` — same page, two spellings."""
+    agent = _feature_agent()
+    agent._record_response_features(
+        "http://t/vulnerabilities/csrf/", {}, "<html><form><input name=x></form></html>"
+    )
+    endpoints = [
+        Endpoint(url="http://t/vulnerabilities/csrf/#", method="GET", params=["password_new"]),
+        Endpoint(url="http://t/vulnerabilities/other/", method="GET"),
+    ]
+    agent._apply_response_feature_annotations(endpoints)
+    assert endpoints[0].has_form is True
+    assert endpoints[1].has_form is False
+
+
+def test_annotation_is_additive_for_an_endpoint_the_crawl_never_opened() -> None:
+    """A target where enrichment could not run must rank exactly as it did
+    before the signal existed."""
+    agent = _feature_agent()
+    endpoints = [Endpoint(url="http://t/never/visited/", method="GET")]
+    agent._apply_response_feature_annotations(endpoints)
+    assert endpoints[0].sets_cookies == []
+    assert endpoints[0].has_form is False
+
+
+def test_malformed_set_cookie_headers_do_not_abort_the_capture() -> None:
+    agent = _feature_agent()
+    agent._record_response_features("http://t/p", {"set-cookie": "; ; =novalue\ngood=1"}, "")
+    assert agent._response_features["http://t/p"]["sets_cookies"] == ["good"]

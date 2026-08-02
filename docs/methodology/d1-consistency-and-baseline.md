@@ -133,3 +133,166 @@ synthesis intends: phase-4 substituted a `.jpg`, so at HIGH this records DVWA's
 upload feature *working as designed* as a finding. Left open deliberately —
 it is a shared upload-methodology change and the contract requires re-running the
 whole upload family across all four levels to validate it.
+
+---
+
+# Batch 5 — the ranking fix, measured
+
+Two LOW ladders were run (N=3 each): one on the first cut of the fix, one after
+the four defects that ladder exposed were repaired.
+
+## Ladder A — the first cut
+
+| run | engagement | confirmed | violations |
+|---|---|---|---|
+| 1 | `890424e8` | 21 | 0 |
+| 2 | `255b74aa` | 18 | 1 |
+| 3 | `fe1c0b1b` | 19 | 0 |
+
+15 stable, 9 flaky. It exposed four defects **in the fix itself**, all found by
+replaying the ranking over the endpoint sets those runs actually produced:
+
+1. **The precondition chosen for the session class is not observable.** Verified
+   against the running container: a GET to `/vulnerabilities/weak_id/` returns no
+   `Set-Cookie` — DVWA issues `dvwaSession` inside `if REQUEST_METHOD == "POST"`.
+   A read-only crawl cannot see a POST-gated issuer, and mapping an application
+   must not submit forms to find out.
+2. **The parameter vocabulary was never consulted.** `_param_name_tokens` was
+   written and not wired in, and the caller lowercased names before tokenising,
+   erasing the camelCase boundary (`txtName` → one word `txtname`). The guestbook
+   form sorted LAST of its class's ten candidates — a regression against batch 4.
+3. **The class floor got stricter, not looser.** Reserving only when the
+   deterministic head outranked the LLM's pick meant any grade-0 LLM pick
+   satisfied the floor.
+4. **A stage that truncated nothing wrote no trace event**, so the harness could
+   not tell it from a stage that never ran and fell back to the deterministic
+   stage — which drops ~500 candidates by design — reporting one class's ordinary
+   tail as a coverage failure. (The single "violation" above is that artifact.)
+
+## Ladder B — after the repairs
+
+| run | engagement | confirmed | admin hash | violations |
+|---|---|---|---|---|
+| 1 | `01b8e683` | 21 | unchanged | 0 |
+| 2 | `43c813ba` | 21 | unchanged | 0 |
+| 3 | `f8d9a7bc` | 21 | unchanged | 0 |
+
+**Every exploitation module is now stable across all three runs** — including all
+three that batch 4 measured as flaky:
+
+| module | endpoint | batch 4 | ladder B |
+|---|---|---|---|
+| `_test_weak_session` | `/vulnerabilities/weak_id/` | 1 of 3 | **3 of 3** |
+| `_test_sqli` | `/vulnerabilities/brute/` | 1 of 3 | **3 of 3** |
+| `_test_xss_stored` | `/vulnerabilities/xss_s/` | 3 of 3 | **3 of 3** |
+
+The 13 stable modules: SQLi (`sqli/`), SQLi (`sqli_blind/`), SQLi (`brute/`),
+Command Injection, LFI, Stored XSS, Unrestricted File Upload, CSRF x2,
+No Brute-Force Protection, Open Redirect, the G16 forge-and-accept, and Weak
+Session ID.
+
+**Zero VALIDATION violations on every run**: no FP-annotated finding, no evidence
+restating its own rationale, no `likely` under a confirmed status anywhere, every
+demotion naming a deterministic contradiction, `admin`'s hash byte-identical, and
+no plan task dropped on a class's own primary target for a class that then
+emitted nothing.
+
+Offline replay over all three runs' real endpoint sets: eleven watched classes
+rank their own target inside the floor, **identically in every run**.
+
+## Residual flake — LOW is NOT yet stable
+
+Three causes remain, so per the brief the ladder was **not** extended to MEDIUM
+and HIGH.
+
+1. **Security-header target (12 of 16 flaky entries; FIXED, not yet re-measured).**
+   `_test_security_headers` emits one finding per `(origin, header)` and the first
+   URL to reach it wins the dedup — but the finding recorded *that URL* as its
+   target. Runs 1 and 3 reached `/` first, run 2 reached `/hackable/uploads/`, so
+   the same seven origin-level findings changed address. The target is now the
+   origin (the measured page stays in the evidence as provenance). This needs a
+   third ladder to confirm.
+2. **`Reflected XSS in name parameter` absent in run 2** (present 1 and 3). Not a
+   ranking miss — the class was planned and dispatched. Cause not yet isolated;
+   it is the next thing to diagnose.
+3. **`File Upload Validation Gap (inclusion_chain)` present only in run 2**, on
+   the same endpoint whose `Unrestricted File Upload` finding is stable in all
+   three. A second upload finding appearing in one run of three; the
+   `verified-stored` branch introduced in this batch is the place to look.
+
+---
+
+# Batch 6 — the three residual flakes, and the two the ladder then found
+
+## G20 · the header finding's ADDRESS (closed, then re-opened one level down)
+
+The target is the origin now (`scheme://netloc`, no path/slash/query/fragment,
+extracted as `_security_headers_origin` so its determinism is asserted rather
+than inferred). The measured page stays in the evidence as `observed_url=`.
+
+Re-measured over three LOW runs: **all seven header findings carry an identical
+`(title, target)` in every run.** The 12-of-16 flake is gone.
+
+What the re-measurement then exposed is the same defect one level down: the
+address was origin-scoped, the **verdict** was not. DVWA serves a
+`Content-Security-Policy` on `/vulnerabilities/csp/` and nowhere else, and
+`(origin, header)` dedups on the first page to reach it — so:
+
+| run | first page measured | CSP verdict | rollup |
+|---|---|---|---|
+| 1 | `/` (`has_csp=False`) | **Missing** | medium |
+| 2 | `/vulnerabilities/csp/` (`has_csp=True`) | **Weak** | low |
+| 3 | `/` (`has_csp=False`) | **Missing** | medium |
+
+Same origin, same posture, different finding — and a different severity. Rule 4
+of the applicability gate now settles it deterministically: a header present on
+*this* page but absent from the **origin root** is reported missing for the
+origin. That is the mirror of the merge phase 2 already does in the other
+direction (a header the root sets covers a deep page), and it is skipped when the
+root could not be fetched, because absence of evidence never vetoes.
+
+## G21 · reflected XSS absent in B2 — isolated
+
+Not a ranking miss and not a dispatch miss. All three runs reached phase 5 on the
+same parameter with the same measurement (`verified=True strength=verified
+context=html_body`, `probed=25 survived=25`); run 2 suppressed **both** of its
+tasks at phase 6 on `execution claim is conditional on an unobserved transform
+('when' + 'unescape')`. The model wrote a different sentence.
+
+Full write-up → [xss.md](xss.md#a-prose-veto-may-not-overrule-a-measurement-g21-batch-6).
+
+## G22 · the upload family — one rule, not a third patch
+
+Each branch declares its defining effect and the one deterministic observation
+that proves it; only branches whose observation this engine can make may confirm.
+`inclusion_chain` verified on a bare `status == 200` from a **direct** GET while
+claiming a consumer sink composes with the upload — so it emits a lead, as
+`client_side_only` already did. And because retrievability is trivially true
+whenever real execution would also have worked, the ranking alone decided
+CRITICAL-vs-HIGH on one endpoint; the confirmable half now runs first, and a
+confirmable branch the model omits is added from the fingerprint.
+
+Full write-up → [file-upload.md](file-upload.md#the-familys-confirmation-model-g22-batch-6).
+
+## G23 · the ladder found one more, same shape as G21
+
+The first LOW ladder on the batch-6 code lost `SQL Injection in username` on
+`/vulnerabilities/brute/` in one run of three. Identical phase 1/2/3
+(`dialect=mysql`, `ranked=['error_based', …]`); phase-4 synthesis then wrote
+
+    run 1  expected_indicator="XPATH syntax error: '~"      -> verified
+    run 2  expected_indicator="XPATH syntax error: '~5.7"   -> no error substring
+
+— a **guessed server version**, against a MariaDB target. The recorded response
+(`tool_invocations/00402_http_client.json`) reads `XPATH syntax error:
+'~10.11.18-MariaDB-ubu2204'`: the error fired, and only the model's guess made it
+invisible.
+
+`_sqli_has_db_error` should have confirmed regardless and could not —
+`_DIALECT_ERROR_PATTERNS` had no pattern for the error-FUNCTION channel, which is
+how error-based injection actually exfiltrates (`extractvalue()`/`updatexml()`
+report inside an XPath complaint; the `floor(rand()*2)` group-by trick inside a
+duplicate-key one). The class's own primary channel had no deterministic
+signature, so an LLM string was the only oracle. Both are in the table now, with
+the two sibling engines' equivalents (Postgres cast-to-int, SQL Server implicit
+convert) because the gap was structural rather than MySQL's.

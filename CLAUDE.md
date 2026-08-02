@@ -92,7 +92,12 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   target while mapping it: `is_state_changing_url` gates navigation (WAF toggle,
   logout — the shared engagement session must never be poisoned) and
   `is_destructive_form_submission` gates submission (credential/account mutation,
-  destructive verbs).
+  destructive verbs). Enrichment opens a bounded number of discovered URLs; WHICH
+  ones is `_url_shape.crawl_visit_priority` (application pages before assets,
+  viewers and doubled-path artifacts), never the crawler's emission order, and it
+  records the **response features** each page showed — `Endpoint.sets_cookies`
+  (cookie NAMES only; a value is authentication material) and `has_form` — which
+  are the observations the Exploit planner's class preconditions rank on.
 - **Research (v2)** — Gemini 3.1 Flash-Lite (GA), pinned via
   `GEMINI_RESEARCH_MODEL` (never `-preview`). Live web research via native Gemini
   Search Grounding + NVD structured CVE data. Runs concurrently with Scan/Exploit;
@@ -173,7 +178,8 @@ src/clinkz/
 ├── config.py         # Settings (env vars, per-agent LLM overrides)
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
-├── agents/           # recon, scan, exploit, research, critic, report, _route_discovery, _url_safety
+├── agents/           # recon, scan, exploit, research, critic, report, _route_discovery,
+│                     #   _url_safety (may we fetch it?), _url_shape (in what order?)
 ├── comms/            # AgentMessage, async bus, protocol
 ├── discovery/        # Δ-model: ingestor(s), catalog, intent, reachability, hypothesis, engine,
 │                     #   topology(+recall), recall, relations, versions
@@ -262,6 +268,24 @@ LESSONS #17).
   is additionally applied at the emission chokepoint (`_persist_finding`), so a
   candidate whose observation merely restates its own rationale is a lead whether or
   not a reviewer noticed it.
+- **A veto that reads the model's PROSE applies only to an effect nobody
+  witnessed.** A speculative-execution claim ("if a later layer decodes this, it
+  executes") contradicts nothing once the deterministic side has seen the payload
+  land byte-for-byte in an executable position — and prose varies run to run
+  while a measurement does not, so such a veto over a measurement is a coin flip
+  that drops live vulnerabilities. Phase 5 records the witness
+  (`literal_landing_witnessed`); the gate and the FP cross-check both read it,
+  and a skipped veto is logged and traced (`prose_veto_overruled_by_witness`) —
+  the suppression that did not happen is as auditable as one that did.
+- **An execution-type branch is a CLAIM, and it confirms only on the observation
+  that proves ITS effect** — a family whose branches share one verifier drifts
+  into confirming the weakest of them. Each upload branch declares
+  (effect, proving observation) in `_FILE_UPLOAD_BRANCH_EFFECT`; only branches
+  this engine can actually observe may confirm (`_FILE_UPLOAD_CONFIRMABLE_TYPES`),
+  the rest emit leads naming both halves. And a branch that cannot prove its
+  effect must never **pre-empt** one that can: the LLM ranks within each half,
+  the confirmable half runs first, so which branch is tried is the model's call
+  and whether the class may confirm is not.
 - **A thin-but-real measurement carries its own control** — a differential is
   proof when it is *reproducible*, not when it is large. The boolean-blind oracle
   sends baseline/true/false as one interleaved triple, repeats it, requires the
@@ -279,7 +303,37 @@ LESSONS #17).
 - **Coverage truncation is never silent** — the plan cap is loud (per class:
   how many candidates were dropped and the first omitted endpoint), each class's
   bucket is ordered by relevance to *that* class, and every applicable class is
-  guaranteed one task before the cap applies.
+  guaranteed one task before the cap applies. A drop on an endpoint carrying the
+  class's **own** surface, while lower-relevance tasks survive, is logged
+  separately as a **RANKING FAILURE**: an ordering defect reads nothing like
+  tail truncation and must not hide inside it.
+- **The plan order is a function of the endpoint SET, never of the crawl's
+  order** — a concurrent crawler emits a different sequence each run, so any tie
+  broken by traversal order makes the engagement non-reproducible. Ranking scores
+  a **(class, endpoint) PAIR** on three class-specific signals — a parameter of
+  the shape the class attacks, an **observed** precondition it needs
+  (`Endpoint.sets_cookies` / `has_form` / `session_setters`), and a path naming
+  its surface — then breaks ties on how many matched, then on generic surface
+  value, then on the endpoint's structural identity. Every Tier-1 class carries
+  signals (`_CLASS_PATH_TOKENS` / `_CLASS_PARAM_NAMES` / `_CLASS_PRECONDITIONS`);
+  a class with no entry ranks on nothing and its answer hides in a tie bucket.
+  Same rule for the crawl's enrichment budget (`crawl_visit_priority`) and for
+  which duplicate represents a collapsed route. **A class with a task is not a
+  class that can fire** — the floor reserves its best endpoint even when the LLM
+  named that class somewhere worse.
+- **`verification_strength` decides emission, and it is a closed vocabulary** — a
+  methodology's own `"likely"` means the defining effect was NOT witnessed, while
+  `_make_finding` stamps `CONFIRMED` unconditionally, so a `likely` result
+  reaching an emit is a finding that contradicts itself in its own evidence.
+  Classified explicitly in both directions
+  (`_CONFIRMING_VERIFICATION_STRENGTHS` / `_NON_CONFIRMING_…`; a test fails on any
+  unclassified literal), enforced per class AND at `_persist_finding`.
+- **A guard never parses text the target controls** — evidence entries hold raw
+  response bytes, and a value read out of them is a value the *host under test*
+  can choose. `_evidence_strength` reads only fully-structured `key=value`
+  entries, so a page echoing `strength=likely` cannot suppress a genuine finding.
+  A suppression primitive handed to the target is worse than the phantom the
+  guard prevents.
 - **Persistent KB feedback loop (Layer-2)** — a confirmed discovery finding writes
   a per-technology capability fact; confidence is a decayed corroboration PRIOR
   from confirming observations only and never gates emission. The older
