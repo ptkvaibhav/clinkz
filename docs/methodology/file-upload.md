@@ -143,3 +143,57 @@ injection → the fingerprint is negative → the upload point is recorded as an
 **nothing is emitted**. That per-level split is the honesty control: a class that
 confirmed identically at every level of a graded control was matching the app's
 benign response.
+
+## The family's confirmation model (G22, batch 6)
+
+Three consecutive batches produced an unstable or over-claimed finding from three
+*different* branches of this one methodology:
+
+| batch | branch | what went wrong |
+|---|---|---|
+| 3 | `direct_execution` | one unlucky synthesis pick (`.phtml`) lost a CRITICAL that three prior runs found → the extension walk |
+| 5 | `client_side_only` | verified on `status == 200` alone → the G17 phantom |
+| 6 | `inclusion_chain` | present in 1 LOW run of 3, on the endpoint whose CRITICAL is stable in all 3 |
+
+Three incidents in one family is a family-level defect, so the repair is one
+rule rather than a third patch. Each execution type is a distinct **claim**, and
+a claim is a finding only when the one observation that proves it was made
+(`_FILE_UPLOAD_BRANCH_EFFECT`):
+
+| branch | defining security effect | deterministic observation that proves it | engine has it? |
+|---|---|---|---|
+| `direct_execution` | the server executes attacker-supplied code from the stored artifact | the artifact fetched back echoes our canary as interpreter **output**, source absent | **yes** |
+| `interpreter_misconfig` | a handler mapping runs the artifact through an interpreter under an atypical extension | the same canary-as-output oracle | **yes** |
+| `inclusion_chain` | a **consumer sink** includes the stored artifact, so the upload half and the inclusion half compose into execution | the canary echoed as interpreter output when the artifact is reached **through that consumer**, distinguished from a direct fetch | **no** |
+| `client_side_only` | a browser executes the stored content in the origin's security context | a client-side execution oracle | **no** |
+
+Only the first two are in `_FILE_UPLOAD_CONFIRMABLE_TYPES`. The other two record
+an `UnprovenExploitLead` carrying both halves — the effect claimed and the
+observation missing — so the reachability is preserved and the claim is not.
+
+### Why `inclusion_chain` was never a confirmation
+
+Its verified branch was a bare `fetch_resp.status == 200` on a **direct GET** of
+the artifact. Nothing in the engine invokes a consumer, and the agent keeps no
+runtime record of a confirmed file-inclusion primitive to invoke one with
+(`LFIMethodologyResult` is a local in `_test_lfi` and is dropped when it
+returns) — so "the chain composes" was asserted by the finding's own title and
+observed nowhere.
+
+### Why that made the ranking decide the severity
+
+Retrievability is trivially true **whenever direct execution would also have
+worked**, and the phase-4/5 loop `break`s on the first branch that verifies. So
+on the same upload point, a run whose model ranked `inclusion_chain` first
+emitted a HIGH "validation gap" and **never attempted** the CRITICAL execution
+finding. Which branch is tried first is an LLM checkpoint; whether a branch that
+cannot prove its effect may pre-empt one that can is not (LESSONS #39). The
+model's order is now preserved *within* each half and the confirmable half runs
+first.
+
+Two consequences fall out. `verified-stored` labelled exactly one thing — that
+retrievability claim — so it leaves `_CONFIRMING_VERIFICATION_STRENGTHS` with
+it. And `interpreter_misconfig` used to render `high` while `direct_execution`
+rendered `critical` for byte-identical proof; both now grade on the effect they
+proved, because which extension carried the execution is a detail of the route,
+not of the impact.

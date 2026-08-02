@@ -159,3 +159,61 @@ DVWA is unaffected: every XSS finding across the batch-4 runs recorded
 `reflection_contexts=['html_body']` and `strength=verified`. The path this closes
 fires on SPA targets (Juice Shop shape), where it was the difference between a
 reported high-severity finding and an honest lead.
+
+## A prose veto may not overrule a measurement (G21, batch 6)
+
+Ladder B ran three identical DVWA LOW engagements. In all three the reflected
+class was planned, dispatched to `/vulnerabilities/xss_r/`, and reached phase 5
+on `name` with the same measurement:
+
+```
+p5 verification: param=name verified=True strength=verified
+                 context=html_body payload='<script>alert(1)</script>'
+p2 character_fingerprint: param=name probed=25 survived=25
+```
+
+Runs 1 and 3 emitted. Run 2 (`43c813ba`) suppressed **both** of its tasks at
+phase 6:
+
+```
+p6 emission_suppressed: reason=execution claim is conditional on an unobserved
+   transform ('when' + 'unescape')
+p6 emission_suppressed: reason=execution claim is conditional on an unobserved
+   transform ('when' + 'transform')
+```
+
+Nothing about the target differed. The model wrote a different sentence.
+
+`_xss_confirmation_gate` carries four conditions. Two are **measurements** — the
+escaping-robust character map (G9) and the error-block check (G10). Two read the
+model's **prose**: the conditional-execution claim and the self-negating verdict.
+Prose is only meaningful about an effect nobody witnessed, and here phase 5 had
+already witnessed the defining one: the payload byte-for-byte in a non-inert
+landing, with every character it needs surviving. The transform the sentence
+speculates about is moot — the payload is already there in executable form.
+
+So phase 5 now records `MethodologyResult.literal_landing_witnessed`, and the two
+prose vetoes apply **only when it is False**:
+
+| path | witness | prose veto |
+|---|---|---|
+| reflected, non-JS_DOM context | phase 5 found the payload literally in the body | skipped (logged + traced) |
+| stored | phase 5 found it literally in the READ-BACK body | skipped (logged + traced) |
+| JS_DOM / DOM class | never looks for it — the server does not echo a fragment | **applies** |
+
+This is the standing rule read in the suppression direction: *a deterministic
+signal decides, in both directions*, and an LLM overrules neither. The FP
+cross-check's ground 3 (`_fp_ground_conditional_claim`) demoted on the same
+prose, so it stands down on the same witness — read from the engine's own
+structured `literal_landing_witnessed=` evidence line, never from prose and never
+from anything the target chose.
+
+A veto that is skipped is **logged and traced**
+(`prose_veto_overruled_by_witness`): the suppression that did not happen has to
+be as auditable as one that did.
+
+G10 is not weakened. Its original case — the full-width homoglyph payload with
+"once normalized, the tag executes" — never lands literally as a tag, so the
+witness is absent and the veto still bites. The same three runs show that
+directly: on `param=page` the full-width payload failed phase 5 in all three
+(`verified=False after 5 bypass attempts`), witness or no witness.
