@@ -242,6 +242,81 @@ class TestPhase2DialectClassification:
         assert matched == ""
 
 
+class TestG23ErrorFunctionChannelHasItsOwnSignature:
+    """The channel an error-based payload actually exfiltrates through.
+
+    Two identical DVWA LOW runs, same parameter, same phase 1/2/3:
+
+        p2 dialect_fingerprint: dialect=mysql
+        p3 injection_type_ranking: ranked=['error_based', ...]
+
+    Run 1's synthesis produced ``expected_indicator="XPATH syntax error: '~"``
+    and confirmed. Run 2's produced ``expected_indicator="XPATH syntax error:
+    '~5.7"`` — a GUESSED version, against a MariaDB target — and phase 5 replied
+    ``no error substring in response``, so a live SQLi its sibling run confirmed
+    on ``/vulnerabilities/brute/`` went unfound.
+
+    The deterministic table had no pattern for ``extractvalue()``/
+    ``updatexml()``, which is how error-based injection reports its data on
+    MySQL. With the class's own primary channel unsignatured, the LLM's free-text
+    indicator was the only oracle left — and it varies. The DB names its own
+    error; we should not need the model to spell it.
+    """
+
+    # Both runs' payloads produce this, with and without the closing marker.
+    LIVE_ERRORS = (
+        "XPATH syntax error: '~10.11.16-MariaDB~'",
+        "XPATH syntax error: '~10.11.16-MariaDB'",
+        "Duplicate entry '~root@localhost~1' for key 'group_key'",
+    )
+
+    @pytest.mark.parametrize("body", LIVE_ERRORS)
+    def test_the_mysql_error_function_channel_classifies_deterministically(self, body: str) -> None:
+        agent = _make_agent()
+        dialect, matched = agent._classify_dialect_from_error(body)
+        assert dialect == SQLDialect.MYSQL
+        assert matched
+        assert agent._sqli_has_db_error(body) is True
+
+    def test_the_version_guess_no_longer_decides(self) -> None:
+        """Run 2's exact indicator still fails to match — and no longer matters,
+        because the deterministic signature confirms on the same response."""
+        agent = _make_agent()
+        body = self.LIVE_ERRORS[1]
+        assert "XPATH syntax error: '~5.7" not in body
+        assert agent._sqli_has_db_error(body) is True
+
+    @pytest.mark.parametrize(
+        ("body", "dialect"),
+        [
+            ('ERROR: invalid input syntax for integer: "clinkz"', SQLDialect.POSTGRES),
+            (
+                "Conversion failed when converting the nvarchar value 'clinkz' to data type int.",
+                SQLDialect.MSSQL,
+            ),
+        ],
+    )
+    def test_the_sibling_engines_error_channels_too(self, body: str, dialect: SQLDialect) -> None:
+        """The same structural gap existed on Postgres (cast-to-int) and SQL
+        Server (implicit convert) — a target-specific fix would have left them."""
+        agent = _make_agent()
+        assert agent._classify_dialect_from_error(body)[0] == dialect
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<h1>Vulnerability: Brute Force</h1><p>Username and password</p>",
+            "Your XPATH expression is documented in the help page",
+            "Duplicate entry found in the user's address book",
+        ],
+    )
+    def test_ordinary_pages_do_not_match(self, body: str) -> None:
+        """Broadening a signature table widens what may confirm, so the control
+        matters: prose that merely mentions the words is not a DB error."""
+        agent = _make_agent()
+        assert agent._sqli_has_db_error(body) is False
+
+
 class TestPhase2PrimitiveExtraction:
     """Quote / comment / concat enumeration."""
 
