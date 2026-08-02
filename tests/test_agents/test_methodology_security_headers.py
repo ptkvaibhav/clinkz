@@ -276,6 +276,97 @@ class TestPhase4Emission:
 
 
 # ===========================================================================
+# G20 — an origin-level fact is addressed by its origin
+# ===========================================================================
+
+
+class TestG20FindingTargetIsTheOrigin:
+    """12 of 16 flaky entries in one ladder came from this one line.
+
+    This method emits per (origin, header) and the first URL to reach it wins
+    the dedup — but the finding recorded THAT URL as its target. Three identical
+    LOW engagements measured the same seven origin-level headers and reported
+    them against three different addresses:
+
+        run 1  http://172.20.0.2/
+        run 2  http://172.20.0.2/hackable/uploads/
+        run 3  http://172.20.0.2/  (missing) + http://172.20.0.2  (weak)
+
+    Same origin, same headers, same severity — three keys. The plan reached a
+    different page first, and a concurrent crawl reaches a different page first
+    every run. Header hygiene is a property of the origin, so the origin is the
+    address; the page that was measured stays in the evidence as provenance.
+    """
+
+    # The three addresses the live runs actually recorded.
+    LIVE_OBSERVED_URLS = (
+        "http://172.20.0.2/",
+        "http://172.20.0.2/hackable/uploads/",
+        "http://172.20.0.2",
+    )
+
+    @staticmethod
+    def _result(observed_url: str) -> SecurityHeadersMethodologyResult:
+        return SecurityHeadersMethodologyResult(
+            phases_completed=3,
+            origin="http://172.20.0.2",
+            observed_url=observed_url,
+            headers_observed={"server": "Apache/2.4.65", "x-powered-by": "PHP/8.5.6"},
+            missing_headers=["Content-Security-Policy"],
+            weak_headers=[("Server", "discloses server software")],
+            severity_rollup=HeaderWeaknessSeverity.MEDIUM,
+            rationale="origin-level posture",
+        )
+
+    def test_the_target_is_identical_whichever_page_was_measured_first(self) -> None:
+        """A fresh agent per run, exactly as three engagements are three runs."""
+        keys = set()
+        for observed_url in self.LIVE_OBSERVED_URLS:
+            agent = _make_agent()
+            findings = agent._security_headers_phase4_emit(self._result(observed_url))
+            assert len(findings) == 2
+            keys.add(tuple(sorted((f.title, f.target) for f in findings)))
+        assert len(keys) == 1, f"the finding key still varies with the measured page: {keys}"
+
+    def test_the_target_is_the_origin_not_a_page(self) -> None:
+        agent = _make_agent()
+        findings = agent._security_headers_phase4_emit(
+            self._result("http://172.20.0.2/hackable/uploads/")
+        )
+        assert {f.target for f in findings} == {"http://172.20.0.2"}
+        for finding in findings:
+            assert "hackable" not in finding.target
+            assert "hackable" not in finding.title
+
+    def test_the_measured_page_survives_as_provenance(self) -> None:
+        """Dropping it would be the opposite error — the reader must still be
+        able to reproduce the exact request the observation came from."""
+        agent = _make_agent()
+        findings = agent._security_headers_phase4_emit(
+            self._result("http://172.20.0.2/hackable/uploads/")
+        )
+        for finding in findings:
+            blob = "\n".join(finding.evidence)
+            assert "GET http://172.20.0.2/hackable/uploads/" in blob
+            assert "origin=http://172.20.0.2" in blob
+
+    def test_the_origin_itself_is_derived_deterministically(self) -> None:
+        """scheme://netloc — no path, no trailing slash, no query. Two pages on
+        one host can never produce two origin strings."""
+        agent = _make_agent()
+        origins = {
+            agent._security_headers_origin(url)
+            for url in (
+                "http://172.20.0.2",
+                "http://172.20.0.2/",
+                "http://172.20.0.2/hackable/uploads/",
+                "http://172.20.0.2/vulnerabilities/xss_r/?name=x#frag",
+            )
+        }
+        assert origins == {"http://172.20.0.2"}
+
+
+# ===========================================================================
 # Integration — full _test_security_headers driving all four phases
 # ===========================================================================
 

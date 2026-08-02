@@ -553,3 +553,233 @@ class TestEvidenceRequestIsTheRealRequest:
         agent = _make_agent()
         built = agent._build_request_url("http://t/go", {"redirect": "//evil.example"})
         assert built.count("redirect=") == 1
+
+
+# ===========================================================================
+# G21 — a prose veto may not overrule a measurement
+# ===========================================================================
+
+
+class TestG21ProseVetoNeverOverrulesAWitness:
+    """Three identical DVWA LOW engagements, one missing finding.
+
+    Ladder B ran the same target three times. In all three the reflected class
+    reached phase 5 on ``name`` with the same measurement — ``verified=True
+    strength=verified context=html_body payload='<script>alert(1)</script>'``,
+    all 25 probed characters surviving. Runs 1 and 3 emitted. Run 2
+    (``43c813ba``) suppressed BOTH of its tasks at phase 6, with:
+
+        reason=execution claim is conditional on an unobserved transform
+               ('when' + 'unescape')
+        reason=execution claim is conditional on an unobserved transform
+               ('when' + 'transform')
+
+    Nothing about the target differed. The model wrote a different sentence, and
+    a veto that reads that sentence dropped a vulnerability the engine had
+    already measured.
+
+    The rule: a condition that reads PROSE applies only to an effect nobody
+    witnessed. A witnessed literal landing outranks it — the same direction the
+    emission side already runs in.
+    """
+
+    PAYLOAD = "<script>alert(1)</script>"
+
+    # The two shapes run 2's model produced, reconstructed to the trace's own
+    # reason strings: a conditional connective co-occurring with a transform verb.
+    B2_RATIONALES = (
+        "The name parameter is echoed into the page; when the application "
+        "unescapes it the script tag executes.",
+        "Reflected into the HTML body — when no transform is applied on output the tag runs.",
+    )
+
+    def _result(self, rationale: str, *, witnessed: bool) -> MethodologyResult:
+        return MethodologyResult(
+            phases_completed=5,
+            verified=True,
+            verification_strength="verified",
+            character_map=RAW_MAP,
+            landing_context="html_body",
+            literal_landing_witnessed=witnessed,
+            verifying_response=f"<pre>Hello {self.PAYLOAD}</pre>",
+            synthesized_payload=SynthesizedPayload(
+                payload=self.PAYLOAD,
+                rationale=rationale,
+                expected_execution="alert(1) runs in the page origin.",
+            ),
+        )
+
+    @pytest.mark.parametrize("rationale", B2_RATIONALES)
+    def test_run2_wording_no_longer_suppresses_a_measured_landing(self, rationale: str) -> None:
+        agent = _make_agent()
+        finding = agent._xss_phase6_emit(
+            "http://t/vulnerabilities/xss_r/", "name", self._result(rationale, witnessed=True)
+        )
+        assert finding is not None, "a witnessed literal landing was dropped on wording"
+        assert finding.title == "Reflected XSS in name parameter"
+
+    @pytest.mark.parametrize("rationale", B2_RATIONALES)
+    def test_the_same_wording_still_vetoes_an_unwitnessed_claim(self, rationale: str) -> None:
+        """G10 is not weakened. Without the measurement the veto still bites —
+        which is the case it was written for."""
+        agent = _make_agent()
+        ok, reason = agent._xss_confirmation_gate(
+            payload=self.PAYLOAD,
+            landing="html_body",
+            char_map=RAW_MAP,
+            rationale=rationale,
+            expected_execution="",
+            literal_landing_witnessed=False,
+        )
+        assert ok is False
+        assert "conditional on an unobserved transform" in reason
+
+    def test_run1_and_run3_wording_was_never_at_risk(self) -> None:
+        """The control: the wording the two emitting runs produced trips no veto
+        either way, which is exactly why they emitted."""
+        agent = _make_agent()
+        for witnessed in (True, False):
+            ok, reason = agent._xss_confirmation_gate(
+                payload=self.PAYLOAD,
+                landing="html_body",
+                char_map=RAW_MAP,
+                rationale="The payload lands unescaped in the html_body context.",
+                expected_execution="The browser parses the tag and runs alert(1).",
+                literal_landing_witnessed=witnessed,
+            )
+            assert (ok, reason) == (True, "confirmed")
+
+    def test_a_measurement_does_not_rescue_a_failed_character_map(self) -> None:
+        """The witness lifts the PROSE vetoes only. A deterministic condition —
+        the character map, the error-block check — is unaffected, or the fix
+        would have re-opened the G9 phantom it sits next to."""
+        agent = _make_agent()
+        ok, why = agent._xss_confirmation_gate(
+            payload=self.PAYLOAD,
+            landing="html_body",
+            char_map=LIVE_ENCODED_MAP,
+            rationale="Lands unescaped.",
+            expected_execution="",
+            literal_landing_witnessed=True,
+        )
+        assert ok is False
+        assert "did not survive" in why
+
+    def test_a_measurement_does_not_rescue_an_error_page_reflection(self) -> None:
+        """A functional payload echoed ONLY inside a PHP warning is still the
+        interpreter reporting what it refused to do, witness or not."""
+        agent = _make_agent()
+        ok, why = agent._xss_confirmation_gate(
+            payload=self.PAYLOAD,
+            landing="html_body",
+            char_map=RAW_MAP,
+            rationale="Lands unescaped.",
+            expected_execution="",
+            verifying_body=(
+                "<br />\n<b>Warning</b>:  include("
+                + self.PAYLOAD
+                + "): Failed to open stream in <b>/var/www/html/x.php</b><br />"
+            ),
+            literal_landing_witnessed=True,
+        )
+        assert ok is False
+        assert "error block" in why
+
+    def test_dom_path_keeps_the_veto_because_it_witnesses_no_landing(self) -> None:
+        """The JS_DOM branch of phase 5 never looks for the payload in the body —
+        the server does not echo a fragment — so it must never claim the witness."""
+        agent = _make_agent()
+        ok, reason = agent._xss_confirmation_gate(
+            payload=self.PAYLOAD,
+            landing="js_dom_likely (sinks: document.write)",
+            char_map=RAW_MAP,
+            rationale=self.B2_RATIONALES[0],
+            expected_execution="",
+            literal_landing_witnessed=False,
+        )
+        assert ok is False
+        assert "conditional on an unobserved transform" in reason
+
+    def test_the_witness_is_recorded_in_the_evidence(self) -> None:
+        """The measurement has to be readable from the raw report, or the
+        post-run cross-check has nothing to tell it apart from the prose."""
+        agent = _make_agent()
+        finding = agent._xss_phase6_emit(
+            "http://t/vulnerabilities/xss_r/",
+            "name",
+            self._result(self.B2_RATIONALES[0], witnessed=True),
+        )
+        assert finding is not None
+        assert any(ev.startswith("literal_landing_witnessed=True") for ev in finding.evidence), (
+            finding.evidence
+        )
+
+    def test_the_fp_crosscheck_ground_reads_the_same_witness(self) -> None:
+        """The demotion side runs the same rule: ground 3 read the same prose to
+        demote, so it reads the same witness to stand down."""
+        agent = _make_agent()
+        finding = agent._xss_phase6_emit(
+            "http://t/vulnerabilities/xss_r/",
+            "name",
+            self._result(self.B2_RATIONALES[0], witnessed=True),
+        )
+        assert finding is not None
+        assert agent._fp_ground_conditional_claim(finding) is None
+
+    @pytest.mark.parametrize("witness_line", ["literal_landing_witnessed=False", None])
+    def test_the_fp_crosscheck_ground_still_fires_without_the_witness(
+        self, witness_line: str | None
+    ) -> None:
+        """Ground 3 is a pure function of a finding's evidence, and it serves
+        every class — including the ones that never run the XSS gate and so never
+        write the witness at all. Absent or False, it demotes exactly as before."""
+        agent = _make_agent()
+        finding = agent._make_finding(
+            title="Reflected XSS in name parameter",
+            severity="high",
+            endpoint="http://t/vulnerabilities/xss_r/",
+            parameter="name",
+            evidence_request="GET http://t/vulnerabilities/xss_r/ — name=x",
+            evidence_response="<pre>Hello x</pre>",
+            technique="WSTG-INPV-01",
+        )
+        if witness_line is not None:
+            finding.evidence.append(witness_line)
+        finding.evidence.append(f"synthesis_rationale={self.B2_RATIONALES[0]}")
+        assert agent._fp_ground_conditional_claim(finding) is not None
+
+    def test_the_reflected_class_never_reaches_the_crosscheck_unwitnessed(self) -> None:
+        """And the belt to that brace: without the measurement the gate refuses
+        at phase 6, so nothing unwitnessed ever gets as far as a demotion."""
+        agent = _make_agent()
+        assert (
+            agent._xss_phase6_emit(
+                "http://t/vulnerabilities/xss_r/",
+                "name",
+                self._result(self.B2_RATIONALES[0], witnessed=False),
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("witnessed", [True, False])
+    def test_stored_xss_runs_the_identical_rule(self, witnessed: bool) -> None:
+        """The gate is shared, so the flake was latent in stored XSS too. Its
+        phase 5 only returns True past a literal read-back, so it always carries
+        the witness — pin both halves anyway."""
+        agent = _make_agent()
+        result = XSSStoredMethodologyResult(
+            phases_completed=5,
+            verified=True,
+            verification_strength="verified",
+            character_map=RAW_MAP,
+            landing_context="html_body",
+            literal_landing_witnessed=witnessed,
+            read_back_url="http://t/vulnerabilities/xss_s/",
+            synthesized_payload=SynthesizedPayload(
+                payload=self.PAYLOAD,
+                rationale=self.B2_RATIONALES[0],
+                expected_execution="",
+            ),
+        )
+        ok, reason = agent._xss_stored_confirmation_gate(result)
+        assert ok is witnessed, reason

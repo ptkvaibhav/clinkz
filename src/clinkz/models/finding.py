@@ -400,6 +400,18 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # extension was accepted and no filename injection survived. Accepted
         # and retrievable is the feature working; a validation gap needs a gap.
         "upload_accepted_but_no_restriction_bypass_observed",
+        # An upload branch whose claimed effect this engine has no oracle for was
+        # attempted, and only the upload feature working was seen. The chain
+        # branch asserts a CONSUMER SINK composes with the upload — nothing here
+        # reaches for a consumer, so a direct GET of the artifact is not that
+        # observation; the client-side branch is the same gap that makes every
+        # DOM-XSS result a lead. Both used to verify on ``status == 200``.
+        "upload_inclusion_chain_effect_not_witnessed",
+        "upload_client_side_only_effect_not_witnessed",
+        # The execution branches, attempted and not proven: the artifact was
+        # stored but came back as source (or re-encoded), so no interpreter ran.
+        "upload_direct_execution_effect_not_witnessed",
+        "upload_interpreter_misconfig_effect_not_witnessed",
         # An external tool (sqlmap) reported the vulnerability while this
         # engine's own oracle did not confirm it. The tool is probably right,
         # but its verdict is not an observation we made and cannot be
