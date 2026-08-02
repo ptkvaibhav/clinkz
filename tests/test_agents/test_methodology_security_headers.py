@@ -350,6 +350,87 @@ class TestG20FindingTargetIsTheOrigin:
             assert "GET http://172.20.0.2/hackable/uploads/" in blob
             assert "origin=http://172.20.0.2" in blob
 
+    LIVE_CSP = "default-src 'self' 'unsafe-inline'"
+
+    def _analysis(self) -> tuple[list[str], list[tuple[str, str]], HeaderWeaknessSeverity, str]:
+        """What the analysis said on DVWA's one CSP-serving page."""
+        return (
+            ["X-Content-Type-Options", "Referrer-Policy"],
+            [("Content-Security-Policy", "allows unsafe-inline")],
+            HeaderWeaknessSeverity.LOW,
+            "csp present but permissive",
+        )
+
+    def test_a_header_only_a_deep_page_sets_is_missing_for_the_origin(self) -> None:
+        """The second half of the same defect: the ADDRESS was origin-scoped but
+        the VERDICT was still whichever page won the race.
+
+        DVWA serves a CSP on `/vulnerabilities/csp/` and nowhere else. The run
+        that measured that page first reported the origin's CSP "weak" (at LOW
+        severity); the two that reached `/` first reported it "missing". A header
+        one deep page sets does not protect the origin."""
+        agent = _make_agent()
+        missing, weak, severity, rationale = agent._gate_security_header_analysis(
+            "http://172.20.0.2/vulnerabilities/csp/",
+            {"content-security-policy": self.LIVE_CSP},
+            self._analysis(),
+            root_header_names={"server", "x-powered-by", "content-type"},
+        )
+        assert "Content-Security-Policy" in missing
+        assert [w[0] for w in weak] == []
+        assert "NOT on the origin root" in rationale
+        assert severity == HeaderWeaknessSeverity.MEDIUM, "no CSP on the origin is medium"
+
+    def test_a_header_the_root_does_set_stays_weak(self) -> None:
+        """The control — this must not turn every weak verdict into a missing
+        one. An origin that really serves a permissive CSP keeps that verdict."""
+        agent = _make_agent()
+        missing, weak, _severity, _rationale = agent._gate_security_header_analysis(
+            "http://172.20.0.2/vulnerabilities/csp/",
+            {"content-security-policy": self.LIVE_CSP},
+            self._analysis(),
+            root_header_names={"content-security-policy", "server"},
+        )
+        assert "Content-Security-Policy" not in missing
+        assert [w[0] for w in weak] == ["Content-Security-Policy"]
+
+    def test_no_root_evidence_never_vetoes(self) -> None:
+        """When the root could not be fetched there is no origin evidence, and
+        absence of evidence never drives a verdict."""
+        agent = _make_agent()
+        _missing, weak, _severity, _rationale = agent._gate_security_header_analysis(
+            "http://172.20.0.2/vulnerabilities/csp/",
+            {"content-security-policy": self.LIVE_CSP},
+            self._analysis(),
+            root_header_names=None,
+        )
+        assert [w[0] for w in weak] == ["Content-Security-Policy"]
+
+    def test_the_verdict_is_the_same_whichever_page_is_measured(self) -> None:
+        """The property the ladder measures, asserted directly: every page on the
+        origin reaches the same origin-level verdict for the same header."""
+        agent = _make_agent()
+        root_names = {"server", "x-powered-by", "content-type"}
+        verdicts = set()
+        for url, headers in (
+            ("http://172.20.0.2/", {}),
+            ("http://172.20.0.2/vulnerabilities/csp/", {"content-security-policy": self.LIVE_CSP}),
+            ("http://172.20.0.2/hackable/uploads/", {}),
+        ):
+            analysis = (
+                (["Content-Security-Policy"], [], HeaderWeaknessSeverity.MEDIUM, "no csp")
+                if not headers
+                else self._analysis()
+            )
+            missing, weak, _s, _r = agent._gate_security_header_analysis(
+                url, headers, analysis, root_header_names=root_names
+            )
+            verdicts.add(
+                ("missing" if "Content-Security-Policy" in missing else None)
+                or ("weak" if any(w[0] == "Content-Security-Policy" for w in weak) else "absent")
+            )
+        assert verdicts == {"missing"}, verdicts
+
     def test_the_origin_itself_is_derived_deterministically(self) -> None:
         """scheme://netloc — no path, no trailing slash, no query. Two pages on
         one host can never produce two origin strings."""
