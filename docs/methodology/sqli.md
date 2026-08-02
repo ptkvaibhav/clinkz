@@ -204,3 +204,29 @@ Every failure names a deterministic cause from a closed vocabulary —
 `response_invariant_to_payload`, `true_shape_diverged_from_baseline`,
 `false_shape_not_divergent_from_baseline`, `differential_not_reproducible`,
 `missing_control_payload` — which the ladder reuses for its per-rung diagnosis.
+
+## sqlmap's verdict is a LEAD, never a finding (G17, batch 5)
+
+When every ranked injection type and both SQL contexts failed verification, the
+methodology fell back to sqlmap and, on a positive, emitted a high-severity
+CONFIRMED finding under `verification_strength="likely"`.
+
+sqlmap is a genuine oracle and the vulnerability it reports is probably real. The
+problem is the artifact: the finding carried
+`payload="sqlmap-confirmed"`, `expected_indicator="sqlmap.injectable=True"` and
+`observed="sqlmap reported param injectable"`. No payload, no indicator, no
+control — a reviewer cannot re-derive the confirmation from it, and it was the
+only confirming path in the engine whose evidence was another tool's conclusion
+rather than an observation this engine made.
+
+It now records an `UnprovenExploitLead`
+(`why_unconfirmed="effect_asserted_by_external_tool_not_witnessed_in_band"`)
+stating what sqlmap said, that our own six-phase oracle did not confirm, and what
+would be needed. **This is a deliberate coverage trade** — a SQLi that only
+sqlmap finds is now a lead rather than a finding — taken under the standing rule
+that a true positive is suppressed before a false positive is emitted.
+
+It cost nothing on the D1 ladder: across the four batch-4 runs the fallback
+produced zero findings (no report mentions sqlmap), because the six-phase oracle
+confirms what is there. The honest way to recover it is to re-derive and re-verify
+sqlmap's payload in-band, not to relabel its verdict.

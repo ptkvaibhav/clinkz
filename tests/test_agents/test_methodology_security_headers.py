@@ -276,6 +276,178 @@ class TestPhase4Emission:
 
 
 # ===========================================================================
+# G20 — an origin-level fact is addressed by its origin
+# ===========================================================================
+
+
+class TestG20FindingTargetIsTheOrigin:
+    """12 of 16 flaky entries in one ladder came from this one line.
+
+    This method emits per (origin, header) and the first URL to reach it wins
+    the dedup — but the finding recorded THAT URL as its target. Three identical
+    LOW engagements measured the same seven origin-level headers and reported
+    them against three different addresses:
+
+        run 1  http://172.20.0.2/
+        run 2  http://172.20.0.2/hackable/uploads/
+        run 3  http://172.20.0.2/  (missing) + http://172.20.0.2  (weak)
+
+    Same origin, same headers, same severity — three keys. The plan reached a
+    different page first, and a concurrent crawl reaches a different page first
+    every run. Header hygiene is a property of the origin, so the origin is the
+    address; the page that was measured stays in the evidence as provenance.
+    """
+
+    # The three addresses the live runs actually recorded.
+    LIVE_OBSERVED_URLS = (
+        "http://172.20.0.2/",
+        "http://172.20.0.2/hackable/uploads/",
+        "http://172.20.0.2",
+    )
+
+    @staticmethod
+    def _result(observed_url: str) -> SecurityHeadersMethodologyResult:
+        return SecurityHeadersMethodologyResult(
+            phases_completed=3,
+            origin="http://172.20.0.2",
+            observed_url=observed_url,
+            headers_observed={"server": "Apache/2.4.65", "x-powered-by": "PHP/8.5.6"},
+            missing_headers=["Content-Security-Policy"],
+            weak_headers=[("Server", "discloses server software")],
+            severity_rollup=HeaderWeaknessSeverity.MEDIUM,
+            rationale="origin-level posture",
+        )
+
+    def test_the_target_is_identical_whichever_page_was_measured_first(self) -> None:
+        """A fresh agent per run, exactly as three engagements are three runs."""
+        keys = set()
+        for observed_url in self.LIVE_OBSERVED_URLS:
+            agent = _make_agent()
+            findings = agent._security_headers_phase4_emit(self._result(observed_url))
+            assert len(findings) == 2
+            keys.add(tuple(sorted((f.title, f.target) for f in findings)))
+        assert len(keys) == 1, f"the finding key still varies with the measured page: {keys}"
+
+    def test_the_target_is_the_origin_not_a_page(self) -> None:
+        agent = _make_agent()
+        findings = agent._security_headers_phase4_emit(
+            self._result("http://172.20.0.2/hackable/uploads/")
+        )
+        assert {f.target for f in findings} == {"http://172.20.0.2"}
+        for finding in findings:
+            assert "hackable" not in finding.target
+            assert "hackable" not in finding.title
+
+    def test_the_measured_page_survives_as_provenance(self) -> None:
+        """Dropping it would be the opposite error — the reader must still be
+        able to reproduce the exact request the observation came from."""
+        agent = _make_agent()
+        findings = agent._security_headers_phase4_emit(
+            self._result("http://172.20.0.2/hackable/uploads/")
+        )
+        for finding in findings:
+            blob = "\n".join(finding.evidence)
+            assert "GET http://172.20.0.2/hackable/uploads/" in blob
+            assert "origin=http://172.20.0.2" in blob
+
+    LIVE_CSP = "default-src 'self' 'unsafe-inline'"
+
+    def _analysis(self) -> tuple[list[str], list[tuple[str, str]], HeaderWeaknessSeverity, str]:
+        """What the analysis said on DVWA's one CSP-serving page."""
+        return (
+            ["X-Content-Type-Options", "Referrer-Policy"],
+            [("Content-Security-Policy", "allows unsafe-inline")],
+            HeaderWeaknessSeverity.LOW,
+            "csp present but permissive",
+        )
+
+    def test_a_header_only_a_deep_page_sets_is_missing_for_the_origin(self) -> None:
+        """The second half of the same defect: the ADDRESS was origin-scoped but
+        the VERDICT was still whichever page won the race.
+
+        DVWA serves a CSP on `/vulnerabilities/csp/` and nowhere else. The run
+        that measured that page first reported the origin's CSP "weak" (at LOW
+        severity); the two that reached `/` first reported it "missing". A header
+        one deep page sets does not protect the origin."""
+        agent = _make_agent()
+        missing, weak, severity, rationale = agent._gate_security_header_analysis(
+            "http://172.20.0.2/vulnerabilities/csp/",
+            {"content-security-policy": self.LIVE_CSP},
+            self._analysis(),
+            root_header_names={"server", "x-powered-by", "content-type"},
+        )
+        assert "Content-Security-Policy" in missing
+        assert [w[0] for w in weak] == []
+        assert "NOT on the origin root" in rationale
+        assert severity == HeaderWeaknessSeverity.MEDIUM, "no CSP on the origin is medium"
+
+    def test_a_header_the_root_does_set_stays_weak(self) -> None:
+        """The control — this must not turn every weak verdict into a missing
+        one. An origin that really serves a permissive CSP keeps that verdict."""
+        agent = _make_agent()
+        missing, weak, _severity, _rationale = agent._gate_security_header_analysis(
+            "http://172.20.0.2/vulnerabilities/csp/",
+            {"content-security-policy": self.LIVE_CSP},
+            self._analysis(),
+            root_header_names={"content-security-policy", "server"},
+        )
+        assert "Content-Security-Policy" not in missing
+        assert [w[0] for w in weak] == ["Content-Security-Policy"]
+
+    def test_no_root_evidence_never_vetoes(self) -> None:
+        """When the root could not be fetched there is no origin evidence, and
+        absence of evidence never drives a verdict."""
+        agent = _make_agent()
+        _missing, weak, _severity, _rationale = agent._gate_security_header_analysis(
+            "http://172.20.0.2/vulnerabilities/csp/",
+            {"content-security-policy": self.LIVE_CSP},
+            self._analysis(),
+            root_header_names=None,
+        )
+        assert [w[0] for w in weak] == ["Content-Security-Policy"]
+
+    def test_the_verdict_is_the_same_whichever_page_is_measured(self) -> None:
+        """The property the ladder measures, asserted directly: every page on the
+        origin reaches the same origin-level verdict for the same header."""
+        agent = _make_agent()
+        root_names = {"server", "x-powered-by", "content-type"}
+        verdicts = set()
+        for url, headers in (
+            ("http://172.20.0.2/", {}),
+            ("http://172.20.0.2/vulnerabilities/csp/", {"content-security-policy": self.LIVE_CSP}),
+            ("http://172.20.0.2/hackable/uploads/", {}),
+        ):
+            analysis = (
+                (["Content-Security-Policy"], [], HeaderWeaknessSeverity.MEDIUM, "no csp")
+                if not headers
+                else self._analysis()
+            )
+            missing, weak, _s, _r = agent._gate_security_header_analysis(
+                url, headers, analysis, root_header_names=root_names
+            )
+            verdicts.add(
+                ("missing" if "Content-Security-Policy" in missing else None)
+                or ("weak" if any(w[0] == "Content-Security-Policy" for w in weak) else "absent")
+            )
+        assert verdicts == {"missing"}, verdicts
+
+    def test_the_origin_itself_is_derived_deterministically(self) -> None:
+        """scheme://netloc — no path, no trailing slash, no query. Two pages on
+        one host can never produce two origin strings."""
+        agent = _make_agent()
+        origins = {
+            agent._security_headers_origin(url)
+            for url in (
+                "http://172.20.0.2",
+                "http://172.20.0.2/",
+                "http://172.20.0.2/hackable/uploads/",
+                "http://172.20.0.2/vulnerabilities/xss_r/?name=x#frag",
+            )
+        }
+        assert origins == {"http://172.20.0.2"}
+
+
+# ===========================================================================
 # Integration — full _test_security_headers driving all four phases
 # ===========================================================================
 

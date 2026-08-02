@@ -123,7 +123,9 @@ async def main() -> int:
             if level == "low" and len(findings) != 1:
                 failures.append(f"low: expected exactly 1 confirmed finding, got {len(findings)}")
             if level != "low" and findings:
-                failures.append(f"{level}: emitted {len(findings)} finding(s); chain is external JS")
+                failures.append(
+                    f"{level}: emitted {len(findings)} finding(s); chain is external JS"
+                )
 
     print("=" * 78)
     if failures:
