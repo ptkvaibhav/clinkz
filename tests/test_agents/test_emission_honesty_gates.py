@@ -761,6 +761,54 @@ class TestG21ProseVetoNeverOverrulesAWitness:
             is None
         )
 
+    @pytest.mark.parametrize("tag", ["textarea", "title", "noscript", "xmp", "plaintext", "style"])
+    @pytest.mark.asyncio
+    async def test_a_literal_landing_inside_an_inert_container_is_not_executable(
+        self, tag: str
+    ) -> None:
+        """Scoping the prose vetoes puts the whole proof on the literal landing,
+        so "landed literally" has to mean "somewhere a parser reads as markup".
+
+        Inside textarea/title/noscript/xmp/plaintext/style the content is text —
+        the payload is reflected, unescaped, and inert. Phase 5 refuses, which is
+        a deterministic replacement for the veto that used to be a coin flip."""
+        agent = _make_agent()
+        body = f"<html><{tag}>Hello {self.PAYLOAD}</{tag}></html>"
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=body)
+        )
+        verified, why, _ = await agent._xss_phase5_verify(
+            "http://t/x", "name", self.PAYLOAD, char_map=RAW_MAP
+        )
+        assert verified is False
+        assert f"<{tag}>" in why
+
+    @pytest.mark.asyncio
+    async def test_a_payload_that_breaks_out_of_the_container_still_confirms(self) -> None:
+        """The escape hatch: a payload supplying its own closing tag has left the
+        container, which is a genuine bypass rather than an inert landing."""
+        agent = _make_agent()
+        breakout = f"</textarea>{self.PAYLOAD}"
+        body = f"<html><textarea>Hello {breakout}</textarea></html>"
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=body)
+        )
+        verified, landing, _ = await agent._xss_phase5_verify(
+            "http://t/x", "name", breakout, char_map=RAW_MAP
+        )
+        assert verified is True, landing
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_body_landing_is_unaffected(self) -> None:
+        agent = _make_agent()
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=f"<div>Hello {self.PAYLOAD}</div>")
+        )
+        verified, landing, _ = await agent._xss_phase5_verify(
+            "http://t/x", "name", self.PAYLOAD, char_map=RAW_MAP
+        )
+        assert (verified, landing) == (True, "html_body")
+
     @pytest.mark.parametrize("witnessed", [True, False])
     def test_stored_xss_runs_the_identical_rule(self, witnessed: bool) -> None:
         """The gate is shared, so the flake was latent in stored XSS too. Its

@@ -268,6 +268,24 @@ LESSONS #17).
   is additionally applied at the emission chokepoint (`_persist_finding`), so a
   candidate whose observation merely restates its own rationale is a lead whether or
   not a reviewer noticed it.
+- **A veto that reads the model's PROSE applies only to an effect nobody
+  witnessed.** A speculative-execution claim ("if a later layer decodes this, it
+  executes") contradicts nothing once the deterministic side has seen the payload
+  land byte-for-byte in an executable position — and prose varies run to run
+  while a measurement does not, so such a veto over a measurement is a coin flip
+  that drops live vulnerabilities. Phase 5 records the witness
+  (`literal_landing_witnessed`); the gate and the FP cross-check both read it,
+  and a skipped veto is logged and traced (`prose_veto_overruled_by_witness`) —
+  the suppression that did not happen is as auditable as one that did.
+- **An execution-type branch is a CLAIM, and it confirms only on the observation
+  that proves ITS effect** — a family whose branches share one verifier drifts
+  into confirming the weakest of them. Each upload branch declares
+  (effect, proving observation) in `_FILE_UPLOAD_BRANCH_EFFECT`; only branches
+  this engine can actually observe may confirm (`_FILE_UPLOAD_CONFIRMABLE_TYPES`),
+  the rest emit leads naming both halves. And a branch that cannot prove its
+  effect must never **pre-empt** one that can: the LLM ranks within each half,
+  the confirmable half runs first, so which branch is tried is the model's call
+  and whether the class may confirm is not.
 - **A thin-but-real measurement carries its own control** — a differential is
   proof when it is *reproducible*, not when it is large. The boolean-blind oracle
   sends baseline/true/false as one interleaved triple, repeats it, requires the
