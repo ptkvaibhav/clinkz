@@ -191,6 +191,12 @@ cannot prove its effect may pre-empt one that can is not (LESSONS #39). The
 model's order is now preserved *within* each half and the confirmable half runs
 first.
 
+A branch the model never **names** is the same decision made by omission — a
+ranking of `[inclusion_chain, client_side_only]` would leave the class unable to
+confirm on a store that accepts `.php`. So every confirmable branch the phase-2
+fingerprint supports is added when the model left it out. The deterministic side
+decides what the class MAY attempt; the model decides the order it tries them in.
+
 Two consequences fall out. `verified-stored` labelled exactly one thing — that
 retrievability claim — so it leaves `_CONFIRMING_VERIFICATION_STRENGTHS` with
 it. And `interpreter_misconfig` used to render `high` while `direct_execution`

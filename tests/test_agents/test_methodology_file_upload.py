@@ -769,6 +769,39 @@ class TestG22BranchEffectContract:
             FileUploadExecutionType.CLIENT_SIDE_ONLY,
         ]
 
+    @pytest.mark.parametrize(
+        ("llm_json", "note"),
+        [
+            (
+                '{"ranked": [{"type": "inclusion_chain"}, {"type": "client_side_only"}]}',
+                "the model named no confirmable branch at all",
+            ),
+            ("not json at all", "the model returned nothing parseable"),
+        ],
+    )
+    async def test_the_class_can_confirm_even_when_the_model_omits_the_branch(
+        self, llm_json: str, note: str
+    ) -> None:
+        """A branch the model never names is the same decision made by omission.
+
+        With the attempt list taken verbatim, a store that accepts `.php` would
+        be unable to confirm because the ranking did not mention
+        `direct_execution`. The deterministic fingerprint decides what MAY be
+        attempted."""
+        agent = _make_agent(_ScriptedLLM([llm_json]))
+        restrictions = FileUploadRestrictions(working_extensions=[".php"])
+        llm_ranked = await agent._file_upload_phase3_rank_execution_types(restrictions, {})
+        floor = [
+            t
+            for t in agent._fallback_file_upload_ranking(restrictions)
+            if t in _FILE_UPLOAD_CONFIRMABLE_TYPES and t not in llm_ranked
+        ]
+        ranked = sorted(
+            llm_ranked + floor, key=lambda t: 0 if t in _FILE_UPLOAD_CONFIRMABLE_TYPES else 1
+        )
+        assert FileUploadExecutionType.DIRECT_EXECUTION in ranked[:3], note
+        assert ranked[0] in _FILE_UPLOAD_CONFIRMABLE_TYPES
+
     def test_the_lead_names_the_effect_and_the_missing_observation(self) -> None:
         agent = _make_agent()
         agent._file_upload_record_unprovable_branch_leads(
