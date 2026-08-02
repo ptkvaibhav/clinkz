@@ -219,3 +219,80 @@ and HIGH.
    the same endpoint whose `Unrestricted File Upload` finding is stable in all
    three. A second upload finding appearing in one run of three; the
    `verified-stored` branch introduced in this batch is the place to look.
+
+---
+
+# Batch 6 — the three residual flakes, and the two the ladder then found
+
+## G20 · the header finding's ADDRESS (closed, then re-opened one level down)
+
+The target is the origin now (`scheme://netloc`, no path/slash/query/fragment,
+extracted as `_security_headers_origin` so its determinism is asserted rather
+than inferred). The measured page stays in the evidence as `observed_url=`.
+
+Re-measured over three LOW runs: **all seven header findings carry an identical
+`(title, target)` in every run.** The 12-of-16 flake is gone.
+
+What the re-measurement then exposed is the same defect one level down: the
+address was origin-scoped, the **verdict** was not. DVWA serves a
+`Content-Security-Policy` on `/vulnerabilities/csp/` and nowhere else, and
+`(origin, header)` dedups on the first page to reach it — so:
+
+| run | first page measured | CSP verdict | rollup |
+|---|---|---|---|
+| 1 | `/` (`has_csp=False`) | **Missing** | medium |
+| 2 | `/vulnerabilities/csp/` (`has_csp=True`) | **Weak** | low |
+| 3 | `/` (`has_csp=False`) | **Missing** | medium |
+
+Same origin, same posture, different finding — and a different severity. Rule 4
+of the applicability gate now settles it deterministically: a header present on
+*this* page but absent from the **origin root** is reported missing for the
+origin. That is the mirror of the merge phase 2 already does in the other
+direction (a header the root sets covers a deep page), and it is skipped when the
+root could not be fetched, because absence of evidence never vetoes.
+
+## G21 · reflected XSS absent in B2 — isolated
+
+Not a ranking miss and not a dispatch miss. All three runs reached phase 5 on the
+same parameter with the same measurement (`verified=True strength=verified
+context=html_body`, `probed=25 survived=25`); run 2 suppressed **both** of its
+tasks at phase 6 on `execution claim is conditional on an unobserved transform
+('when' + 'unescape')`. The model wrote a different sentence.
+
+Full write-up → [xss.md](xss.md#a-prose-veto-may-not-overrule-a-measurement-g21-batch-6).
+
+## G22 · the upload family — one rule, not a third patch
+
+Each branch declares its defining effect and the one deterministic observation
+that proves it; only branches whose observation this engine can make may confirm.
+`inclusion_chain` verified on a bare `status == 200` from a **direct** GET while
+claiming a consumer sink composes with the upload — so it emits a lead, as
+`client_side_only` already did. And because retrievability is trivially true
+whenever real execution would also have worked, the ranking alone decided
+CRITICAL-vs-HIGH on one endpoint; the confirmable half now runs first, and a
+confirmable branch the model omits is added from the fingerprint.
+
+Full write-up → [file-upload.md](file-upload.md#the-familys-confirmation-model-g22-batch-6).
+
+## G23 · the ladder found one more, same shape as G21
+
+The first LOW ladder on the batch-6 code lost `SQL Injection in username` on
+`/vulnerabilities/brute/` in one run of three. Identical phase 1/2/3
+(`dialect=mysql`, `ranked=['error_based', …]`); phase-4 synthesis then wrote
+
+    run 1  expected_indicator="XPATH syntax error: '~"      -> verified
+    run 2  expected_indicator="XPATH syntax error: '~5.7"   -> no error substring
+
+— a **guessed server version**, against a MariaDB target. The recorded response
+(`tool_invocations/00402_http_client.json`) reads `XPATH syntax error:
+'~10.11.18-MariaDB-ubu2204'`: the error fired, and only the model's guess made it
+invisible.
+
+`_sqli_has_db_error` should have confirmed regardless and could not —
+`_DIALECT_ERROR_PATTERNS` had no pattern for the error-FUNCTION channel, which is
+how error-based injection actually exfiltrates (`extractvalue()`/`updatexml()`
+report inside an XPath complaint; the `floor(rand()*2)` group-by trick inside a
+duplicate-key one). The class's own primary channel had no deterministic
+signature, so an LLM string was the only oracle. Both are in the table now, with
+the two sibling engines' equivalents (Postgres cast-to-int, SQL Server implicit
+convert) because the gap was structural rather than MySQL's.
