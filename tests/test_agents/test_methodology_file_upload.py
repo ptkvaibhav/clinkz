@@ -19,6 +19,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from clinkz.agents.exploit import (
+    _CONFIRMING_VERIFICATION_STRENGTHS,
+    _FILE_UPLOAD_BRANCH_EFFECT,
+    _FILE_UPLOAD_CONFIRMABLE_TYPES,
     ExploitAgent,
     PageAnalysis,
     _HTTPResponse,
@@ -598,3 +601,195 @@ class TestUploadAcceptanceGuard:
         field, extra = agent._upload_form_fields(_make_upload_form())
         assert field == "uploaded"
         assert extra.get("Upload") == "Upload"
+
+
+# ===========================================================================
+# G22 — the family's confirmation model
+# ===========================================================================
+
+
+class TestG22BranchEffectContract:
+    """One rule for the whole family instead of three per-branch patches.
+
+    Three consecutive batches produced an unstable or over-claimed finding from
+    three different branches of this one methodology — ``client_side_only`` (the
+    G17 phantom), ``direct_execution`` (which needed the extension walk), and
+    ``inclusion_chain`` (present in one LOW run of three, on the same endpoint
+    whose CRITICAL direct-execution finding was stable in all three). Each
+    branch is a claim about a different security effect; a claim is a finding
+    only when the one observation that proves it was made.
+    """
+
+    def test_every_execution_type_declares_its_effect_and_its_proof(self) -> None:
+        """A new branch cannot be added without saying what it claims and what
+        would prove it — the same closed-vocabulary discipline
+        ``verification_strength`` runs under."""
+        assert set(_FILE_UPLOAD_BRANCH_EFFECT) == set(FileUploadExecutionType)
+        for execution_type, (effect, observation) in _FILE_UPLOAD_BRANCH_EFFECT.items():
+            assert effect.strip(), execution_type
+            assert observation.strip(), execution_type
+
+    def test_only_the_two_execution_branches_can_confirm(self) -> None:
+        assert _FILE_UPLOAD_CONFIRMABLE_TYPES == {
+            FileUploadExecutionType.DIRECT_EXECUTION,
+            FileUploadExecutionType.INTERPRETER_MISCONFIG,
+        }
+
+    @pytest.mark.parametrize(
+        "execution_type",
+        [FileUploadExecutionType.INCLUSION_CHAIN, FileUploadExecutionType.CLIENT_SIDE_ONLY],
+    )
+    async def test_a_branch_without_an_oracle_never_verifies_on_retrievability(
+        self, execution_type: FileUploadExecutionType
+    ) -> None:
+        """The exact line both phantoms came from: ``fetch_resp.status == 200``.
+
+        ``inclusion_chain`` claims a consumer sink composes with the upload.
+        Nothing here reaches for a consumer, so a direct GET of the artifact is
+        not that observation — and retrievability is trivially true precisely
+        when direct execution would ALSO have worked.
+        """
+        agent = _make_agent()
+        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="../../hackable/uploads/clinkz_lfi_chain.php succesfully uploaded!"
+            )
+        )
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="<?php echo 'clinkzcanary1'; ?>")
+        )
+        verified, uploaded_url, observed = await agent._file_upload_phase5_verify(
+            "http://example.com/upload",
+            {
+                "filename": "clinkz_lfi_chain.php",
+                "content": "<?php echo 'clinkzcanary1'; ?>",
+                "content_type": "application/octet-stream",
+                "canary": "clinkzcanary1",
+            },
+            execution_type,
+        )
+        assert verified is False
+        assert uploaded_url
+        assert f"{execution_type.value} needs" in observed
+        assert "never observed" in observed
+
+    async def test_direct_execution_still_confirms_on_the_canary(self) -> None:
+        """The control. The fix removes no confirmation that was ever earned."""
+        agent = _make_agent()
+        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(
+                status=200, body="../../hackable/uploads/clinkz_shell.php succesfully uploaded!"
+            )
+        )
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="clinkzcanary1")
+        )
+        verified, uploaded_url, observed = await agent._file_upload_phase5_verify(
+            "http://example.com/upload",
+            {
+                "filename": "clinkz_shell.php",
+                "content": "<?php echo 'clinkzcanary1'; ?>",
+                "content_type": "application/octet-stream",
+                "canary": "clinkzcanary1",
+            },
+            FileUploadExecutionType.DIRECT_EXECUTION,
+        )
+        assert verified is True
+        assert uploaded_url
+        assert observed.startswith("execution: ")
+
+    @pytest.mark.parametrize(
+        "execution_type",
+        [FileUploadExecutionType.INCLUSION_CHAIN, FileUploadExecutionType.CLIENT_SIDE_ONLY],
+    )
+    def test_phase6_refuses_a_branch_that_cannot_prove_its_effect(
+        self, execution_type: FileUploadExecutionType
+    ) -> None:
+        """Belt to the phase-5 brace: even handed a result claiming otherwise,
+        the emitter will not render a finding for an unprovable branch."""
+        agent = _make_agent()
+        result = FileUploadMethodologyResult(
+            candidate_param="uploaded",
+            verified=True,
+            verification_strength="verified",
+            execution_type=execution_type,
+            synthesized_filename="clinkz_lfi_chain.php",
+            uploaded_url="http://example.com/uploads/clinkz_lfi_chain.php",
+            indicator_observed="upload accepted; payload retrievable",
+        )
+        with pytest.raises(RuntimeError, match="no confirming observation"):
+            agent._file_upload_phase6_emit("http://example.com/upload", result)
+
+    def test_both_execution_branches_grade_the_same_proven_effect_the_same(self) -> None:
+        """``interpreter_misconfig`` rendered ``high`` while ``direct_execution``
+        rendered ``critical`` for byte-identical proof — the canary echoed as
+        interpreter output. Which extension carried it is a route detail."""
+        agent = _make_agent()
+        severities = set()
+        for execution_type in _FILE_UPLOAD_CONFIRMABLE_TYPES:
+            result = FileUploadMethodologyResult(
+                candidate_param="uploaded",
+                verified=True,
+                verification_strength="verified",
+                execution_type=execution_type,
+                synthesized_filename="clinkz_shell.php",
+                uploaded_url="http://example.com/uploads/clinkz_shell.php",
+                indicator_observed="execution: canary 'clinkzcanary1' echoed without source",
+            )
+            severities.add(
+                agent._file_upload_phase6_emit("http://example.com/upload", result).severity.value
+            )
+        assert severities == {"critical"}
+
+    async def test_an_unprovable_branch_ranked_first_cannot_pre_empt_a_provable_one(
+        self,
+    ) -> None:
+        """The instability itself. Phase 5 breaks on the first branch that
+        verifies, so a model ranking ``inclusion_chain`` above
+        ``direct_execution`` used to emit a HIGH "validation gap" and never
+        attempt the CRITICAL execution finding. The LLM's order is kept WITHIN
+        each half; the confirmable half runs first."""
+        llm = _ScriptedLLM(
+            [
+                '{"ranked": [{"type": "inclusion_chain"}, {"type": "client_side_only"}, '
+                '{"type": "interpreter_misconfig"}, {"type": "direct_execution"}]}'
+            ]
+        )
+        agent = _make_agent(llm)
+        ranked = await agent._file_upload_phase3_rank_execution_types(
+            FileUploadRestrictions(working_extensions=[".php"]), {}
+        )
+        reordered = sorted(ranked, key=lambda t: 0 if t in _FILE_UPLOAD_CONFIRMABLE_TYPES else 1)
+        assert reordered[:2] == [
+            FileUploadExecutionType.INTERPRETER_MISCONFIG,
+            FileUploadExecutionType.DIRECT_EXECUTION,
+        ], "the model's order must be preserved within the confirmable half"
+        assert reordered[2:] == [
+            FileUploadExecutionType.INCLUSION_CHAIN,
+            FileUploadExecutionType.CLIENT_SIDE_ONLY,
+        ]
+
+    def test_the_lead_names_the_effect_and_the_missing_observation(self) -> None:
+        agent = _make_agent()
+        agent._file_upload_record_unprovable_branch_leads(
+            "http://example.com/upload",
+            "uploaded",
+            [
+                (
+                    FileUploadExecutionType.INCLUSION_CHAIN,
+                    "http://example.com/uploads/clinkz_lfi_chain.php",
+                    "upload accepted; artifact retrievable",
+                )
+            ],
+        )
+        assert len(agent._unproven_exploit_leads) == 1
+        lead = agent._unproven_exploit_leads[0]
+        assert lead.why_unconfirmed == "upload_inclusion_chain_effect_not_witnessed"
+        assert "consumer sink" in lead.claim
+        assert "THROUGH that consumer" in lead.missing_observation
+        assert lead.raw_observation
+
+    def test_verified_stored_is_no_longer_a_confirming_strength(self) -> None:
+        """It labelled exactly one thing — the inclusion chain's retrievability
+        claim — which is now a lead, so the label went with it."""
+        assert "verified-stored" not in _CONFIRMING_VERIFICATION_STRENGTHS

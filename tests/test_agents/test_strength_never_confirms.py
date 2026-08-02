@@ -334,7 +334,11 @@ class TestUploadNegativeResultNeverConfirms:
         )
         assert verified is False
         assert uploaded_url is not None
-        assert "no client-side execution was witnessed" in observed
+        # The observation now names the branch's OWN missing proof, from the
+        # family table, rather than a phrase hand-written for this one branch.
+        assert "client_side_only needs" in observed
+        assert "client-side execution oracle" in observed
+        assert "never observed" in observed
 
     def test_the_no_bypass_lead_states_what_was_missing(self) -> None:
         agent = _make_agent()

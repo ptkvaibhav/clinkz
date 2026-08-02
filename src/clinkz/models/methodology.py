@@ -201,6 +201,15 @@ class MethodologyResult(BaseModel):
     # escaping-robust capability rule against the SAME context verification used,
     # rather than re-deriving (or assuming) one.
     landing_context: str = ""
+    # Did phase 5 observe the payload appear BYTE-FOR-BYTE in the response, in a
+    # non-inert landing position? That is the reflected-XSS defining effect, and
+    # it is measured, not narrated. Recorded because the emission gate carries
+    # two vetoes that read the LLM's *prose* (a conditional execution claim, a
+    # self-negating verdict); those vetoes are only meaningful about an effect
+    # nobody witnessed. When this is True the transform they speculate about is
+    # moot — the payload is already there in executable form — and a prose veto
+    # over it is an LLM overruling a deterministic oracle.
+    literal_landing_witnessed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1332,6 +1341,11 @@ class XSSStoredMethodologyResult(BaseModel):
     # the payload's XSS-functional capability against the ACTUAL landing rather
     # than assuming a context.
     landing_context: str = ""
+    # As :attr:`MethodologyResult.literal_landing_witnessed` — phase 5 observed
+    # the payload byte-for-byte in the READ-BACK body, in a non-inert landing.
+    # ``_xss_stored_phase5_verify`` only returns True through that check, so it
+    # is set on every confirmation this class makes.
+    literal_landing_witnessed: bool = False
     # The phase-3 synthesis rationale, preserved verbatim for the evidence chain
     # even when a phase-4 bypass payload replaces the phase-3 one. Kept separate
     # so the emission gate's no-execution veto judges the payload that is
