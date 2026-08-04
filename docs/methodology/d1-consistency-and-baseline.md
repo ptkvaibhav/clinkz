@@ -296,3 +296,95 @@ duplicate-key one). The class's own primary channel had no deterministic
 signature, so an LLM string was the only oracle. Both are in the table now, with
 the two sibling engines' equivalents (Postgres cast-to-int, SQL Server implicit
 convert) because the gap was structural rather than MySQL's.
+
+## Phase 3 — the full ladder
+
+Three levels, N=3 each, all nine runs on the same frozen commit. Every number
+below is re-derived from the reports themselves, not read off the runner's
+summary.
+
+| level | run | engagement | confirmed | leads | admin hash | violations |
+|---|---|---|---|---|---|---|
+| LOW | 1 | `608de145` | 21 | 0 | unchanged | 0 |
+| LOW | 2 | `36aa5d2a` | 21 | 0 | unchanged | 0 |
+| LOW | 3 | `5d5727f9` | 21 | 1 | unchanged | 0 |
+| MEDIUM | 1 | `e3a7b1bf` | 18 | 1 | unchanged | 0 |
+| MEDIUM | 2 | `ac159526` | 18 | 1 | unchanged | 0 |
+| MEDIUM | 3 | `8d3c4e31` | 18 | 1 | unchanged | 0 |
+| HIGH | 1 | `6a64f2d3` | 14 | 2 | unchanged | 0 |
+| HIGH | 2 | `e819a1e4` | 14 | 3 | unchanged | 0 |
+| HIGH | 3 | `925007e6` | 14 | 2 | unchanged | 0 |
+
+**STABLE 21 / 18 / 14. FLAKY 0 at every level. VALIDATION violations 0 across
+all nine runs.**
+
+### The per-level set, and why it shrinks
+
+| module | LOW | MEDIUM | HIGH |
+|---|---|---|---|
+| SQLi `sqli/` | yes | yes | yes (session-indirection carrier) |
+| SQLi `sqli_blind/` | yes | yes | — |
+| SQLi `brute/` | yes | — | — |
+| Command Injection | yes | yes | yes |
+| LFI | yes | yes | yes |
+| Reflected XSS | yes | yes | yes |
+| Stored XSS | yes | yes | yes |
+| Unrestricted File Upload | yes (critical) | yes (critical) | — (lead) |
+| CSRF ×2 | yes | yes | — |
+| No Brute-Force Protection | yes | — | — |
+| Open Redirect | `direct_redirect` | `protocol_relative` | `allowlist_bypass` |
+| Client-side control bypassed | yes | — | — |
+| Weak Session ID | yes | yes | yes |
+| posture headers | 7 | 7 | 7 |
+| **exploitation total** | **14** | **11** | **7** |
+
+The shrink is the honesty control. Each drop matches a control DVWA actually
+adds at that level — the brute-force lockout, the CSRF token+referer check, the
+hardened JS token, the upload's real-extension and image-dimension validation —
+and the open-redirect bypass type changes with the level's filter rather than
+staying constant. A set that confirmed identically at every level of a graded
+control would be the phantom signature.
+
+**The two batch-4/5 defects are visibly closed at the level that exposed them.**
+At HIGH the upload class emits **no finding** and records
+`upload_accepted_but_no_restriction_bypass_observed` instead (batch 4 emitted
+that same upload point as a confirmed/medium `File Upload Validation Gap
+(client_side_only)`), and `SQL Injection in id session value` is present in all
+three runs (batch 4's HIGH run had it absent, the G18 ranking miss).
+
+### The RANKING assertion was over-broad (harness, not engine)
+
+HIGH run 2 initially reported three violations:
+
+    RANKING: _test_brute_force        primary target dropped (/vulnerabilities/upload/#)
+    RANKING: _test_javascript_attacks primary target dropped (/vulnerabilities/xss_r/#)
+    RANKING: _test_csrf               primary target dropped (/vulnerabilities/exec/#)
+
+None of those is that class's target, and the trace shows all three classes were
+dispatched to their real ones in the same run (`brute/` with
+`login_form_shape: True, path_match: True`; `csrf/#` `state_changing=True`;
+`javascript/` `candidate=True`). They emitted nothing because HIGH defends all
+three, which is the correct per-level result.
+
+The cause is in `_endpoint_class_relevance`: it returns **grade 0** on
+`param_match OR precondition_match`, and `_CLASS_PRECONDITIONS` gives the form
+classes the bare precondition `("form",)`. On an application where nearly every
+page posts something, grade 0 for those classes means "has a form", not "this
+class's surface" — so every form-bearing page in the truncated tail looked like a
+dropped primary target. Reporting ordinary tail truncation as an ordering defect
+is the same confusion the RANKING check exists to prevent, pointed the other way.
+
+The **harness** is narrowed: for a class whose preconditions include the generic
+`form`, a grade-0 drop must also be named by that class's own vocabulary (a path
+token or a parameter of its shape, evaluated with the engine's own tables and
+predicates). Classes with a specific precondition (`site_root`,
+`session_setter`, `file_server_path`, `xml_body`) keep the original stricter
+reading. Excused drops are still returned and printed, so nothing is hidden.
+
+**Open — not fixed here.** The underlying imprecision is in the engine: grade 0
+should mean the class's own surface, and for the five form classes it does not.
+Fixing it changes which 150 of ~620 tasks survive for **every** class at **every**
+level, so it invalidates this ladder and needs its own three-level re-run — the
+same reason batch 4 deferred the ranking fix and batch 5 had to run three ladders
+to land it. It cost no coverage across these nine runs: every affected class
+reached its genuine target in every run.
