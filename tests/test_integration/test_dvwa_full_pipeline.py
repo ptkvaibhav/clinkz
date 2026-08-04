@@ -26,6 +26,7 @@ from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.models.finding import Finding
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.orchestrator.orchestrator import OrchestratorAgent
+from tests.authorization_fixtures import TEST_AUTHORIZATION
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ DVWA_URL = f"http://{DVWA_HOST}:{DVWA_PORT}"
 SCOPE = EngagementScope(
     name="dvwa-full-pipeline-v2",
     targets=[ScopeEntry(value=DVWA_URL, type=ScopeType.URL)],
+    authorization=TEST_AUTHORIZATION,
 )
 
 # ---------------------------------------------------------------------------

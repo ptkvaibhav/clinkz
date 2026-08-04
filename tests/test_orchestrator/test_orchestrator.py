@@ -35,6 +35,7 @@ from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.llm.base import LLMClient
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.orchestrator.orchestrator import MAX_CROSS_PHASE_RESPINS, OrchestratorAgent
+from tests.authorization_fixtures import TEST_AUTHORIZATION
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -43,6 +44,7 @@ from clinkz.orchestrator.orchestrator import MAX_CROSS_PHASE_RESPINS, Orchestrat
 SCOPE = EngagementScope(
     name="Test Engagement",
     targets=[ScopeEntry(value="10.10.10.1", type=ScopeType.IP)],
+    authorization=TEST_AUTHORIZATION,
 )
 
 # The expected phases spun up in a full pipeline run (recon is sequential,

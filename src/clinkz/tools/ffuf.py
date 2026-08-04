@@ -123,6 +123,30 @@ class FfufTool(ToolBase):
         }
 
     async def execute(self, args: dict[str, Any]) -> str:
+        """Run ffuf, paced by the engagement's rate policy when one is in force.
+
+        ffuf generates its own traffic inside a subprocess, so the engagement's
+        HTTP chokepoint never sees those requests and cannot pace them. This is
+        the tool most capable of flooding a live application — tens of thousands
+        of requests across 40 threads — so its own ``-rate`` and ``-t`` flags are
+        driven from the governor's policy instead.
+
+        With no governor installed the flags are untouched and behaviour is
+        unchanged, which keeps the benchmark suites at full speed.
+        """
+        from clinkz.safety.governor import get_active_governor
+
+        governor = get_active_governor()
+        threads = int(args["threads"])
+        rate_flags: list[str] = []
+        if governor is not None:
+            policy = governor.policy
+            # ffuf's -rate is requests/second across all threads; 0 means
+            # unlimited, so round up to at least 1 rather than silently
+            # uncapping a fractional policy.
+            rate_flags = ["-rate", str(max(1, int(policy.max_requests_per_second)))]
+            threads = min(threads, policy.max_concurrent_requests)
+
         cmd = [
             "ffuf",
             "-u",
@@ -136,7 +160,8 @@ class FfufTool(ToolBase):
             "-fc",
             args["filter_status"],
             "-t",
-            str(args["threads"]),
+            str(threads),
+            *rate_flags,
             "-s",  # silent mode
         ]
         if args.get("cookies"):

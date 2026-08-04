@@ -48,6 +48,15 @@ from clinkz.discovery import (
     derive_successor_edges,
     predicate_point_version,
 )
+from clinkz.engagement.auth_state import (
+    AuthAssertion,
+    AuthMechanism,
+    SessionSentinel,
+    assert_authenticated,
+    detect_auth_mechanism,
+)
+from clinkz.engagement.gate import open_engagement
+from clinkz.engagement.secrets import clear_secrets, register_secret
 from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
@@ -58,6 +67,7 @@ from clinkz.llm.fallback import (
     preflight_provider_available,
     validate_agent_chains,
 )
+from clinkz.models.engagement import AuthorizationRecord, CredentialSet, RoleCredential
 from clinkz.models.finding import ExploitTask
 from clinkz.models.recon import (
     PortScanResult,
@@ -75,6 +85,7 @@ from clinkz.observability.trace import (
 from clinkz.oob import CallbackShape, OOBCollaborator
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.orchestrator.target_resolver import resolve_target_for_docker_mode
+from clinkz.safety.governor import EngagementGovernor, set_active_governor
 from clinkz.state import StateStore
 from clinkz.tools.docker_preflight import ensure_container_ready
 from clinkz.tools.resolver import ToolResolver
@@ -117,6 +128,75 @@ _GENERIC_SERVICE_NAMES: frozenset[str] = frozenset(
 )
 
 
+class _ToolHttpProbe:
+    """:class:`~clinkz.engagement.auth_state.HttpProbe` over the engagement's HTTP client.
+
+    Routing auth detection and the authenticated-state assertion through
+    :class:`~clinkz.tools.http_client.HTTPClientTool` rather than a bare client
+    is what keeps them honest: they inherit the same scope enforcement, the same
+    docker/host routing, and the same safety governor as every other request the
+    engagement makes.
+
+    Every probe here sets ``no_session=True`` except when session material is
+    passed explicitly. That is the load-bearing detail of the whole assertion —
+    the shared cookie jar would otherwise make the "anonymous" control carry the
+    engagement's own session, and the comparison would prove nothing while
+    looking like it proved everything.
+    """
+
+    def __init__(self, scope: Any, engagement_id: str) -> None:
+        self._scope = scope
+        self._engagement_id = engagement_id
+
+    async def get(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+        follow_redirects: bool = False,
+    ) -> Any:
+        return await self._send(
+            {
+                "method": "GET",
+                "url": url,
+                "headers": headers or {},
+                "cookies": cookies or {},
+                "follow_redirects": follow_redirects,
+                "no_session": not (cookies or headers),
+            }
+        )
+
+    async def post_json(self, url: str, payload: dict[str, str]) -> Any:
+        return await self._send(
+            {
+                "method": "POST",
+                "url": url,
+                "headers": {"Content-Type": "application/json", "Accept": "application/json"},
+                "body": json.dumps(payload),
+                "follow_redirects": False,
+                "no_session": True,
+            }
+        )
+
+    async def _send(self, args: dict[str, Any]) -> Any:
+        from clinkz.engagement.auth_state import ProbeResponse
+        from clinkz.tools.http_client import HTTPClientTool
+
+        tool = HTTPClientTool(scope=self._scope, engagement_id=self._engagement_id, stage="auth")
+        try:
+            validated = tool.validate_input(args)
+            parsed = tool.parse_output(await tool.execute(validated))
+        except Exception as exc:  # noqa: BLE001 — a probe failure is data, not a crash
+            return ProbeResponse(error=str(exc))
+        return ProbeResponse(
+            status=parsed.status_code,
+            headers=parsed.response_headers,
+            body=parsed.response_body,
+            error=parsed.error,
+        )
+
+
 # ---------------------------------------------------------------------------
 # OrchestratorAgent
 # ---------------------------------------------------------------------------
@@ -145,6 +225,7 @@ class OrchestratorAgent:
         llm: LLMClient | None = None,
         db_path: Path | str | None = None,
         provider: str | None = None,
+        credentials: CredentialSet | None = None,
     ) -> None:
         if llm is not None:
             self._llm = llm
@@ -179,6 +260,23 @@ class OrchestratorAgent:
         # Cache for _probe_url results to avoid repeated slow HTTP HEAD requests
         self._probe_cache: dict[str, int | None] = {}
 
+        # ---- Productization P1 --------------------------------------------
+        # Operator-supplied credentials, one entry per role. Held here and NEVER
+        # attached to the scope: the scope is model_dump()-ed into the state
+        # store at engagement creation, and a credential set must not be.
+        self._credentials: CredentialSet = credentials or CredentialSet()
+        self._authorization: AuthorizationRecord | None = None
+        self._governor: EngagementGovernor | None = None
+        # Watches every response for signs the session has been lost, so half an
+        # engagement cannot run silently unauthenticated.
+        self._session_sentinel = SessionSentinel()
+        # role → {cookies, headers, username, assertion}
+        self._role_sessions: dict[str, dict[str, Any]] = {}
+        self._auth_assertion: AuthAssertion | None = None
+        self._auth_mechanism: AuthMechanism = AuthMechanism.NONE
+        self._reauth_credential: RoleCredential | None = None
+        self._reauth_login_url: str = ""
+
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     # ------------------------------------------------------------------
@@ -198,7 +296,24 @@ class OrchestratorAgent:
 
         Returns:
             Summary dict with engagement outcome and key statistics.
+
+        Raises:
+            AuthorizationRequiredError: The scope carries no authorization record.
+            EngagementWindowClosedError: Now is outside the authorized window.
         """
+        # THE GATE. Before docker, before state, before a single packet: an
+        # engagement without a named authorizing party is not an engagement.
+        # This is the refusal that makes the authorization record a required
+        # input rather than a flag with a default — there is no path to a tool
+        # call that does not pass through here.
+        self._authorization = open_engagement(scope)
+
+        # Register operator-supplied secrets so every artifact writer redacts
+        # them. The primary guarantee is that no writer is ever handed a
+        # password; this is the second layer, for the route nobody thought of.
+        for secret in self._credentials.secrets():
+            register_secret(secret)
+
         self._logger.info(
             "OrchestratorAgent starting engagement — scope: %s",
             scope.name,
@@ -221,6 +336,29 @@ class OrchestratorAgent:
             trace_writer = TraceWriter(engagement_id=engagement_id)
             set_active_trace_writer(trace_writer)
             self._logger.info("TraceWriter opened: %s", trace_writer.path)
+
+            # Install the production safety rails for this engagement. Every
+            # outbound request now passes through the governor: paced, capped,
+            # classified, logged if it mutates, and stopped the moment the kill
+            # switch appears or the target starts blocking. Uninstalled in the
+            # finally below so it can never leak into a later engagement or a
+            # test — the rails govern an engagement, not the process.
+            governor = EngagementGovernor(
+                engagement_id,
+                scope.safety,
+                window=scope.window,
+            )
+            governor.add_response_observer(self._session_sentinel.observe)
+            set_active_governor(governor)
+            self._governor = governor
+            self._logger.info(
+                "Safety rails active — %.1f req/s, %d concurrent, halt-on-blocking=%s, "
+                "kill switch: %s",
+                scope.safety.max_requests_per_second,
+                scope.safety.max_concurrent_requests,
+                scope.safety.halt_on_blocking,
+                governor.halt_path,
+            )
 
             # In docker tool-exec mode, agents and tools execute inside the
             # clinkz-tools container — so a target like http://localhost:8080
@@ -355,29 +493,18 @@ class OrchestratorAgent:
                 # Query persistent KB for playbook entries matching tech stack
                 await self._log_playbook_matches(persistent_kb, technologies)
 
-                # Prepare session for authenticated agents (cookies and/or a
-                # JWT bearer header, depending on the auth shape).
-                cookies: dict[str, str] = {}
-                authenticated_as = ""
-                auth_headers: dict[str, str] = {}
-                if sessions:
-                    login_url = await self._find_login_url(recon_result, "", scan_result=None)
-                    if not login_url:
-                        for t in scope.targets:
-                            base = (
-                                t.value
-                                if t.value.startswith(("http://", "https://"))
-                                else f"http://{t.value}"
-                            )
-                            login_url = f"{base.rstrip('/')}/login"
-                            break
-                    (
-                        cookies,
-                        authenticated_as,
-                        auth_headers,
-                    ) = await self._verify_and_refresh_session(
-                        login_url or "", sessions, valid_creds
-                    )
+                # Authenticate every supplied role and PROVE the session is
+                # authenticated before scanning. Silent anonymous scanning of an
+                # authenticated application is the failure that produces an
+                # empty report and a false all-clear, so when the operator
+                # supplied credentials and the assertion fails, this raises and
+                # the engagement stops loudly.
+                (
+                    cookies,
+                    authenticated_as,
+                    auth_headers,
+                ) = await self._establish_authenticated_state(recon_result, sessions, valid_creds)
+                summary["authentication"] = self._authentication_summary()
 
                 # =============================================================
                 # PHASE 2: CONCURRENT (Research + Scan + Exploit)
@@ -428,6 +555,11 @@ class OrchestratorAgent:
                 # =============================================================
                 # PHASE 3: REPORT (sequential)
                 # =============================================================
+                # The report runs even when the engagement was halted — a halt is
+                # a clean stop, and an operator whose kill switch fired needs the
+                # report MORE than one whose run completed, not less. Hence
+                # honor_halt=False: the report phase sends no requests, so there
+                # is nothing for the rails to stop.
                 report_result = await self._run_phase(
                     "report",
                     {
@@ -435,7 +567,23 @@ class OrchestratorAgent:
                         "Include all findings with CVSS scores, evidence, "
                         "and remediation recommendations.",
                         "engagement_id": engagement_id,
+                        "engagement_name": scope.name,
+                        "authorization": self._authorization.model_dump(mode="json")
+                        if self._authorization
+                        else None,
+                        "scope_in": [f"{t.value} ({t.type.value})" for t in scope.targets],
+                        "scope_out": [
+                            f"{e.value} ({e.type.value})" + (f" — {e.notes}" if e.notes else "")
+                            for e in scope.excluded
+                        ],
+                        "rules_of_engagement": list(scope.rules_of_engagement),
+                        "engagement_window": scope.window.model_dump(mode="json")
+                        if scope.window
+                        else None,
+                        "safety": governor.stats(),
+                        "authentication": self._authentication_summary(),
                     },
+                    honor_halt=False,
                 )
                 summary["phases"]["report"] = report_result
                 self._logger.info("PHASE 3 (REPORT) complete")
@@ -447,6 +595,20 @@ class OrchestratorAgent:
                 summary["error"] = str(exc)
                 return summary
             finally:
+                summary["safety"] = governor.stats()
+                summary["action_log"] = str(governor.action_log.path)
+                if governor.halted:
+                    summary["status"] = "halted"
+                    summary["halt_reason"] = governor.halt_reason
+                    summary["halt_detail"] = governor.halt_detail
+                # Uninstall the rails and forget every registered secret. Both
+                # are module-level state, so leaving either behind would leak
+                # into the next engagement in the same process (and between
+                # tests).
+                set_active_governor(None)
+                self._governor = None
+                clear_secrets()
+
                 await persistent_kb.close()
                 # Tear down the P6 collaborator (bounded, per-engagement, redacted
                 # log cleared) — always, even on failure.
@@ -1001,6 +1163,7 @@ class OrchestratorAgent:
         agent_type: str,
         task_content: dict[str, Any],
         phase_timeout: float | None = None,
+        honor_halt: bool = True,
     ) -> dict[str, Any]:
         """Run a single phase: spin up agent, wait for RESULT, handle QUERYs.
 
@@ -1021,6 +1184,9 @@ class OrchestratorAgent:
                 the agent. Defaults to ``_PHASE_TIMEOUT``. The exploit phase
                 passes a larger value than its cooperative budget so the agent
                 has a grace window to stop cleanly before being cancelled.
+            honor_halt: Whether a halted governor ends this phase. ``True`` for
+                every testing phase; ``False`` for the report, which sends no
+                requests and must still run after a halt.
 
         Returns:
             Result dict from the agent (or error info).
@@ -1050,6 +1216,35 @@ class OrchestratorAgent:
         result: dict[str, Any] = {}
 
         while True:
+            # Kill switch / window / blocking. The governor already refuses every
+            # request once halted, so no further traffic is possible; this loop
+            # is what turns "sending nothing" into "stopped", by shutting the
+            # agent down and letting the run proceed to the report.
+            if honor_halt and self._governor is not None and self._governor.halted:
+                self._logger.error(
+                    "Phase '%s' stopping — engagement halted (%s): %s",
+                    agent_type,
+                    self._governor.halt_reason,
+                    self._governor.halt_detail,
+                )
+                try:
+                    await self._lifecycle.shut_down(agent_type)
+                except Exception:
+                    pass
+                return {
+                    "status": "halted",
+                    "agent": agent_type,
+                    "halt_reason": self._governor.halt_reason,
+                    "halt_detail": self._governor.halt_detail,
+                    **({"result": result} if result else {}),
+                }
+
+            # Session maintenance. The sentinel sees every response the
+            # engagement receives, so a session lost mid-phase is noticed here
+            # rather than by the methodology that lost it.
+            if self._session_sentinel.reauth_needed:
+                await self._reauthenticate_running_agents()
+
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
                 self._logger.error("Phase '%s' timed out", agent_type)
@@ -1815,6 +2010,311 @@ class OrchestratorAgent:
 
         self._logger.warning("Re-authentication failed — proceeding without session")
         return {}, "", {}
+
+    # ------------------------------------------------------------------
+    # Authenticated scanning (productization P1 · part B)
+    # ------------------------------------------------------------------
+
+    async def _establish_authenticated_state(
+        self,
+        recon_result: dict[str, Any],
+        sessions: list[dict[str, Any]],
+        valid_creds: list[Any],
+    ) -> tuple[dict[str, str], str, dict[str, str]]:
+        """Authenticate every supplied role, then PROVE the primary session.
+
+        Three outcomes, and the difference between them is the whole point:
+
+        * **Credentials supplied and the assertion succeeds** — the engagement
+          proceeds authenticated, and the proof is recorded in the report.
+        * **Credentials supplied and the assertion fails** — the engagement
+          ABORTS. Scanning an authenticated application anonymously produces an
+          empty report that reads like a clean bill of health, which is worse
+          than no report at all.
+        * **No credentials supplied** — the engagement proceeds anonymously
+          (a legitimate black-box run), falling back to whatever session the
+          default-credential phase happened to establish. The report says so
+          explicitly.
+
+        Args:
+            recon_result: Recon phase result, used to locate the login surface.
+            sessions: Sessions already in the state store (default-cred phase).
+            valid_creds: Valid credentials from the default-cred phase.
+
+        Returns:
+            ``(cookies, authenticated_as, auth_headers)`` for the primary role.
+
+        Raises:
+            AuthStateError: Credentials were supplied but authenticated state
+                could not be proven.
+        """
+        from clinkz.engagement.auth_state import AuthStateError
+
+        base_url = self._primary_target_url()
+        probe = _ToolHttpProbe(self._scope, self._engagement_id or "")
+
+        discovered_login = await self._find_login_url(recon_result, "", scan_result=None)
+        detection = await detect_auth_mechanism(
+            probe,
+            base_url,
+            extra_login_urls=[u for u in (discovered_login,) if u],
+        )
+        self._auth_mechanism = detection.mechanism
+        self._logger.info(
+            "Auth mechanism detected: %s (login_url=%s) — %s",
+            detection.mechanism.value,
+            detection.login_url or "(none)",
+            "; ".join(detection.evidence) or "no evidence",
+        )
+
+        if not self._credentials.authenticating:
+            # No operator credentials. Fall back to the pre-existing behaviour
+            # so a black-box run is unchanged, but say plainly what that means.
+            self._logger.warning(
+                "No operator credentials supplied — this engagement will run "
+                "%s. If %s requires a login, an empty report means the "
+                "application was never seen, not that it is secure.",
+                "ANONYMOUSLY" if not sessions else "on default credentials only",
+                base_url,
+            )
+            if not sessions:
+                return {}, "", {}
+            login_url = discovered_login or detection.login_url or f"{base_url}/login"
+            return await self._verify_and_refresh_session(login_url, sessions, valid_creds)
+
+        # Authenticate each role. Every role gets its own session so the
+        # access-control classes have two principals to compare.
+        for cred in self._credentials.authenticating:
+            await self._authenticate_role(cred, detection.login_url or discovered_login or base_url)
+
+        primary = self._credentials.primary()
+        primary_session = self._role_sessions.get(primary.role if primary else "", {})
+        if not primary_session.get("established"):
+            raise AuthStateError(self._auth_failure_message(base_url, detection))
+
+        assertion: AuthAssertion = primary_session["assertion"]
+        self._auth_assertion = assertion
+        self._logger.info(
+            "AUTHENTICATED STATE PROVEN as '%s' — %s at %s (auth=%d anon=%d)",
+            primary_session["username"],
+            assertion.discriminator,
+            assertion.url,
+            assertion.authenticated_status,
+            assertion.anonymous_status,
+        )
+        if len(self._role_sessions) >= 2:
+            self._logger.info(
+                "Multi-role engagement: %s — access-control classes can compare principals",
+                ", ".join(sorted(self._role_sessions)),
+            )
+
+        return (
+            primary_session["cookies"],
+            primary_session["username"],
+            primary_session["headers"],
+        )
+
+    async def _authenticate_role(self, cred: RoleCredential, default_login_url: str) -> None:
+        """Log in as one role and assert the resulting session, recording both."""
+        from clinkz.tools.auth import WebAuthenticator
+
+        login_url = cred.login_url or default_login_url
+        authenticator = WebAuthenticator(scope=self._scope, engagement_id=self._engagement_id)
+        result = await authenticator.authenticate(login_url, cred.username, cred.secret())
+
+        if not result.success:
+            self._logger.error(
+                "Login FAILED for role '%s' at %s (status %d): %s",
+                cred.role,
+                login_url,
+                result.status_code,
+                result.error or "no error reported",
+            )
+            self._role_sessions[cred.role] = {
+                "established": False,
+                "username": cred.username,
+                "cookies": {},
+                "headers": {},
+                "assertion": AuthAssertion(
+                    established=False,
+                    why_unproven=f"Login did not succeed at {login_url}",
+                ),
+            }
+            return
+
+        headers = {"Authorization": f"Bearer {result.bearer_token}"} if result.bearer_token else {}
+        assertion = await self._assert_role_session(
+            cred, result.session_cookies, headers, login_url
+        )
+        self._role_sessions[cred.role] = {
+            "established": assertion.established,
+            "username": cred.username,
+            "cookies": result.session_cookies,
+            "headers": headers,
+            "assertion": assertion,
+        }
+        if assertion.established and cred.role == (
+            self._credentials.primary().role if self._credentials.primary() else ""
+        ):
+            # Remember what to re-authenticate with when the session is lost.
+            self._reauth_credential = cred
+            self._reauth_login_url = login_url
+
+    async def _assert_role_session(
+        self,
+        cred: RoleCredential,
+        cookies: dict[str, str],
+        headers: dict[str, str],
+        login_url: str,
+    ) -> AuthAssertion:
+        """Prove *cred*'s session is authenticated against an anonymous control."""
+        probe = _ToolHttpProbe(self._scope, self._engagement_id or "")
+        base_url = self._primary_target_url()
+        candidates = [
+            f"{base_url}/",
+            base_url,
+            f"{base_url}/index.php",
+            f"{base_url}/rest/user/whoami",
+            f"{base_url}/api/user",
+            f"{base_url}/profile",
+            f"{base_url}/account",
+            f"{base_url}/dashboard",
+            login_url,
+        ]
+        assertion = await assert_authenticated(
+            probe,
+            candidates,
+            cookies=cookies,
+            headers=headers,
+            username=cred.username,
+        )
+        if not assertion.established:
+            self._logger.error(
+                "Could NOT prove authenticated state for role '%s': %s",
+                cred.role,
+                assertion.why_unproven,
+            )
+        return assertion
+
+    def _auth_failure_message(self, base_url: str, detection: Any) -> str:
+        """The loud abort message for an unprovable session."""
+        lines = [
+            "ABORTING: credentials were supplied but authenticated state could not be proven.",
+            "",
+            "Scanning an authenticated application anonymously produces an empty report "
+            "that reads like a clean bill of health. That is a worse outcome than no "
+            "report, so the engagement stops here rather than continuing blind.",
+            "",
+            f"Target        : {base_url}",
+            f"Auth mechanism: {getattr(detection, 'mechanism', '?')}",
+            f"Login URL     : {getattr(detection, 'login_url', '') or '(not found)'}",
+            "",
+            "Per role:",
+        ]
+        for role, session in self._role_sessions.items():
+            assertion: AuthAssertion = session["assertion"]
+            lines.append(f"  [{role}] {assertion.why_unproven or 'not established'}")
+            for attempt in assertion.attempted[:6]:
+                lines.append(f"      tried {attempt}")
+        lines += [
+            "",
+            "Fix one of:",
+            "  - the credentials are wrong, or the account is locked",
+            '  - the login URL is wrong (set "login_url" on the role in the credential file)',
+            "  - the application has no URL that behaves differently when "
+            "authenticated among the ones tried; supply a known "
+            "authenticated-only URL",
+        ]
+        return "\n".join(lines)
+
+    async def _reauthenticate_running_agents(self) -> None:
+        """Re-authenticate and push the fresh session into the running agents.
+
+        The sentinel raised the flag from a response; acting on it is the
+        Orchestrator's job because it owns the engagement session. Pushing the
+        refreshed cookies into the live agent instances is a deliberate
+        coupling: an agent reads its session once, at task start, so without
+        this the remainder of the phase would keep using the dead one — which is
+        exactly the "half the engagement ran unauthenticated" failure this
+        machinery exists to prevent.
+        """
+        self._session_sentinel.clear()
+        cred = self._reauth_credential
+        if cred is None or not self._reauth_login_url:
+            self._logger.warning(
+                "Session loss detected but no credential is available to "
+                "re-authenticate with — continuing with the session we have"
+            )
+            return
+
+        self._logger.warning("Session lost — re-authenticating as '%s'", cred.username)
+        from clinkz.tools.auth import WebAuthenticator
+
+        authenticator = WebAuthenticator(scope=self._scope, engagement_id=self._engagement_id)
+        result = await authenticator.authenticate(
+            self._reauth_login_url, cred.username, cred.secret()
+        )
+        if not result.success:
+            self._logger.error(
+                "Re-authentication FAILED for '%s' — the remainder of this phase "
+                "may run unauthenticated; this is recorded in the report",
+                cred.username,
+            )
+            return
+
+        headers = {"Authorization": f"Bearer {result.bearer_token}"} if result.bearer_token else {}
+        self._role_sessions.setdefault(cred.role, {}).update(
+            {"cookies": result.session_cookies, "headers": headers, "username": cred.username}
+        )
+        if self._cred_store and self._engagement_id:
+            valid = await self._cred_store.get_all_valid(self._engagement_id)
+            for stored in valid:
+                if stored.username == cred.username:
+                    await self._cred_store.mark_valid(
+                        stored.id,
+                        session_cookies=result.session_cookies,
+                        engagement_id=self._engagement_id,
+                        agent="orchestrator",
+                        bearer_token=result.bearer_token,
+                    )
+                    break
+
+        pushed = self._push_session_to_agents(result.session_cookies, headers)
+        self._logger.info(
+            "Re-authenticated as '%s' — session pushed to %d running agent(s)",
+            cred.username,
+            pushed,
+        )
+
+    def _push_session_to_agents(self, cookies: dict[str, str], headers: dict[str, str]) -> int:
+        """Write a refreshed session onto every running agent that holds one."""
+        if self._lifecycle is None:
+            return 0
+        pushed = 0
+        for name in self._lifecycle.get_running_agents():
+            agent = self._lifecycle.get_agent(name)
+            if agent is None:
+                continue
+            if hasattr(agent, "_session_cookies") and cookies:
+                agent._session_cookies = dict(cookies)
+                pushed += 1
+            if hasattr(agent, "_session_headers") and headers:
+                agent._session_headers = dict(headers)
+        return pushed
+
+    def _authentication_summary(self) -> dict[str, Any]:
+        """Authentication state as the report and the run summary render it."""
+        assertion = self._auth_assertion
+        return {
+            "mechanism": self._auth_mechanism.value,
+            "roles": sorted(self._role_sessions),
+            "multi_role": len([r for r, s in self._role_sessions.items() if s.get("established")])
+            >= 2,
+            "authenticated": bool(assertion and assertion.established),
+            "assertion": assertion.model_dump(mode="json") if assertion else None,
+            "session_losses_detected": self._session_sentinel.losses_detected,
+            "reauthentications": self._session_sentinel.reauths_triggered,
+        }
 
     # ------------------------------------------------------------------
     # Fallback recon from scope targets

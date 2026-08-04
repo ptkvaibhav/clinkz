@@ -43,6 +43,7 @@ from clinkz.orchestrator.orchestrator import OrchestratorAgent
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase, ToolOutput
 from clinkz.tools.resolver import ToolMatch, ToolResolver
+from tests.authorization_fixtures import TEST_AUTHORIZATION
 
 # ---------------------------------------------------------------------------
 # Engagement scope
@@ -53,6 +54,7 @@ TARGET_IP = "192.168.1.100"
 PIPELINE_SCOPE = EngagementScope(
     name="Full Pipeline Test",
     targets=[ScopeEntry(value=TARGET_IP, type=ScopeType.IP)],
+    authorization=TEST_AUTHORIZATION,
 )
 
 

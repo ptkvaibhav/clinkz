@@ -307,6 +307,23 @@ class AgentLifecycleManager:
             name for name, record in self._records.items() if record.status == AgentStatus.RUNNING
         )
 
+    def get_agent(self, name: str) -> BaseAgent | None:
+        """Return the live agent instance registered under *name*.
+
+        The Orchestrator uses this to push a refreshed session into a running
+        agent after mid-run re-authentication. An agent reads its session once,
+        at task start, so without a way to reach the instance the rest of the
+        phase would keep using the dead one.
+
+        Args:
+            name: Agent name (``recon`` / ``scan`` / ``exploit`` / …).
+
+        Returns:
+            The agent, or ``None`` when nothing is registered under that name.
+        """
+        record = self._records.get(name)
+        return record.agent if record else None
+
     # ------------------------------------------------------------------
     # Agent run-loop (asyncio.Task target)
     # ------------------------------------------------------------------

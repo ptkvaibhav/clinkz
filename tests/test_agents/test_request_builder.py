@@ -172,7 +172,7 @@ async def test_http_post_json_builds_json_request(monkeypatch: pytest.MonkeyPatc
     captured: dict[str, Any] = {}
 
     class _CapturingHTTP:
-        def __init__(self, scope: Any = None, engagement_id: Any = None) -> None:
+        def __init__(self, scope: Any = None, engagement_id: Any = None, stage: str = "") -> None:
             pass
 
         def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -214,7 +214,7 @@ async def test_http_post_json_unknown_method_falls_back_to_post(
     captured: dict[str, Any] = {}
 
     class _CapturingHTTP:
-        def __init__(self, scope: Any = None, engagement_id: Any = None) -> None:
+        def __init__(self, scope: Any = None, engagement_id: Any = None, stage: str = "") -> None:
             pass
 
         def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
