@@ -1,0 +1,548 @@
+"""Canonical registry of vulnerability classes — the client-facing view.
+
+The Exploit Agent's own tables (``_CLASS_PATH_TOKENS``, ``_CLASS_PARAM_NAMES``,
+``_CLASS_PRECONDITIONS``) are how a class gets *ranked and dispatched*. This
+registry is how a class gets *talked about*: the human label a report prints, the
+permitted-technique name a client authorizes, and — the part that matters most —
+an honest statement of what this engine can and cannot prove about it.
+
+Two things a professional deliverable must not do: silently omit a class the
+client assumes was tested, and imply a class was cleared when the engine has no
+oracle for it. Both are prevented by making the limitation a **field**, so the
+report's "what was NOT tested" section is generated from the same registry the
+planner is checked against rather than written by hand and left to rot.
+
+:mod:`tests.test_models.test_vuln_classes` asserts this registry stays in sync
+with the Exploit Agent's dispatch table, so a class added there without a client
+label fails the build rather than disappearing from reports.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+from pydantic import BaseModel
+
+
+class ConfirmationCapability(StrEnum):
+    """What this engine can prove about a class.
+
+    Attributes:
+        SERVER_SIDE: The defining effect is observable in a server response, so
+            a finding here is confirmable in-band.
+        OUT_OF_BAND: Confirmable only via the P6 out-of-band collaborator; with
+            no collaborator provisioned the class defers rather than confirms.
+        CLIENT_SIDE_ORACLE_REQUIRED: The defining effect happens in a browser
+            (script execution, policy enforcement). Without a client-side oracle
+            this engine can report reachability but must never claim the effect.
+        NOT_IMPLEMENTED: No methodology exists. Reported as untested, never as
+            clean.
+    """
+
+    SERVER_SIDE = "server_side"
+    OUT_OF_BAND = "out_of_band"
+    CLIENT_SIDE_ORACLE_REQUIRED = "client_side_oracle_required"
+    NOT_IMPLEMENTED = "not_implemented"
+
+
+class VulnClass(BaseModel):
+    """One vulnerability class as a client sees it.
+
+    Attributes:
+        key: Technique name a client authorizes (``sql_injection``). This is what
+            :meth:`~clinkz.models.engagement.AuthorizationRecord.permits` matches.
+        test_method: The Exploit Agent method that implements it, or ``""``.
+        label: Human name for the report.
+        capability: What the engine can prove.
+        limitation: Why the class is limited, when it is. Rendered verbatim in
+            the report's "what was NOT tested" section — so it has to read as a
+            sentence, not a code comment.
+        title_tokens: Lowercase substrings that identify this class in a
+            finding's title. Used by :func:`for_finding` to attach remediation
+            guidance to a finding the methodology emitted without any.
+        remediation: Standards-aligned remediation guidance. A client-ready
+            report has to say what to DO about a finding; the methodologies emit
+            proof, not advice, so the advice is attached here — once per class,
+            reviewable in one place, rather than inlined at twenty emit sites.
+    """
+
+    key: str
+    test_method: str
+    label: str
+    capability: ConfirmationCapability
+    limitation: str = ""
+    title_tokens: tuple[str, ...] = ()
+    remediation: str = ""
+
+
+_C = ConfirmationCapability
+
+#: Every class the engine plans, keyed by the Exploit Agent's method name.
+VULN_CLASSES: tuple[VulnClass, ...] = (
+    VulnClass(
+        key="sql_injection",
+        test_method="_test_sqli",
+        label="SQL Injection",
+        capability=_C.SERVER_SIDE,
+        title_tokens=("sql injection",),
+        remediation=(
+            "Use parameterised queries / prepared statements for every database call; never build "
+            "SQL by concatenating request data. Where a dynamic identifier is genuinely required, "
+            "resolve it through a server-side allowlist. Run the application's database account "
+            "with least privilege so a residual injection cannot reach beyond its own tables."
+        ),
+    ),
+    VulnClass(
+        key="nosql_injection",
+        test_method="_test_nosqli",
+        label="NoSQL Injection",
+        capability=_C.SERVER_SIDE,
+        title_tokens=("nosql injection",),
+        remediation=(
+            "Cast and type-check every operand before it reaches the query: reject an "
+            "object-valued parameter where a scalar is expected, which is what turns a lookup "
+            "into an operator injection. Disable server-side JavaScript evaluation and use the "
+            "driver's typed query builders rather than raw documents assembled from request data."
+        ),
+    ),
+    VulnClass(
+        key="ssti",
+        test_method="_test_ssti",
+        label="Server-Side Template Injection",
+        capability=_C.SERVER_SIDE,
+        title_tokens=(
+            "template injection",
+            "ssti",
+        ),
+        remediation=(
+            "Never render user-controlled text AS a template. Pass it to the template as DATA, so "
+            "the engine escapes it, and keep the template set static and server-owned. If "
+            "user-authored templates are a product requirement, use a logic-less or sandboxed "
+            "engine and treat the sandbox as a hardening layer, not a boundary."
+        ),
+    ),
+    VulnClass(
+        key="xxe",
+        test_method="_test_xxe",
+        label="XML External Entity Injection",
+        capability=_C.SERVER_SIDE,
+        title_tokens=(
+            "xxe",
+            "xml external entity",
+        ),
+        remediation=(
+            "Disable external entity resolution and DTD processing on every XML parser instance. "
+            "Prefer a parser configuration that is secure by default, and apply it in a shared "
+            "factory so a new call site cannot opt out by omission."
+        ),
+    ),
+    VulnClass(
+        key="jwt",
+        test_method="_test_jwt",
+        label="JWT / Token Forgery",
+        capability=_C.SERVER_SIDE,
+        title_tokens=(
+            "jwt",
+            "json web token",
+        ),
+        remediation=(
+            "Pin the accepted signature algorithm server-side and reject any token whose header "
+            "disagrees, including 'none'. Verify the signature BEFORE reading any claim. Validate "
+            "issuer, audience, and expiry, and rotate the signing key; a symmetric key must never "
+            "be a value that also appears in client-reachable code."
+        ),
+    ),
+    VulnClass(
+        key="ssrf",
+        test_method="_test_ssrf",
+        label="Server-Side Request Forgery",
+        capability=_C.OUT_OF_BAND,
+        limitation=(
+            "A blind SSRF — one whose response body reveals nothing — is only "
+            "confirmable through an out-of-band callback. Where no collaborator "
+            "was provisioned for this engagement, blind candidates are reported "
+            "as unproven leads rather than findings."
+        ),
+        title_tokens=(
+            "ssrf",
+            "server-side request forgery",
+        ),
+        remediation=(
+            "Allowlist the destinations the server may fetch, resolve the hostname and "
+            "re-validate the resulting ADDRESS against that allowlist immediately before "
+            "connecting (which is what defeats DNS rebinding), and deny loopback, link-local, and "
+            "cloud metadata ranges. Do not follow redirects on server-initiated fetches, and "
+            "route them through an egress proxy that enforces the same policy."
+        ),
+    ),
+    VulnClass(
+        key="xss_reflected",
+        test_method="_test_xss_reflected",
+        label="Reflected Cross-Site Scripting",
+        capability=_C.SERVER_SIDE,
+        title_tokens=("reflected xss",),
+        remediation=(
+            "Encode output for the context it lands in — HTML body, attribute, JavaScript string, "
+            "URL — at the sink, rather than sanitising on input. Deploy a strict "
+            "Content-Security-Policy as defence in depth, and prefer a framework that "
+            "auto-escapes by default so an unescaped sink is the exception a reviewer notices."
+        ),
+    ),
+    VulnClass(
+        key="xss_stored",
+        test_method="_test_xss_stored",
+        label="Stored Cross-Site Scripting",
+        capability=_C.SERVER_SIDE,
+        title_tokens=("stored xss",),
+        remediation=(
+            "Treat stored content as untrusted at RENDER time and encode it for its output "
+            "context; storage-time sanitisation alone fails as soon as the same record is "
+            "rendered somewhere new. Where rich text is required, sanitise with a maintained "
+            "allowlist-based library and serve user content from a separate origin under a strict "
+            "Content-Security-Policy."
+        ),
+    ),
+    VulnClass(
+        key="xss_dom",
+        test_method="_test_xss_dom",
+        label="DOM-based Cross-Site Scripting",
+        capability=_C.CLIENT_SIDE_ORACLE_REQUIRED,
+        limitation=(
+            "DOM-based XSS executes in the browser, not in a response body. This "
+            "engine has no client-side execution oracle, so it can identify a "
+            "sink reachable from a controllable source but cannot witness the "
+            "script running. Candidates are reported as unproven leads. A manual "
+            "browser check, or a headless-browser oracle, is required to confirm."
+        ),
+        title_tokens=(
+            "dom xss",
+            "dom-based",
+        ),
+        remediation=(
+            "Stop passing data derived from location, document.referrer, or postMessage into "
+            "innerHTML, outerHTML, document.write, or eval. Use textContent and other inert "
+            "sinks, and enforce Trusted Types so an unsafe assignment fails at runtime rather "
+            "than silently executing."
+        ),
+    ),
+    VulnClass(
+        key="command_injection",
+        test_method="_test_cmdi",
+        label="OS Command Injection",
+        capability=_C.SERVER_SIDE,
+        title_tokens=("command injection",),
+        remediation=(
+            "Do not pass request data to a shell. Invoke the target program with an argument "
+            "vector so no shell metacharacter is ever interpreted, and where a value must select "
+            "behaviour, map it through a server-side allowlist to a fixed argument rather than "
+            "interpolating it."
+        ),
+    ),
+    VulnClass(
+        key="lfi",
+        test_method="_test_lfi",
+        label="Local File Inclusion / Path Traversal",
+        capability=_C.SERVER_SIDE,
+        title_tokens=(
+            "local file inclusion",
+            "file read",
+            "path traversal",
+            "poison-null-byte",
+        ),
+        remediation=(
+            "Never build a filesystem path from request data. Look the resource up by an opaque "
+            "identifier against a server-side map; if a path is unavoidable, resolve it to its "
+            "canonical absolute form and verify it is still under the intended root AFTER "
+            "resolution — checking before normalisation is exactly what traversal payloads "
+            "defeat."
+        ),
+    ),
+    VulnClass(
+        key="file_upload",
+        test_method="_test_file_upload",
+        label="Unrestricted File Upload",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "Only upload branches whose effect this engine can observe may "
+            "confirm; branches whose effect requires a client-side or "
+            "out-of-band observation are reported as unproven leads naming both "
+            "the claimed effect and the observation that would prove it."
+        ),
+        title_tokens=(
+            "file upload",
+            "unrestricted upload",
+        ),
+        remediation=(
+            "Store uploads outside the web root, under a server-generated name and extension, and "
+            "serve them through a handler that sets a non-executing Content-Type and "
+            "Content-Disposition. Validate type by inspecting the content rather than trusting "
+            "the declared name or MIME, and ensure no interpreter is mapped to the storage "
+            "location."
+        ),
+    ),
+    VulnClass(
+        key="csrf",
+        test_method="_test_csrf",
+        label="Cross-Site Request Forgery",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "CSRF is confirmed by token-absence and origin-acceptance analysis. "
+            "Where the only proving action would be an actual state change "
+            "(a password change, a funds transfer), the production safety rails "
+            "refuse to perform it and the class reports reachability only."
+        ),
+        title_tokens=("csrf",),
+        remediation=(
+            "Require a per-session anti-CSRF token, bound to the authenticated user and verified "
+            "on every state-changing request. Set session cookies SameSite=Lax or Strict, and "
+            "re-authenticate for high-value actions such as changing a password, an email "
+            "address, or payment details."
+        ),
+    ),
+    VulnClass(
+        key="idor",
+        test_method="_test_idor",
+        label="Insecure Direct Object Reference / Broken Access Control",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "Requires at least two authenticated roles to prove that an "
+            "authorization boundary was crossed. With a single role (or none) "
+            "the class can only report candidates."
+        ),
+        title_tokens=(
+            "idor",
+            "insecure direct object",
+        ),
+        remediation=(
+            "Authorise every object access against the CALLER's identity, server-side, on each "
+            "request — not once at navigation time and not in the client. Unguessable identifiers "
+            "are useful defence in depth but must never be the control itself, because an "
+            "identifier that leaks anywhere then becomes an access grant."
+        ),
+    ),
+    VulnClass(
+        key="brute_force",
+        test_method="_test_brute_force",
+        label="Weak Authentication / Credential Brute Force",
+        capability=_C.SERVER_SIDE,
+        title_tokens=(
+            "brute-force",
+            "brute force",
+        ),
+        remediation=(
+            "Rate-limit authentication per account AND per source, with progressive delay and "
+            "lockout, and monitor for credential-stuffing patterns across accounts. Offer "
+            "multi-factor authentication, and return a generic failure message so the response "
+            "cannot be used to enumerate valid usernames."
+        ),
+    ),
+    VulnClass(
+        key="open_redirect",
+        test_method="_test_open_redirect",
+        label="Open Redirect",
+        capability=_C.SERVER_SIDE,
+        title_tokens=("open redirect",),
+        remediation=(
+            "Do not take a redirect destination from the request. Where a return-to flow is "
+            "required, pass an opaque key that maps to a server-side allowlist of paths, and "
+            "reject absolute URLs, protocol-relative URLs, and anything resolving to a host you "
+            "do not control."
+        ),
+    ),
+    VulnClass(
+        key="security_headers",
+        test_method="_test_security_headers",
+        label="Security Header & Transport Hygiene",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "Content-Security-Policy is assessed as a declared policy only. "
+            "Whether a given policy is actually bypassable depends on how a "
+            "browser resolves it against the page's real script sources, which "
+            "requires a client-side oracle this engine does not have."
+        ),
+        title_tokens=("security header",),
+        remediation=(
+            "Set Strict-Transport-Security with a long max-age, a Content-Security-Policy naming "
+            "explicit sources, X-Content-Type-Options: nosniff, a restrictive Referrer-Policy, "
+            "and frame-ancestors to control framing. Apply them at a shared edge or middleware so "
+            "a new route cannot ship without them."
+        ),
+    ),
+    VulnClass(
+        key="weak_session",
+        test_method="_test_weak_session",
+        label="Weak Session Management",
+        capability=_C.SERVER_SIDE,
+        title_tokens=(
+            "weak session",
+            "predictable",
+        ),
+        remediation=(
+            "Generate session identifiers from a cryptographically secure RNG with at least 128 "
+            "bits of entropy, regenerate the identifier on login and on any privilege change, and "
+            "set Secure, HttpOnly, and SameSite on the cookie. Enforce both an idle and an "
+            "absolute session lifetime server-side."
+        ),
+    ),
+    VulnClass(
+        key="javascript_attacks",
+        test_method="_test_javascript_attacks",
+        label="Client-Side Logic Flaws",
+        capability=_C.CLIENT_SIDE_ORACLE_REQUIRED,
+        limitation=(
+            "Confirmation requires the server to accept a value rebuilt from the "
+            "page's own client-side chain while rejecting an equal-shaped "
+            "control. Where that server-side acceptance cannot be observed, the "
+            "class reports the client-side control's existence as reachability, "
+            "never as an exploited effect."
+        ),
+        title_tokens=(
+            "client-side",
+            "javascript",
+        ),
+        remediation=(
+            "Every control implemented in client-side code must be enforced again on the server. "
+            "Treat browser-side validation, token generation, and flow sequencing as user "
+            "experience, never as a security boundary — the client is an input the attacker "
+            "writes."
+        ),
+    ),
+)
+
+#: Classes proven by the gray-box discovery engine rather than by a black-box
+#: ``_test_*`` dispatch entry. They emit findings, so a report has to be able to
+#: describe and remediate them, but they carry no entry in the Exploit Agent's
+#: ranking tables and are therefore held apart from the sync assertion.
+DISCOVERY_CLASSES: tuple[VulnClass, ...] = (
+    VulnClass(
+        key="log4shell",
+        test_method="_test_log4shell",
+        label="Log4Shell — JNDI lookup in a logged value (CVE-2021-44228)",
+        capability=_C.OUT_OF_BAND,
+        title_tokens=("log4shell", "cve-2021-44228"),
+        remediation=(
+            "Upgrade Log4j to a fixed release (2.17.1 or later); the "
+            "mitigations published for the earlier CVEs were each superseded. "
+            "Removing JndiLookup from the jar is a valid stopgap where an "
+            "upgrade cannot ship immediately. Confirm no other dependency "
+            "bundles its own vulnerable copy, and restrict outbound egress "
+            "from application hosts so a residual lookup cannot reach an "
+            "attacker-controlled server."
+        ),
+    ),
+)
+
+#: Classes with no methodology at all. Listed so a report can say "not tested"
+#: about them explicitly rather than leaving a client to assume coverage.
+UNIMPLEMENTED_CLASSES: tuple[VulnClass, ...] = (
+    VulnClass(
+        key="insecure_captcha",
+        test_method="",
+        label="Insecure CAPTCHA",
+        capability=_C.NOT_IMPLEMENTED,
+        limitation=(
+            "No methodology. CAPTCHA-bypass testing requires solving or "
+            "replaying a human-verification challenge, which this engine does "
+            "not attempt. Not tested."
+        ),
+        remediation=(
+            "Verify the CAPTCHA response server-side against the provider on every submission and "
+            "bind it to that single request; never accept a client-supplied 'passed' flag or "
+            "reuse a token across the steps of a multi-step flow."
+        ),
+    ),
+    VulnClass(
+        key="business_logic",
+        test_method="",
+        label="Business Logic Flaws",
+        capability=_C.NOT_IMPLEMENTED,
+        limitation=(
+            "No methodology. Business-logic abuse depends on what the "
+            "application is FOR, which is not derivable from its HTTP surface. "
+            "Requires a human tester with domain context. Not tested."
+        ),
+    ),
+    VulnClass(
+        key="race_condition",
+        test_method="",
+        label="Race Conditions",
+        capability=_C.NOT_IMPLEMENTED,
+        limitation=(
+            "No methodology. Proving a race requires deliberately concurrent "
+            "state-changing requests, which the production safety rails refuse "
+            "to send. Not tested."
+        ),
+    ),
+)
+
+_ALL: tuple[VulnClass, ...] = (*VULN_CLASSES, *DISCOVERY_CLASSES, *UNIMPLEMENTED_CLASSES)
+
+_BY_METHOD: dict[str, VulnClass] = {
+    vc.test_method: vc for vc in (*VULN_CLASSES, *DISCOVERY_CLASSES) if vc.test_method
+}
+_BY_KEY: dict[str, VulnClass] = {vc.key: vc for vc in _ALL}
+
+
+def for_method(test_method: str) -> VulnClass | None:
+    """Return the class implemented by *test_method*, or ``None``."""
+    return _BY_METHOD.get(test_method)
+
+
+def for_finding(title: str, description: str = "") -> VulnClass | None:
+    """Resolve the class a finding belongs to, from its own text.
+
+    Findings are emitted with a title naming the class ("Reflected XSS in q
+    parameter") but no machine-readable class field, and the methodologies emit
+    proof rather than advice. This is what lets the report attach the right
+    remediation to a finding without every emit site having to carry a copy of
+    it.
+
+    Matching is on the LONGEST token first, so "stored xss" wins over a bare
+    "xss" and "dom xss" is not swallowed by "reflected xss". A finding that
+    matches nothing returns ``None`` and is rendered without guidance — a
+    missing remediation is honest; a confidently wrong one is not.
+
+    Args:
+        title: The finding's title.
+        description: The finding's description, searched as a fallback.
+
+    Returns:
+        The matching :class:`VulnClass`, or ``None``.
+    """
+    haystack = f"{title} {description}".lower()
+    best: VulnClass | None = None
+    best_len = 0
+    for vc in _ALL:
+        for token in vc.title_tokens:
+            if token in haystack and len(token) > best_len:
+                best, best_len = vc, len(token)
+    return best
+
+
+def for_key(key: str) -> VulnClass | None:
+    """Return the class named by a permitted-technique *key*, or ``None``."""
+    return _BY_KEY.get((key or "").strip().lower())
+
+
+def classes_requiring_client_side_oracle() -> tuple[VulnClass, ...]:
+    """Classes this engine cannot confirm without a browser-side oracle."""
+    return tuple(vc for vc in VULN_CLASSES if vc.capability is _C.CLIENT_SIDE_ORACLE_REQUIRED)
+
+
+def limited_classes() -> tuple[VulnClass, ...]:
+    """Every class carrying a stated limitation, implemented or not."""
+    return tuple(vc for vc in _ALL if vc.limitation)
+
+
+__all__ = [
+    "DISCOVERY_CLASSES",
+    "UNIMPLEMENTED_CLASSES",
+    "VULN_CLASSES",
+    "ConfirmationCapability",
+    "VulnClass",
+    "classes_requiring_client_side_oracle",
+    "for_finding",
+    "for_key",
+    "for_method",
+    "limited_classes",
+]

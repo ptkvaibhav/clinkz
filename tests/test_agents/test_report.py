@@ -291,7 +291,10 @@ async def test_research_leads_render_even_with_no_findings(tmp_path: Path) -> No
 
     assert result["report"]["findings"] == []
     md = Path(result["markdown_path"]).read_text(encoding="utf-8")
-    assert "No validated findings." in md
+    # An empty findings list must not read as a clean bill of health: it points
+    # the reader at what was and was not examined.
+    assert "No confirmed findings" in md
+    assert "What was NOT tested" in md
     assert "Cross-service research leads (candidate chains — UNCONFIRMED)" in md
     assert "chain-x" in md
 

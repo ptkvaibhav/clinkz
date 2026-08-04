@@ -187,6 +187,37 @@ class ToolBase(ABC):
                 "Refusing to run tool. Check your scope definition."
             )
 
+    def _halt_result(self) -> tuple[str, str, int] | None:
+        """Return a failure triple when the engagement has been halted.
+
+        The kill switch has to reach subprocess tools too — a halted engagement
+        that keeps shelling out to ``ffuf`` has not stopped. Returning a
+        non-zero result rather than raising keeps the contract every caller
+        already handles, and stderr says plainly why nothing ran.
+
+        Only the halt is checked here. Rate limiting and the concurrency cap
+        live at the HTTP chokepoint (:meth:`clinkz.tools.http_client.HTTPClientTool.execute`)
+        and must NOT be duplicated here: the docker path reaches this method
+        from inside that chokepoint, so acquiring a second slot per request
+        would deadlock the semaphore and double-count every rate token.
+        External tools that generate their own traffic are paced by their own
+        rate flags instead — see :meth:`clinkz.tools.ffuf.FfufTool.execute`.
+
+        Returns:
+            ``(stdout, stderr, returncode)`` when halted, else ``None``.
+        """
+        from clinkz.safety.governor import get_active_governor
+
+        governor = get_active_governor()
+        if governor is None or not governor.halted:
+            return None
+        message = (
+            f"engagement halted ({governor.halt_reason}): {governor.halt_detail} "
+            "— no further tool execution"
+        )
+        self._logger.warning("%s [%s]", message, self.name)
+        return "", message, 1
+
     async def _run_subprocess(self, cmd: list[str]) -> tuple[str, str, int]:
         """Execute a shell command and capture output.
 
@@ -205,6 +236,10 @@ class ToolBase(ABC):
         """
         from clinkz.config import settings
         from clinkz.observability.trace import Stopwatch
+
+        halted = self._halt_result()
+        if halted is not None:
+            return halted
 
         exec_mode = settings.tool_exec_mode
         if exec_mode == "docker":
@@ -256,6 +291,10 @@ class ToolBase(ABC):
         """
         from clinkz.config import settings
         from clinkz.observability.trace import Stopwatch, get_active_trace_writer  # noqa: F401
+
+        halted = self._halt_result()
+        if halted is not None:
+            return halted
 
         exec_mode = settings.tool_exec_mode
         if exec_mode == "docker":

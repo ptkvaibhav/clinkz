@@ -58,6 +58,9 @@ Phase agents follow **deterministic step sequences with LLM checkpoints** (no fr
 - **Adaptive methodologies** — every `_test_*` is a multi-phase methodology: the injection family (SQLi, NoSQL, SSTI, XSS, CMDi, LFI, …) maps → fingerprints (SQL dialect / NoSQL carrier / template engine / shell) → ranks → LLM-synthesizes → verifies; SSTI sends polyglot arithmetic probes and is read-back aware for second-order Pug; CMDi candidacy uses a reflection-guarded echo-canary probe so injection surfaces even when the base command writes only to stderr
 - **Gray-box discovery engine** — when an engagement supplies a source tree, `src/clinkz/discovery/` ingests it (bounded regex, no whole-program analysis) and derives *Δ-capability × untrusted-channel-reachability × provable-impact* hypotheses that union into the exploit plan alongside the LLM and deterministic plans. Ingestion is **cross-language** behind a `SourceIngestor` seam (`select_ingestor` picks per source tree): a Java ingestor (servlet / param-bag / typed path-param / log-sink idioms) and a JS/TS **Node/Express backend** ingestor (Express route entrypoints incl. cross-file factory-per-file handlers; `axios`/`fetch`/`fs` sink shapes; `package.json` manifest) — the JS path is **live-proven on OWASP Juice Shop**, surfacing its own-code SSRF (`fetch(req.body.imageUrl)`) and confirming it out-of-band (P6) on the running instance. A class-generic capability catalog holds three classes today — **SSRF** (`openConnection` / `axios.get` egress → `_test_ssrf`), **file read** (`new File(pathParam)` / `fs.readFile` → `_test_lfi`), and **Log4Shell** (`log4j-core` log-sink JNDI egress → `_test_log4shell`) — each learned from the target's own source with no target literal, N/A by construction on a patched/absent instance; the SSRF/file-read classes are language-agnostic (the same catalog entry fires on Java or Node)
 - **Out-of-band (P6) confirmation** — a blind capability is confirmed only when an inbound callback bearing a Clinkz-minted, single-use nonce reaches a Clinkz-owned receive-only DNS+HTTP collaborator (zero-FP by construction: the nonce rides only the one outbound probe). Payloads come from CLINKZ-OWNED nonce-only templates (structural exfil guardrail — target data cannot ride the channel). This is the confirmation oracle for blind SSRF and the **Log4Shell flagship** (CVE-2021-44228), live-validated end-to-end on Vulhub Solr 8.11.0 via a `${jndi:dns://…}` callback. Disabled by default (unchanged black-box floor)
+- **Engagement setup** — an engagement refuses to start without an `AuthorizationRecord` (authorizing party, role, contact, authorization reference, permitted-technique list, emergency contact — every field required, no flag to skip it), and an optional `EngagementWindow` is a hard stop re-checked on every request. Credentials arrive from an untracked file or a no-echo prompt, are `SecretStr`, are never attached to the persisted scope, and are redacted at every artifact writer. `--dry-run` enumerates what the engagement WOULD do — targets, classes, the destructive categories that will be refused — and sends nothing
+- **Authenticated scanning** — the auth mechanism is *detected* (HTML form / bearer / session cookie), not assumed, and the session is **proven**: the same URL is fetched with the session and deliberately without it, and only a discriminator an authorization boundary produces is accepted (login redirect, status class, login form, session marker, identity echo). A body-length delta is a correlate and is refused. Credentials supplied + assertion failed ⇒ the engagement aborts loudly, because silently scanning an authenticated app anonymously produces an empty report that reads like a clean result. Mid-run session loss is watched at the response chokepoint and re-authenticated into the live agents; multiple roles give access-control classes two principals to compare
+- **Production safety rails** — a generic, default-deny classifier refuses deletion, password/email change, payment, cancellation, key revocation, bulk messaging, data reset, logout, and WAF toggles over path + method + field names + button labels. Conservative rate limit (5 req/s) and concurrency cap (4), a kill switch (`clinkz abort`), WAF/blocking detection that stops rather than hammering, and a per-run action log of every state-changing request actually sent (`clinkz actions`). The rails are absent by default, so direct methodology invocation is unaffected
 - **Session hygiene** — recon/scan map the target without changing it; WAF/security toggles and logout links are never followed, so injection payloads aren't silently WAF-blocked in the exploit phase
 - **Cross-engagement learning (Layer-2 capability memory)** — a confirmed discovery-originated finding writes a per-technology **capability fact** (+ observation ledger) to `clinkz_knowledge.db` so future engagements adapt at the capability level; the store carries **no target identity** (schema-level exfil guardrail) and its confidence is a decayed corroboration PRIOR from confirming observations only that **never gates emission**. The **load-as-prior READ side** then transfers it: a fact confirmed on one app is recalled on the next via deterministic version predicates + manifest-derived `bundles`/`successor` transfer edges, seeding a proof hypothesis even where the new engagement's own source is too partial to derive it — recall changes the **path** to a finding, never the finding (the live P1–P6 proof still confirms). Live-validated end-to-end (a log4j capability learned on one engagement seeds + confirms Log4Shell on a partial-source engagement a cold start misses). The older technique-success learning loop is retired (kept read-only for the report's historical view)
 - **Dynamic tool discovery + fallback chains** — Agents request capabilities (`web_crawling`, `directory_fuzzing`, ...); the resolver walks declared `TOOL_CHAINS` until output meets threshold
@@ -118,14 +121,56 @@ This brings up:
 ### Running a Scan
 
 ```bash
-# Full autonomous pentest against a local DVWA
-clinkz scan --target http://localhost:8080
+# See what an engagement WOULD do -- sends nothing
+clinkz scan --target https://app.example.com --scope scope.json --dry-run
+
+# A real engagement. --authorization is REQUIRED (or an "authorization" block
+# inside the scope file); there is no flag that skips it.
+clinkz scan --target https://app.example.com \
+    --scope scope.json \
+    --authorization auth.json \
+    --credentials ../acme-creds.json \
+    --rate 3 --max-concurrency 2
+
+# Against a local benchmark
+clinkz scan --target http://localhost:8080 --authorization auth.json
 
 # Override the orchestrator LLM provider for a single run
-clinkz scan --target http://localhost:8080 --provider anthropic
+clinkz scan --target http://localhost:8080 -a auth.json --provider anthropic
+
+# Halt a running engagement immediately and cleanly (the report is still produced)
+clinkz abort <engagement_id>
+
+# "What did it do to my app?" -- every state-changing request, sent or refused
+clinkz actions <engagement_id>
 
 # Inspect the execution trace afterwards
 clinkz trace inspect <engagement_id>
+```
+
+`auth.json`:
+
+```json
+{
+  "authorizing_party": "Dana Okafor",
+  "authorizing_role": "VP Engineering",
+  "authorizing_contact": "dana@example.com",
+  "authorization_reference": "SOW-2026-114",
+  "permitted_techniques": ["sql_injection", "xss", "idor", "lfi"],
+  "emergency_contact": "+1-555-0100 (24h ops bridge)"
+}
+```
+
+Credentials live in an **untracked** file outside the repo (a git-tracked
+credential file is refused outright):
+
+```json
+{
+  "credentials": [
+    {"role": "admin", "username": "admin@example.com", "password": "..."},
+    {"role": "user",  "username": "user@example.com",  "password": "..."}
+  ]
+}
 ```
 
 > Note: `recon`, `crawl`, `exploit`, and `report` subcommands exist for future per-phase invocation but are still TODO. Use `scan` for the full pipeline.
@@ -209,9 +254,24 @@ Tools are discovered dynamically at runtime via `ToolResolver.find_tool(capabili
 The current report agent emits:
 
 - `report_<engagement_id>.json` — structured findings (title, severity, CVSS, endpoint, request/response evidence, remediation)
-- `report_<engagement_id>.md` — human-readable summary
+- `report_<engagement_id>.md` — human-readable deliverable
 
-Each engagement also produces `outputs/<engagement_id>/trace.jsonl` for post-mortem inspection.
+The Markdown report is client-ready: an **authorization header** (who authorized
+it, under what reference, over what window, against what scope — in *and* out),
+the **authentication outcome** with the discriminator that proved the session,
+how the run was conducted (rate, state-changing requests sent, requests refused,
+any halt), the findings with remediation, the unconfirmed leads in their own
+sections, and a **"What was NOT tested"** section covering excluded hosts,
+techniques the client did not authorize, classes with no client-side oracle
+(DOM-XSS, CSP enforceability), classes with no methodology (Insecure CAPTCHA,
+business logic, races), the actions the safety rails refused, and any coverage
+cut short. That section is generated from the class registry and the run's own
+action log, so it cannot drift out of date — a client reading "no findings" can
+see whether that means "we looked and it is sound" or "we could not look".
+
+Each engagement also produces `outputs/<engagement_id>/trace.jsonl` for
+post-mortem inspection and `outputs/<engagement_id>/actions.jsonl` — every
+state-changing request the run produced, sent or refused.
 
 Output formats today: **JSON**, **Markdown**. The HTML/PDF Jinja+WeasyPrint pipeline described in earlier plans is on the W3 horizon.
 
@@ -244,19 +304,24 @@ clinkz/
 │   │   └── prompts/     # Agent system prompts (.md per agent)
 │   ├── comms/           # Message bus + communication protocol
 │   ├── credentials/     # CredentialStore for default-credential chaining
+│   ├── engagement/      # gate (authorization + window refusals), secrets (credential
+│   │                    # intake + redaction), auth_state (detect / PROVE / maintain), dryrun
+│   ├── safety/          # destructive (default-deny classifier), governor (rate,
+│   │                    # concurrency, kill switch, blocking detection), action_log
 │   ├── knowledge/       # MITRE ATT&CK + OWASP WSTG/API/LLM datasets,
 │   │                    # persistent_kb (cross-engagement), seed_playbook (Tier 1)
 │   ├── llm/             # LLM abstraction (Anthropic, Gemini, OpenAI, Ollama) + ResilientLLMClient
-│   ├── models/          # Pydantic v2 models (scope, target, recon, scan, methodology,
-│   │                    # research, finding, report)
+│   ├── models/          # Pydantic v2 models (scope, engagement, vuln_classes, target,
+│   │                    # recon, scan, methodology, research, finding, report)
 │   ├── observability/   # Per-engagement JSONL execution trace
 │   ├── orchestrator/    # OrchestratorAgent + AgentLifecycleManager
 │   ├── research/        # Runtime web search for CVEs / writeups
 │   └── tools/           # ToolBase + ToolResolver (capability + fallback chains),
 │                        # binary_identity, docker_preflight, MCP client, individual wrappers
 ├── scripts/             # Demo / live integration helpers
-├── tests/               # Unit, agent, comms, credentials, knowledge, llm,
-│                        # orchestrator, integration, skills_dvwa, skills_juiceshop
+├── tests/               # Unit, agent, comms, credentials, engagement, knowledge, llm,
+│                        # models, orchestrator, safety, integration, skills_dvwa,
+│                        # skills_juiceshop
 ├── docker/              # Dockerfile.tools + Dockerfile.dvwa + docker-compose.yml
 └── docs/                # architecture, adding-tools, playbooks, analysis/*
 ```
