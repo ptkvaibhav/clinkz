@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
+from clinkz.models.engagement import AuthorizationRecord, EngagementWindow, SafetyPolicy
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,6 +91,31 @@ class EngagementScope(BaseModel):
         default_factory=list,
         description="Whitelist of ports to test. Empty list means all ports allowed.",
     )
+
+    # ---- Engagement setup (productization P1) --------------------------------
+    # Optional on the MODEL so every existing programmatic construction (tests,
+    # smoke harnesses, the discovery engine's fixtures) keeps working, and
+    # REQUIRED at the engagement gate: OrchestratorAgent.run() refuses to start
+    # without an authorization record (clinkz.engagement.gate.require_authorization).
+    # Making it model-optional-but-run-required is deliberate — the refusal
+    # belongs where an engagement actually begins, not where a unit test builds a
+    # scope object to check a CIDR match.
+    authorization: AuthorizationRecord | None = Field(
+        default=None,
+        description="Who authorized this engagement. Required to start a run.",
+    )
+    window: EngagementWindow | None = Field(
+        default=None,
+        description="Agreed testing window. Outside it the engagement hard-stops.",
+    )
+    safety: SafetyPolicy = Field(
+        default_factory=SafetyPolicy,
+        description="Production safety rails (rate, concurrency, blocking response).",
+    )
+    # Human-readable rules of engagement echoed into the report header — e.g.
+    # "no testing during business hours", "do not touch the payment provider".
+    # Recorded, never interpreted.
+    rules_of_engagement: list[str] = Field(default_factory=list)
 
     # Gray-box discovery inputs (optional; absent ⇒ black-box, engine inert).
     # ``source_dir`` is the ingestable target source tree the discovery engine
