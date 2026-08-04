@@ -72,6 +72,39 @@ _FORM_LOGIN_PATHS: tuple[str, ...] = (
 
 _PASSWORD_INPUT_RE = re.compile(r"""<input[^>]+type\s*=\s*['"]?password['"]?""", re.IGNORECASE)
 
+#: Conventional paths that are authorization-protected in most applications,
+#: tried when the operator has not named one. These are naming CONVENTIONS, not
+#: target literals: REST collection nouns, the "who am I" route, and the usual
+#: account areas. Both lower-case and PascalCase collection spellings appear
+#: because ORM-generated APIs (Sequelize, LoopBack) expose the model name
+#: verbatim, and paths are case-sensitive.
+#:
+#: This list is a convenience, not the mechanism. An application whose protected
+#: surface is named something else supplies it via ``assert_url`` on the role —
+#: which is why :func:`assert_authenticated` reports what it tried when nothing
+#: discriminates, rather than guessing further.
+PROTECTED_PATH_CANDIDATES: tuple[str, ...] = (
+    "/api/users",
+    "/api/Users",
+    "/api/user",
+    "/api/me",
+    "/api/account",
+    "/api/profile",
+    "/api/orders",
+    "/api/Orders",
+    "/api/basket",
+    "/api/BasketItems",
+    "/rest/user/whoami",
+    "/rest/basket/1",
+    "/me",
+    "/profile",
+    "/account",
+    "/settings",
+    "/dashboard",
+    "/admin",
+    "/orders",
+)
+
 
 class AuthStateError(Exception):
     """Raised when an authenticated session could not be established or proven."""
@@ -554,6 +587,7 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 __all__ = [
+    "PROTECTED_PATH_CANDIDATES",
     "AuthAssertion",
     "AuthDetection",
     "AuthMechanism",

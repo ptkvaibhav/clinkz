@@ -33,6 +33,7 @@ from clinkz.engagement.secrets import (
 )
 
 from clinkz.engagement.auth_state import (  # isort: skip — must follow gate/secrets
+    PROTECTED_PATH_CANDIDATES,
     AuthAssertion,
     AuthMechanism,
     AuthStateError,
@@ -42,6 +43,7 @@ from clinkz.engagement.auth_state import (  # isort: skip — must follow gate/s
 from clinkz.engagement.dryrun import DryRunPlan, build_dry_run_plan, render_dry_run
 
 __all__ = [
+    "PROTECTED_PATH_CANDIDATES",
     "AuthAssertion",
     "AuthMechanism",
     "AuthStateError",

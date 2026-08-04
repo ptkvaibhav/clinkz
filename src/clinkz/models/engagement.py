@@ -253,6 +253,14 @@ class RoleCredential(BaseModel):
             never the plaintext.
         login_url: Optional explicit login endpoint for this role, when the
             application's login is not discoverable or differs per role.
+        assert_url: Optional URL known to behave differently authenticated vs
+            anonymous. Tried FIRST by the authenticated-state assertion.
+
+            The assertion falls back to conventional protected paths, but an
+            application whose protected surface is named something unconventional
+            will fail that guess — and the engagement then aborts rather than
+            scanning blind, which is correct but unhelpful if the operator
+            already knew the answer. This is where they say it.
         description: Free-text note (e.g. "read-only reporting account").
     """
 
@@ -260,6 +268,7 @@ class RoleCredential(BaseModel):
     username: str = ""
     password: SecretStr = SecretStr("")
     login_url: str = ""
+    assert_url: str = ""
     description: str = ""
 
     @field_validator("role")

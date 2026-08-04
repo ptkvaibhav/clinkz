@@ -265,7 +265,19 @@ def abort(
     """
     from clinkz.safety.governor import HALT_SENTINEL
 
-    engagement_dir = outputs_root / engagement_id
+    # A blank or path-shaped id would resolve to the outputs root itself and
+    # write a sentinel no governor ever polls -- the operator would believe the
+    # engagement was halted while it kept testing. Refuse instead.
+    cleaned = engagement_id.strip()
+    if not cleaned or "/" in cleaned or "\\" in cleaned or cleaned in (".", ".."):
+        typer.echo(
+            f"Invalid engagement id {engagement_id!r}. Pass the UUID printed at the "
+            "start of the run (also the directory name under outputs/).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    engagement_dir = outputs_root / cleaned
     if not engagement_dir.is_dir():
         typer.echo(
             f"No engagement directory at {engagement_dir}. "

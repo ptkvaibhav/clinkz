@@ -304,3 +304,78 @@ def test_anonymous_role_is_kept_but_not_counted_as_authenticating() -> None:
     assert cred_set.roles == ["anonymous", "user"]
     assert [c.role for c in cred_set.authenticating] == ["user"]
     assert cred_set.primary().role == "user"
+
+
+def test_a_scope_carrying_a_window_survives_json_serialization() -> None:
+    """The scope is JSON-serialized into the state store at engagement creation.
+
+    ``EngagementWindow`` put real ``datetime`` objects into that dict, and a
+    plain ``model_dump()`` leaves them as datetimes — which killed a live
+    engagement at ``create_engagement`` before a single packet was sent. Every
+    persisting call site now dumps in JSON mode; this asserts the property
+    rather than the call sites, so a new one cannot reintroduce it.
+    """
+    now = datetime.now(UTC)
+    scope = _scope(
+        authorization=TEST_AUTHORIZATION,
+        window=EngagementWindow(start=now - timedelta(hours=1), end=now + timedelta(hours=1)),
+    )
+    payload = json.dumps(scope.model_dump(mode="json"))
+    assert "authorizing_party" in payload
+    assert isinstance(json.loads(payload)["window"]["start"], str)
+
+
+def test_the_trace_writer_and_invocation_store_redact(tmp_path: Path) -> None:
+    """Redaction has to reach the trace, not only the action log.
+
+    A live engagement found the gap: the action log was redacted, but a login
+    curl's own argv (``-d 'email=..&password=..'``) went verbatim into
+    ``trace.jsonl`` and into the tool-invocation record. Those are artifacts an
+    operator shares.
+    """
+    import os
+
+    from clinkz.observability.trace import TraceWriter
+
+    password = "Rk7-Feldspar-Cinder-52"
+    register_secret(password)
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        writer = TraceWriter(engagement_id="eng-trace")
+        try:
+            seq, inv_path = writer.record_tool_invocation(
+                tool_name="web_authenticator",
+                exec_mode="docker",
+                cwd=str(tmp_path),
+                command=["curl", "-d", f"email=a@b.test&password={password}", "http://t/login"],
+                stdin=f'{{"password": "{password}"}}',
+                stdout=f"echoed {password}",
+            )
+            writer.tool_call(
+                stage="auth",
+                cmd=["curl", "-d", f"password={password}"],
+                stdout_summary=f"body contained {password}",
+                stderr_summary="",
+                exit_code=0,
+                duration_ms=1.0,
+            )
+            writer.attach_parsed_output(
+                seq=seq,
+                parsed_output_type="AuthOutput",
+                parsed_output={"submitted": password},
+                parse_succeeded=True,
+            )
+        finally:
+            writer.close()
+
+        trace_text = writer.path.read_text(encoding="utf-8")
+        invocation_text = inv_path.read_text(encoding="utf-8")
+    finally:
+        os.chdir(cwd)
+
+    assert password not in trace_text, "the password reached trace.jsonl"
+    assert password not in invocation_text, "the password reached the invocation record"
+    assert REDACTION_PLACEHOLDER in trace_text
+    assert REDACTION_PLACEHOLDER in invocation_text

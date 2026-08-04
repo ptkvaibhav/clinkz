@@ -49,6 +49,7 @@ from clinkz.discovery import (
     predicate_point_version,
 )
 from clinkz.engagement.auth_state import (
+    PROTECTED_PATH_CANDIDATES,
     AuthAssertion,
     AuthMechanism,
     SessionSentinel,
@@ -340,7 +341,7 @@ class OrchestratorAgent:
         validate_agent_chains(["recon", "scan", "exploit", "research", "report"])
 
         async with StateStore(self._db_path) as state:
-            engagement_id = await state.create_engagement(scope.name, scope.model_dump())
+            engagement_id = await state.create_engagement(scope.name, scope.model_dump(mode="json"))
             # Open the engagement-scoped trace writer before any agents spin up
             # so tool/LLM/handoff events from the very first phase are captured.
             trace_writer = TraceWriter(engagement_id=engagement_id)
@@ -468,7 +469,7 @@ class OrchestratorAgent:
                         "task": f"Full reconnaissance on {targets_str}. "
                         f"Discover subdomains, open ports, services, "
                         f"technology stack, and any OSINT intel.",
-                        "scope": scope.model_dump(),
+                        "scope": scope.model_dump(mode="json"),
                     },
                 )
                 summary["phases"]["recon"] = recon_result
@@ -1458,7 +1459,7 @@ class OrchestratorAgent:
                 needs_respin,
                 {
                     "task": query_text,
-                    "scope": self._scope.model_dump() if self._scope else {},
+                    "scope": self._scope.model_dump(mode="json") if self._scope else {},
                 },
             )
             # Route sub-task result back to the requesting agent
@@ -2190,18 +2191,20 @@ class OrchestratorAgent:
         headers: dict[str, str],
         login_url: str,
     ) -> AuthAssertion:
-        """Prove *cred*'s session is authenticated against an anonymous control."""
+        """Prove *cred*'s session is authenticated against an anonymous control.
+
+        Candidate order is deliberate: the operator's own ``assert_url`` first
+        (they know their application), then conventional protected paths, then
+        the site root and the login URL last — the root is the least likely to
+        discriminate on a modern SPA, whose shell renders identically either way.
+        """
         probe = _ToolHttpProbe(self._scope, self._engagement_id or "")
-        base_url = self._primary_target_url()
+        base_url = self._primary_target_url().rstrip("/")
         candidates = [
+            *([cred.assert_url] if cred.assert_url else []),
+            *(f"{base_url}{path}" for path in PROTECTED_PATH_CANDIDATES),
             f"{base_url}/",
-            base_url,
             f"{base_url}/index.php",
-            f"{base_url}/rest/user/whoami",
-            f"{base_url}/api/user",
-            f"{base_url}/profile",
-            f"{base_url}/account",
-            f"{base_url}/dashboard",
             login_url,
         ]
         assertion = await assert_authenticated(
