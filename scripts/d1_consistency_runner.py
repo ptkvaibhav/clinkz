@@ -35,9 +35,18 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import requests
+
+from clinkz.agents import exploit
+from clinkz.agents.exploit import (
+    _CLASS_PARAM_NAMES,
+    _CLASS_PARAM_PREDICATE_NAMES,
+    _CLASS_PATH_TOKENS,
+    _CLASS_PRECONDITIONS,
+    _param_name_tokens,
+)
 
 DVWA_BASE = "http://localhost:8080"
 DVWA_DB_CONTAINER = "clinkz-dvwa-db"
@@ -308,6 +317,61 @@ def classes_that_fired(report: dict[str, Any]) -> set[str]:
     return fired
 
 
+def _names_the_class_surface(test_method: str, url: str) -> bool:
+    """Does *url* carry this class's OWN vocabulary — a path token or a param?
+
+    ``_endpoint_class_relevance`` returns grade 0 on ``param_match OR
+    precondition_match``, and for the form classes the precondition is the bare
+    string ``"form"``. On an application where nearly every page posts something
+    — DVWA is one — that makes grade 0 mean "has a form" rather than "this
+    class's surface", and every form-bearing page in the tail becomes a
+    "primary target" this assertion would report as a RANKING failure.
+
+    It did: one HIGH run reported ``_test_brute_force`` dropping
+    ``/vulnerabilities/upload/#``, ``_test_csrf`` dropping
+    ``/vulnerabilities/exec/#`` and ``_test_javascript_attacks`` dropping
+    ``/vulnerabilities/xss_r/#`` — none of which is that class's target, and all
+    three classes were dispatched to their real ones in the same run. Reporting
+    ordinary tail truncation as an ordering defect is the same confusion the
+    RANKING check exists to prevent, pointed the other way.
+
+    So for a class whose preconditions include the generic ``"form"``, a grade-0
+    drop must ALSO be named by that class's own vocabulary to count. Classes with
+    a specific precondition (``site_root``, ``session_setter``,
+    ``file_server_path``, ``xml_body``) keep the original, stricter reading —
+    narrowing this check any further than the defect requires would blunt the
+    assertion that caught the batch-4 weak-session and HIGH-SQLi misses.
+
+    The drop is still returned to the caller either way, marked, so nothing is
+    hidden — it just is not counted as a violation.
+    """
+    if "form" not in _CLASS_PRECONDITIONS.get(test_method, ()):
+        return True
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+    for token in _CLASS_PATH_TOKENS.get(test_method, ()):
+        if token in path:
+            return True
+    params = list(parse_qs(parsed.query))
+    names = _CLASS_PARAM_NAMES.get(test_method)
+    if names:
+        tokens: set[str] = set()
+        for raw in params:
+            tokens |= _param_name_tokens(raw)
+        if tokens & names:
+            return True
+    # The shape predicates (id-like, file-like, url-like) are the OTHER half of
+    # ``param_match`` in the engine — omitting them here would have excused a
+    # genuine drop on, say, ``/vulnerabilities/sqli/?id=1``, which is the exact
+    # miss this assertion was written for.
+    predicate_name = _CLASS_PARAM_PREDICATE_NAMES.get(test_method)
+    if predicate_name is not None:
+        predicate = getattr(exploit, predicate_name)
+        if any(predicate(p.lower()) for p in params):
+            return True
+    return False
+
+
 def dropped_primary_targets(engagement: str) -> list[dict[str, Any]]:
     """Plan tasks the cap dropped ON THE CLASS'S OWN PRIMARY TARGET (grade 0).
 
@@ -317,6 +381,10 @@ def dropped_primary_targets(engagement: str) -> list[dict[str, Any]]:
     precondition it measures — was OBSERVED on that endpoint. Dropping one of
     those is the ordering failing, not the budget: it is the exact shape that
     cost D1 its weak-session and HIGH SQLi findings.
+
+    Entries whose grade 0 came only from a generic precondition are returned
+    with ``names_class_surface=False`` — see :func:`_names_the_class_surface` —
+    and :func:`audit` does not count those as violations.
 
     Only the LAST truncation record per stage is read, and ONLY the union stage
     counts — that is the plan that actually dispatched. The deterministic stage
@@ -346,7 +414,14 @@ def dropped_primary_targets(engagement: str) -> list[dict[str, Any]]:
     for klass, urls in (record.get("dropped_by_class") or {}).items():
         for url, grade in zip(urls, grades.get(klass, []), strict=False):
             if grade == 0:
-                dropped.append({"test_method": klass, "endpoint_url": url, "grade": grade})
+                dropped.append(
+                    {
+                        "test_method": klass,
+                        "endpoint_url": url,
+                        "grade": grade,
+                        "names_class_surface": _names_the_class_surface(klass, url),
+                    }
+                )
     return dropped
 
 
@@ -368,11 +443,12 @@ def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
     fired = classes_that_fired(report)
     dropped_primary = dropped_primary_targets(engagement)
     for entry in dropped_primary:
-        if entry["test_method"] not in fired:
-            violations.append(
-                f"RANKING: {entry['test_method']} primary target dropped "
-                f"({entry['endpoint_url']}) and the class emitted nothing"
-            )
+        if entry["test_method"] in fired or not entry.get("names_class_surface"):
+            continue
+        violations.append(
+            f"RANKING: {entry['test_method']} primary target dropped "
+            f"({entry['endpoint_url']}) and the class emitted nothing"
+        )
 
     for finding in findings:
         blob = " ".join(
