@@ -1,18 +1,28 @@
 """Typer CLI entry point for Clinkz.
 
 Commands:
-    scan          — Full pipeline (recon → scan/research/exploit → report)
-    trace inspect — Render an engagement execution trace
-    tool-invoke   — Inspect or replay one recorded tool invocation
-    step-replay   — Re-run one recorded agent step in isolation
+    scan          - Full pipeline (recon -> scan/research/exploit -> report)
+    abort         - Kill switch: halt a running engagement immediately
+    actions       - Show what a run actually did to the target
+    trace inspect - Render an engagement execution trace
+    tool-invoke   - Inspect or replay one recorded tool invocation
+    step-replay   - Re-run one recorded agent step in isolation
 
 The pipeline runs end-to-end via ``scan``; there are no single-phase run
 commands (the Orchestrator owns phase sequencing). ``trace inspect`` /
-``tool-invoke`` / ``step-replay`` are post-run inspectors over ``outputs/<id>/``.
+``tool-invoke`` / ``step-replay`` / ``actions`` are post-run inspectors over
+``outputs/<id>/``.
+
+``scan`` refuses to start without an authorization record. That is deliberate
+and there is no flag to skip it - see ``clinkz.engagement.gate``.
 
 Usage::
 
-    clinkz scan --target example.com --scope scope.json
+    clinkz scan --target example.com --scope scope.json \\
+        --authorization auth.json --credentials ../creds.json
+    clinkz scan --target example.com --scope scope.json --dry-run
+    clinkz abort <engagement_id>
+    clinkz actions <engagement_id>
     python -m clinkz trace inspect <engagement_id>
 """
 
@@ -21,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -61,6 +72,53 @@ def scan(
         Path | None,
         typer.Option("--scope", "-s", help="Path to scope JSON file (EngagementScope)"),
     ] = None,
+    authorization: Annotated[
+        Path | None,
+        typer.Option(
+            "--authorization",
+            "-a",
+            help=(
+                "Path to the authorization record JSON. REQUIRED unless the scope "
+                "file already carries an 'authorization' object."
+            ),
+        ),
+    ] = None,
+    credentials: Annotated[
+        Path | None,
+        typer.Option(
+            "--credentials",
+            "-c",
+            help=(
+                "Path to an UNTRACKED local JSON file of role credentials. "
+                "Refused outright if the file is tracked by git."
+            ),
+        ),
+    ] = None,
+    prompt_credentials: Annotated[
+        str | None,
+        typer.Option(
+            "--prompt-credentials",
+            help=(
+                "Comma-separated role names to prompt for interactively "
+                "(passwords are read without echo), e.g. 'admin,user'."
+            ),
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Enumerate what the engagement WOULD do and exit. Sends nothing.",
+        ),
+    ] = False,
+    rate: Annotated[
+        float | None,
+        typer.Option("--rate", help="Max requests per second (overrides the scope's policy)."),
+    ] = None,
+    max_concurrency: Annotated[
+        int | None,
+        typer.Option("--max-concurrency", help="Max simultaneous in-flight requests."),
+    ] = None,
     provider: Annotated[
         str | None,
         typer.Option("--provider", "-p", help="LLM provider: openai | anthropic | gemini | ollama"),
@@ -71,11 +129,23 @@ def scan(
     ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
-    """Run a full penetration test: recon → crawl → exploit → report."""
+    """Run a full penetration test: recon -> crawl -> exploit -> report.
+
+    Refuses to start without an authorization record naming the authorizing
+    party, their role and contact, the authorization reference, the permitted
+    techniques, and an emergency contact.
+    """
     _setup_logging(verbose)
     log = logging.getLogger("cli.scan")
-    log.info("Starting full scan — target: %s, provider: %s", target, provider)
 
+    from clinkz.engagement.dryrun import build_dry_run_plan, render_dry_run
+    from clinkz.engagement.gate import EngagementAbortedError
+    from clinkz.engagement.secrets import (
+        CredentialFileError,
+        load_credential_file,
+        prompt_for_credentials,
+    )
+    from clinkz.models.engagement import AuthorizationRecord, CredentialSet
     from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
     from clinkz.orchestrator.orchestrator import OrchestratorAgent
     from clinkz.tools.docker_preflight import ClinkzDockerError
@@ -99,12 +169,55 @@ def scan(
             targets=[ScopeEntry(value=target, type=scope_type)],
         )
 
+    # --authorization overrides / supplies the scope's record.
+    if authorization is not None:
+        try:
+            auth_data = json.loads(authorization.read_text(encoding="utf-8"))
+            scope_obj.authorization = AuthorizationRecord.model_validate(auth_data)
+        except (OSError, json.JSONDecodeError) as exc:
+            typer.echo(f"Could not read the authorization file: {exc}", err=True)
+            raise typer.Exit(code=2) from None
+        except Exception as exc:  # noqa: BLE001 - surfaced as a setup error
+            typer.echo(f"Invalid authorization record in {authorization}:\n{exc}", err=True)
+            raise typer.Exit(code=2) from None
+
+    # Rail overrides. Applied to the scope's policy so one object carries the
+    # rails into the engagement and into the report.
+    if rate is not None:
+        scope_obj.safety.max_requests_per_second = rate
+    if max_concurrency is not None:
+        scope_obj.safety.max_concurrent_requests = max_concurrency
+
+    # Credentials. Never echoed, never written to the scope (which IS persisted).
+    cred_set = CredentialSet()
+    try:
+        if credentials is not None:
+            cred_set = load_credential_file(credentials)
+        elif prompt_credentials:
+            roles = [r.strip() for r in prompt_credentials.split(",") if r.strip()]
+            cred_set = prompt_for_credentials(roles)
+    except CredentialFileError as exc:
+        typer.echo(f"{exc}", err=True)
+        raise typer.Exit(code=2) from None
+
+    if dry_run:
+        typer.echo(render_dry_run(build_dry_run_plan(scope_obj, cred_set)))
+        return
+
+    log.info("Starting full scan - target: %s, provider: %s", target, provider)
+
     async def _run() -> dict:
-        orchestrator = OrchestratorAgent(provider=provider)
+        orchestrator = OrchestratorAgent(provider=provider, credentials=cred_set)
         return await orchestrator.run(scope_obj)
 
     try:
         result = asyncio.run(_run())
+    except EngagementAbortedError as exc:
+        # The gate, the window, or the authenticated-state assertion refused.
+        # Exit code 3 so a wrapper can tell "we refused to run" apart from
+        # "the run failed".
+        typer.echo(f"\n{exc}\n", err=True)
+        raise typer.Exit(code=3) from None
     except ClinkzDockerError as exc:
         typer.echo(f"Docker pre-flight failed:\n{exc}", err=True)
         raise typer.Exit(code=2) from None
@@ -112,6 +225,139 @@ def scan(
     status = result.get("status", "unknown")
     summary = result.get("summary", "No summary.")
     typer.echo(f"Engagement {status}: {summary}")
+    if status == "halted":
+        typer.echo(f"HALTED ({result.get('halt_reason')}): {result.get('halt_detail')}", err=True)
+    safety = result.get("safety") or {}
+    if safety:
+        typer.echo(
+            f"State-changing requests sent: {safety.get('state_changing_sent', 0)}; "
+            f"refused by safety rails: {safety.get('state_changing_refused', 0)}"
+        )
+    if result.get("action_log"):
+        typer.echo(f"Action log: {result['action_log']}")
+
+
+# ---------------------------------------------------------------------------
+# abort - the kill switch
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def abort(
+    engagement_id: Annotated[
+        str,
+        typer.Argument(help="Engagement UUID to halt (from the run's log output)."),
+    ],
+    outputs_root: Annotated[
+        Path,
+        typer.Option("--outputs-root", help="Root dir containing engagement subdirs."),
+    ] = Path("outputs"),
+) -> None:
+    """Halt a running engagement immediately and cleanly.
+
+    Writes the kill-switch sentinel the running governor polls. Within one poll
+    interval the engagement stops sending requests, every phase winds down, and
+    the report is still generated - a halt is a clean stop, and the operator who
+    pulled the switch needs the report more than one whose run completed, not
+    less.
+
+    Safe to run against a finished engagement; it simply leaves the marker.
+    """
+    from clinkz.safety.governor import HALT_SENTINEL
+
+    # A blank or path-shaped id would resolve to the outputs root itself and
+    # write a sentinel no governor ever polls -- the operator would believe the
+    # engagement was halted while it kept testing. Refuse instead.
+    cleaned = engagement_id.strip()
+    if not cleaned or "/" in cleaned or "\\" in cleaned or cleaned in (".", ".."):
+        typer.echo(
+            f"Invalid engagement id {engagement_id!r}. Pass the UUID printed at the "
+            "start of the run (also the directory name under outputs/).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    engagement_dir = outputs_root / cleaned
+    if not engagement_dir.is_dir():
+        typer.echo(
+            f"No engagement directory at {engagement_dir}. "
+            "Check the engagement id, or pass --outputs-root.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    sentinel = engagement_dir / HALT_SENTINEL
+    sentinel.write_text(
+        f"halt requested via `clinkz abort` at {datetime.now(UTC).isoformat()}\n",
+        encoding="utf-8",
+    )
+    typer.echo(f"Kill switch armed: {sentinel}")
+    typer.echo(
+        "The engagement will stop sending requests within one poll interval and "
+        "will still produce its report."
+    )
+
+
+# ---------------------------------------------------------------------------
+# actions - what did it do to my app?
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def actions(
+    engagement_id: Annotated[
+        str,
+        typer.Argument(help="Engagement UUID. Reads outputs/<id>/actions.jsonl"),
+    ],
+    outcome: Annotated[
+        str | None,
+        typer.Option("--outcome", help="Filter: sent | refused | failed"),
+    ] = None,
+    outputs_root: Annotated[
+        Path,
+        typer.Option("--outputs-root", help="Root dir containing engagement subdirs."),
+    ] = Path("outputs"),
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="Emit JSONL instead of the human table."),
+    ] = False,
+) -> None:
+    """Show every state-changing request the engagement produced.
+
+    The precise answer to "what did it do to my app?". Read-only requests are
+    deliberately absent - the trace already records those, and burying twelve
+    mutations in forty thousand GETs would defeat the purpose.
+    """
+    from clinkz.safety.action_log import ActionLog
+
+    records = ActionLog.read(engagement_id, outputs_root=outputs_root)
+    if not records:
+        typer.echo(
+            f"No action log at {outputs_root / engagement_id / 'actions.jsonl'} "
+            "(or the engagement sent no state-changing requests)."
+        )
+        return
+
+    if outcome:
+        records = [r for r in records if r.outcome == outcome]
+
+    if raw:
+        for record in records:
+            typer.echo(record.model_dump_json())
+        return
+
+    sent = sum(1 for r in records if r.outcome == "sent")
+    refused = sum(1 for r in records if r.outcome == "refused")
+    typer.echo(f"{len(records)} state-changing action(s): {sent} sent, {refused} refused")
+    typer.echo("")
+    for record in records:
+        marker = "SENT   " if record.outcome == "sent" else "REFUSED"
+        status = f" -> {record.status_code}" if record.status_code else ""
+        typer.echo(f"[{record.seq:04d}] {marker} {record.method:<7} {record.url}{status}")
+        if record.outcome == "refused":
+            typer.echo(f"          {record.category}: {record.reason} (signal: {record.signal})")
+        elif record.body_excerpt:
+            typer.echo(f"          body: {record.body_excerpt[:160]}")
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +495,7 @@ def tool_invoke(
 
     command: list[str] = record.get("command") or []
     if not command:
-        typer.echo("Recorded record has no command — cannot replay.", err=True)
+        typer.echo("Recorded record has no command - cannot replay.", err=True)
         raise typer.Exit(code=2)
     cwd = record.get("cwd") or None
     stdin_data: str | None = record.get("stdin")

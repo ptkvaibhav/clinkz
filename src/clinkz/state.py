@@ -7,7 +7,7 @@ PostgreSQL later with minimal interface changes.
 Usage::
 
     async with StateStore("clinkz.db") as state:
-        eid = await state.create_engagement("ACME Corp", scope.model_dump())
+        eid = await state.create_engagement("ACME Corp", scope.model_dump(mode="json"))
         await state.upsert_target(eid, host.model_dump())
 """
 

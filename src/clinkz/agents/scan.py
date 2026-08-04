@@ -748,7 +748,9 @@ class ScanAgent(BaseAgent):
         if not http_match or not http_match.available or not http_match.tool_class:
             return None
         try:
-            tool = http_match.tool_class(scope=self.scope, engagement_id=self.engagement_id)
+            tool = http_match.tool_class(
+                scope=self.scope, engagement_id=self.engagement_id, stage="scan"
+            )
             req_input: dict[str, Any] = {
                 "url": url,
                 "method": "GET",
@@ -927,7 +929,9 @@ class ScanAgent(BaseAgent):
                 continue
 
             try:
-                tool = http_match.tool_class(scope=self.scope, engagement_id=self.engagement_id)
+                tool = http_match.tool_class(
+                    scope=self.scope, engagement_id=self.engagement_id, stage="scan"
+                )
                 req_input: dict[str, Any] = {
                     "url": current_url,
                     "method": "GET",

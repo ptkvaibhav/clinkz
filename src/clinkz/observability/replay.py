@@ -287,7 +287,7 @@ class StepReplayer:
         scope = await self._load_scope()
         state = StateStore(":memory:")
         await state.connect()
-        await state.create_engagement(scope.name, scope.model_dump())
+        await state.create_engagement(scope.name, scope.model_dump(mode="json"))
 
         agent_role = agent_cls.__name__.lower().replace("agent", "")
         if self.llm_provider is not None:

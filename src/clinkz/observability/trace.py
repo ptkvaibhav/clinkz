@@ -43,6 +43,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, TextIO
 
+from clinkz.engagement.secrets import redact_structure
 from clinkz.observability.invocations import (
     InvocationRecord,
     StepContext,
@@ -249,7 +250,10 @@ class TraceWriter:
             path = matches[0]
             data = json.loads(path.read_text(encoding="utf-8"))
             data["parsed_output_type"] = parsed_output_type
-            data["parsed_output"] = parsed_output
+            # A tool's PARSED output can echo the credential it submitted (an
+            # auth tool's own result), so this write is redacted like every
+            # other artifact writer.
+            data["parsed_output"] = redact_structure(parsed_output)
             data["parse_succeeded"] = parse_succeeded
             path.write_text(
                 json.dumps(data, default=str, indent=2),
@@ -328,11 +332,17 @@ class TraceWriter:
         if self._closed or self._fh is None:
             return
         cat_value = category.value if isinstance(category, TraceCategory) else str(category)
+        # Every trace line passes through redaction. This is the second layer
+        # under SecretStr: the primary guarantee is that no writer is handed a
+        # plaintext credential, but a tool's own argv carries whatever the
+        # methodology built -- a login curl's `-d email=..&password=..` is the
+        # engagement's own credential, verbatim, in an artifact an operator
+        # shares. A live run found exactly that.
         record = {
             "ts": datetime.now(UTC).isoformat(),
             "stage": stage,
             "category": cat_value,
-            "payload": payload,
+            "payload": redact_structure(payload),
         }
         line = json.dumps(record, default=str)
         with self._lock:

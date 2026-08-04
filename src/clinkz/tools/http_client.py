@@ -107,6 +107,7 @@ class HTTPClientTool(ToolBase):
         scope: Any = None,
         timeout: int = 300,
         engagement_id: str | None = None,
+        stage: str = "",
     ) -> None:
         if scope is None:
             from clinkz.models.scope import EngagementScope
@@ -114,6 +115,7 @@ class HTTPClientTool(ToolBase):
             scope = EngagementScope(name="default", targets=[])
         super().__init__(scope=scope, timeout=timeout)
         self._engagement_id = engagement_id
+        self._stage = stage
 
     @property
     def name(self) -> str:
@@ -159,6 +161,16 @@ class HTTPClientTool(ToolBase):
                         "description": "Whether to follow HTTP redirects.",
                         "default": False,
                     },
+                    "no_session": {
+                        "type": "boolean",
+                        "description": (
+                            "Send with NO session material at all: the shared "
+                            "engagement cookie jar is neither read nor written. "
+                            "This is what makes an anonymous control genuinely "
+                            "anonymous."
+                        ),
+                        "default": False,
+                    },
                 },
                 "required": ["url"],
             },
@@ -187,15 +199,95 @@ class HTTPClientTool(ToolBase):
             "body": args.get("body", ""),
             "cookies": args.get("cookies") or {},
             "follow_redirects": bool(args.get("follow_redirects", False)),
+            "no_session": bool(args.get("no_session", False)),
         }
 
     async def execute(self, args: dict[str, Any]) -> str:
-        """Execute the HTTP request and return raw response info."""
+        """Execute the HTTP request and return raw response info.
+
+        This is the engagement's single HTTP chokepoint: every methodology probe,
+        every enrichment fetch, and the JSON/API auth path all funnel through
+        here. So it is also where the production safety rails apply — the
+        governor decides whether the request may be sent, paces it, records it if
+        it mutates state, and watches the response for signs the target has
+        started blocking us.
+
+        When no governor is installed (:func:`~clinkz.safety.governor.get_active_governor`
+        returns ``None``) this is byte-for-byte the previous behaviour. That is
+        the point: the rails govern an *engagement*, and a direct methodology
+        invocation — a smoke test, a replay, a driver script — is unaffected.
+
+        A refusal is returned as an ordinary error-shaped response rather than
+        raised, because every caller already handles ``status_code == 0`` with an
+        ``error``, and an exception thrown through twenty layers of methodology
+        code would be swallowed by one of their ``except`` blocks and turn
+        "refused by policy" into "that probe failed".
+        """
+        from clinkz.safety.governor import get_active_governor
+
+        governor = get_active_governor()
+        if governor is None:
+            return await self._dispatch(args)
+
+        decision = await governor.authorize(
+            args["method"],
+            args["url"],
+            body=args.get("body", "") or "",
+            stage=self._stage or self.category,
+        )
+        if not decision.allowed:
+            self._logger.warning(
+                "SAFETY REFUSAL [%s] %s %s — %s",
+                decision.category,
+                args["method"],
+                args["url"],
+                decision.reason,
+            )
+            return json.dumps(
+                {
+                    "status_code": 0,
+                    "response_headers": {},
+                    "response_body": "",
+                    "redirect_chain": [],
+                    "response_time_ms": 0.0,
+                    "error": (
+                        f"refused by safety policy [{decision.category}]: {decision.reason}"
+                        + (f" (signal: {decision.signal})" if decision.signal else "")
+                    ),
+                    "safety_refusal": decision.category,
+                }
+            )
+
+        try:
+            raw = await self._dispatch(args)
+        finally:
+            governor.release()
+
+        self._observe(governor, raw)
+        return raw
+
+    async def _dispatch(self, args: dict[str, Any]) -> str:
+        """Route to the curl (docker) or aiohttp (host) implementation."""
         from clinkz.config import settings
 
         if settings.tool_exec_mode == "docker":
             return await self._execute_curl(args)
         return await self._execute_aiohttp(args)
+
+    @staticmethod
+    def _observe(governor: Any, raw: str) -> None:
+        """Feed the response back to the governor for blocking detection."""
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        governor.observe_response(
+            status=int(data.get("status_code") or 0),
+            headers=data.get("response_headers") or {},
+            body=data.get("response_body") or "",
+        )
 
     # ------------------------------------------------------------------
     # Docker mode: curl inside container
@@ -247,15 +339,21 @@ class HTTPClientTool(ToolBase):
         if body:
             cmd.extend(["--data-binary", body])
 
-        # Cookie jar for persistence across redirect chain
-        cmd.extend(["-c", cookie_jar])
+        # Session material. ``no_session`` skips the jar in BOTH directions,
+        # which is what makes an anonymous control genuinely anonymous: reading
+        # the jar would send the engagement's own session cookies, and writing it
+        # would let the target's Set-Cookie on an unauthenticated response
+        # overwrite the session every later request depends on.
+        if not args.get("no_session"):
+            # Cookie jar for persistence across redirect chain
+            cmd.extend(["-c", cookie_jar])
 
-        # Cookies — if dict provided, send as header; otherwise read from jar
-        if cookies:
-            cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-            cmd.extend(["-b", cookie_str])
-        else:
-            cmd.extend(["-b", cookie_jar])
+            # Cookies — if dict provided, send as header; otherwise read from jar
+            if cookies:
+                cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+                cmd.extend(["-b", cookie_str])
+            else:
+                cmd.extend(["-b", cookie_jar])
 
         cmd.append(url)
 
@@ -388,7 +486,7 @@ class HTTPClientTool(ToolBase):
         url = args["url"]
         headers = args.get("headers") or {}
         body = args.get("body", "")
-        cookies = args.get("cookies") or {}
+        cookies = {} if args.get("no_session") else (args.get("cookies") or {})
         follow_redirects = args.get("follow_redirects", False)
 
         redirect_chain: list[str] = []

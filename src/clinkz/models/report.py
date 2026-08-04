@@ -12,6 +12,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from clinkz.models.engagement import AuthorizationRecord, EngagementWindow
 from clinkz.models.finding import (
     CrossServiceResearchLead,
     Finding,
@@ -89,6 +90,48 @@ class ExecutiveSummary(BaseModel):
         )
 
 
+class NotTestedCategory(StrEnum):
+    """Why something was not tested.
+
+    Attributes:
+        OUT_OF_SCOPE: Explicitly excluded by the client.
+        NOT_PERMITTED: Outside the authorized permitted-technique list.
+        NO_CLIENT_SIDE_ORACLE: The defining effect happens in a browser and this
+            engine has no client-side execution oracle.
+        NOT_IMPLEMENTED: No methodology exists for the class.
+        DESTRUCTIVE_REFUSED: The safety rails refused the action.
+        ENGAGEMENT_HALTED: The engagement stopped before coverage completed.
+        UNAUTHENTICATED: The class needed a session (or a second role) that the
+            engagement did not have.
+    """
+
+    OUT_OF_SCOPE = "out_of_scope"
+    NOT_PERMITTED = "not_permitted"
+    NO_CLIENT_SIDE_ORACLE = "no_client_side_oracle"
+    NOT_IMPLEMENTED = "not_implemented"
+    DESTRUCTIVE_REFUSED = "destructive_refused"
+    ENGAGEMENT_HALTED = "engagement_halted"
+    UNAUTHENTICATED = "unauthenticated"
+
+
+class NotTestedItem(BaseModel):
+    """One thing the engagement did NOT test, and why.
+
+    The section this feeds is what separates a professional deliverable from an
+    automated scan dump. A client reading "no findings" is entitled to know
+    whether that means "we looked and it is sound" or "we could not look".
+
+    Attributes:
+        item: What was not tested — a class label, a host, an action category.
+        category: Why, as a machine-readable reason.
+        reason: The same thing as a sentence a client can act on.
+    """
+
+    item: str
+    category: NotTestedCategory
+    reason: str
+
+
 class PentestReport(BaseModel):
     """Complete penetration test report.
 
@@ -129,6 +172,24 @@ class PentestReport(BaseModel):
     unproven_leads: list[UnprovenExploitLead] = Field(default_factory=list)
     methodology: str = ""
     appendices: dict[str, str] = Field(default_factory=dict)
+
+    # ---- Client-ready header (productization P1 · part D) ------------------
+    # The authorization record is reproduced verbatim in the report header: a
+    # deliverable that cannot say who authorized the test is not a deliverable.
+    authorization: AuthorizationRecord | None = None
+    engagement_window: EngagementWindow | None = None
+    rules_of_engagement: list[str] = Field(default_factory=list)
+    #: Explicitly excluded targets. Rendered as prominently as the in-scope list
+    #: — "we did not touch X" is a statement the client is paying for.
+    excluded_scope: list[str] = Field(default_factory=list)
+    #: Everything the engagement did NOT test, and why. Never empty in practice:
+    #: at minimum it carries the classes with no oracle and no methodology.
+    not_tested: list[NotTestedItem] = Field(default_factory=list)
+    #: Safety-rail outcome — rate, refusals, halts, action-log location.
+    safety_summary: dict[str, object] = Field(default_factory=dict)
+    #: Authentication outcome — mechanism, roles, and the assertion that proved
+    #: the session (or the absence of one).
+    authentication: dict[str, object] = Field(default_factory=dict)
 
     @property
     def finding_counts(self) -> dict[str, int]:

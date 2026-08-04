@@ -33,6 +33,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from clinkz.engagement.secrets import redact_structure
+
 logger = logging.getLogger(__name__)
 
 
@@ -150,7 +152,7 @@ class ToolInvocationRecorder:
         path = self.dir / filename
         try:
             path.write_text(
-                json.dumps(invocation.to_dict(), default=str, indent=2),
+                json.dumps(redact_structure(invocation.to_dict()), default=str, indent=2),
                 encoding="utf-8",
             )
         except Exception as exc:  # noqa: BLE001 — tracing must never raise
@@ -196,7 +198,7 @@ class StepInputRecorder:
         path = self.dir / f"{step_id}.json"
         try:
             path.write_text(
-                json.dumps(payload, default=str, indent=2),
+                json.dumps(redact_structure(payload), default=str, indent=2),
                 encoding="utf-8",
             )
         except Exception as exc:  # noqa: BLE001 — tracing must never raise

@@ -541,7 +541,7 @@ class ReconAgent(BaseAgent):
                 http_match = self._resolver.find_tool("http_request")
                 if http_match and http_match.available and http_match.tool_class:
                     http_tool = http_match.tool_class(
-                        scope=self.scope, engagement_id=self.engagement_id
+                        scope=self.scope, engagement_id=self.engagement_id, stage="recon"
                     )
                     http_args = http_tool.validate_input(
                         {

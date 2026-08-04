@@ -99,6 +99,10 @@ tests/fixtures/real_outputs/
 # Windows
 nul
 
-# sqlmap temp output
+# sqlmap temp output. The bare form covers a sane run; the escaped form covers
+# the case where a Windows host path is passed to sqlmap running INSIDE the
+# tools container, which then creates a single directory literally named
+# "C:\Users\...\Temp\sqlmap_xxxx" in the repo root.
 sqlmap_*/
+*sqlmap_*/
 
