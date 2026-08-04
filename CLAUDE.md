@@ -8,6 +8,8 @@ LLM-mediated Orchestrator, discovering and running tools dynamically.
 > **This file is the lean operating core, loaded every session.** Per-methodology
 > forensic history → [`docs/methodology/`](docs/methodology/README.md) (one file
 > per class); gray-box discovery-engine detail → `docs/discovery-engine-*.md`;
+> engagement setup / authenticated scanning / safety rails →
+> [`docs/productization-engagement-safety.md`](docs/productization-engagement-safety.md);
 > recurring-mistake narratives → [`.claude/LESSONS.md`](.claude/LESSONS.md) (index)
 > → `docs/lessons/`. Fetch on demand — do not restate them here.
 
@@ -116,10 +118,67 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
 - **Critic** — validates findings before the report (CVSS, FP elimination,
   evidence, repro); can reject back to Exploit.
 - **Report** — zero LLM calls; emits JSON + a Markdown summary from the state
-  store in <30 s. Findings and **research-leads are separate types in separate
-  fields**: `CrossServiceResearchLead` (unproven A→B chains) and
+  store in <30 s. Client-ready header (authorization record verbatim, window,
+  in-scope AND out-of-scope, authentication proof, testing conduct), remediation
+  attached per class from `models/vuln_classes.py`, and a generated **"What was
+  NOT tested"** section (excluded hosts, unauthorized techniques, classes with no
+  client-side oracle / no methodology, safety-rail refusals, any halt) — built
+  from the registry and the run's own action log so it cannot drift. Findings and
+  **research-leads are separate types in separate fields**: `CrossServiceResearchLead` (unproven A→B chains) and
   `UnprovenExploitLead` (single-service, effect not witnessed) render in their own
   UNCONFIRMED sections and are never counted in the totals.
+
+## Engagement Setup + Production Safety (`src/clinkz/engagement/`, `src/clinkz/safety/`)
+
+The layer that makes a run against a **non-benchmark** target possible. **Full
+detail → `docs/productization-engagement-safety.md`.**
+
+- **The gate** (`engagement/gate.py::open_engagement`) is the FIRST statement of
+  `OrchestratorAgent.run()` — before docker, before state, before a packet. No
+  `AuthorizationRecord` (authorizing party + role + contact, authorization
+  reference, permitted techniques, emergency contact; every field required, no
+  partially-populated shape) ⇒ refusal, with no flag to skip it. An
+  `EngagementWindow` is a hard stop re-checked on every request.
+- **Credentials are never on `EngagementScope`** — the scope is `model_dump()`-ed
+  into the state store, so keeping the `CredentialSet` off it is structural, not
+  disciplinary. `SecretStr` passwords; git-tracked credential files are refused
+  outright; `engagement/secrets.py` is the redaction registry every artifact
+  writer runs through (short-secret limit stated, not hidden).
+- **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`).
+  The same URL is fetched with the session and deliberately without it
+  (`HTTPClientTool`'s `no_session` — the shared cookie jar would otherwise make
+  the "anonymous" control carry our own session), and only a boundary
+  discriminator is accepted: login redirect, status class, login form, session
+  marker, identity echo. **A body-length delta is a correlate and is refused.**
+  Credentials supplied + assertion failed ⇒ the engagement aborts loudly.
+  `SessionSentinel` rides the governor's response observers, because the code
+  that lost the session is the code that will not notice.
+- **The rails are absent by default** — `get_active_governor()` is `None` unless
+  an engagement installed one and every hook no-ops, so direct methodology
+  invocation (smoke suites, replays, drivers) is byte-identical. The governor
+  (`safety/governor.py`) owns rate (5 req/s), concurrency (4), the kill switch
+  (`clinkz abort` → `outputs/<id>/HALT`), blocking detection, the window, and the
+  action log. **It never raises from the data path** — it returns a refusal the
+  callers already handle; `_run_phase` polls `halted` and winds down so the
+  report is still produced.
+- **`safety/destructive.py` is the one destructive vocabulary**, consulted by
+  both `is_state_changing_url` (navigation) and `is_destructive_form_submission`
+  (submission), over path + method + field names + label text. The predecessor's
+  rules are preserved verbatim, so it can only refuse MORE. **A parameter VALUE
+  is read for semantics only when it looks like an identifier the APP chose**
+  (`_PLAIN_VALUE`) — our own payloads carry `drop`/`rm`/`passwd`, and reading
+  them back as application semantics would refuse the engine's own probes and
+  silently reduce an authorized engagement to a crawler.
+- **`_run_subprocess` gets the halt check ONLY** — it is reached from inside the
+  HTTP chokepoint, so a second slot per request would deadlock the semaphore and
+  double-count every rate token. Self-flooding tools are paced by their own flags
+  (`ffuf -rate`).
+- **The permitted-technique list gates dispatch**, refused before the page fetch,
+  and every withheld class is named in the report.
+- **`models/vuln_classes.py` is the client-facing class registry** (label,
+  capability, limitation, remediation), asserted in sync with the Exploit Agent's
+  dispatch table: a class it dispatches but the registry has never heard of is
+  BOTH invisible in the report and ungated by authorization.
 
 ## Gray-box Discovery Engine (`src/clinkz/discovery/`)
 
@@ -174,12 +233,16 @@ reports the missing capability to the Orchestrator.
 
 ```
 src/clinkz/
-├── cli.py            # Typer CLI: scan / trace inspect / tool-invoke / step-replay
+├── cli.py            # Typer CLI: scan / abort / actions / trace inspect / tool-invoke / step-replay
 ├── config.py         # Settings (env vars, per-agent LLM overrides)
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
 ├── agents/           # recon, scan, exploit, research, critic, report, _route_discovery,
 │                     #   _url_safety (may we fetch it?), _url_shape (in what order?)
+├── engagement/       # gate (the refusals), secrets (credentials + redaction),
+│                     #   auth_state (detect / PROVE / maintain), dryrun
+├── safety/           # destructive (default-deny classifier), governor (rate, concurrency,
+│                     #   kill switch, blocking, window), action_log
 ├── comms/            # AgentMessage, async bus, protocol
 ├── discovery/        # Δ-model: ingestor(s), catalog, intent, reachability, hypothesis, engine,
 │                     #   topology(+recall), recall, relations, versions
@@ -188,14 +251,24 @@ src/clinkz/
 ├── tools/            # ToolBase, resolver, mcp_client, auth, http_client, nmap/ffuf/…
 ├── oob/              # P6: templates (exfil guardrail), collaborator (receive-only)
 ├── observability/    # trace.py (JSONL), replay.py
-└── models/           # scope, target, recon, scan, methodology, research, finding, report
+└── models/           # scope, engagement (authorization/window/credentials/policy),
+                      #   vuln_classes, target, recon, scan, methodology, research,
+                      #   finding, report
 docker/  scripts/  tests/  docs/
 ```
 
 ## Commands
 
-- `python -m clinkz scan --target <domain> --scope <scope.json>` — full pentest
-  (recon → scan/research/exploit → report). The only end-to-end command.
+- `python -m clinkz scan --target <domain> --scope <scope.json>
+  --authorization <auth.json> [--credentials <creds.json>] [--dry-run]
+  [--rate N] [--max-concurrency N]` — full pentest (recon → scan/research/
+  exploit → report). The only end-to-end command. **Refuses to start without an
+  authorization record**; `--dry-run` enumerates what it WOULD do and sends
+  nothing.
+- `python -m clinkz abort <engagement_id>` — kill switch: halt immediately and
+  cleanly (the report is still produced).
+- `python -m clinkz actions <engagement_id> [--outcome sent|refused] [--raw]` —
+  every state-changing request the run produced: "what did it do to my app?".
 - `python -m clinkz trace inspect <engagement_id>` — render an execution trace.
 - `python -m clinkz tool-invoke <engagement_id> <seq> [--replay]` — inspect/replay
   one tool invocation.
