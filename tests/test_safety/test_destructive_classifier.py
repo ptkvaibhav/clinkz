@@ -213,3 +213,86 @@ def test_classifier_can_only_refuse_more_than_its_predecessor() -> None:
     ]
     for form in legacy_refused:
         assert is_destructive_form_submission(form, "http://t/x"), form
+
+
+# ---------------------------------------------------------------------------
+# The value-tokenization bypass (found by the security review)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # An earlier version tested the WHOLE value against
+        # ^[A-Za-z0-9_.\-]{1,24}$, so a single space or a 25th character
+        # dropped it from the token set entirely: `?action=delete` was refused
+        # while `?action=Delete%20this%20record` sailed through. A crawler then
+        # followed that link and re-sent it on every subsequent probe.
+        "http://t/records.php?id=5&Submit=Delete+Record",
+        "http://t/records.php?id=5&action=Delete%20Record",
+        "http://t/admin.php?action=Delete%20this%20record&id=5",
+        "http://t/items?id=5&op=delete_selected_user_records",
+        "http://t/x?next=deleteAccountPermanentlyNow",
+        "http://t/c?confirm=Yes,+delete+it",
+        "http://t/s?cmd=cancel%20subscription",
+        "http://t/b?op=empty%20cart",
+        "http://t/b?op=clear+basket",
+    ],
+)
+def test_a_multi_word_or_long_action_value_is_still_refused(url: str) -> None:
+    verdict = classify_request("GET", url)
+    assert verdict.refused, f"{url} was allowed — the value-shape bypass is back"
+    assert is_state_changing_url(url), "the navigation guard must refuse it too"
+
+
+def test_a_hidden_field_carrying_the_action_is_refused() -> None:
+    """The action is not always on the submit button.
+
+    ``<input type="hidden" name="op" value="delete">`` renders nothing at all;
+    restricting value-reading to submit/button dropped it entirely.
+    """
+    form = _form(
+        "POST",
+        [
+            {"name": "op", "type": "hidden", "value": "delete"},
+            {"name": "id", "type": "hidden", "value": "5"},
+        ],
+    )
+    verdict = classify_form_submission(form, "http://t/admin.php")
+    assert verdict.refused
+    assert verdict.category == CATEGORY_DELETION
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Widening value tokenization must not start reading our own payloads
+        # back as application semantics. Each of these carries at least one
+        # character no human-readable action label contains.
+        "http://t/v/sqli/?id=1' OR '1'='1&Submit=Submit",
+        "http://t/v/sqli/?id=1'; DROP TABLE users--",
+        "http://t/v/sqli/?id=1 UNION SELECT 1,2,3--",
+        "http://t/v/sqli/?id=1 AND SLEEP(5)",
+        "http://t/v/exec/?ip=127.0.0.1;rm -rf /tmp/x",
+        "http://t/v/exec/?ip=127.0.0.1|cat /etc/passwd",
+        "http://t/v/fi/?page=../../../../etc/passwd",
+        "http://t/v/fi/?page=php://filter/convert.base64-encode/resource=index",
+        "http://t/v/xss_r/?name=<script>alert(1)</script>",
+        "http://t/s?q=%3Cimg%20src%3Dx%20onerror%3Ddelete%3E",
+        "http://t/r?url=http://evil.example/logout",
+        "http://t/x?q={{7*7}}",
+        "http://t/x?q=${jndi:dns://c/n}",
+        'http://t/x?q={"$ne": null}',
+        "http://t/x?f=..%252f..%252fetc%252fpasswd",
+    ],
+)
+def test_widening_value_tokenization_did_not_self_block(url: str) -> None:
+    assert not classify_request("GET", url).refused, (
+        "the classifier read an injection payload as an application action"
+    )
+
+
+def test_an_ordinary_filter_flag_is_not_a_deletion() -> None:
+    """``empty``/``clear`` are weak: destructive next to a resource, not alone."""
+    assert not classify_request("GET", "http://t/list?empty=true").refused
+    assert not classify_request("GET", "http://t/search?clear=1").refused

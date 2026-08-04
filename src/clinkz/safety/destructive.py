@@ -122,6 +122,11 @@ _CANCELLATION_TOKENS = frozenset(
 
 _WEAK_CANCELLATION_TOKENS = frozenset({"disable", "close"})
 
+# Verbs that destroy a container's CONTENTS rather than the container. Weak on
+# their own (``?empty=true`` is an ordinary filter flag) but unambiguous next to
+# a resource: "empty cart", "clear orders".
+_WEAK_EMPTYING_TOKENS = frozenset({"empty", "clear", "flush"})
+
 _REVOCATION_TOKENS = frozenset({"revoke", "rotate", "regenerate", "reissue", "invalidate"})
 
 _KEY_NOUNS = frozenset(
@@ -219,18 +224,50 @@ _WHOLE_RESOURCE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _SEPARATORS = re.compile(r"[^A-Za-z0-9]+")
 
-# A parameter VALUE is only read for semantics when it looks like a plain
-# identifier the APPLICATION chose — ``?action=delete`` — never when it looks
-# like a payload WE chose.
+# A parameter VALUE is only read for semantics when the APPLICATION plausibly
+# wrote it — ``?action=delete``, ``?Submit=Delete Record`` — never when WE did.
 #
 # This distinction is load-bearing, not cosmetic. Our own probes carry the exact
 # vocabulary this module refuses on: ``?id=1' OR 1=1; DROP TABLE--`` contains
 # ``drop``, a command-injection probe contains ``rm``, an LFI probe contains
 # ``passwd``. Tokenizing values indiscriminately would make the safety rail
 # refuse the engine's own payloads and silently reduce an authorized engagement
-# to a crawler. Every real payload fails this pattern (quotes, spaces, slashes,
-# semicolons, angle brackets, ``%`` escapes); every genuine action verb passes.
-_PLAIN_VALUE = re.compile(r"^[A-Za-z0-9_.\-]{1,24}$")
+# to a crawler.
+#
+# The discriminator is the CHARACTER SET, not the shape. Every injection payload
+# this engine sends carries at least one of these — a quote, a bracket, a
+# separator, an escape — while a human-readable action label carries none.
+#
+# An earlier version tested the whole value against ``^[A-Za-z0-9_.\-]{1,24}$``,
+# which meant a single space defeated it: ``?action=delete`` was refused but
+# ``?action=Delete%20this%20record`` sailed through, and a crawler would then
+# follow that link and re-send it on every subsequent probe. Bounding LENGTH
+# per token rather than per value closes that without weakening the payload
+# exclusion at all.
+_PAYLOAD_CHARS = frozenset("'\"<>;%/\\()*=`{}[]|&$\n\r\t")
+
+#: Longest single word that can still be an application's action verb. Applied
+#: per TOKEN after splitting, never to the whole value.
+_MAX_VALUE_TOKEN_LEN = 24
+
+#: Values longer than this are not read for semantics at all. A genuine action
+#: label is short; anything this long is data, and splitting it would only add
+#: noise to the token set.
+_MAX_VALUE_LEN = 256
+
+
+def _application_authored(value: str) -> bool:
+    """Whether *value* looks like text the APPLICATION wrote, not a payload we did.
+
+    Args:
+        value: A raw parameter or field value.
+
+    Returns:
+        ``True`` when the value is safe to read for destructive semantics.
+    """
+    if not value or len(value) > _MAX_VALUE_LEN:
+        return False
+    return not any(char in _PAYLOAD_CHARS for char in value)
 
 
 class DestructiveVerdict(BaseModel):
@@ -260,7 +297,7 @@ _ALLOWED = DestructiveVerdict()
 # ---------------------------------------------------------------------------
 
 
-def _tokens(*parts: str) -> set[str]:
+def _tokens(*parts: str, max_token_len: int | None = None) -> set[str]:
     """Split *parts* into lowercase word tokens.
 
     Separators and camelCase humps both split, so ``deleteAllUsers``,
@@ -268,6 +305,10 @@ def _tokens(*parts: str) -> set[str]:
 
     Args:
         *parts: Arbitrary text fragments (path, field names, labels, ...).
+        max_token_len: Drop tokens longer than this. Applied to values, whose
+            length is a weak signal that we are looking at data rather than a
+            label; never applied to paths or field names, which the application
+            always authored.
 
     Returns:
         The set of lowercase tokens.
@@ -278,8 +319,11 @@ def _tokens(*parts: str) -> set[str]:
             continue
         spaced = _CAMEL_BOUNDARY.sub(" ", str(part))
         for token in _SEPARATORS.split(spaced):
-            if token:
-                out.add(token.lower())
+            if not token:
+                continue
+            if max_token_len is not None and len(token) > max_token_len:
+                continue
+            out.add(token.lower())
     return out
 
 
@@ -287,13 +331,21 @@ def _request_tokens(
     url: str,
     field_names: list[str] | None,
     labels: list[str] | None,
+    values: list[str] | None = None,
 ) -> tuple[set[str], set[str]]:
     """Return ``(all_tokens, query_keys)`` for a request.
 
-    Query values are tokenized only when they pass :data:`_PLAIN_VALUE` — see
-    that pattern's comment for why reading our own payloads back as semantics
-    would be a self-inflicted outage. Query KEYS are returned separately because
-    the security-control rule keys on exact query-key names.
+    Three tiers of trust, and the distinction is what keeps the classifier from
+    refusing the engine's own probes:
+
+    * **Path, query keys, field names, labels** — the application authored all of
+      these. A submit button's caption is the page's own words and may contain
+      anything ("Create / Reset Database"), so it is tokenized unconditionally.
+    * **Query values and field values** — WE author these during a fuzz, so they
+      pass :func:`_application_authored` first and are bounded per token.
+
+    Query KEYS are returned separately because the security-control rule keys on
+    exact query-key names.
     """
     try:
         parts = urlsplit(url or "")
@@ -306,9 +358,13 @@ def _request_tokens(
     tokens = _tokens(
         parts.path,
         *(k for k, _ in query_pairs),
-        *(v for _, v in query_pairs if _PLAIN_VALUE.match(v)),
         *(field_names or []),
         *(labels or []),
+    )
+    tokens |= _tokens(
+        *(v for _, v in query_pairs if _application_authored(v)),
+        *(v for v in (values or []) if _application_authored(v)),
+        max_token_len=_MAX_VALUE_TOKEN_LEN,
     )
     return tokens, query_keys
 
@@ -325,6 +381,7 @@ def classify_request(
     field_names: list[str] | None = None,
     labels: list[str] | None = None,
     field_types: list[str] | None = None,
+    values: list[str] | None = None,
 ) -> DestructiveVerdict:
     """Classify a request as destructive (refuse) or not.
 
@@ -334,7 +391,11 @@ def classify_request(
         field_names: Names of the fields the request would submit.
         labels: Button / link / label text associated with the action. Submit
             button values belong here — ``value="Delete account"`` is often the
-            only place the semantics are written down.
+            only place the semantics are written down. The application authored
+            these, so they are read verbatim.
+        values: Non-label field values the PAGE shipped with (a hidden field's
+            default, say). Filtered through :func:`_application_authored` first,
+            because a synthesized pseudo-form can carry a value we authored.
         field_types: Input types parallel to *field_names*; a ``password`` type
             is an authentication-material signal even when the field is named
             something opaque.
@@ -343,7 +404,7 @@ def classify_request(
         A :class:`DestructiveVerdict`.
     """
     verb = (method or "GET").upper()
-    tokens, query_keys = _request_tokens(url, field_names, labels)
+    tokens, query_keys = _request_tokens(url, field_names, labels, values)
     types = {t.lower() for t in (field_types or [])}
 
     # 1. The verb is the harm.
@@ -413,14 +474,23 @@ def classify_request(
 
 def _deletion_verdict(tokens: set[str]) -> DestructiveVerdict:
     hit = tokens & _DELETION_TOKENS
-    if not hit:
-        return _ALLOWED
-    return DestructiveVerdict(
-        refused=True,
-        category=CATEGORY_DELETION,
-        reason="Request semantics indicate deletion of a resource.",
-        signal=sorted(hit)[0],
-    )
+    if hit:
+        return DestructiveVerdict(
+            refused=True,
+            category=CATEGORY_DELETION,
+            reason="Request semantics indicate deletion of a resource.",
+            signal=sorted(hit)[0],
+        )
+    weak_hit = tokens & _WEAK_EMPTYING_TOKENS
+    noun_hit = tokens & _SENSITIVE_RESOURCE_NOUNS
+    if weak_hit and noun_hit:
+        return DestructiveVerdict(
+            refused=True,
+            category=CATEGORY_DELETION,
+            reason="Request would empty or clear a resource's contents.",
+            signal=f"{sorted(weak_hit)[0]}+{sorted(noun_hit)[0]}",
+        )
+    return _ALLOWED
 
 
 def _payment_verdict(tokens: set[str]) -> DestructiveVerdict:
@@ -686,8 +756,10 @@ def classify_form_submission(form: dict[str, Any], action_url: str = "") -> Dest
     fields = form.get("fields") or []
     names = [str(fld.get("name") or "") for fld in fields]
     types = [str(fld.get("type") or "") for fld in fields]
-    # Submit-button values ARE the human-readable label — often the only place a
-    # form's semantics ("Delete my account") are written down at all.
+    # A submit/button value IS the human-readable label ("Delete my account") —
+    # often the only place a form's semantics are written down — and the page
+    # wrote it, so it is read verbatim even when it contains punctuation
+    # ("Create / Reset Database").
     labels = [
         str(fld.get("value") or "")
         for fld in fields
@@ -695,9 +767,20 @@ def classify_form_submission(form: dict[str, Any], action_url: str = "") -> Dest
     ]
     labels.extend(str(fld.get("label") or "") for fld in fields if fld.get("label"))
 
+    # Other field values carry the action too — ``<input type="hidden" name="op"
+    # value="delete">`` renders nothing at all — but a synthesized pseudo-form
+    # can carry a value WE authored, so these go through the payload filter.
+    values = [
+        str(fld.get("value") or "")
+        for fld in fields
+        if str(fld.get("type") or "").lower() not in ("submit", "button")
+    ]
+
     target = action_url or str(form.get("action") or "")
     method = str(form.get("method") or "POST").upper()
-    return classify_request(method, target, field_names=names, labels=labels, field_types=types)
+    return classify_request(
+        method, target, field_names=names, labels=labels, field_types=types, values=values
+    )
 
 
 def is_state_changing_request(url: str, method: str = "GET") -> bool:
