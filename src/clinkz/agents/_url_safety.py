@@ -42,22 +42,14 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlparse, urlsplit
+from urllib.parse import urljoin, urlparse, urlsplit
 
-# Query-parameter keys whose presence flips a server-side security/session
-# control. Matched case-insensitively against the URL's query keys. Kept tight
-# on purpose: broad keys like ``security`` would wrongly exclude legitimate
-# content endpoints such as ``view_source.php?id=fi&security=low``.
-_STATE_CHANGING_QUERY_KEYS = frozenset(
-    {
-        "phpids",  # DVWA WAF toggle (GET-triggered): security.php?phpids=on/off
-        "seclev_submit",  # DVWA security-level form submit
-        "seclev",
-    }
-)
+from clinkz.safety.destructive import classify_form_submission, is_state_changing_request
 
 # Path fragments that change application/session state on their own. ``logout``
-# / ``signout`` drop the session; both are universal, not DVWA-specific.
+# / ``signout`` drop the session; both are universal, not DVWA-specific. Kept
+# here as a fast pre-check ahead of the full classifier — a crawler evaluates
+# this once per discovered link and most links are ordinary content.
 _STATE_CHANGING_PATH_FRAGMENTS = (
     "logout",
     "signout",
@@ -68,19 +60,22 @@ _STATE_CHANGING_PATH_FRAGMENTS = (
 def is_state_changing_url(url: str) -> bool:
     """Return ``True`` if visiting ``url`` would mutate the target's state.
 
-    Used by the Scan Agent (crawl/enrichment) and the Exploit planner to avoid
-    following links that toggle a WAF, change the security level, or log out —
-    actions that poison the shared engagement session. Conservative: anything
-    that does not match a known state-changing signature is treated as safe so
-    coverage is never silently reduced.
+    The **navigation** chokepoint: the Scan Agent's crawl/enrichment and the
+    Exploit planner both consult it before following or emitting a link.
+
+    Since the productization pass this delegates to
+    :func:`clinkz.safety.destructive.is_state_changing_request`, so it no longer
+    recognises only the two DVWA-shaped signatures it was born with (a WAF
+    toggle, a logout path) but the general categories a production application
+    exposes — a ``/admin/users/5/delete`` link, a ``?action=cancel`` parameter,
+    a checkout route. The substring pre-check below is retained purely as a fast
+    path for the common ``logout``-in-path case.
 
     Args:
         url: Absolute or relative URL string discovered by a crawler.
 
     Returns:
-        ``True`` when the URL matches a state-changing signature (a known WAF /
-        security-level toggle query key, or a logout-style path), else
-        ``False``.
+        ``True`` when visiting the URL would mutate target state.
     """
     if not url:
         return False
@@ -91,66 +86,20 @@ def is_state_changing_url(url: str) -> bool:
         return False
 
     path = parts.path.lower()
-    for fragment in _STATE_CHANGING_PATH_FRAGMENTS:
-        if fragment in path:
-            return True
+    if any(fragment in path for fragment in _STATE_CHANGING_PATH_FRAGMENTS):
+        return True
 
-    if parts.query:
-        keys = {k.lower() for k in parse_qs(parts.query, keep_blank_values=True)}
-        if keys & _STATE_CHANGING_QUERY_KEYS:
-            return True
-
-    return False
+    return is_state_changing_request(url)
 
 
 # ---------------------------------------------------------------------------
 # Form-submission safety (destructive-mutation guard)
-# ---------------------------------------------------------------------------
-
-# Field-name / path tokens naming AUTHENTICATION MATERIAL. Deliberately excludes
-# ``token``: an anti-CSRF ``user_token`` rides along on almost every form and
-# would block the whole form surface.
-_AUTH_MATERIAL_TOKENS = ("password", "passwd", "pwd", "passphrase")
-
-# Tokens naming ACCOUNT IDENTITY — the value an account is recovered/logged in by.
-_IDENTITY_TOKENS = ("email", "e-mail", "username", "user_name", "userid", "user_id")
-
-# What separates a *mutation* of existing auth material from a plain login (submit
-# an existing credential) or a fresh registration (create a new one). A login form
-# carries none of these, so brute-force testing is unaffected; a change/reset form
-# carries at least one in a field name (``password_new``, ``password_current``) or
-# in the resolved path (``/rest/user/change-password``, ``/account/settings``).
 #
-# This is the discriminator, NOT "two password fields": a registration form also
-# has ``password`` + ``passwordRepeat``, and creating an account destroys nothing.
-_MUTATION_QUALIFIERS = (
-    "new",
-    "change",
-    "update",
-    "reset",
-    "current",
-    "old",
-    "confirm",
-    "edit",
-    "modify",
-    "credential",
-    "account",
-    "profile",
-    "settings",
-)
-
-# Verbs whose submission destroys or moves a resource outright. These need no
-# credential signal — the action is the harm.
-_DESTRUCTIVE_ACTION_TOKENS = (
-    "delete",
-    "remove",
-    "destroy",
-    "purge",
-    "deactivate",
-    "transfer",
-    "withdraw",
-    "revoke",
-)
+# The vocabularies that used to live here now live in
+# ``clinkz.safety.destructive`` — the predecessor rules verbatim, plus the
+# production categories. One vocabulary, consulted by both the form guard below
+# and the HTTP chokepoint, so the two can never drift apart.
+# ---------------------------------------------------------------------------
 
 
 def is_destructive_form_submission(form: dict[str, Any], action_url: str = "") -> bool:
@@ -166,13 +115,14 @@ def is_destructive_form_submission(form: dict[str, Any], action_url: str = "") -
     True when any of:
 
       1. The declared method is ``DELETE`` (the verb is the harm).
-      2. A destructive verb (:data:`_DESTRUCTIVE_ACTION_TOKENS`) appears in a
-         field name or the resolved path.
-      3. An authentication-material signal (:data:`_AUTH_MATERIAL_TOKENS`, or a
-         ``type="password"`` input) co-occurs with a mutation qualifier
-         (:data:`_MUTATION_QUALIFIERS`) — a password *change/reset*, not a login.
-      4. An account-identity signal (:data:`_IDENTITY_TOKENS`) co-occurs with a
-         mutation qualifier — an email/username change hijacks the account.
+      2. A destructive verb appears in a field name or the resolved path.
+      3. An authentication-material signal (``password``/``passwd``/``pwd``/
+         ``passphrase``, or a ``type="password"`` input) co-occurs with a
+         mutation qualifier (``new``/``change``/``reset``/``current``/…) — a
+         password *change/reset*, not a login.
+      4. An account-identity signal (``email``/``username``/``user_id``/…)
+         co-occurs with a mutation qualifier — an email/username change hijacks
+         the account.
 
     Deliberately NOT destructive: a plain **login** form (credentials submitted,
     nothing mutated — brute-force testing depends on this) and a plain
@@ -195,33 +145,18 @@ def is_destructive_form_submission(form: dict[str, Any], action_url: str = "") -
     Returns:
         ``True`` when the submission would mutate credentials/identity or destroy
         a resource, else ``False``.
+
+    Note:
+        Since the productization pass the decision is made by
+        :func:`clinkz.safety.destructive.classify_form_submission`, which runs
+        the rules documented above **verbatim** and then adds the categories a
+        production engagement needs (payment, cancellation, key revocation, bulk
+        messaging, data reset). It can only ever refuse more than this docstring
+        describes, never less. Callers wanting the category and the deciding
+        signal — for an action-log entry or a report line — should call the
+        classifier directly and read the :class:`~clinkz.safety.destructive.DestructiveVerdict`.
     """
-    fields = form.get("fields") or []
-    field_names = [str(fld.get("name") or "").lower() for fld in fields]
-    field_types = [str(fld.get("type") or "").lower() for fld in fields]
-    path = ""
-    if action_url:
-        try:
-            path = (urlsplit(action_url).path or "").lower()
-        except ValueError:
-            path = ""
-    haystack = " ".join([str(form.get("action") or "").lower(), path, *field_names])
-
-    if str(form.get("method") or "").upper() == "DELETE":
-        return True
-    if any(tok in haystack for tok in _DESTRUCTIVE_ACTION_TOKENS):
-        return True
-
-    has_mutation_qualifier = any(q in haystack for q in _MUTATION_QUALIFIERS)
-    if not has_mutation_qualifier:
-        return False
-
-    has_auth_material = any(t == "password" for t in field_types) or any(
-        tok in haystack for tok in _AUTH_MATERIAL_TOKENS
-    )
-    if has_auth_material:
-        return True
-    return any(tok in haystack for tok in _IDENTITY_TOKENS)
+    return classify_form_submission(form, action_url).refused
 
 
 # ---------------------------------------------------------------------------
