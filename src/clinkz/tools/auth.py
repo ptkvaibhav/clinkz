@@ -263,15 +263,60 @@ class WebAuthenticator(ToolBase):
         }
 
     async def execute(self, args: dict[str, Any]) -> str:
-        """Execute the full login flow and return JSON result."""
+        """Execute the full login flow and return JSON result.
+
+        The login flow is its own HTTP path (curl/aiohttp directly, not via
+        :class:`~clinkz.tools.http_client.HTTPClientTool`), so it takes its own
+        governor slot. It never nests with the HTTP chokepoint: the JSON/API
+        fallback runs *after* this method returns.
+
+        A login is state-changing enough to belong in the action log — an
+        operator asking "what did it do to my app?" should see every
+        authentication attempt — and it must be paced like everything else, so
+        repeated default-credential attempts cannot become an unintended
+        brute-force burst against a production login.
+        """
+        from clinkz.safety.governor import get_active_governor
+
+        governor = get_active_governor()
+        if governor is not None:
+            decision = await governor.authorize(
+                "POST",
+                args["login_url"],
+                stage="auth",
+                field_names=["username", "password"],
+            )
+            if not decision.allowed:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "session_cookies": {},
+                        "redirect_url": "",
+                        "login_url": args["login_url"],
+                        "username": args.get("username", ""),
+                        "status_code": 0,
+                        "error": (
+                            f"refused by safety policy [{decision.category}]: {decision.reason}"
+                        ),
+                    }
+                )
+            try:
+                return await self._dispatch(args)
+            finally:
+                governor.release()
+        return await self._dispatch(args)
+
+    async def _dispatch(self, args: dict[str, Any]) -> str:
+        """Route the login flow to the curl (docker) or aiohttp (host) path.
+
+        Mirror HTTPClientTool: in docker mode, every request runs via
+        ``docker exec curl`` inside the tools container. The container is on the
+        same network as sibling targets (``clinkz-dvwa``, etc.) AND can reach the
+        public internet, so the previous hostname whitelist was both incomplete
+        (missed container aliases) and unnecessary.
+        """
         from clinkz.config import settings
 
-        # Mirror HTTPClientTool: in docker mode, every request runs via
-        # `docker exec curl` inside the tools container. The container is
-        # on the same network as sibling targets (`clinkz-dvwa`, etc.)
-        # AND can reach the public internet, so the previous hostname
-        # whitelist was both incomplete (missed container aliases) and
-        # unnecessary.
         if settings.tool_exec_mode == "docker":
             return await self._execute_curl(args)
         return await self._execute_aiohttp(args)

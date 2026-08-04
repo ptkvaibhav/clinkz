@@ -44,6 +44,7 @@ from clinkz.orchestrator.orchestrator import OrchestratorAgent
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase, ToolOutput
 from clinkz.tools.resolver import ToolMatch, ToolResolver
+from tests.authorization_fixtures import TEST_AUTHORIZATION
 
 # ---------------------------------------------------------------------------
 # Shared test scopes
@@ -52,11 +53,13 @@ from clinkz.tools.resolver import ToolMatch, ToolResolver
 CIDR_SCOPE = EngagementScope(
     name="Integration Test – CIDR",
     targets=[ScopeEntry(value="192.168.1.0/24", type=ScopeType.CIDR)],
+    authorization=TEST_AUTHORIZATION,
 )
 
 DOMAIN_SCOPE = EngagementScope(
     name="Integration Test – Domain",
     targets=[ScopeEntry(value="example.com", type=ScopeType.DOMAIN)],
+    authorization=TEST_AUTHORIZATION,
 )
 
 

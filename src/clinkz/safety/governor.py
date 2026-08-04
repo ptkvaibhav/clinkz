@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -197,7 +198,26 @@ class EngagementGovernor:
         self._state_changes_sent = 0
         self._requests_authorized = 0
         self._rate_wait_seconds = 0.0
+        # Extra watchers fed every response. The session sentinel registers here
+        # rather than the governor importing it, which keeps the safety package
+        # free of any dependency on the engagement's auth logic.
+        self._observers: list[Callable[[int, dict[str, str], str], None]] = []
         self._logger = logging.getLogger(f"{__name__}.EngagementGovernor")
+
+    def add_response_observer(self, observer: Callable[[int, dict[str, str], str], None]) -> None:
+        """Register a callback fed ``(status, headers, body)`` for every response.
+
+        Used by the session sentinel: it needs to see every response the
+        engagement receives, and no methodology can be relied on to report that
+        it has been logged out — the code that lost the session is exactly the
+        code that will not notice.
+
+        Args:
+            observer: A cheap, non-raising callable. An exception from an
+                observer is logged and swallowed; watching responses must never
+                be able to break the request that produced them.
+        """
+        self._observers.append(observer)
 
     # ------------------------------------------------------------------
     # Kill switch
@@ -385,6 +405,12 @@ class EngagementGovernor:
             headers: Response headers.
             body: Response body.
         """
+        for observer in self._observers:
+            try:
+                observer(status, headers or {}, body)
+            except Exception as exc:  # noqa: BLE001 — a watcher must never break a request
+                self._logger.warning("Response observer raised: %s", exc)
+
         if self._halted:
             return
         if _looks_blocked(status, headers or {}, body):
