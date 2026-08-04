@@ -144,6 +144,11 @@ class _ToolHttpProbe:
     looking like it proved everything.
     """
 
+    #: Per-probe timeout. Auth detection walks a candidate list, so the default
+    #: 300s tool timeout would let one unreachable host stall the engagement for
+    #: an hour before recon's own findings were ever used.
+    PROBE_TIMEOUT = 10
+
     def __init__(self, scope: Any, engagement_id: str) -> None:
         self._scope = scope
         self._engagement_id = engagement_id
@@ -183,7 +188,12 @@ class _ToolHttpProbe:
         from clinkz.engagement.auth_state import ProbeResponse
         from clinkz.tools.http_client import HTTPClientTool
 
-        tool = HTTPClientTool(scope=self._scope, engagement_id=self._engagement_id, stage="auth")
+        tool = HTTPClientTool(
+            scope=self._scope,
+            engagement_id=self._engagement_id,
+            stage="auth",
+            timeout=self.PROBE_TIMEOUT,
+        )
         try:
             validated = tool.validate_input(args)
             parsed = tool.parse_output(await tool.execute(validated))
@@ -795,6 +805,11 @@ class OrchestratorAgent:
             "credentials": cred_data,
             "sessions": session_data,
         }
+        # The client's permitted-technique list gates dispatch: a class outside
+        # it is never attempted, and the report names it under "Techniques not
+        # authorized" rather than leaving the client to assume coverage.
+        if self._authorization is not None and not self._authorization.permits_all:
+            exploit_content["permitted_techniques"] = list(self._authorization.permitted_techniques)
 
         # Pass v2 ScanResult directly (the exploit agent parses it via _parse_scan_result)
         if results.get("scan", {}).get("status") != "error":
@@ -2051,8 +2066,22 @@ class OrchestratorAgent:
         from clinkz.engagement.auth_state import AuthStateError
 
         base_url = self._primary_target_url()
-        probe = _ToolHttpProbe(self._scope, self._engagement_id or "")
 
+        if not self._credentials.authenticating and not sessions:
+            # Nothing to authenticate with. Probing for a login surface we have
+            # no credentials for would cost the target a dozen requests and tell
+            # us nothing we can act on, so this path stays exactly as it was
+            # before the productization pass — but says plainly what an empty
+            # report from it would and would not mean.
+            self._logger.warning(
+                "No credentials available — this engagement will run ANONYMOUSLY. "
+                "If %s requires a login, an empty report means the application "
+                "was never seen, not that it is secure.",
+                base_url,
+            )
+            return {}, "", {}
+
+        probe = _ToolHttpProbe(self._scope, self._engagement_id or "")
         discovered_login = await self._find_login_url(recon_result, "", scan_result=None)
         detection = await detect_auth_mechanism(
             probe,
@@ -2068,17 +2097,11 @@ class OrchestratorAgent:
         )
 
         if not self._credentials.authenticating:
-            # No operator credentials. Fall back to the pre-existing behaviour
-            # so a black-box run is unchanged, but say plainly what that means.
+            # Default-credential sessions only. Pre-existing behaviour, kept.
             self._logger.warning(
-                "No operator credentials supplied — this engagement will run "
-                "%s. If %s requires a login, an empty report means the "
-                "application was never seen, not that it is secure.",
-                "ANONYMOUSLY" if not sessions else "on default credentials only",
-                base_url,
+                "No operator credentials supplied — proceeding on the default "
+                "credentials the recon phase validated."
             )
-            if not sessions:
-                return {}, "", {}
             login_url = discovered_login or detection.login_url or f"{base_url}/login"
             return await self._verify_and_refresh_session(login_url, sessions, valid_creds)
 

@@ -1,4 +1,4 @@
-"""``--dry-run`` — enumerate what the engagement WOULD do, sending nothing.
+"""``--dry-run`` - enumerate what the engagement WOULD do, sending nothing.
 
 The operator-facing answer to "before you touch my production application, tell
 me what you are about to do". Everything here is derived from the engagement
@@ -12,7 +12,7 @@ operator asked it not to do.
 Because nothing is probed, the endpoint list is whatever the caller already
 knows (typically empty on a first run). The classes, the scope decisions, the
 rate rails, and the destructive categories that WILL be refused are all fully
-determined without it — and those are the parts an operator is signing off on.
+determined without it - and those are the parts an operator is signing off on.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class DryRunPlan(BaseModel):
         classes: Every class, planned or not, with the reason.
         refused_categories: Action categories that will be refused outright.
         destructive_examples: Concrete ``METHOD URL`` samples the classifier
-            refuses, with the category — the rails demonstrated, not asserted.
+            refuses, with the category - the rails demonstrated, not asserted.
         rails: The safety policy in force.
         warnings: Anything an operator should read before approving.
     """
@@ -108,7 +108,7 @@ class DryRunPlan(BaseModel):
 
 
 #: Sample requests used to DEMONSTRATE the destructive rails during a dry run.
-#: Synthetic and never sent — they exist so an operator can see the classifier's
+#: Synthetic and never sent - they exist so an operator can see the classifier's
 #: actual verdicts rather than take a bullet list on trust.
 _DEMO_REQUESTS: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/records/1"),
@@ -147,19 +147,19 @@ def build_dry_run_plan(
         )
     else:
         plan.warnings.append(
-            "NO AUTHORIZATION RECORD — a real run would refuse to start. "
+            "NO AUTHORIZATION RECORD - a real run would refuse to start. "
             "Supply --authorization <file.json> or an 'authorization' block in the scope."
         )
 
     if scope.window is not None:
-        plan.window_summary = f"{scope.window.start.isoformat()} → {scope.window.end.isoformat()}"
+        plan.window_summary = f"{scope.window.start.isoformat()} -> {scope.window.end.isoformat()}"
         if scope.window.has_ended():
             plan.warnings.append(
-                "The engagement window has already closed — a real run would stop."
+                "The engagement window has already closed - a real run would stop."
             )
         elif not scope.window.has_started():
             plan.warnings.append(
-                "The engagement window has not opened yet — a real run would refuse to start."
+                "The engagement window has not opened yet - a real run would refuse to start."
             )
     else:
         plan.window_summary = "no window agreed (no hard stop configured)"
@@ -169,23 +169,23 @@ def build_dry_run_plan(
 
     plan.in_scope = [f"{t.value} ({t.type.value})" for t in scope.targets]
     plan.out_of_scope = [
-        f"{e.value} ({e.type.value})" + (f" — {e.notes}" if e.notes else "") for e in scope.excluded
+        f"{e.value} ({e.type.value})" + (f" - {e.notes}" if e.notes else "") for e in scope.excluded
     ]
     if not plan.in_scope:
-        plan.warnings.append("Scope contains no targets — nothing would be tested.")
+        plan.warnings.append("Scope contains no targets - nothing would be tested.")
 
     cred_set = credentials or CredentialSet()
     plan.roles = cred_set.roles
     plan.multi_role_available = len(cred_set.authenticating) >= 2
     if not cred_set.authenticating:
         plan.warnings.append(
-            "No credentials supplied — the engagement would scan ANONYMOUSLY. "
+            "No credentials supplied - the engagement would scan ANONYMOUSLY. "
             "If the application requires a login, expect an empty report that means "
             "nothing. Supply --credentials."
         )
     elif not plan.multi_role_available:
         plan.warnings.append(
-            "Only one authenticating role supplied — access-control classes (IDOR / "
+            "Only one authenticating role supplied - access-control classes (IDOR / "
             "authorization) cannot compare two principals and will report candidates only."
         )
 
@@ -199,7 +199,7 @@ def build_dry_run_plan(
         "max_concurrent_requests": str(policy.max_concurrent_requests),
         "blocking_threshold": (
             f"{policy.blocking_threshold} consecutive blocked responses"
-            + (" → halt" if policy.halt_on_blocking else " → warn only")
+            + (" -> halt" if policy.halt_on_blocking else " -> warn only")
         ),
         "max_state_changing_requests": (
             str(policy.max_state_changing_requests)
@@ -209,7 +209,7 @@ def build_dry_run_plan(
     }
     if not policy.halt_on_blocking:
         plan.warnings.append(
-            "halt_on_blocking is disabled — the engagement would keep sending "
+            "halt_on_blocking is disabled - the engagement would keep sending "
             "requests to a target that is blocking it."
         )
     return plan
@@ -250,7 +250,7 @@ def _capability_note(vc: VulnClass) -> str:
     if vc.capability is ConfirmationCapability.OUT_OF_BAND:
         return "blind cases need the out-of-band collaborator to confirm"
     if vc.capability is ConfirmationCapability.CLIENT_SIDE_ORACLE_REQUIRED:
-        return "reachability only — no client-side execution oracle"
+        return "reachability only - no client-side execution oracle"
     return ""
 
 
@@ -283,12 +283,12 @@ def render_dry_run(plan: DryRunPlan) -> str:
     """
     lines: list[str] = [
         "=" * 78,
-        f"DRY RUN — {plan.engagement_name}",
+        f"DRY RUN - {plan.engagement_name}",
         "  Nothing was sent. This is what the engagement WOULD do.",
         "=" * 78,
         "",
         "AUTHORIZATION",
-        f"  {plan.authorization_summary or 'MISSING — a real run would refuse to start'}",
+        f"  {plan.authorization_summary or 'MISSING - a real run would refuse to start'}",
         f"  Window: {plan.window_summary}",
         "",
         "SCOPE",
@@ -301,7 +301,7 @@ def render_dry_run(plan: DryRunPlan) -> str:
     lines += [
         "",
         "AUTHENTICATION",
-        f"  roles: {', '.join(plan.roles) if plan.roles else '(none — anonymous scan)'}",
+        f"  roles: {', '.join(plan.roles) if plan.roles else '(none - anonymous scan)'}",
         f"  multi-role access-control comparison: {'yes' if plan.multi_role_available else 'no'}",
         "",
         "SAFETY RAILS",
@@ -319,12 +319,12 @@ def render_dry_run(plan: DryRunPlan) -> str:
 
     lines += ["", f"CLASSES THAT WOULD BE ATTEMPTED ({len(planned)})"]
     for cls in planned:
-        suffix = f"  — {cls.reason}" if cls.reason else ""
+        suffix = f"  - {cls.reason}" if cls.reason else ""
         lines.append(f"  + {cls.label} [{cls.key}]{suffix}")
 
     lines += ["", f"CLASSES THAT WOULD NOT BE ATTEMPTED ({len(skipped)})"]
     for cls in skipped:
-        lines.append(f"  - {cls.label} [{cls.key}] — {cls.reason}")
+        lines.append(f"  - {cls.label} [{cls.key}]: {cls.reason}")
 
     if plan.warnings:
         lines += ["", "WARNINGS"]

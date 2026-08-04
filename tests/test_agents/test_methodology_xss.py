@@ -690,6 +690,7 @@ class TestFragmentURLPreservation:
             return _json.dumps({"status_code": 200, "response_body": "ok"})
 
         agent = _make_agent()
+        original_execute = http_client.HTTPClientTool.execute
         http_client.HTTPClientTool.validate_input = capture_validate  # type: ignore[method-assign]
         http_client.HTTPClientTool.execute = fake_execute  # type: ignore[method-assign]
         try:
@@ -697,7 +698,12 @@ class TestFragmentURLPreservation:
             await agent._http_get(url, {})
             assert "#/search?q=test" in captured["url"]
         finally:
+            # BOTH patches must be undone. Restoring only validate_input left a
+            # permanently stubbed ``execute`` on the class for the rest of the
+            # session, so any later test exercising the real HTTP chokepoint
+            # silently ran against this stub instead.
             http_client.HTTPClientTool.validate_input = original_validate  # type: ignore[method-assign]
+            http_client.HTTPClientTool.execute = original_execute  # type: ignore[method-assign]
 
 
 # ===========================================================================
