@@ -83,6 +83,21 @@ ruff format src/    # Format
 - Never hardcode tool names in agent code — use the Tool Resolver
 - All inter-agent communication goes through the Orchestrator
 - All tool outputs must be parsed into Pydantic models
+- Never add a flag that skips the authorization gate — an engagement without a
+  named authorizing party is not an engagement
+- Never put credentials on `EngagementScope`; it is `model_dump()`-ed into the
+  state store. Passwords are `SecretStr`, and anything that reaches an artifact
+  writer goes through `clinkz.engagement.secrets.redact`
+- Never add a switch that disables the destructive-action refusal. It is the
+  contract with the client, not a tunable
+- A new destructive token goes in `clinkz.safety.destructive`, never in a second
+  vocabulary — the navigation guard and the submission guard must not drift.
+  Check any new token against `tests/test_safety/test_destructive_classifier.py`:
+  reading our own payloads as application semantics silently reduces an
+  authorized engagement to a crawler
+- A new `_test_*` class needs an entry in `clinkz.models.vuln_classes` (label,
+  capability, limitation, remediation) or the registry-sync test fails — an
+  unregistered class is invisible in the report and ungated by authorization
 
 ## Pull Request Process
 

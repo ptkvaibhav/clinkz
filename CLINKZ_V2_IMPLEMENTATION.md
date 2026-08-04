@@ -254,6 +254,35 @@ REPORT                                                           [partial]
 - Cross-engagement learning validation — pending (depends on consistency
   drill)
 
+## Productization P1 — engagement setup, authenticated scanning, safety rails — **DONE**
+
+The pass that made the engine runnable against an application that is not a
+deliberately-vulnerable benchmark. Full detail →
+[`docs/productization-engagement-safety.md`](docs/productization-engagement-safety.md).
+
+- **A · Engagement setup.** `AuthorizationRecord` (every field required),
+  `EngagementWindow` (hard stop, re-checked per request), `SafetyPolicy`,
+  role-labelled `CredentialSet` with `SecretStr` passwords held off the persisted
+  scope. `engagement/gate.py::open_engagement` is the first statement of
+  `OrchestratorAgent.run()` — no flag skips it. `--dry-run` enumerates and sends
+  nothing.
+- **B · Authenticated scanning.** Mechanism detection (form / bearer / cookie),
+  an authenticated-state **assertion against an anonymous control** that accepts
+  only boundary discriminators (a body-length delta is refused), a loud abort
+  when credentials were supplied and the assertion fails, mid-run session-loss
+  detection at the response chokepoint with re-authentication pushed into the
+  live agents, and multi-role sessions for access-control comparison.
+- **C · Production safety rails.** A generic default-deny request classifier
+  (`safety/destructive.py`) that preserves the predecessor form guard verbatim
+  and adds payment / cancellation / key-revocation / bulk-messaging / data-reset;
+  a governor (`safety/governor.py`) owning rate, concurrency, kill switch,
+  blocking detection, window, and the action log — **absent by default**, so the
+  benchmark suites are byte-identical.
+- **D · Client-ready report.** Authorization header, scope in *and* out,
+  authentication proof, testing conduct, per-class remediation, and a generated
+  **"What was NOT tested"** section built from the class registry and the run's
+  own action log.
+
 ## On the horizon
 
 > **Capability expansion** (new vuln-class primitives — NoSQL/SSTI/XXE, then JWT/SSRF, then a
