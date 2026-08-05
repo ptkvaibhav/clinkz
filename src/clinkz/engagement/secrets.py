@@ -18,8 +18,22 @@ the credential set is never attached to the persisted
 plaintext password to a writer. The registry here is the second layer — it
 catches the route nobody thought of.
 
-**Honest limitation.** Redaction is a substring replacement, so it can only be
-applied to values long enough to be distinctive. A secret shorter than
+**Two definitions of "secret", not one.** Redaction removes a string because of
+what it IS (a registered value) *and* because of what it LOOKS LIKE (a
+credential shape — see :mod:`clinkz.engagement.credential_shapes`). Value-only
+redaction is structurally incapable of removing the credential material an
+engagement CAPTURES rather than supplies: a live run wrote five session JWTs
+into ``trace.jsonl``, one of whose payload carried the account's password hash,
+and every writer was already redacting correctly. Nothing was registered, so
+nothing was removed. Shape redaction is always on, registry or not — an
+artifact must be clean whether or not an engagement installed anything.
+
+Order is deliberate: shapes run first, so a registered password that arrives
+inside a session token disappears with the whole token rather than leaving a
+partially-masked one behind.
+
+**Honest limitation.** Value redaction is a substring replacement, so it can
+only be applied to values long enough to be distinctive. A secret shorter than
 :data:`_MIN_REDACTABLE_LEN` characters is accepted (we do not get to dictate the
 client's password policy) but is NOT substring-redacted, because replacing every
 occurrence of a two-character string would corrupt every artifact it appears in.
@@ -35,6 +49,11 @@ import subprocess  # noqa: S404 — list-form, no shell=True; used for git hygie
 from pathlib import Path
 from typing import Any
 
+from clinkz.engagement.credential_shapes import (
+    CREDENTIAL_HEADER_KEYS,
+    redact_header_value,
+    redact_shapes,
+)
 from clinkz.models.engagement import CredentialSet, RoleCredential
 
 logger = logging.getLogger(__name__)
@@ -93,18 +112,22 @@ def clear_secrets() -> None:
 
 
 def redact(text: str) -> str:
-    """Replace every registered secret in *text* with the placeholder.
+    """Replace credential shapes and every registered secret in *text*.
+
+    Shapes first (see the module docstring), then registered values.
 
     Args:
         text: Arbitrary text about to be written to a durable artifact.
 
     Returns:
-        *text* with every registered secret masked. Returns the input unchanged
-        when nothing is registered (the common case — zero cost).
+        *text* with credential material removed. Shape redaction applies
+        whether or not anything is registered.
     """
-    if not _SECRETS or not text:
+    if not text:
         return text
-    out = text
+    out = redact_shapes(text)
+    if not _SECRETS:
+        return out
     # Longest first: a secret that contains another must be masked before the
     # shorter one turns it into "[REDACTED]xyz".
     for secret in sorted(_SECRETS, key=len, reverse=True):
@@ -121,18 +144,32 @@ def redact_structure(obj: Any) -> Any:
     (numbers, ``None``, Pydantic models — a model is dumped by its own writer
     before it reaches here).
 
+    **Key-aware.** A value whose key is in
+    :data:`~clinkz.engagement.credential_shapes.CREDENTIAL_HEADER_KEYS` is
+    redacted on the strength of the key alone. This is the only way a
+    ``Set-Cookie`` value can be caught: the target chose it, so it has no
+    intrinsic shape, and the sole thing identifying it as the session is the
+    header it arrived under. A header dict flattened to a string loses that,
+    which is why the walker — not the string rule — makes this call.
+
     Args:
         obj: A JSON-ish structure.
 
     Returns:
         The same shape with strings redacted.
     """
-    if not _SECRETS:
-        return obj
     if isinstance(obj, str):
         return redact(obj)
     if isinstance(obj, dict):
-        return {redact_structure(k): redact_structure(v) for k, v in obj.items()}
+        out: dict[Any, Any] = {}
+        for key, value in obj.items():
+            new_key = redact_structure(key)
+            if isinstance(key, str) and isinstance(value, str):
+                if key.strip().lower() in CREDENTIAL_HEADER_KEYS:
+                    out[new_key] = redact(redact_header_value(key, value))
+                    continue
+            out[new_key] = redact_structure(value)
+        return out
     if isinstance(obj, list):
         return [redact_structure(v) for v in obj]
     if isinstance(obj, tuple):
