@@ -160,6 +160,20 @@ class Settings(BaseModel):
         description="Max wall-clock seconds for the Research phase before partial return.",
     )
 
+    # Scan phase hard wall-clock budget (seconds). The Scan Agent skips its
+    # remaining optional work once this elapses and returns the surface it has
+    # mapped so far — because the phase that maps the attack surface must never
+    # be force-killed. It used to have no budget of its own and was cut off by
+    # the orchestrator's generic phase timeout, which discards the agent's
+    # return value: on a real SPA the crawl + enrichment + coverage-expansion
+    # pass ran past 600 s and the Exploit planner was handed ZERO endpoints
+    # after the scan had discovered 138. A partial map is a scan result; a
+    # killed phase is not.
+    scan_time_budget: float = Field(
+        default=900.0,
+        description="Max wall-clock seconds for the Scan phase before partial return.",
+    )
+
     # Tool execution mode: "local" runs tools directly, "docker" runs via docker exec.
     # Default is "docker" because local mode is a footgun — the resolver can
     # match unrelated host binaries that share a name (e.g., the Python `httpx`
@@ -268,6 +282,7 @@ class Settings(BaseModel):
             exploit_category_max_findings=int(os.getenv("EXPLOIT_CATEGORY_MAX_FINDINGS", "5")),
             exploit_category_time_budget=float(os.getenv("EXPLOIT_CATEGORY_TIME_BUDGET", "90.0")),
             research_time_budget=float(os.getenv("RESEARCH_TIME_BUDGET", "180.0")),
+            scan_time_budget=float(os.getenv("SCAN_TIME_BUDGET", "900.0")),
             tool_exec_mode=os.getenv("TOOL_EXEC_MODE", "docker"),
             docker_container=os.getenv("DOCKER_CONTAINER", "clinkz-tools"),
             mcp_servers=json.loads(os.getenv("MCP_SERVERS", "[]")),

@@ -90,6 +90,16 @@ class AuthResult(BaseModel):
     username: str = ""
     status_code: int = 0
     error: str = ""
+    # The request shape that actually worked. The authenticator discovers the
+    # login route and its identifier/secret field names empirically — it tries
+    # the candidate shapes and one of them returns a token — so on success it
+    # holds an OBSERVED body schema for the single endpoint every credential
+    # attack targets. Recording it costs nothing and is the only non-guessed
+    # source for a JSON login body, which no representation and no frontend
+    # destructuring reveals. Empty for a form login (whose fields are already
+    # readable from the HTML) and on failure.
+    auth_body_fields: list[str] = []
+    auth_content_type: str = ""
 
 
 class AuthOutput(ToolOutput):
@@ -485,6 +495,8 @@ class WebAuthenticator(ToolBase):
                         login_url=url,
                         username=username,
                         status_code=status,
+                        auth_body_fields=list(body),
+                        auth_content_type="application/json",
                     )
 
         return AuthResult(
