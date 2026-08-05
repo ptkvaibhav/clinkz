@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re as _re
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
@@ -41,6 +42,7 @@ from clinkz.models.scan import (
     Endpoint,
     FTPScanResult,
     HTTPScanResult,
+    ParamLocation,
     ScanResult,
     ServiceScanResult,
     SMBScanResult,
@@ -98,6 +100,32 @@ class ScanAgent(BaseAgent):
         # Auth headers for JWT/bearer sessions (e.g. Juice Shop), sent on
         # authenticated HTTP crawl/enrichment requests alongside cookies.
         self._session_headers: dict[str, str] = {}
+        # Wall-clock deadline for this phase; ``None`` until run() starts, which
+        # is what keeps every direct-invocation caller (smoke suites, drivers,
+        # scan_additional) unbudgeted and byte-identical.
+        self._deadline: float | None = None
+
+    # ------------------------------------------------------------------
+    # Phase budget
+    # ------------------------------------------------------------------
+
+    def _budget_exhausted(self) -> bool:
+        """Whether the scan phase's own wall-clock budget has run out.
+
+        The scan agent bounds itself for the same reason the research agent
+        does: the orchestrator's phase timeout force-kills the agent and
+        **discards its return value**, so an over-running scan delivers not a
+        smaller map but no map at all — and the Exploit planner then has no
+        endpoints to plan against. Every optional step consults this and
+        degrades to "return what we have".
+        """
+        return self._deadline is not None and time.monotonic() >= self._deadline
+
+    def _budget_remaining(self) -> float:
+        """Seconds left in the phase budget (``inf`` when unbudgeted)."""
+        if self._deadline is None:
+            return float("inf")
+        return max(0.0, self._deadline - time.monotonic())
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -158,7 +186,18 @@ class ScanAgent(BaseAgent):
                 "ScanAgent received auth headers: %s",
                 list(self._session_headers.keys()),
             )
-        self._logger.info("ScanAgent v2 starting — target: %s", target)
+        # The login request shape the authenticator proved against this target.
+        # Unioned into the endpoint set below so the credential-attack classes
+        # get a real body injection point on the login route.
+        self._proven_login: dict[str, Any] = input_data.get("proven_login") or {}
+        from clinkz.config import settings
+
+        self._deadline = time.monotonic() + settings.scan_time_budget
+        self._logger.info(
+            "ScanAgent v2 starting — target: %s (budget %.0fs)",
+            target,
+            settings.scan_time_budget,
+        )
 
         # Step 1: LLM plans scan strategy (PLANNING checkpoint)
         self._logger.info("Step 1: LLM plans scan strategy")
@@ -184,8 +223,23 @@ class ScanAgent(BaseAgent):
             len(coverage.gaps),
         )
 
-        # Step 5: Expand coverage if insufficient (TOOL — conditional)
-        if not coverage.sufficient:
+        # Step 5: Expand coverage if insufficient (TOOL — conditional).
+        # Coverage expansion re-runs the whole crawl chain, so it is the step
+        # most likely to push the phase past its budget — and it is also the
+        # most optional: it adds to a map that already exists. Skipping it keeps
+        # the map; running it past the deadline used to lose the map entirely.
+        if not coverage.sufficient and self._budget_exhausted():
+            self._logger.warning(
+                "Step 5: SKIPPED — scan budget exhausted; returning the surface mapped so far "
+                "(%d gap(s) left unexpanded: %s)",
+                len(coverage.gaps),
+                "; ".join(coverage.gaps[:3]),
+            )
+            coverage.gaps.append(
+                "Coverage expansion was skipped: the scan phase's wall-clock budget "
+                "(SCAN_TIME_BUDGET) elapsed first."
+            )
+        elif not coverage.sufficient:
             self._logger.info("Step 5: Expanding coverage (%d gaps)", len(coverage.gaps))
             additional = await self._step_expand_coverage(coverage.gaps, recon_result)
             scan_results.extend(additional)
@@ -466,6 +520,25 @@ class ScanAgent(BaseAgent):
             self._merge_crawl_endpoints_preferring_params(endpoints, self._crawl_endpoints)
             self._crawl_endpoints = []
 
+        # The proven login shape (observed by the authenticator, not guessed).
+        # Replaces any param-less twin of the same route — a discovered
+        # `POST /rest/user/login` with no body is the same endpoint with less
+        # information.
+        self._apply_proven_login(endpoints)
+
+        # Learn from the live target what the frontend's source could not say:
+        # which write verbs each route accepts (OPTIONS) and what a write body
+        # contains (the collection's own representation). Safe methods only —
+        # mapping a surface must never write to it.
+        try:
+            method_endpoints = await self._learn_api_schemas(endpoints)
+        except Exception as exc:  # never abort the scan phase
+            self._logger.warning("API schema learning failed: %s", exc)
+            method_endpoints = []
+        for ep in method_endpoints:
+            if (ep.url, ep.method) not in {(e.url, e.method) for e in endpoints}:
+                endpoints.append(ep)
+
         # Stamp session-setter annotations onto their trigger endpoints (or emit
         # a param-less trigger endpoint if the crawl produced none) so the
         # cross-request injection point is queued downstream.
@@ -710,6 +783,48 @@ class ScanAgent(BaseAgent):
             len(features),
         )
 
+    def _apply_proven_login(self, endpoints: list[Endpoint]) -> None:
+        """Union the authenticator's PROVEN login request shape into *endpoints*.
+
+        A login body is the one API schema no other source can reach: it is not
+        in any collection's representation, the frontend passes its form object
+        straight through without naming the fields, and provoking a validation
+        error would mean POSTing to a credential endpoint. But the engagement
+        already logged in — so the shape that worked is an observation we hold.
+
+        Mutates *endpoints* in place: upgrades an existing param-less twin of
+        the same route rather than appending a duplicate.
+        """
+        shape = getattr(self, "_proven_login", None) or {}
+        url = str(shape.get("url") or "")
+        fields = [str(f) for f in (shape.get("fields") or []) if f]
+        if not url or not fields:
+            return
+        method = str(shape.get("method") or "POST").upper()
+        content_type = str(shape.get("content_type") or "application/json")
+        location = (
+            ParamLocation.JSON_BODY if "json" in content_type.lower() else ParamLocation.FORM_BODY
+        )
+        for ep in endpoints:
+            if ep.url.rstrip("/") == url.rstrip("/") and (ep.method or "GET").upper() == method:
+                for name in fields:
+                    if name not in ep.param_locations:
+                        ep.params.append(name)
+                        ep.param_locations[name] = location
+                ep.content_type = ep.content_type or content_type
+                self._logger.info("Login endpoint %s upgraded with its proven body shape", url)
+                return
+        endpoints.append(
+            Endpoint(
+                url=url,
+                method=method,
+                params=list(fields),
+                content_type=content_type,
+                param_locations=dict.fromkeys(fields, location),
+            )
+        )
+        self._logger.info("Login endpoint %s added with its proven body shape", url)
+
     def _apply_session_setter_annotations(self, endpoints: list[Endpoint]) -> None:
         """Stamp recorded session-setter refs onto their trigger endpoints.
 
@@ -773,6 +888,92 @@ class ScanAgent(BaseAgent):
             headers={str(k).lower(): str(v) for k, v in raw_headers.items()},
         )
 
+    async def _safe_method_probe(
+        self, method: str, url: str
+    ) -> tuple[int, str, dict[str, str]] | None:
+        """Send one SAFE-method request for API schema learning.
+
+        Restricted to ``GET``/``HEAD``/``OPTIONS`` — the methods RFC 9110
+        defines as not changing the target's state — and asserted here rather
+        than trusted from the caller, because this is the seam where a schema
+        learner could otherwise turn surface mapping into a write. Returns
+        ``(status, body, headers)`` or ``None`` on any failure.
+        """
+        verb = (method or "GET").upper()
+        if verb not in ("GET", "HEAD", "OPTIONS"):
+            self._logger.error(
+                "Refusing %s during schema learning — only safe methods may map a surface", verb
+            )
+            return None
+        http_match = self._resolver.find_tool("http_request")
+        if not http_match or not http_match.available or not http_match.tool_class:
+            return None
+        try:
+            tool = http_match.tool_class(
+                scope=self.scope, engagement_id=self.engagement_id, stage="scan"
+            )
+            req_input: dict[str, Any] = {"url": url, "method": verb, "follow_redirects": False}
+            if self._session_cookies:
+                req_input["cookies"] = self._session_cookies
+            if self._session_headers:
+                req_input["headers"] = dict(self._session_headers)
+            args = tool.validate_input(req_input)
+            raw = await tool.execute(args)
+            parsed = tool.parse_output(raw)
+        except Exception as exc:
+            self._logger.debug("Schema probe %s %s failed: %s", verb, url, exc)
+            return None
+        raw_headers = getattr(parsed, "response_headers", {}) or {}
+        return (
+            getattr(parsed, "status_code", 0),
+            getattr(parsed, "response_body", "") or "",
+            {str(k).lower(): str(v) for k, v in raw_headers.items()},
+        )
+
+    async def _learn_api_schemas(self, endpoints: list[Endpoint]) -> list[Endpoint]:
+        """Learn accepted methods and missing body schemas from the live target.
+
+        Two safe-method sweeps, both budget-aware and both additive:
+
+        * ``OPTIONS`` per route — the write verbs the target says it accepts,
+          which is how a ``PUT``/``PATCH`` injection point becomes reachable at
+          all when the frontend only ever calls ``GET``.
+        * ``GET`` per write route with no known body — a REST collection's own
+          records name the fields its writes take.
+
+        Returns the endpoints discovered by the method sweep (the body schemas
+        are filled in place on *endpoints*).
+        """
+        from clinkz.agents._api_schema import (
+            learn_allowed_methods,
+            learn_body_schema_from_representation,
+        )
+
+        if self._budget_exhausted():
+            self._logger.info("API schema learning: skipped — scan budget exhausted")
+            return []
+        try:
+            method_endpoints = await learn_allowed_methods(endpoints, self._safe_method_probe)
+        except Exception as exc:  # schema learning must never abort the scan
+            self._logger.warning("OPTIONS sweep failed: %s", exc)
+            method_endpoints = []
+
+        combined = [*endpoints, *method_endpoints]
+        if self._budget_exhausted():
+            self._logger.info("API body-schema learning: skipped — scan budget exhausted")
+            return method_endpoints
+        try:
+            filled = await learn_body_schema_from_representation(combined, self._safe_method_probe)
+        except Exception as exc:
+            self._logger.warning("Representation sweep failed: %s", exc)
+            filled = 0
+        self._logger.info(
+            "API schema learning: +%d method endpoint(s), %d body schema(s) learned",
+            len(method_endpoints),
+            filled,
+        )
+        return method_endpoints
+
     async def _enrich_endpoints_with_params(self, urls: list[str]) -> list[Endpoint]:
         """Fetch each URL and extract forms / query-param links as Endpoints.
 
@@ -832,7 +1033,20 @@ class ScanAgent(BaseAgent):
 
         enriched: list[Endpoint] = []
         seen_keys: set[tuple[str, str, tuple[str, ...]]] = set()
+        visited_count = 0
         for current_url in ordered_urls:
+            # Rate-limited enrichment of a large crawl is the single longest
+            # stretch of the phase. Stopping here keeps every endpoint already
+            # enriched — and because the list is priority-ordered, what is
+            # dropped is the tail, not a random slice.
+            if self._budget_exhausted():
+                self._logger.warning(
+                    "Endpoint enrichment: stopping at %d/%d URL(s) — scan budget exhausted",
+                    visited_count,
+                    len(ordered_urls),
+                )
+                break
+            visited_count += 1
             try:
                 res = await self._discovery_http_get(current_url)
                 if res is None:
@@ -882,7 +1096,7 @@ class ScanAgent(BaseAgent):
 
         self._logger.info(
             "Endpoint enrichment: visited %d URLs, produced %d parameterized endpoints",
-            len(ordered_urls),
+            visited_count,
             len(enriched),
         )
         return enriched
