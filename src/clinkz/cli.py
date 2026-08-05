@@ -361,6 +361,65 @@ def actions(
 
 
 # ---------------------------------------------------------------------------
+# artifact-scan
+# ---------------------------------------------------------------------------
+
+
+@app.command("artifact-scan")
+def artifact_scan(
+    engagement_id: Annotated[
+        str,
+        typer.Argument(help="Engagement UUID. Scans outputs/<id>/ in full."),
+    ],
+    outputs_root: Annotated[
+        Path,
+        typer.Option("--outputs-root", help="Root dir containing engagement subdirs."),
+    ] = Path("outputs"),
+    raw: Annotated[
+        bool,
+        typer.Option("--raw", help="Emit the scan report as JSON."),
+    ] = False,
+) -> None:
+    """Check whether an engagement's artifacts still carry credential material.
+
+    The same gate the orchestrator runs automatically at the end of every
+    engagement, exposed so it can be re-run over an older bundle - or over one
+    an operator is about to send. Exits non-zero when credential material is
+    found, so it can be used as a release check.
+
+    A finding names the file, line and column, the kind of credential, and a
+    salted fingerprint. It never reproduces the value: a leak report that
+    contains the leak is a new artifact with the same defect.
+    """
+    from clinkz.engagement.artifact_scan import scan_artifact_tree
+
+    # Same refusal as `clinkz abort`: a blank or path-shaped id resolves to the
+    # outputs root (or outside it) and would scan the wrong tree, then report a
+    # verdict the operator would read as being about their engagement.
+    cleaned = engagement_id.strip()
+    if not cleaned or "/" in cleaned or "\\" in cleaned or cleaned in (".", ".."):
+        typer.echo(
+            f"Invalid engagement id {engagement_id!r}. Pass the UUID printed at the "
+            "start of the run (also the directory name under outputs/).",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    root = outputs_root / cleaned
+    if not root.is_dir():
+        typer.echo(f"No such engagement directory: {root}", err=True)
+        raise typer.Exit(code=2)
+
+    report = scan_artifact_tree(root, engagement_id=engagement_id)
+    if raw:
+        typer.echo(report.model_dump_json(indent=2))
+    else:
+        typer.echo(report.render())
+    if not report.clean:
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
 # trace inspect
 # ---------------------------------------------------------------------------
 
