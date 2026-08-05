@@ -87,7 +87,15 @@ ruff format src/    # Format
   named authorizing party is not an engagement
 - Never put credentials on `EngagementScope`; it is `model_dump()`-ed into the
   state store. Passwords are `SecretStr`, and anything that reaches an artifact
-  writer goes through `clinkz.engagement.secrets.redact`
+  writer goes through `clinkz.engagement.secrets.redact` — **every** writer,
+  including the report, which was once the only one that did not
+- A new credential SHAPE goes in `clinkz.engagement.credential_shapes`, never in
+  a second vocabulary — the redactor and the disclosure gate must not drift. The
+  entropy heuristic stays in the gate alone: broadening the write path shreds
+  evidence, and a gate that cries wolf gets ignored
+- Never write a raw session token, `Authorization` value, or cookie value into an
+  artifact. Record a fingerprint instead. `clinkz artifact-scan <id>` is the
+  check, and it must pass before a bundle is shared
 - Never add a switch that disables the destructive-action refusal. It is the
   contract with the client, not a tunable
 - A new destructive token goes in `clinkz.safety.destructive`, never in a second
