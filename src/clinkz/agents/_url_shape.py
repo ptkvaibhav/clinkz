@@ -108,6 +108,21 @@ def path_extension(path: str) -> str:
     return last_segment.rsplit(".", 1)[-1].lower() if "." in last_segment else ""
 
 
+# Conventional API path prefixes. A route under one of these is a data endpoint
+# rather than a page: it answers with records, takes parameters structurally, and
+# is where a modern application's whole attack surface lives. These are
+# ecosystem conventions (the two prefixes every REST style guide names), not any
+# application's own vocabulary.
+API_PATH_PREFIXES: tuple[str, ...] = ("/api/", "/rest/", "/v1/", "/v2/", "/graphql")
+
+
+def is_api_path(path: str) -> bool:
+    """Whether *path* sits under a conventional API prefix."""
+    lowered = (path or "").lower()
+    normalised = lowered if lowered.endswith("/") else lowered + "/"
+    return any(normalised.startswith(p) or p in normalised for p in API_PATH_PREFIXES)
+
+
 def crawl_visit_priority(url: str) -> int:
     """How worth *opening* a discovered URL is — lower is visited earlier.
 
@@ -117,12 +132,17 @@ def crawl_visit_priority(url: str) -> int:
 
     * **0** — carries a query string already: a parameterised route, the highest-
       value thing a crawl can hand the planner.
-    * **1** — an ordinary application page (no extension, or a handler
+    * **1** — a route under a conventional API prefix. On a single-page
+      application this is the *entire* server-side surface: the HTML pages are
+      one shell and every parameter the app takes is carried to an ``/api``
+      route. Ranked with application pages rather than below them, because on an
+      SPA target there are no application pages to rank below.
+    * **2** — an ordinary application page (no extension, or a handler
       extension). This is where forms live.
-    * **2** — a source/help viewer or other low-value page.
-    * **3** — a documentation / translation artifact.
-    * **4** — a static asset: no form, no link, nothing to enrich.
-    * **5** — a doubled-path crawl artifact: not a route at all.
+    * **3** — a source/help viewer or other low-value page.
+    * **4** — a documentation / translation artifact.
+    * **5** — a static asset: no form, no link, nothing to enrich.
+    * **6** — a doubled-path crawl artifact: not a route at all.
 
     Args:
         url: Absolute URL as discovered by the crawl.
@@ -133,14 +153,16 @@ def crawl_visit_priority(url: str) -> int:
     parsed = urlparse(url)
     path = parsed.path.lower()
     if has_repeated_path_block(path):
-        return 5
+        return 6
     extension = path_extension(path)
     if extension in STATIC_ASSET_EXTENSIONS:
-        return 4
+        return 5
     if extension in DOC_ASSET_EXTENSIONS:
-        return 3
+        return 4
     if any(fragment in path for fragment in LOW_VALUE_PATH_FRAGMENTS):
-        return 2
+        return 3
     if parsed.query:
         return 0
-    return 1
+    if is_api_path(path):
+        return 1
+    return 2
