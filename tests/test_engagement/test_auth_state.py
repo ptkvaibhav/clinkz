@@ -249,8 +249,15 @@ def test_a_bare_403_is_not_session_loss(status: int, body: str) -> None:
     assert not looks_unauthenticated(status, {}, body)
 
 
+def _armed(threshold: int = 3, **kwargs: int) -> SessionSentinel:
+    """A sentinel with a session to watch. Disarmed is covered separately."""
+    sentinel = SessionSentinel(threshold=threshold, **kwargs)
+    sentinel.arm()
+    return sentinel
+
+
 def test_the_sentinel_needs_a_streak_before_it_raises_the_flag() -> None:
-    sentinel = SessionSentinel(threshold=3)
+    sentinel = _armed(threshold=3)
     for _ in range(2):
         sentinel.observe(401, {}, "")
     assert not sentinel.reauth_needed
@@ -260,17 +267,99 @@ def test_the_sentinel_needs_a_streak_before_it_raises_the_flag() -> None:
 
 
 def test_a_healthy_response_resets_the_sentinel() -> None:
-    sentinel = SessionSentinel(threshold=2)
+    sentinel = _armed(threshold=2)
     sentinel.observe(401, {}, "")
     sentinel.observe(200, {}, "ok")
     sentinel.observe(401, {}, "")
     assert not sentinel.reauth_needed
 
 
-def test_clearing_counts_the_reauthentication() -> None:
-    sentinel = SessionSentinel(threshold=1)
+def test_a_disarmed_sentinel_cannot_report_a_loss() -> None:
+    """You cannot lose what you never had.
+
+    Everything before the first proven session — the login POSTs, the mechanism
+    probes, the form-auth attempts that fail before the JSON path succeeds — is
+    unauthenticated by definition. A live run had the sentinel raise its flag on
+    exactly those, six seconds before the session existed.
+    """
+    sentinel = SessionSentinel(threshold=3)
+    for _ in range(12):
+        sentinel.observe(401, {}, "")
+
+    assert not sentinel.reauth_needed
+    assert sentinel.losses_detected == 0
+    assert sentinel.pre_session_signals == 12
+
+
+def test_only_a_successful_reauthentication_is_counted_as_one() -> None:
+    """The counter records what happened, not what was attempted.
+
+    It used to be incremented on the way IN to re-authentication, before
+    anything had been tried, so a run with no credential to re-authenticate
+    with still reported having re-authenticated. The report is where that
+    number is read.
+    """
+    sentinel = _armed(threshold=1)
     sentinel.observe(401, {}, "")
     assert sentinel.reauth_needed
-    sentinel.clear()
+    sentinel.clear(reauthenticated=True)
     assert not sentinel.reauth_needed
     assert sentinel.reauths_triggered == 1
+    assert sentinel.false_alarms == 0
+
+    sentinel.observe(401, {}, "")
+    sentinel.clear(reauthenticated=False)
+    assert sentinel.reauths_triggered == 1, "a failed re-auth was counted as a success"
+    assert sentinel.false_alarms == 1
+
+
+def test_a_session_free_response_is_not_evidence_about_the_session() -> None:
+    """The defect a live run exposed, in one test.
+
+    Every one of that run's fifteen "session losses" was a 401 from a request
+    the engine had deliberately sent with no session: the auth-mechanism probe
+    that POSTs empty credentials, and the anonymous control whose 401 IS the
+    proof the session works. Counting them means the tool reports losing a
+    session at the exact moment it proves it has one.
+    """
+    sentinel = _armed(threshold=3)
+    for _ in range(10):
+        sentinel.observe(401, {}, "", session_bearing=False)
+
+    assert not sentinel.reauth_needed
+    assert sentinel.losses_detected == 0
+    assert sentinel.control_responses_ignored == 10
+
+
+def test_a_session_free_response_does_not_reset_a_genuine_streak_either() -> None:
+    """Ignored in BOTH directions.
+
+    A control says nothing about the session, so letting it clear a real streak
+    would be exactly as wrong as letting it start one — and the anonymous
+    control is issued right next to the authenticated request it is compared
+    against, so it lands mid-streak by construction.
+    """
+    sentinel = _armed(threshold=3)
+    sentinel.observe(401, {}, "")
+    sentinel.observe(200, {}, "public page", session_bearing=False)
+    sentinel.observe(401, {}, "")
+    assert not sentinel.reauth_needed
+    sentinel.observe(401, {}, "")
+    assert sentinel.reauth_needed
+    assert sentinel.losses_detected == 3
+
+
+def test_scattered_losses_still_earn_one_verification() -> None:
+    """A dead session diluted by public 200s must not be invisible forever.
+
+    Consecutive-only counting means any interleaved success resets the run, and
+    a concurrent phase supplies those constantly. The escalation ceiling is what
+    turns "never noticed" into "checked once".
+    """
+    sentinel = _armed(threshold=3, escalation=4)
+    for _ in range(4):
+        sentinel.observe(401, {}, "")
+        sentinel.observe(200, {}, "public")
+    assert sentinel.reauth_needed
+    assert sentinel.losses_detected == 4
+    assert sentinel.checks_requested == 1

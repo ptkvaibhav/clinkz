@@ -249,12 +249,36 @@ async def test_state_change_ceiling_halts(tmp_path: Path) -> None:
 async def test_a_raising_observer_cannot_break_a_request(tmp_path: Path) -> None:
     governor = _governor(tmp_path)
 
-    def _explode(status: int, headers: dict[str, str], body: str) -> None:
+    def _explode(
+        status: int, headers: dict[str, str], body: str, *, session_bearing: bool = True
+    ) -> None:
         raise RuntimeError("observer bug")
 
     seen: list[int] = []
     governor.add_response_observer(_explode)
-    governor.add_response_observer(lambda s, h, b: seen.append(s))
+    governor.add_response_observer(lambda s, h, b, session_bearing=True: seen.append(s))
 
     governor.observe_response(status=200, headers={}, body="ok")
     assert seen == [200], "a broken observer stopped a later one from running"
+
+
+@pytest.mark.asyncio
+async def test_the_governor_tells_observers_whether_the_session_was_carried(
+    tmp_path: Path,
+) -> None:
+    """``session_bearing`` reaches the observer verbatim.
+
+    Only the request seam knows whether a request carried the engagement's
+    session. An observer left to infer it from the response reads the 401 of a
+    deliberate anonymous control as proof the session died.
+    """
+    governor = _governor(tmp_path)
+    seen: list[bool] = []
+    governor.add_response_observer(
+        lambda s, h, b, session_bearing=True: seen.append(session_bearing)
+    )
+
+    governor.observe_response(status=401, headers={}, body="", session_bearing=False)
+    governor.observe_response(status=401, headers={}, body="")
+
+    assert seen == [False, True]
