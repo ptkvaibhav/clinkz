@@ -39,8 +39,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
@@ -93,6 +93,21 @@ _BLOCK_BODY_SIGNATURES = (
 #: Response headers whose presence identifies an edge/WAF vendor. Only counted
 #: alongside a blocking status.
 _WAF_HEADERS = ("cf-ray", "x-sucuri-id", "x-iinfo", "x-akamai-transformed", "x-waf-event")
+
+
+class ResponseObserver(Protocol):
+    """A watcher fed every response the engagement receives."""
+
+    def __call__(
+        self,
+        status: int,
+        headers: dict[str, str],
+        body: str,
+        *,
+        session_bearing: bool = True,
+    ) -> None:
+        """Handle one response. Must be cheap and must not raise."""
+        ...
 
 
 class EngagementHaltedError(EngagementAbortedError):
@@ -201,16 +216,23 @@ class EngagementGovernor:
         # Extra watchers fed every response. The session sentinel registers here
         # rather than the governor importing it, which keeps the safety package
         # free of any dependency on the engagement's auth logic.
-        self._observers: list[Callable[[int, dict[str, str], str], None]] = []
+        self._observers: list[ResponseObserver] = []
         self._logger = logging.getLogger(f"{__name__}.EngagementGovernor")
 
-    def add_response_observer(self, observer: Callable[[int, dict[str, str], str], None]) -> None:
-        """Register a callback fed ``(status, headers, body)`` for every response.
+    def add_response_observer(self, observer: ResponseObserver) -> None:
+        """Register a callback fed every response the engagement receives.
 
-        Used by the session sentinel: it needs to see every response the
-        engagement receives, and no methodology can be relied on to report that
-        it has been logged out — the code that lost the session is exactly the
-        code that will not notice.
+        The callback is invoked as
+        ``observer(status, headers, body, session_bearing=…)``. Used by the
+        session sentinel: it needs to see every response the engagement
+        receives, and no methodology can be relied on to report that it has been
+        logged out — the code that lost the session is exactly the code that
+        will not notice.
+
+        ``session_bearing`` is the request seam's answer to "did this request
+        actually carry the session?", which only the seam knows. An observer
+        that had to guess would count the engagement's own anonymous controls as
+        losses, which is precisely what it used to do.
 
         Args:
             observer: A cheap, non-raising callable. An exception from an
@@ -393,8 +415,9 @@ class EngagementGovernor:
         status: int,
         headers: dict[str, str] | None = None,
         body: str = "",
+        session_bearing: bool = True,
     ) -> None:
-        """Feed a response back for blocking detection.
+        """Feed a response back for blocking detection and session watching.
 
         Consecutive blocked responses trip the halt; any clean response resets
         the counter, so an isolated 403 from a working authorization control —
@@ -404,10 +427,14 @@ class EngagementGovernor:
             status: HTTP status code.
             headers: Response headers.
             body: Response body.
+            session_bearing: Whether the originating request carried the
+                engagement's session material. Passed straight through to the
+                observers; blocking detection deliberately ignores it, because a
+                WAF blocks anonymous and authenticated requests alike.
         """
         for observer in self._observers:
             try:
-                observer(status, headers or {}, body)
+                observer(status, headers or {}, body, session_bearing=session_bearing)
             except Exception as exc:  # noqa: BLE001 — a watcher must never break a request
                 self._logger.warning("Response observer raised: %s", exc)
 
@@ -568,6 +595,7 @@ __all__ = [
     "EngagementGovernor",
     "EngagementHaltedError",
     "RequestDecision",
+    "ResponseObserver",
     "TargetBlockingDetectedError",
     "get_active_governor",
     "set_active_governor",
