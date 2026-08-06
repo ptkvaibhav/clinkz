@@ -199,6 +199,41 @@ def test_a_json_body_field_satisfies_the_injection_preconditions() -> None:
     assert not _endpoint_meets_precondition("body_param", plain, "/api/x")
 
 
+def test_body_param_is_only_given_to_the_generic_injection_classes() -> None:
+    """A signal that matches almost everything is not a signal (LESSONS #46).
+
+    On an API target nearly every write endpoint carries a body param, so
+    ``body_param`` may only mean "this class injects into ANY field whose value
+    reaches a sink". A class needing a *particular kind* of field — a
+    credential, an identifier, a content field — must discriminate with its own
+    vocabulary instead. A live run caught the regression: with ``body_param``,
+    ``_test_brute_force`` graded 0 on twenty endpoints holding no credential.
+    """
+    from clinkz.agents.exploit import _CLASS_PRECONDITIONS
+
+    with_body = {m for m, pre in _CLASS_PRECONDITIONS.items() if "body_param" in pre}
+    assert with_body == {
+        "_test_sqli",
+        "_test_nosqli",
+        "_test_ssti",
+        "_test_cmdi",
+        "_test_xss_stored",
+    }
+
+    # Isolating the change: a body param no longer counts as brute-force's own
+    # surface. (A POST still grades 0 for it through the pre-existing generic
+    # `form` precondition — that breadth is the open engine-side item recorded
+    # in LESSONS #46 and is deliberately NOT widened here, because changing it
+    # would move the established DVWA baseline this branch must not disturb.)
+    basket = _json_endpoint(f"{BASE}/api/BasketItems", "ProductId", "quantity")
+    assert _endpoint_meets_precondition("body_param", basket, "/api/basketitems")
+    assert "body_param" not in _CLASS_PRECONDITIONS["_test_brute_force"]
+
+    # A login body is brute-force's surface via the class's own vocabulary.
+    login = _json_endpoint(f"{BASE}/rest/user/login", "email", "password")
+    assert _endpoint_class_relevance("_test_brute_force", login) == 0
+
+
 def test_an_api_write_outranks_a_bare_route_for_the_injection_classes() -> None:
     """Without this the class's own surface lands in the same tie bucket as the
     site's static routes and is dropped at the plan cap."""
