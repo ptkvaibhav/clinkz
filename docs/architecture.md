@@ -80,15 +80,70 @@ checkpoints.
 6. Build structured ScanResult         (CODE)
 ```
 
-For HTTP services the crawl/fuzz fallback chains are augmented by **SPA/API
-route discovery** (`agents/_route_discovery.py`): a set of pluggable
-`RouteDiscoverer`s — `StaticBundleDiscoverer` (parse the SPA shell's JS bundles
-and webpack chunks for `/api`+`/rest` route literals, including interpolated and
-path-param forms) and `OpenAPIDiscoverer` (parse a served OpenAPI/Swagger spec —
-including `requestBody` schemas into JSON-body params, with local-`$ref`
-resolution and remote-ref rejection as an SSRF guard — else probe a tight set of
-conventional JSON roots plus a curated JSON-POST body fallback). Results union
-into `HTTPScanResult.endpoints` (additive, deduped) and flow to Exploit with
+The phase runs under its **own wall-clock budget** (`SCAN_TIME_BUDGET`, default
+900 s). The orchestrator's generic phase timeout is a force-kill that discards
+the agent's return value, so an over-running scan produces not a smaller attack
+surface but none at all — steps 5 and the enrichment loop consult the budget and
+stop, and the partial map is returned with the shortfall named in the coverage
+gaps. The orchestrator's own scan timeout is `scan_time_budget + grace`, and both
+early-stop paths carry through whatever the agent already delivered.
+
+For HTTP services the crawl/fuzz fallback chains are augmented by **API surface
+discovery** (`agents/_route_discovery.py`): a set of pluggable
+`RouteDiscoverer`s. **None of them carries a list of endpoint names, body field
+names, or route words for any particular application** — such a table reports
+the same surface whether or not the target has it, which is recall rather than
+discovery, and is how a general capability decays into a target detector.
+
+* `JSCallSiteDiscoverer` — the richest source, and the only one that can learn a
+  **method** or a **request body** with no served spec.
+  `agents/_js_api_mining.py` reads the frontend's own **HTTP call sites**
+  (`fetch`, XHR `.open`, axios, Angular `HttpClient`, and browser *navigation*
+  via `location.replace`/`href`), recovering method, URL template, query params
+  and body shape. Two things make it work on the minified bundles a target
+  actually serves: the URL is resolved **backwards** through the nearest
+  preceding class-field binding (`host = this.hostServer + "/api/X"`, where a
+  minifier has reused `host` in forty classes), and a body shape is recovered
+  from member accesses on the body argument — scoped to the **enclosing
+  function** and cut at the response-handling chain, because a fixed window gave
+  one endpoint the fields of its neighbour and `.pipe(o => o.data)` reads the
+  *response* under the same one-letter name. A body the source never names stays
+  unknown; unknown is a fact, not an invitation to guess.
+* `StaticBundleDiscoverer` — the same bundles scanned for route *literals* under
+  the conventional `api`/`rest` prefixes. Weaker (no method, no body), but it
+  catches routes referenced where the call-site reader cannot resolve them.
+* `OpenAPIDiscoverer` — parse a served OpenAPI/Swagger spec, including
+  `requestBody` schemas into JSON-body params, with local-`$ref` resolution and
+  remote-ref rejection as an SSRF guard. With no parseable spec it emits
+  **nothing**.
+* `GraphQLDiscoverer` — probe conventional GraphQL paths; when introspection is
+  open, each query/mutation field becomes an endpoint with its declared argument
+  names. When introspection is **disabled** that is recorded as a fact and no
+  operations are emitted.
+
+What the source cannot say is then learned from the live target
+(`agents/_api_schema.py`) using **safe methods only** — the probe is restricted
+to `GET`/`HEAD`/`OPTIONS` and that restriction is asserted at the seam:
+
+* `learn_allowed_methods` — `OPTIONS` per route, read from the resource's own
+  `Allow` header. `Access-Control-Allow-Methods` is deliberately **not** read as
+  an inventory: it is a blanket CORS policy, and doing so manufactured 105 write
+  endpoints out of one wildcard header against a live target.
+* `learn_body_schema_from_representation` — a REST collection's records name the
+  fields its writes accept, and reading them is a `GET`. Server-managed fields
+  (identifiers, ORM timestamps) are stripped; a bare-object *status envelope* is
+  not treated as a record. A shape already read from the frontend's source is
+  never overwritten by one inferred here.
+
+The obvious third source — POST an empty body and read the validation error — is
+**deliberately not built**: measured against the live target, two of six
+endpoints answered `201 Created` and the probe *created records*, including an
+account, during surface mapping. Error responses are still read when one arrives
+(`field_names_from_error`); nothing provokes one. The login body instead comes
+from the request shape the **authenticator proved**, which is the one schema no
+representation and no frontend destructuring can reach.
+
+Results union into `HTTPScanResult.endpoints` (additive, deduped) and flow to Exploit with
 their **param structure and location** (`ParamLocation`: query / json_body /
 form_body / path / cookie / session, on `Endpoint.param_locations` +
 `content_type`; `cookie`/`session` carry cross-request injection points invisible
@@ -108,9 +163,34 @@ carrier (`_cookie_send_probe` overrides one ambient cookie; `_session_send_probe
 POSTs a session-setter then GETs the trigger, for setter→session→trigger sinks) —
 and the form-shaped
 methodologies (stored-XSS / CSRF / brute-force) iterate `_injectable_forms`,
-which synthesizes a JSON pseudo-form for body-only endpoints (e.g. `POST
-/api/Feedbacks {comment}`) that have no HTML `<form>`. JSON requests carry the
-same cookie + JWT-bearer session as form posts.
+which synthesizes a JSON pseudo-form for body-only endpoints that have no HTML
+`<form>`. JSON requests carry the same cookie + JWT-bearer session as form posts.
+
+Inside a structured body a field is a **path**, not a name
+(`agents/_json_body.py`): `config.app.name`, `items[0].sku`. `_build_json_body`
+writes each one into place with `set_json_path`, so the body that goes out has
+the shape the target declared. Two rules keep the probe reaching the sink —
+only **leaves** are written (replacing a container would destroy the object
+holding the field under test), and every **sibling keeps a benign value**,
+because an endpoint that validates its input rejects a body whose unrelated
+fields were blanked or dropped and a rejected request never reaches the sink.
+That is the form-field rule generalized to structure. The NoSQL operator carrier
+delegates to the same builder, so the operator and string carriers cannot
+disagree about what a nested field is.
+
+On the response side the echo-comparison guard undoes **JSON** string escaping
+alongside HTML entities and SQL backslashes — a JSON API re-encodes the payload
+on the way out (`<` → `<`), and without it the guard cannot find the echo
+it exists to blank. `locate_in_body` reports *where* in the structure a marker
+came back: `data[0].comment` is a record the application stored,
+`errors[0].msg` is the API quoting our input back — the JSON analogue of
+"reflected in an executable context".
+
+Ranking follows: `_CLASS_PRECONDITIONS` gains `body_param`, so a class whose
+injection point is a body field grades an API write as **its own surface**
+rather than tying with the site's static routes and being dropped at the plan
+cap, and `crawl_visit_priority` lifts a conventional API route above an ordinary
+page — on an SPA there are no other pages.
 
 ### Research (`agents/research.py`) — runs concurrently
 
