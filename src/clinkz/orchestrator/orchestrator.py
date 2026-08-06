@@ -48,6 +48,7 @@ from clinkz.discovery import (
     derive_successor_edges,
     predicate_point_version,
 )
+from clinkz.engagement.artifact_scan import SCAN_REPORT_FILENAME, run_disclosure_gate
 from clinkz.engagement.auth_state import (
     PROTECTED_PATH_CANDIDATES,
     AuthAssertion,
@@ -287,6 +288,10 @@ class OrchestratorAgent:
         self._auth_mechanism: AuthMechanism = AuthMechanism.NONE
         self._reauth_credential: RoleCredential | None = None
         self._reauth_login_url: str = ""
+        # Scan, Research and Exploit poll the same sentinel concurrently, so the
+        # verify-and-refresh sequence is serialised. Two simultaneous re-logins
+        # would race to write _role_sessions and push the loser's token.
+        self._session_reauth_lock = asyncio.Lock()
 
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
@@ -635,6 +640,14 @@ class OrchestratorAgent:
                     trace_writer.close()
                 finally:
                     set_active_trace_writer(None)
+
+                # The disclosure gate runs LAST, once every writer has flushed,
+                # and reads the bundle back off disk with its own eyes. It
+                # deliberately shares no state with the redaction that produced
+                # those files: a guarantee checked by the logic that makes it is
+                # not checked at all, which is exactly how five live session
+                # tokens sat in a trace under a check reporting zero leaks.
+                summary["artifact_scan"] = self._run_disclosure_gate(engagement_id)
 
             await state.update_engagement_status(engagement_id, "completed")
 
@@ -2118,6 +2131,12 @@ class OrchestratorAgent:
 
         assertion: AuthAssertion = primary_session["assertion"]
         self._auth_assertion = assertion
+        # There is now a session to lose. Everything before this point was
+        # unauthenticated by definition — the login POSTs, the mechanism probes,
+        # the form-auth attempts that fail before the JSON path succeeds — and a
+        # live run had the sentinel fire on exactly those, seconds before the
+        # session it was watching for existed.
+        self._session_sentinel.arm()
         self._logger.info(
             "AUTHENTICATED STATE PROVEN as '%s' — %s at %s (auth=%d anon=%d)",
             primary_session["username"],
@@ -2254,23 +2273,61 @@ class OrchestratorAgent:
         return "\n".join(lines)
 
     async def _reauthenticate_running_agents(self) -> None:
-        """Re-authenticate and push the fresh session into the running agents.
+        """Verify the session the sentinel flagged, and refresh it if it is dead.
 
-        The sentinel raised the flag from a response; acting on it is the
-        Orchestrator's job because it owns the engagement session. Pushing the
-        refreshed cookies into the live agent instances is a deliberate
-        coupling: an agent reads its session once, at task start, so without
-        this the remainder of the phase would keep using the dead one — which is
+        The sentinel raised a flag from a heuristic; acting on it is the
+        Orchestrator's job because it owns the engagement session. Two things
+        happen here that the sentinel deliberately cannot do for itself.
+
+        **The oracle decides, not the heuristic.** Before re-authenticating we
+        re-run :func:`assert_authenticated` — the same with-session /
+        without-session comparison that proved the session at startup. A run of
+        401s from an authorization boundary the scan legitimately walked into
+        looks identical to a dead session from the outside; only the assertion
+        can tell them apart. A verified-alive session is a false alarm, recorded
+        as one, and costs two requests instead of a needless re-login that
+        rotates a working token mid-phase.
+
+        **Only a success counts as a re-authentication.** The counter used to be
+        incremented on the way IN, before anything had been attempted, so a run
+        with no credential to re-authenticate with still reported having
+        re-authenticated. The report is where that number is read; a recovery
+        nobody made must not appear in it.
+
+        Pushing the refreshed cookies into the live agent instances is a
+        deliberate coupling: an agent reads its session once, at task start, so
+        without this the remainder of the phase would keep using the dead one —
         exactly the "half the engagement ran unauthenticated" failure this
         machinery exists to prevent.
+
+        Three phases poll the same sentinel concurrently, so the whole sequence
+        is serialised: two simultaneous re-logins would race to write
+        ``_role_sessions`` and the loser's token would be pushed to the agents.
         """
-        self._session_sentinel.clear()
+        async with self._session_reauth_lock:
+            if not self._session_sentinel.reauth_needed:
+                # A concurrent phase already handled this flag.
+                return
+            await self._verify_and_refresh_session()
+
+    async def _verify_and_refresh_session(self) -> None:
+        """The body of :meth:`_reauthenticate_running_agents`, under the lock."""
         cred = self._reauth_credential
+
+        if await self._session_still_proven(cred):
+            self._logger.info(
+                "Session-loss signals did not survive verification — the session is "
+                "still authenticated; continuing without re-authenticating"
+            )
+            self._session_sentinel.clear(reauthenticated=False)
+            return
+
         if cred is None or not self._reauth_login_url:
             self._logger.warning(
                 "Session loss detected but no credential is available to "
                 "re-authenticate with — continuing with the session we have"
             )
+            self._session_sentinel.clear(reauthenticated=False)
             return
 
         self._logger.warning("Session lost — re-authenticating as '%s'", cred.username)
@@ -2286,6 +2343,7 @@ class OrchestratorAgent:
                 "may run unauthenticated; this is recorded in the report",
                 cred.username,
             )
+            self._session_sentinel.clear(reauthenticated=False)
             return
 
         headers = {"Authorization": f"Bearer {result.bearer_token}"} if result.bearer_token else {}
@@ -2306,11 +2364,56 @@ class OrchestratorAgent:
                     break
 
         pushed = self._push_session_to_agents(result.session_cookies, headers)
+        self._session_sentinel.clear(reauthenticated=True)
         self._logger.info(
             "Re-authenticated as '%s' — session pushed to %d running agent(s)",
             cred.username,
             pushed,
         )
+
+    async def _session_still_proven(self, cred: RoleCredential | None) -> bool:
+        """Whether the flagged session still passes the authenticated assertion.
+
+        Re-runs the startup proof against the URL it originally succeeded at, so
+        the verification is the same oracle rather than a second heuristic. A
+        probe failure returns ``False``: "we could not verify" must fall through
+        to re-authentication, never be read as "it is fine".
+
+        Args:
+            cred: The credential whose session is in question.
+
+        Returns:
+            ``True`` only when the assertion re-established the boundary.
+        """
+        if cred is None or not self._engagement_id:
+            return False
+        session = self._role_sessions.get(cred.role) or {}
+        cookies = session.get("cookies") or {}
+        headers = session.get("headers") or {}
+        if not cookies and not headers:
+            return False
+
+        previous: AuthAssertion | None = session.get("assertion")
+        candidates = [
+            *([previous.url] if previous and previous.url else []),
+            *([cred.assert_url] if cred.assert_url else []),
+        ]
+        if not candidates:
+            return False
+
+        probe = _ToolHttpProbe(self._scope, self._engagement_id)
+        try:
+            assertion = await assert_authenticated(
+                probe,
+                candidates,
+                cookies=cookies,
+                headers=headers,
+                username=cred.username,
+            )
+        except Exception as exc:  # noqa: BLE001 — verification failure is not proof of health
+            self._logger.warning("Session verification probe failed: %s", exc)
+            return False
+        return assertion.established
 
     def _push_session_to_agents(self, cookies: dict[str, str], headers: dict[str, str]) -> int:
         """Write a refreshed session onto every running agent that holds one."""
@@ -2328,6 +2431,44 @@ class OrchestratorAgent:
                 agent._session_headers = dict(headers)
         return pushed
 
+    def _run_disclosure_gate(self, engagement_id: str) -> dict[str, Any]:
+        """Scan the finished bundle for credential material and report it.
+
+        Runs after every writer has flushed, so what it sees is what an operator
+        would hand over. A failure does not retract the report — the findings
+        are still the client's — but it is stated at ERROR and recorded in the
+        run summary, because "this bundle must not leave the building" is
+        information the operator needs before they attach it to an email.
+
+        Never raises: a scan that crashed must not be the reason a completed
+        engagement reports failure, so the error is recorded instead.
+        """
+        root = Path("outputs") / engagement_id
+        try:
+            report = run_disclosure_gate(root, engagement_id=engagement_id)
+        except Exception as exc:  # noqa: BLE001 — a gate must not sink the run
+            self._logger.error("Artifact disclosure gate could not run: %s", exc, exc_info=True)
+            return {"status": "error", "error": str(exc), "root": str(root)}
+
+        if not report.clean:
+            self._logger.error(
+                "DO NOT SHARE outputs/%s — the artifact disclosure gate found "
+                "%d credential shape(s). See %s.",
+                engagement_id,
+                len(report.findings),
+                root / SCAN_REPORT_FILENAME,
+            )
+        return {
+            "status": "clean" if report.clean else "credential_material_found",
+            "root": str(root),
+            "report_file": str(root / SCAN_REPORT_FILENAME),
+            "files_scanned": report.files_scanned,
+            "bytes_scanned": report.bytes_scanned,
+            "credential_findings": len(report.findings),
+            "advisory_suspicions": len(report.suspicions),
+            "summary": report.summary_line(),
+        }
+
     def _authentication_summary(self) -> dict[str, Any]:
         """Authentication state as the report and the run summary render it."""
         assertion = self._auth_assertion
@@ -2338,7 +2479,17 @@ class OrchestratorAgent:
             >= 2,
             "authenticated": bool(assertion and assertion.established),
             "assertion": assertion.model_dump(mode="json") if assertion else None,
+            # Session maintenance, stated so the numbers cannot contradict each
+            # other silently. `session_losses_detected` counts ONLY responses to
+            # requests that actually carried the session; the engagement's own
+            # anonymous controls are counted separately, because a run that
+            # reports fifteen losses and zero re-authentications is telling the
+            # operator nothing unless it also says what those fifteen were.
             "session_losses_detected": self._session_sentinel.losses_detected,
+            "control_responses_ignored": self._session_sentinel.control_responses_ignored,
+            "pre_session_signals": self._session_sentinel.pre_session_signals,
+            "session_checks_performed": self._session_sentinel.checks_requested,
+            "session_false_alarms": self._session_sentinel.false_alarms,
             "reauthentications": self._session_sentinel.reauths_triggered,
         }
 

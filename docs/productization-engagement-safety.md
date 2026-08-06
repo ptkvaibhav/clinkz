@@ -82,17 +82,101 @@ Hygiene is structural first and defensive second:
   credential file under version control is a leaked credential file — and warns
   if it is inside the repo but merely un-ignored.
 * Every loaded secret is registered with `engagement/secrets.py`, whose
-  `redact()` / `redact_structure()` run at the action-log writer and are
-  available to any other artifact writer.
+  `redact()` / `redact_structure()` run at every artifact writer.
 
-*Honest limitation*: redaction is substring replacement, so a secret shorter than
-four characters is accepted but **not** substring-redacted — replacing a
-two-character value would corrupt every artifact it appears in.
+*Honest limitation*: value redaction is substring replacement, so a secret
+shorter than four characters is accepted but **not** substring-redacted —
+replacing a two-character value would corrupt every artifact it appears in.
 `register_secret` returns `False` and the loader warns, so the gap is visible.
 
 `tests/test_engagement/test_gate_and_secrets.py::test_the_supplied_password_appears_in_no_artifact`
 takes a real password through the action log, the persisted scope, and the
 credential model, and asserts the plaintext appears in none of them.
+
+### What a report bundle may contain
+
+Everything under `outputs/<engagement_id>/` is the deliverable — not just
+`report_<id>.md`. The trace, the action log, the tool-invocation records and the
+step inputs travel with it, and an operator who zips the directory has handed
+over all of it. The contract is one sentence:
+
+> **An artifact handed to a client must never carry a usable session token.**
+
+Where a token's *presence* is the evidence, the artifact records a **fingerprint**
+instead — a salted hash prefix plus the algorithm, the registered `iss`/`sub`
+claims, and the NAMES of the remaining claims:
+
+```
+[REDACTED:JWT sha256=032980c2f6e5 alg=RS256 claims=[data{email,password,role,…},iat,status]]
+```
+
+That is enough to correlate (*this* token was accepted where *that* one was
+rejected — same value, same fingerprint) and useless to replay. Naming the claims
+is deliberate: it tells the reader the token's payload carried a password hash
+without the artifact carrying one. The salt is per-process, so a short
+low-entropy value cannot be recovered by hashing a dictionary.
+
+**Two definitions of "secret", because one was not enough.** Redaction removes a
+string for what it IS (a registered value) *and* for what it LOOKS LIKE
+(`engagement/credential_shapes.py` — JWTs, `Authorization`/`Cookie`/`Set-Cookie`
+values, vendor API keys, PEM private-key blocks). Value-only redaction is
+structurally incapable of removing credential material the engagement
+**captures** rather than one the operator **supplies**: a live authenticated run
+wrote five session JWTs into `trace.jsonl`, one of whose payload carried the
+account's password hash and TOTP secret, and every writer was redacting
+correctly the whole time. Nothing was registered, so nothing was removed. Shape
+redaction is always on, registry or not.
+
+Cookie **names** survive and cookie **values** do not, because a name is evidence
+(`Endpoint.sets_cookies` records names for exactly this reason) and a value is
+the session.
+
+*Cost, stated rather than hidden*: `clinkz tool-invoke <id> <seq> --replay` can no
+longer replay an authenticated request verbatim — the credential in the recorded
+argv is a fingerprint. Re-authenticate and replay against a fresh session. A
+replayable token in a client deliverable is the defect, not a feature.
+
+### The disclosure gate (`engagement/artifact_scan.py`)
+
+The contract above is enforced by the writers and **checked independently** by a
+gate that runs automatically at the end of every engagement, after every writer
+has flushed. It reads the bundle back off disk and looks with its own eyes.
+
+That independence is the point. The check in place when the JWTs leaked searched
+for the credential values the operator had *configured*, and a token the target
+issued is not one of those — so it reported zero leaks, truthfully, about the
+wrong question. **A guarantee asserted by the same logic that produces it is not
+checked at all.** The gate shares the shape *vocabulary* with the redactor (so the
+two cannot drift) but re-reads the bytes rather than trusting the write path.
+
+Two severities, and only one fails the gate:
+
+| Severity | What it is | Effect |
+|---|---|---|
+| `credential` | a definite shape — JWT with a decoding header, `Authorization` value, cookie value, vendor key, PEM private key | **fails loudly**: ERROR log, `status: credential_material_found` in the run summary, `DO NOT SHARE` |
+| `suspicious` | the entropy heuristic — long, high-entropy, mixed-charset, matching no shape | reported, never fatal |
+
+The entropy rule lives only in the gate, never in the redactor. This tool's
+evidence is *made of* alarming-looking strings — payloads, extracted hashes,
+base64 from an XXE response — so an entropy rule on the write path would shred
+findings, and one that failed the gate would cry wolf until it was ignored, which
+is the same as not having a gate.
+
+**The scan report never contains what it found**: a finding carries the kind, the
+file, line and column, the length and a fingerprint, never the value, not even a
+prefix. A leak report that reproduces the leak is a new artifact with the same
+defect.
+
+The verdict is written to `outputs/<id>/artifact_scan.json` — the last file
+written, and excluded from its own scan so a re-run is idempotent. Re-run it by
+hand over any bundle, including an older one, with:
+
+```
+python -m clinkz artifact-scan <engagement_id>
+```
+
+which exits non-zero when credential material is present, so it can be used as a
+release check before anything is sent.
 
 ### `--dry-run`
 
@@ -156,14 +240,59 @@ every response the engagement receives. That placement matters: the code that
 lost the session is exactly the code that will not notice.
 
 It keys on being sent back to the login surface (401, a login redirect, a body
-that has become a login form) and requires a streak, not a single signal. A bare
-403 does **not** count — 403 is the correct answer to an authorization probe, and
-the IDOR class produces them deliberately.
+that has become a login form). A bare 403 does **not** count — 403 is the correct
+answer to an authorization probe, and the IDOR class produces them deliberately.
+
+**Only a session-bearing response is evidence about the session.** A live run
+reported `session_losses_detected=15` and `reauthentications=0`, and both numbers
+were wrong in opposite directions. Every one of the fifteen came from a request
+the engine had deliberately sent with *no session at all*:
+
+* the auth-mechanism probe that POSTs empty credentials to a candidate login
+  route, whose 401 is the **positive** signal that an API login endpoint exists;
+* the anonymous control in `assert_authenticated`, whose 401 **is the proof** the
+  session works.
+
+The sentinel was counting the controls that prove authentication as evidence
+authentication had been lost. `HTTPClientTool` is the only code that knows
+whether a request carried the session, so it passes `session_bearing` through
+`governor.observe_response` to the observers; a session-free response is now
+ignored in **both** directions — it does not count as a loss and does not reset a
+streak either, because it says nothing about the session in either direction.
+
+The zero was structural as well. The flag needed *N consecutive* signals through
+one sentinel fed by three concurrent phases, so any interleaved success reset it.
+A second trigger — `escalation`, a total of scattered session-bearing losses —
+means a genuinely dead session diluted by public-page 200s still earns one check
+instead of being invisible forever.
+
+**The flag is a hypothesis; the assertion is the oracle.** `reauth_needed` means
+"verify the session", not "the session is dead". The Orchestrator re-runs
+`assert_authenticated` against the URL the startup proof succeeded at, because a
+run of 401s from an authorization boundary the scan legitimately walked into is
+indistinguishable from a dead session at the response level. A session that
+re-proves itself is recorded as a **false alarm** and costs two requests instead
+of a needless re-login that rotates a working token mid-phase. Verification
+failure is not proof of health: if the probe cannot be made, it falls through to
+re-authentication.
+
+`reauthentications` counts **successes only**. It used to be incremented on the
+way *in*, before anything had been attempted, so a run with no credential to
+re-authenticate with still reported having re-authenticated — in the report,
+which is where an operator reads that number.
+
+The whole verify-and-refresh sequence is serialised behind a lock: Scan, Research
+and Exploit poll the same sentinel concurrently, and two simultaneous re-logins
+would race to write `_role_sessions` and push the loser's token.
 
 On a confirmed loss the Orchestrator re-authenticates and **pushes the fresh
 session into the live agent instances** (`_push_session_to_agents`). An agent
 reads its session once, at task start, so without that push the rest of the phase
 would keep using the dead one.
+
+The report renders all five counters and explains them, so
+"15 losses / 0 re-authentications" can never again be printed without saying what
+the fifteen were.
 
 ### Multi-role
 
@@ -332,7 +461,9 @@ and it is sound" or "we could not look".
 | `models/vuln_classes.py` | class registry — label, capability, limitation, remediation |
 | `models/report.py` | `NotTestedItem` / `NotTestedCategory` + the report header fields |
 | `engagement/gate.py` | the refusals (dependency-free, so the governor can import it) |
-| `engagement/secrets.py` | credential intake + the redaction registry |
+| `engagement/secrets.py` | credential intake + the redaction chokepoint (values AND shapes) |
+| `engagement/credential_shapes.py` | the one credential-shape vocabulary; redactor + gate share it |
+| `engagement/artifact_scan.py` | the disclosure gate over `outputs/<id>/` |
 | `engagement/auth_state.py` | mechanism detection, the assertion, `SessionSentinel` |
 | `engagement/dryrun.py` | `--dry-run` |
 | `safety/destructive.py` | the default-deny classifier |

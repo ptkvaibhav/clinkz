@@ -263,7 +263,7 @@ class HTTPClientTool(ToolBase):
         finally:
             governor.release()
 
-        self._observe(governor, raw)
+        self._observe(governor, raw, session_bearing=not args.get("no_session"))
         return raw
 
     async def _dispatch(self, args: dict[str, Any]) -> str:
@@ -275,8 +275,16 @@ class HTTPClientTool(ToolBase):
         return await self._execute_aiohttp(args)
 
     @staticmethod
-    def _observe(governor: Any, raw: str) -> None:
-        """Feed the response back to the governor for blocking detection."""
+    def _observe(governor: Any, raw: str, *, session_bearing: bool = True) -> None:
+        """Feed the response back to the governor for blocking + session watching.
+
+        ``session_bearing`` is the whole point of doing this here rather than in
+        an observer: this seam is the only code that knows whether the request
+        carried the engagement's session. A ``no_session`` request is an
+        anonymous control by construction — its 401 is the intended result — and
+        an observer forced to infer that from the response alone will read the
+        proof that authentication works as proof that it broke.
+        """
         try:
             data = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
@@ -287,6 +295,7 @@ class HTTPClientTool(ToolBase):
             status=int(data.get("status_code") or 0),
             headers=data.get("response_headers") or {},
             body=data.get("response_body") or "",
+            session_bearing=session_bearing,
         )
 
     # ------------------------------------------------------------------
