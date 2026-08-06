@@ -302,11 +302,16 @@ class TestCrawlVisitPriority:
         ("url", "expected"),
         [
             ("http://t/app/fi/?page=x", 0),
-            ("http://t/app/brute/", 1),
-            ("http://t/app/view_source.php", 2),
-            ("http://t/docs/README.md", 3),
-            ("http://t/static/main.css", 4),
-            ("http://t/app/app/x/", 5),
+            # An API route ranks with — and now just above — an ordinary
+            # application page: on a single-page app the /api routes ARE the
+            # surface, and there are no other pages to rank them below.
+            ("http://t/api/items", 1),
+            ("http://t/rest/user/whoami", 1),
+            ("http://t/app/brute/", 2),
+            ("http://t/app/view_source.php", 3),
+            ("http://t/docs/README.md", 4),
+            ("http://t/static/main.css", 5),
+            ("http://t/app/app/x/", 6),
         ],
     )
     def test_grades(self, url: str, expected: int) -> None:

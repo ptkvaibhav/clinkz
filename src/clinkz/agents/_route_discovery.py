@@ -9,14 +9,28 @@ param routes a methodology needs (``/rest/products/search?q=``, ``/rest/basket/:
 This module recovers those routes deterministically from sources that do not
 require a browser:
 
-* :class:`StaticBundleDiscoverer` — fetch the SPA shell, pull its ``<script src>``
-  bundles, and regex-extract route-shaped string literals (anchored on the
-  ``api``/``rest`` prefixes and a tight set of known top-level routes), with
-  path/query param structure.
+* :class:`JSCallSiteDiscoverer` — fetch the SPA shell and its bundles and read
+  the **HTTP call sites** out of them: method, URL template, query parameters
+  and, where the source reveals it, the request **body shape**. The frontend
+  declares the API contract; this reads that declaration rather than guessing at
+  it. It is the only source of a request body on a target that serves no spec,
+  and the only source of a method other than GET. See
+  :mod:`clinkz.agents._js_api_mining`.
+* :class:`StaticBundleDiscoverer` — the same bundles, scanned for route-shaped
+  string *literals* under the conventional ``api``/``rest`` prefixes. Weaker
+  than a call site (no method, no body) but it catches routes referenced
+  somewhere the call-site reader cannot resolve.
 * :class:`OpenAPIDiscoverer` — probe conventional spec locations
   (``/openapi.json``, ``/v3/api-docs``, …); when a real JSON spec is present it
-  is the richest, most reliable source. Falls back to a tight conventional
-  JSON-API-root probe when no spec is served.
+  is the richest, most reliable source.
+* :class:`GraphQLDiscoverer` — probe conventional GraphQL endpoints and, if
+  introspection is enabled, read the schema's operations and their argument
+  names. When introspection is **disabled** that is recorded as a fact, not
+  papered over with guessed queries.
+
+No discoverer carries a list of endpoint names, body field names, or route
+words for any particular application. Everything emitted was read from
+something the target served.
 
 The discoverers run behind the :class:`RouteDiscoverer` protocol and are unioned
 by :func:`run_route_discovery`. This is the **seam**: a future
@@ -47,8 +61,9 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
+from clinkz.agents._js_api_mining import ApiCallSite, mine_api_call_sites
 from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.models.scan import Endpoint, ParamLocation
 
@@ -64,24 +79,20 @@ _MAX_SCHEMA_DEPTH = 6  # max $ref/allOf recursion when reading a body schema (cy
 _MAX_BODY_PARAMS = 50  # max body field names read from one operation's requestBody
 
 # --- Route shape ------------------------------------------------------------
-# Distinctive top-level routes that are not under /api or /rest but matter
-# (the alternation is anchored by quotes + a continuation that must be a path
-# separator / query / closing quote, so it will not fire on substrings such as
-# "restaurant" or "redirection").
-_KNOWN_TOP_ROUTES = ("redirect", "ftp", "b2b", "dataerasure", "snippets")
-
-# Route-shaped tokens inside JS. Anchored on a left boundary (so "restaurant"
-# / "redirection" are not matched) and able to start mid-literal (so an
-# interpolated template such as ``${host}/rest/basket/${id}`` still yields
-# ``/rest/basket/``). ``api``/``rest`` must be followed by a ``/resource``; a
-# known top-level route must be followed by ``/`` or ``?`` or a closing quote.
+# Route-shaped tokens inside JS, under the two conventional API path prefixes.
+# Anchored on a left boundary (so "restaurant" / "redirection" are not matched)
+# and able to start mid-literal (so an interpolated template such as
+# ``${host}/rest/basket/${id}`` still yields ``/rest/basket/``).
+#
+# This used to also carry an alternation of five literal top-level route words
+# lifted from one benchmark application. A hardcoded benchmark value is exactly
+# how a general capability decays into a target detector, and it bought nothing
+# a real reader does not: those routes are reachable from the HTML crawl or from
+# a call site, both of which are evidence rather than recall.
 _ROUTE_CHARS = r"A-Za-z0-9_./{}:?=&%\-"
 _ROUTE_RE: re.Pattern[str] = re.compile(
     r"""(?<![A-Za-z0-9_$])"""
-    r"""(?P<route>"""
-    rf"""/?(?:api|rest)/[{_ROUTE_CHARS}]*"""
-    rf"""|/?(?:{"|".join(_KNOWN_TOP_ROUTES)})(?:[/?][{_ROUTE_CHARS}]*|(?=['\"`]))"""
-    r""")""",
+    rf"""(?P<route>/?(?:api|rest)/[{_ROUTE_CHARS}]*)""",
 )
 
 # Capture the ``src`` of every <script> tag (we filter to same-origin .js below).
@@ -103,31 +114,18 @@ _SPEC_PATHS = (
     "/api/openapi.json",
 )
 
-# Tight set of conventional JSON-API roots, probed only when no spec is served.
-# Kept deliberately small — this is a complement, not a fuzz list.
-_KNOWN_API_ROOTS = (
-    "/rest/products",
-    "/rest/user/whoami",
-    "/api/Products",
-    "/api/Users",
-    "/api/Feedbacks",
-    "/api/Challenges",
-)
+# Conventional GraphQL endpoint locations. A path convention is not an
+# application's own vocabulary — these are the paths the GraphQL spec ecosystem
+# standardised on — and each is gated on a real GraphQL response before
+# anything is emitted.
+_GRAPHQL_PATHS = ("/graphql", "/api/graphql", "/v1/graphql", "/query")
 
-# Conventional JSON-POST mutation endpoints and their body field names, probed
-# ONLY when no OpenAPI spec is served (OpenAPI is the richer source). This is
-# the PART-2 fallback: many SPAs (notably Juice Shop, whose served spec is just
-# Swagger-UI HTML + a partial /b2b/v2 doc) expose no parseable spec, so the
-# body shape a state-changing methodology needs cannot be harvested from one.
-# Each entry is gated on a cheap GET that proves the route exists (status !=
-# 404) before a POST endpoint is emitted, so it never invents a phantom route
-# on a target that lacks these conventional paths. Kept deliberately tight —
-# a complement to OpenAPI, not a fuzz list.
-_KNOWN_JSON_POST_BODIES: dict[str, tuple[str, ...]] = {
-    "/rest/user/login": ("email", "password"),
-    "/api/Feedbacks": ("comment", "rating"),
-    "/api/Users": ("email", "password"),  # self-registration
-}
+# Minimal introspection query: operation names and their argument names, which
+# is exactly the parameter inventory a methodology consumes. Deliberately not
+# the full introspection document — we need arguments, not the type system.
+_GRAPHQL_INTROSPECTION = (
+    "{__schema{queryType{name fields{name args{name}}}mutationType{name fields{name args{name}}}}}"
+)
 
 
 @dataclass(frozen=True)
@@ -383,12 +381,17 @@ class OpenAPIDiscoverer:
             endpoints = self._endpoints_from_spec(spec, base_url)
             if endpoints:
                 return endpoints
-        # No parseable spec: fall back to conventional GET roots plus the
-        # curated JSON-POST body probe (the only source of body params when no
-        # spec is served — e.g. on Juice Shop).
-        roots = await self._probe_known_roots(base_url, fetch)
-        post_bodies = await self._probe_known_post_bodies(base_url, fetch)
-        return roots + post_bodies
+        # No parseable spec. There is nothing honest to substitute: a list of
+        # endpoint names and body fields for one benchmark application is not
+        # discovery, it is recall, and it reports the same surface whether or
+        # not the target has it. The call-site reader supplies the routes and
+        # bodies instead, from what this target actually serves.
+        logger.info(
+            "OpenAPI: no parseable spec at %d conventional location(s) — "
+            "the API surface for this target comes from its own JavaScript",
+            len(_SPEC_PATHS),
+        )
+        return []
 
     @staticmethod
     def _parse_spec(res: FetchResult) -> dict | None:
@@ -609,73 +612,207 @@ class OpenAPIDiscoverer:
             param_locations=locations,
         )
 
-    @staticmethod
-    async def _probe_known_roots(base_url: str, fetch: FetchFn) -> list[Endpoint]:
-        """Probe a tight conventional-root set; keep only JSON responders."""
+
+# ---------------------------------------------------------------------------
+# JS call-site discoverer
+# ---------------------------------------------------------------------------
+
+
+class JSCallSiteDiscoverer:
+    """Read the API contract out of the HTTP call sites in a target's own JS.
+
+    The one discoverer that can learn a **method** and a **request body** with
+    no served spec, which is the ordinary case for a modern application. It
+    walks the same bundles as :class:`StaticBundleDiscoverer` and hands each to
+    :func:`~clinkz.agents._js_api_mining.mine_api_call_sites`.
+    """
+
+    name = "js_call_site"
+
+    async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
+        shell = await fetch(base_url)
+        if shell is None or not shell.body:
+            return []
+
+        queue: list[str] = StaticBundleDiscoverer._bundle_urls(shell.body, base_url)
+        visited: set[str] = set()
         endpoints: list[Endpoint] = []
         seen: set[str] = set()
-        for root in _KNOWN_API_ROOTS:
-            res = await fetch(urljoin(base_url, root.lstrip("/")))
-            if res is None:
+        sites_total = 0
+        while queue and len(visited) < _MAX_BUNDLES:
+            bundle_url = queue.pop(0)
+            if bundle_url in visited:
                 continue
-            # 2xx/401/403 + JSON => a real API endpoint exists (auth or not).
-            # A SPA shell answers text/html and is rejected by _looks_like_json.
-            if res.status not in (200, 201, 401, 403):
+            visited.add(bundle_url)
+            res = await fetch(bundle_url)
+            if res is None or not res.body:
                 continue
-            if not _looks_like_json(res):
-                continue
-            ep = _route_to_endpoint(root, base_url)
-            if ep is None:
-                continue
-            key = _structural_key(ep)
-            if key in seen:
-                continue
-            seen.add(key)
-            endpoints.append(ep)
+            body = res.body[:_MAX_BUNDLE_BYTES]
+            for site in mine_api_call_sites(body):
+                sites_total += 1
+                ep = self._site_to_endpoint(site, base_url)
+                if ep is None:
+                    continue
+                key = _structural_key(ep)
+                if key in seen:
+                    continue
+                seen.add(key)
+                endpoints.append(ep)
+                if len(endpoints) >= _MAX_ROUTES:
+                    return endpoints
+            for chunk in StaticBundleDiscoverer._chunk_urls(body, base_url):
+                if chunk not in visited:
+                    queue.append(chunk)
+
+        logger.info(
+            "JS call sites: %d endpoint(s) from %d call site(s) across %d bundle(s)",
+            len(endpoints),
+            sites_total,
+            len(visited),
+        )
         return endpoints
 
     @staticmethod
-    async def _probe_known_post_bodies(base_url: str, fetch: FetchFn) -> list[Endpoint]:
-        """Emit curated JSON-POST endpoints with body params, gated on existence.
+    def _site_to_endpoint(site: ApiCallSite, base_url: str) -> Endpoint | None:
+        """Convert one mined call site into an :class:`Endpoint`.
 
-        For each conventional mutation endpoint in :data:`_KNOWN_JSON_POST_BODIES`,
-        a cheap GET confirms the route exists on this target before a POST
-        :class:`Endpoint` is emitted with its body fields marked ``json_body``
-        and ``content_type=application/json``, so the state-changing
-        methodologies (brute-force, CSRF, stored-XSS) can reach the body
-        injection point even with no served spec.
-
-        Existence test (SPA-200 safe): a SPA shell answers ``200 + text/html``
-        to *any* path, so a bare 200 is not proof a route exists. A route is
-        accepted only when the GET returns JSON (``_looks_like_json``) *or* a
-        non-200, non-404 status (401/403/405/500 — the route exists but rejects
-        the GET method/auth). A 200 that is not JSON is treated as the SPA
-        catch-all and skipped, so no phantom endpoint is invented on a SPA or a
-        target lacking these conventional paths.
+        Off-origin call sites (a third-party API the frontend also talks to) are
+        dropped here: they are outside the engagement's target and the tool
+        layer would refuse them anyway, but nothing out of scope should reach a
+        plan in the first place.
         """
+        raw = site.url_template
+        parsed = urlsplit(urljoin(base_url, raw))
+        base = urlsplit(base_url)
+        if (parsed.scheme, parsed.hostname, parsed.port) != (base.scheme, base.hostname, base.port):
+            return None
+        path = parsed.path
+        # The miner names its interpolations explicitly, so a trailing slash is
+        # just the code's own style — never an implicit collection id.
+        if len(path) > 1:
+            path = path.rstrip("/")
+        if not path.strip("/"):
+            return None
+
+        locations: dict[str, ParamLocation] = {}
+        names: list[str] = []
+
+        def _add(name: str, location: ParamLocation) -> None:
+            if name and name not in locations:
+                names.append(name)
+                locations[name] = location
+
+        for name in site.path_params:
+            _add(name, ParamLocation.PATH)
+        for name in site.query_params:
+            _add(name, ParamLocation.QUERY)
+
+        content_type = site.content_type
+        body_location = (
+            ParamLocation.JSON_BODY
+            if "json" in (content_type or "application/json").lower()
+            else ParamLocation.FORM_BODY
+        )
+        for name in site.body_fields:
+            _add(name, body_location)
+        if site.body_fields and content_type is None:
+            content_type = "application/json"
+
+        url = urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+        return Endpoint(
+            url=url,
+            method=site.method.upper(),
+            params=names,
+            content_type=content_type,
+            param_locations=locations,
+        )
+
+
+# ---------------------------------------------------------------------------
+# GraphQL discoverer
+# ---------------------------------------------------------------------------
+
+
+class GraphQLDiscoverer:
+    """Probe conventional GraphQL endpoints and read the schema when it is open.
+
+    Emits one endpoint per query/mutation field, with its declared argument
+    names as ``json_body`` params (a GraphQL request body is
+    ``{"query": ..., "variables": {...}}``, and the arguments are what a
+    methodology can drive). When an endpoint answers as GraphQL but refuses
+    introspection, that is recorded in :attr:`introspection_disabled` and NO
+    operations are emitted — a disabled schema means we do not know the
+    operations, and guessing them would be inventing surface.
+    """
+
+    name = "graphql"
+
+    def __init__(self) -> None:
+        self.endpoints_seen: list[str] = []
+        self.introspection_disabled: list[str] = []
+
+    async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
+        self.endpoints_seen = []
+        self.introspection_disabled = []
         endpoints: list[Endpoint] = []
-        seen: set[str] = set()
-        for path, fields in _KNOWN_JSON_POST_BODIES.items():
-            res = await fetch(urljoin(base_url, path.lstrip("/")))
-            if res is None or res.status == 404:
-                continue  # route absent / unreachable — do not emit a phantom
-            if res.status == 200 and not _looks_like_json(res):
-                continue  # SPA-200 catch-all, not a real API route
-            parsed = urlsplit(urljoin(base_url, path.lstrip("/")))
-            url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-            ep = Endpoint(
-                url=url,
-                method="POST",
-                params=list(fields),
-                content_type="application/json",
-                param_locations=dict.fromkeys(fields, ParamLocation.JSON_BODY),
-            )
-            key = _structural_key(ep)
-            if key in seen:
+        for path in _GRAPHQL_PATHS:
+            url = urljoin(base_url, path.lstrip("/"))
+            res = await fetch(f"{url}?query={quote(_GRAPHQL_INTROSPECTION)}")
+            if res is None or not _looks_like_json(res):
                 continue
-            seen.add(key)
-            endpoints.append(ep)
-        return endpoints
+            try:
+                data = json.loads(res.body or "")
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(data, dict) or ("data" not in data and "errors" not in data):
+                continue  # JSON, but not a GraphQL response envelope
+            self.endpoints_seen.append(url)
+            envelope = data.get("data")
+            schema = envelope.get("__schema") if isinstance(envelope, dict) else None
+            if not isinstance(schema, dict):
+                self.introspection_disabled.append(url)
+                logger.info(
+                    "GraphQL endpoint at %s answered, but introspection is disabled — "
+                    "its operations are NOT known and none are being guessed",
+                    url,
+                )
+                continue
+            endpoints.extend(self._operations(schema, url))
+        return endpoints[:_MAX_ROUTES]
+
+    @staticmethod
+    def _operations(schema: dict, url: str) -> list[Endpoint]:
+        """One POST endpoint per query/mutation field, args as body params."""
+        out: list[Endpoint] = []
+        for root in ("queryType", "mutationType"):
+            node = schema.get(root)
+            if not isinstance(node, dict):
+                continue
+            fields = node.get("fields")
+            if not isinstance(fields, list):
+                continue
+            for entry in fields[:_MAX_SPEC_PATHS]:
+                if not isinstance(entry, dict):
+                    continue
+                op_name = entry.get("name")
+                if not isinstance(op_name, str) or not op_name:
+                    continue
+                args = [
+                    a.get("name")
+                    for a in (entry.get("args") or [])
+                    if isinstance(a, dict) and isinstance(a.get("name"), str)
+                ]
+                names = [a for a in args if a][:_MAX_BODY_PARAMS]
+                out.append(
+                    Endpoint(
+                        url=f"{url}#{op_name}",
+                        method="POST",
+                        params=names,
+                        content_type="application/json",
+                        param_locations=dict.fromkeys(names, ParamLocation.JSON_BODY),
+                    )
+                )
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +822,12 @@ class OpenAPIDiscoverer:
 
 def default_discoverers() -> list[RouteDiscoverer]:
     """The discoverers run by default, richest-source-last for union stability."""
-    return [StaticBundleDiscoverer(), OpenAPIDiscoverer()]
+    return [
+        JSCallSiteDiscoverer(),
+        StaticBundleDiscoverer(),
+        OpenAPIDiscoverer(),
+        GraphQLDiscoverer(),
+    ]
 
 
 async def run_route_discovery(

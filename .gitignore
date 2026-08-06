@@ -72,6 +72,9 @@ Thumbs.db
 reports/
 outputs/
 *.db
+# SQLite write-ahead-log sidecars — same data, same policy as the db itself.
+*.db-shm
+*.db-wal
 !tests/fixtures/**/*.db
 *.html
 *.pdf
