@@ -61,6 +61,13 @@ logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "scan_system.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
+# Budget (seconds) a coverage-expansion pass is assumed to need. Measured
+# against a live SPA, one pass — full crawl, 80-URL rate-limited enrichment,
+# route discovery, schema learning — took about six minutes. Starting a pass
+# with less than this left is how the phase overruns and gets force-killed,
+# which loses the whole map instead of trimming it.
+_EXPANSION_MIN_REMAINING = 420
+
 
 class ScanAgent(BaseAgent):
     """Attack surface mapper — tool-driven with LLM supervision and fallback chains.
@@ -224,20 +231,29 @@ class ScanAgent(BaseAgent):
         )
 
         # Step 5: Expand coverage if insufficient (TOOL — conditional).
-        # Coverage expansion re-runs the whole crawl chain, so it is the step
-        # most likely to push the phase past its budget — and it is also the
-        # most optional: it adds to a map that already exists. Skipping it keeps
-        # the map; running it past the deadline used to lose the map entirely.
-        if not coverage.sufficient and self._budget_exhausted():
+        # Coverage expansion re-runs the WHOLE HTTP scan per gap — crawl,
+        # enrichment, route discovery, schema learning — so it is both the step
+        # most likely to push the phase past its budget and the most optional:
+        # it adds to a map that already exists.
+        #
+        # The entry test is "is there enough budget left to finish a pass",
+        # not merely "has the budget run out". Those differ, and the difference
+        # is the whole fix: with a sliver of budget remaining, one pass starts,
+        # overruns, and the orchestrator's backstop force-kills the agent —
+        # which loses the ENTIRE map rather than trimming it. Measured on a live
+        # SPA, the first expansion pass alone took ~6 minutes.
+        if not coverage.sufficient and self._budget_remaining() < _EXPANSION_MIN_REMAINING:
             self._logger.warning(
-                "Step 5: SKIPPED — scan budget exhausted; returning the surface mapped so far "
-                "(%d gap(s) left unexpanded: %s)",
+                "Step 5: SKIPPED — %.0fs of scan budget left, less than the %ds an expansion "
+                "pass needs; returning the surface mapped so far (%d gap(s) unexpanded: %s)",
+                self._budget_remaining(),
+                _EXPANSION_MIN_REMAINING,
                 len(coverage.gaps),
                 "; ".join(coverage.gaps[:3]),
             )
             coverage.gaps.append(
                 "Coverage expansion was skipped: the scan phase's wall-clock budget "
-                "(SCAN_TIME_BUDGET) elapsed first."
+                "(SCAN_TIME_BUDGET) would not have covered another pass."
             )
         elif not coverage.sufficient:
             self._logger.info("Step 5: Expanding coverage (%d gaps)", len(coverage.gaps))
@@ -435,7 +451,13 @@ class ScanAgent(BaseAgent):
         self._session_setter_refs: dict[str, list[str]] = {}
         self._response_features: dict[str, dict[str, Any]] = {}
 
-        # Crawl using fallback chain
+        # Crawl using fallback chain. Skipped outright once the budget is gone:
+        # this method is re-entered once per coverage gap, and a crawl started
+        # past the deadline cannot deliver anything the caller will still be
+        # alive to return.
+        if self._budget_exhausted():
+            self._logger.warning("HTTP scan of %s: crawl skipped — scan budget exhausted", url)
+            return HTTPScanResult(technologies_detected=list(tech_stack))
         try:
             crawl_tool, crawl_result = await self._resolver.try_until_sufficient(
                 "web_crawling",
@@ -502,18 +524,23 @@ class ScanAgent(BaseAgent):
                 len(discovered),
             )
 
-        # Fuzz using fallback chain
-        try:
-            fuzz_tool, fuzz_result = await self._resolver.try_until_sufficient(
-                "directory_fuzzing",
-                3,
-                self._run_fuzz_tool,
-                url,
-            )
-            if fuzz_result:
-                directories = [str(d) for d in fuzz_result]
-        except ValueError:
-            self._logger.warning("No fuzzing tools available")
+        # Fuzz using fallback chain. Directory fuzzing adds paths, never
+        # parameters, so it is the first thing to drop when time is short.
+        if self._budget_exhausted():
+            self._logger.warning("HTTP scan of %s: fuzz skipped — scan budget exhausted", url)
+            fuzz_tool = ""
+        else:
+            try:
+                fuzz_tool, fuzz_result = await self._resolver.try_until_sufficient(
+                    "directory_fuzzing",
+                    3,
+                    self._run_fuzz_tool,
+                    url,
+                )
+                if fuzz_result:
+                    directories = [str(d) for d in fuzz_result]
+            except ValueError:
+                self._logger.warning("No fuzzing tools available")
 
         # Merge parameterized endpoints from crawl fallback (forms, query params).
         if hasattr(self, "_crawl_endpoints") and self._crawl_endpoints:
@@ -1610,7 +1637,21 @@ class ScanAgent(BaseAgent):
         additional: list[ServiceScanResult] = []
         target = recon_result.target
 
-        for gap in gaps:
+        for index, gap in enumerate(gaps):
+            # Each addressable gap re-runs the WHOLE HTTP scan — crawl,
+            # enrichment, route discovery, schema learning — so five gaps mean
+            # up to five more full passes. Checking the budget only on the way
+            # into this step is not enough: the first pass alone can consume
+            # what is left, and then the orchestrator's backstop force-kills the
+            # agent and the entire map is lost rather than trimmed.
+            if self._budget_exhausted():
+                self._logger.warning(
+                    "Coverage expansion: stopping after %d of %d gap(s) — scan budget "
+                    "exhausted; returning the surface mapped so far",
+                    index,
+                    len(gaps),
+                )
+                break
             gap_lower = gap.lower()
             try:
                 if "endpoint" in gap_lower or "url" in gap_lower or "crawl" in gap_lower:
