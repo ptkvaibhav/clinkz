@@ -88,9 +88,31 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
 - **Scan (v2)** — Gemini Flash. LLM plans strategy → service-specific methods
   (HTTP/FTP/SSH/SMB/DB) → LLM reviews output → coverage check → expand via fallback
   chains (`katana→gospider→hakrawler` crawl; `ffuf→gobuster→feroxbuster` fuzz).
-  SPA/API route discovery (`agents/_route_discovery.py`) unions static-JS-bundle +
-  OpenAPI discoverers into `HTTPScanResult.endpoints` (additive; param structure
-  via `ParamLocation`). **Probe-safety** (`_url_safety.py`) never mutates the
+  **The phase budgets its own wall clock** (`SCAN_TIME_BUDGET`, default 900 s):
+  the orchestrator's phase timeout is a force-kill that DISCARDS the agent's
+  return value, so an over-running scan delivers not a smaller attack surface but
+  **none** — coverage expansion and enrichment stop instead, and the partial map
+  is returned and named in the coverage gaps.
+  **API surface discovery** (`agents/_route_discovery.py`) unions four
+  discoverers into `HTTPScanResult.endpoints` (additive; param structure via
+  `ParamLocation`), and **none of them carries any application's vocabulary** —
+  a hardcoded endpoint/body/route-word table reports the same surface whether or
+  not the target has it, which is recall, not discovery:
+  `JSCallSiteDiscoverer` reads the frontend's own **HTTP call sites**
+  (`agents/_js_api_mining.py` — fetch/XHR/axios/HttpClient/navigation → method,
+  URL template, query params, body shape, resolving minified class-field
+  bindings backwards from the call site and scoping a body shape to its
+  enclosing function); `StaticBundleDiscoverer` (route literals under the
+  conventional `api`/`rest` prefixes); `OpenAPIDiscoverer`; `GraphQLDiscoverer`
+  (introspection when open, **recorded as disabled** when not — never guessed).
+  What the source cannot say is learned from the live target with **safe methods
+  only** (`agents/_api_schema.py`): `OPTIONS` for a resource's `Allow` (never
+  `Access-Control-Allow-Methods`, a blanket CORS policy that manufactured 105
+  phantom endpoints), and a collection's own `GET` representation for the fields
+  its writes accept. A `{}`-POST schema probe is deliberately **not** built: it
+  CREATED records on the live target. The login body comes from the shape the
+  **authenticator proved**, the one schema no other source can reach.
+  **Probe-safety** (`_url_safety.py`) never mutates the
   target while mapping it: `is_state_changing_url` gates navigation (WAF toggle,
   logout — the shared engagement session must never be poisoned) and
   `is_destructive_form_submission` gates submission (credential/account mutation,
@@ -273,6 +295,9 @@ src/clinkz/
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
 ├── agents/           # recon, scan, exploit, research, critic, report, _route_discovery,
+│                     #   _js_api_mining (what does the frontend CALL?), _api_schema
+│                     #   (what does the live target ACCEPT? — safe methods only),
+│                     #   _json_body (addressing a field INSIDE a structure),
 │                     #   _url_safety (may we fetch it?), _url_shape (in what order?)
 ├── engagement/       # gate (the refusals), secrets (credentials + redaction chokepoint),
 │                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
@@ -344,6 +369,23 @@ LESSONS #17).
   methodology did not intend to set is omitted — never sent empty-but-present.
 - **A new injection *shape* gets a DEDICATED carrier**; leave the shared
   string-only `_send_probe` untouched.
+- **A body field is a PATH, not a name** (`agents/_json_body.py`) —
+  `config.app.name`, `items[0].sku`. Written into place with `set_json_path`, so
+  the body that goes out has the shape the target declared; only **leaves** are
+  written (replacing a container destroys the object holding the field under
+  test) and **every sibling keeps a benign value** — an endpoint that validates
+  its input rejects a body whose unrelated fields were blanked or dropped, and a
+  rejected request never reaches the sink. The G8 form rule, generalized to
+  structure. On the response side the echo guard undoes **JSON** escaping too (a
+  JSON API re-encodes the payload on the way out, so `<` returns as `<` and
+  the guard cannot otherwise find the echo it exists to blank), and
+  `locate_in_body` reports *where* a marker landed — `data[0].comment` is a
+  stored record, `errors[0].msg` is the API quoting us back.
+- **Surface mapping never writes to the target.** Every API schema learner takes
+  a probe restricted to `GET`/`HEAD`/`OPTIONS`, asserted at the seam. The
+  rejected alternative is instructive: a `{}`-POST read for its validation error
+  answered `201 Created` on two of six live endpoints and *created an account*
+  during discovery, for one field name.
 - **Stack-conditioned branches** (`_is_php_stack`, engine fingerprints, dialect)
   are backed by a deterministic protocol artifact (a `PHPSESSID` cookie, a `.php`
   path, a header) — never the flaky LLM tech list alone (LESSONS #28).

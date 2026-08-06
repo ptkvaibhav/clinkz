@@ -88,14 +88,18 @@ async def test_bundle_discoverer_extracts_api_and_rest_routes_with_params() -> N
     assert "/rest/basket/:id" in by_path
     assert by_path["/rest/basket/:id"].params == ["id"]
 
-    # Plain collection + open-redirect param route.
+    # Plain collection route.
     assert "/api/Feedbacks" in by_path
-    redirects = [ep for ep in endpoints if ep.url.endswith("/redirect")]
-    assert any("to" in ep.params for ep in redirects)
 
     # Interpolated path-param route also recovered.
     assert "/api/Products/:id" in by_path
     assert by_path["/api/Products/:id"].params == ["id"]
+
+    # A route outside the /api and /rest prefixes is NOT this discoverer's job.
+    # It used to be, via an alternation of five literal route words lifted from
+    # one benchmark application; JSCallSiteDiscoverer recovers it from the
+    # navigation idiom instead (see test_call_site_discoverer_finds_navigation).
+    assert "/redirect" not in by_path
 
 
 async def test_bundle_discoverer_rejects_word_lookalikes() -> None:
@@ -210,23 +214,22 @@ async def test_openapi_discoverer_rejects_spa_200_shell() -> None:
     assert await OpenAPIDiscoverer().discover(BASE, fetch) == []
 
 
-async def test_known_roots_probe_keeps_only_json_responders() -> None:
-    """No spec served → tight conventional-root probe keeps JSON responders and
-    drops SPA-shell HTML answers."""
+async def test_no_spec_emits_nothing_rather_than_a_remembered_route_list() -> None:
+    """No parseable spec → the discoverer emits NOTHING.
+
+    It used to fall back to a hardcoded list of one benchmark application's
+    endpoint names and body field names. That list reported the same surface
+    whether or not the target had it, which is recall, not discovery — the
+    routes and bodies now come from the target's own JavaScript instead.
+    """
 
     async def fetch(url: str) -> FetchResult | None:
-        if url.endswith("/rest/products"):
-            return FetchResult(200, '{"data":[]}', {"content-type": "application/json"})
-        # spec paths + other roots: SPA shell
+        # Every path answers the SPA shell: no spec, and no route is provable.
         return FetchResult(
             200, "<!DOCTYPE html><app-root></app-root>", {"content-type": "text/html"}
         )
 
-    endpoints = await OpenAPIDiscoverer().discover(BASE, fetch)
-    paths = {ep.url for ep in endpoints}
-    assert any(u.endswith("/rest/products") for u in paths)
-    # The SPA-shell roots are not emitted.
-    assert not any(u.endswith("/api/Users") for u in paths)
+    assert await OpenAPIDiscoverer().discover(BASE, fetch) == []
 
 
 async def test_openapi_discoverer_extracts_json_body_params() -> None:
@@ -272,49 +275,47 @@ async def test_openapi_discoverer_extracts_json_body_params() -> None:
     assert feedbacks_get[0].content_type is None
 
 
-async def test_known_post_bodies_emitted_when_no_spec() -> None:
-    """fix #4 fallback: with no parseable spec, curated JSON-POST endpoints are
-    emitted with json_body params, gated on the route existing (non-404).
+async def test_no_discoverer_carries_a_target_specific_vocabulary() -> None:
+    """The generality law, asserted against the source rather than described.
 
-    This is the path Juice Shop actually takes — it serves Swagger-UI HTML, not
-    a parseable JSON spec, so OpenAPI parsing finds nothing and this fallback is
-    the only source of body params for POST /rest/user/login and /api/Feedbacks.
+    Route discovery must never recognise an application by name. This reads the
+    module's own constants and fails if any of them spell out an endpoint,
+    route word, or body field belonging to a particular application — the exact
+    regression that turns a general capability back into a target detector.
     """
+    import clinkz.agents._route_discovery as rd
 
-    async def fetch(url: str) -> FetchResult | None:
-        # Every spec path answers the SPA shell (no parseable spec).
-        if any(url.endswith(p) for p in ("/openapi.json", "/swagger.json", "/v3/api-docs")):
-            return FetchResult(
-                200, "<!DOCTYPE html><app-root></app-root>", {"content-type": "text/html"}
-            )
-        if url.endswith("/rest/user/login"):
-            return FetchResult(500, "<html>method error</html>", {"content-type": "text/html"})
-        if url.endswith("/api/Feedbacks"):
-            return FetchResult(
-                200, '{"status":"success","data":[]}', {"content-type": "application/json"}
-            )
-        if url.endswith("/api/Users"):
-            return FetchResult(404, "not found", {"content-type": "text/html"})
-        # Other spec paths + known GET roots: SPA shell (rejected by _looks_like_json).
-        return FetchResult(
-            200, "<!DOCTYPE html><app-root></app-root>", {"content-type": "text/html"}
+    vocabulary: list[str] = []
+    for name, value in vars(rd).items():
+        if name.startswith("__") or not name.isupper():
+            continue
+        if isinstance(value, str):
+            vocabulary.append(value)
+        elif isinstance(value, tuple | list):
+            vocabulary.extend(str(v) for v in value)
+        elif isinstance(value, dict):
+            vocabulary.extend(str(k) for k in value)
+            for v in value.values():
+                vocabulary.extend(str(x) for x in v) if isinstance(v, tuple | list) else None
+
+    haystack = " ".join(vocabulary).lower()
+    # Names from the benchmark applications this engine is validated against.
+    # None of them may appear in a constant: the engine must find these routes
+    # by reading the target, or not at all.
+    for forbidden in (
+        "feedback",
+        "basket",
+        "juice",
+        "dvwa",
+        "b2b",
+        "dataerasure",
+        "snippets",
+        "whoami",
+        "challenges",
+    ):
+        assert forbidden not in haystack, (
+            f"route discovery carries the target-specific token {forbidden!r} in a constant"
         )
-
-    endpoints = await OpenAPIDiscoverer().discover(BASE, fetch)
-    posts = {ep.url: ep for ep in endpoints if ep.method == "POST"}
-
-    login = posts.get(f"{BASE}rest/user/login")
-    assert login is not None, "POST /rest/user/login not emitted by the body fallback"
-    assert set(login.params) == {"email", "password"}
-    assert login.content_type == "application/json"
-    assert all(login.param_locations[p] is ParamLocation.JSON_BODY for p in ("email", "password"))
-
-    feedback = posts.get(f"{BASE}api/Feedbacks")
-    assert feedback is not None
-    assert set(feedback.params) == {"comment", "rating"}
-
-    # /api/Users 404s the existence probe → no phantom POST endpoint emitted.
-    assert f"{BASE}api/Users" not in posts
 
 
 async def test_openapi_discoverer_ignores_remote_ref_ssrf() -> None:

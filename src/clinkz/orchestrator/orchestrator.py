@@ -116,6 +116,13 @@ _EXPLOIT_HARD_GRACE = 30
 # Research can never hold the engagement open indefinitely.
 _RESEARCH_PHASE_GRACE = 150
 
+# Scan phase backstop, behind the Scan Agent's own settings.scan_time_budget.
+# The generic phase timeout is a force-kill that DISCARDS the agent's return
+# value, so on a scan it does not produce a smaller attack surface — it produces
+# none, and the Exploit planner then invents endpoints instead of probing
+# discovered ones. The agent self-caps first; this is only the wall behind it.
+_SCAN_PHASE_GRACE = 180
+
 # Maximum cross-phase re-spins per engagement (e.g., Exploit asks for more recon).
 MAX_CROSS_PHASE_RESPINS = 3
 
@@ -288,6 +295,11 @@ class OrchestratorAgent:
         self._auth_mechanism: AuthMechanism = AuthMechanism.NONE
         self._reauth_credential: RoleCredential | None = None
         self._reauth_login_url: str = ""
+        # The login request shape the authenticator PROVED against this target
+        # (url + method + content type + body field names), handed to Scan so
+        # the credential-attack classes have a real injection point on it.
+        # ``None`` until a role authenticates; never populated by a guess.
+        self._proven_login: dict[str, Any] | None = None
         # Scan, Research and Exploit poll the same sentinel concurrently, so the
         # verify-and-refresh sequence is serialised. Two simultaneous re-logins
         # would race to write _role_sessions and push the loser's token.
@@ -770,8 +782,21 @@ class OrchestratorAgent:
             scan_content["session_cookies"] = cookies
         if auth_headers:
             scan_content["session_headers"] = auth_headers
+        if self._proven_login is not None:
+            scan_content["proven_login"] = dict(self._proven_login)
+        # The scan phase gets its OWN budget plus a grace window, exactly like
+        # research. The generic 600 s phase timeout is a force-kill that
+        # DISCARDS the agent's return value: on a real SPA the crawl +
+        # enrichment + coverage-expansion pass ran past it, and the Exploit
+        # planner was handed zero endpoints after the scan had discovered 138.
+        # The agent now self-caps at settings.scan_time_budget and returns a
+        # partial map; this timeout is only the backstop behind that.
         scan_task = asyncio.create_task(
-            self._run_phase("scan", scan_content),
+            self._run_phase(
+                "scan",
+                scan_content,
+                phase_timeout=settings.scan_time_budget + _SCAN_PHASE_GRACE,
+            ),
             name="clinkz-concurrent-scan",
         )
 
@@ -1187,6 +1212,37 @@ class OrchestratorAgent:
     # Phase runner
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _phase_stop_result(
+        status: str,
+        agent_type: str,
+        result: dict[str, Any],
+        **extra: Any,
+    ) -> dict[str, Any]:
+        """The result dict for a phase the orchestrator stopped early.
+
+        Whatever the agent already delivered is carried through. A stop is a
+        reason to stop asking for more, never a reason to discard work the phase
+        already handed over — and on the scan phase the difference is total: its
+        return value IS the attack surface, so dropping it leaves the Exploit
+        planner with no endpoints and every methodology probing an invented URL.
+
+        Args:
+            status: Why the phase stopped (``"timeout"`` / ``"halted"``).
+            agent_type: The phase's agent name.
+            result: Whatever the agent had already delivered (may be empty).
+            **extra: Status-specific detail (halt reason, etc).
+
+        Returns:
+            The phase result dict, including ``result`` when there was one.
+        """
+        return {
+            "status": status,
+            "agent": agent_type,
+            **extra,
+            **({"result": result} if result else {}),
+        }
+
     async def _run_phase(
         self,
         agent_type: str,
@@ -1260,13 +1316,13 @@ class OrchestratorAgent:
                     await self._lifecycle.shut_down(agent_type)
                 except Exception:
                     pass
-                return {
-                    "status": "halted",
-                    "agent": agent_type,
-                    "halt_reason": self._governor.halt_reason,
-                    "halt_detail": self._governor.halt_detail,
-                    **({"result": result} if result else {}),
-                }
+                return self._phase_stop_result(
+                    "halted",
+                    agent_type,
+                    result,
+                    halt_reason=self._governor.halt_reason,
+                    halt_detail=self._governor.halt_detail,
+                )
 
             # Session maintenance. The sentinel sees every response the
             # engagement receives, so a session lost mid-phase is noticed here
@@ -1281,7 +1337,7 @@ class OrchestratorAgent:
                     await self._lifecycle.shut_down(agent_type)
                 except Exception:
                     pass
-                return {"status": "timeout", "agent": agent_type}
+                return self._phase_stop_result("timeout", agent_type, result)
 
             # Drain pending messages for orchestrator
             pending = await self._bus.get_pending(ORCHESTRATOR)
@@ -2184,6 +2240,26 @@ class OrchestratorAgent:
                 ),
             }
             return
+
+        # The authenticator discovered this target's login route and the body
+        # shape that actually returned a token. That is an OBSERVED schema for
+        # the endpoint every credential-attack class targets, and no other
+        # discovery source can reach it: a login body is not in a collection
+        # representation, and a frontend hands its form object straight through
+        # without ever naming the fields. Recorded once, on the first role that
+        # proves a session.
+        if result.auth_body_fields and self._proven_login is None:
+            self._proven_login = {
+                "url": result.login_url or login_url,
+                "method": "POST",
+                "content_type": result.auth_content_type or "application/json",
+                "fields": list(result.auth_body_fields),
+            }
+            self._logger.info(
+                "Login request shape observed at %s: %s",
+                self._proven_login["url"],
+                ", ".join(self._proven_login["fields"]),
+            )
 
         headers = {"Authorization": f"Bearer {result.bearer_token}"} if result.bearer_token else {}
         assertion = await self._assert_role_session(
