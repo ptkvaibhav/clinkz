@@ -523,7 +523,7 @@ def looks_unauthenticated(status: int, headers: dict[str, str], body: str) -> bo
 
 
 class SessionSentinel:
-    """Watches responses for session loss and triggers re-authentication.
+    """Watches responses for session loss and asks for re-authentication.
 
     Registered as a response observer on the governor, so it sees every response
     the engagement receives without any methodology having to cooperate. That
@@ -531,46 +531,162 @@ class SessionSentinel:
     failure this exists to prevent, and it will not be noticed by the code that
     caused it.
 
+    **Only a session-bearing response is evidence about the session.** This is
+    the correction a live run forced. Every one of the fifteen "session losses"
+    that run reported came from a request the engine had deliberately sent with
+    no session at all: the auth-mechanism probe that POSTs empty credentials and
+    reads the 401 as *positive* proof an API login route exists, and the
+    anonymous control in :func:`assert_authenticated` whose 401 IS the proof the
+    session works. The sentinel was counting the controls that prove
+    authentication as evidence authentication had been lost — and because those
+    arrive in short runs separated by ordinary 200s, the consecutive counter
+    never reached the threshold either. Fifteen signals, zero re-authentications,
+    and both numbers were wrong.
+
+    So a response to a session-free request is ignored in BOTH directions: it
+    does not count as a loss, and it does not reset the run either. It says
+    nothing about the session, and resetting on it would be exactly as wrong as
+    counting it.
+
     Re-authentication itself is asynchronous and belongs to the Orchestrator, so
-    this class only raises the flag; :attr:`reauth_needed` is polled.
+    this class only raises the flag; :attr:`reauth_needed` is polled. The flag
+    means "check the session", not "the session is dead" — the Orchestrator
+    re-runs the assertion oracle before acting, so a heuristic never gets to
+    decide on its own.
 
     Args:
-        threshold: Consecutive session-loss signals before the flag is raised.
-            More than one, because a single protected-resource redirect during
-            ordinary probing is not proof the session died.
+        threshold: Consecutive session-bearing loss signals before the flag is
+            raised. More than one, because a single protected-resource redirect
+            during ordinary probing is not proof the session died.
+        escalation: Total session-bearing loss signals since the last check that
+            raise the flag regardless of whether they were consecutive. Scattered
+            losses across a concurrent phase are still worth one verification;
+            without this, a genuinely dead session whose failures interleave with
+            public-page 200s is diluted away forever.
+
+    **Disarmed until a session exists.** You cannot lose what you never had. Every
+    request before the first successful assertion is unauthenticated by
+    definition — the login POSTs, the mechanism probes, the form-auth attempts
+    that fail before the JSON path succeeds — and counting those as session
+    LOSSES made the sentinel fire during startup, on a live run, seconds before
+    the session it was watching for had even been established.
+    :meth:`arm` is called once the assertion proves a session.
+
+    Attributes:
+        losses_detected: Session-bearing loss signals seen after arming.
+        control_responses_ignored: Session-free responses that looked
+            unauthenticated and were deliberately not counted. Reported, so the
+            exclusion is visible rather than silent.
+        pre_session_signals: Unauthenticated responses seen before any session
+            was established. Also reported, for the same reason.
+        checks_requested: Times the flag was raised.
+        reauths_triggered: Times re-authentication actually SUCCEEDED.
+        false_alarms: Times the flag was raised and the assertion found the
+            session alive after all.
     """
 
-    def __init__(self, threshold: int = 3) -> None:
+    def __init__(self, threshold: int = 3, *, escalation: int = 9) -> None:
         self.threshold = max(1, threshold)
+        self.escalation = max(self.threshold, escalation)
         self._consecutive = 0
+        self._since_check = 0
         self._reauth_needed = False
+        self._armed = False
         self.losses_detected = 0
+        self.control_responses_ignored = 0
+        self.pre_session_signals = 0
+        self.checks_requested = 0
         self.reauths_triggered = 0
+        self.false_alarms = 0
+
+    @property
+    def armed(self) -> bool:
+        """Whether a session has been established for this sentinel to watch."""
+        return self._armed
+
+    def arm(self) -> None:
+        """Begin watching — called once authenticated state has been PROVEN.
+
+        Idempotent, and it deliberately discards anything counted beforehand:
+        pre-session signals are startup noise, not history worth carrying into
+        the streak that decides re-authentication.
+        """
+        if self._armed:
+            return
+        self._armed = True
+        self._consecutive = 0
+        self._since_check = 0
 
     @property
     def reauth_needed(self) -> bool:
-        """Whether the Orchestrator should re-authenticate now."""
+        """Whether the Orchestrator should verify (and probably refresh) the session."""
         return self._reauth_needed
 
-    def observe(self, status: int, headers: dict[str, str], body: str) -> None:
-        """Feed one response in."""
-        if looks_unauthenticated(status, headers, body):
-            self._consecutive += 1
-            self.losses_detected += 1
-            if self._consecutive >= self.threshold and not self._reauth_needed:
-                self._reauth_needed = True
-                logger.warning(
-                    "Session appears lost (%d consecutive unauthenticated responses) "
-                    "— re-authentication required",
-                    self._consecutive,
-                )
-        else:
-            self._consecutive = 0
+    def observe(
+        self,
+        status: int,
+        headers: dict[str, str],
+        body: str,
+        *,
+        session_bearing: bool = True,
+    ) -> None:
+        """Feed one response in.
 
-    def clear(self) -> None:
-        """Reset after a successful re-authentication."""
-        self._consecutive = 0
+        Args:
+            status: Response status.
+            headers: Response headers.
+            body: Response body.
+            session_bearing: Whether the request that produced this response
+                actually carried session material. ``False`` for a deliberate
+                anonymous control or an auth-detection probe, whose
+                unauthenticated answer is the intended result and not a symptom.
+        """
+        if not looks_unauthenticated(status, headers, body):
+            if session_bearing and self._armed:
+                self._consecutive = 0
+            return
+        if not session_bearing:
+            self.control_responses_ignored += 1
+            return
+        if not self._armed:
+            self.pre_session_signals += 1
+            return
+
+        self._consecutive += 1
+        self._since_check += 1
+        self.losses_detected += 1
         if self._reauth_needed:
+            return
+        if self._consecutive >= self.threshold:
+            self._raise(f"{self._consecutive} consecutive")
+        elif self._since_check >= self.escalation:
+            self._raise(f"{self._since_check} scattered")
+
+    def _raise(self, how: str) -> None:
+        self._reauth_needed = True
+        self.checks_requested += 1
+        logger.warning(
+            "Session may be lost (%s unauthenticated responses to session-bearing "
+            "requests) — verifying before continuing",
+            how,
+        )
+
+    def clear(self, *, reauthenticated: bool) -> None:
+        """Reset after the Orchestrator has resolved the flag.
+
+        Args:
+            reauthenticated: ``True`` when a re-authentication actually
+                succeeded; ``False`` when the assertion found the session alive,
+                or when re-authentication was impossible or failed. Only a
+                genuine success increments :attr:`reauths_triggered` — a counter
+                that logs an event which did not happen is worse than no
+                counter, because the report then asserts a recovery nobody made.
+        """
+        self._consecutive = 0
+        self._since_check = 0
+        if self._reauth_needed and not reauthenticated:
+            self.false_alarms += 1
+        if reauthenticated:
             self.reauths_triggered += 1
         self._reauth_needed = False
 

@@ -142,8 +142,30 @@ detail → `docs/productization-engagement-safety.md`.**
 - **Credentials are never on `EngagementScope`** — the scope is `model_dump()`-ed
   into the state store, so keeping the `CredentialSet` off it is structural, not
   disciplinary. `SecretStr` passwords; git-tracked credential files are refused
-  outright; `engagement/secrets.py` is the redaction registry every artifact
-  writer runs through (short-secret limit stated, not hidden).
+  outright; `engagement/secrets.py` is the redaction chokepoint every artifact
+  writer runs through — **including the report**, which used to be the one
+  writer that did not (short-secret limit stated, not hidden).
+- **Redaction removes what a secret IS and what it LOOKS LIKE.** Value-only
+  redaction cannot remove credential material the engagement *captures* rather
+  than the operator *supplies* — a session token the target issued was never
+  registered. `engagement/credential_shapes.py` is the **one shape vocabulary**
+  (JWT gated on a decoding header, `Authorization`/`Cookie`/`Set-Cookie` values,
+  vendor keys, PEM blocks), always on, registry or not. A token becomes a
+  **fingerprint** — salted hash prefix + `alg`/`iss`/`sub` + claim NAMES — which
+  correlates within a bundle and replays nowhere. Cookie NAMES survive, cookie
+  VALUES do not. `redact_structure` is **key-aware**, because a `Set-Cookie`
+  value has no intrinsic shape and only the key identifies it.
+- **`engagement/artifact_scan.py` is the disclosure gate**, run automatically
+  after every writer has flushed: it re-reads `outputs/<id>/` off disk and
+  refuses to certify the bundle on the strength of the logic that wrote it. **A
+  guarantee asserted by the same logic that produces it is not checked at all** —
+  the previous check searched for *configured* secret values and truthfully
+  reported zero leaks about the wrong question. Definite shapes FAIL the run
+  loudly (`DO NOT SHARE`); the entropy heuristic is advisory-only and lives ONLY
+  in the gate — an entropy rule on the write path would shred evidence made of
+  alarming-looking strings, and a gate that cried wolf would be ignored. The scan
+  report never reproduces what it found. `clinkz artifact-scan <id>` re-runs it
+  over any bundle and exits non-zero.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`).
   The same URL is fetched with the session and deliberately without it
   (`HTTPClientTool`'s `no_session` — the shared cookie jar would otherwise make
@@ -153,6 +175,18 @@ detail → `docs/productization-engagement-safety.md`.**
   Credentials supplied + assertion failed ⇒ the engagement aborts loudly.
   `SessionSentinel` rides the governor's response observers, because the code
   that lost the session is the code that will not notice.
+- **Only a session-bearing response is evidence about the session.** The HTTP
+  chokepoint is the only code that knows whether a request carried the session,
+  so it passes `session_bearing` through `observe_response`; a session-free
+  response is ignored in BOTH directions (it neither counts as a loss nor resets
+  a streak). Without it the sentinel reads the engine's own anonymous control —
+  whose 401 *is the proof the session works* — as proof the session broke.
+  **The raised flag is a hypothesis; `assert_authenticated` is the oracle**: the
+  Orchestrator re-proves the session before re-authenticating, records a false
+  alarm when it survives, and counts `reauthentications` on **success only** (it
+  used to count the attempt, before anything was tried). Consecutive-counting
+  alone cannot survive a concurrent phase — any interleaved 200 resets it — so a
+  scattered-loss `escalation` ceiling also earns one check.
 - **The rails are absent by default** — `get_active_governor()` is `None` unless
   an engagement installed one and every hook no-ops, so direct methodology
   invocation (smoke suites, replays, drivers) is byte-identical. The governor
@@ -233,13 +267,17 @@ reports the missing capability to the Orchestrator.
 
 ```
 src/clinkz/
-├── cli.py            # Typer CLI: scan / abort / actions / trace inspect / tool-invoke / step-replay
+├── cli.py            # Typer CLI: scan / abort / actions / artifact-scan / trace inspect /
+│                     #   tool-invoke / step-replay
 ├── config.py         # Settings (env vars, per-agent LLM overrides)
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
 ├── agents/           # recon, scan, exploit, research, critic, report, _route_discovery,
 │                     #   _url_safety (may we fetch it?), _url_shape (in what order?)
-├── engagement/       # gate (the refusals), secrets (credentials + redaction),
+├── engagement/       # gate (the refusals), secrets (credentials + redaction chokepoint),
+│                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
+│                     #   shared by the redactor and the gate), artifact_scan (the
+│                     #   disclosure gate over outputs/<id>/),
 │                     #   auth_state (detect / PROVE / maintain), dryrun
 ├── safety/           # destructive (default-deny classifier), governor (rate, concurrency,
 │                     #   kill switch, blocking, window), action_log
@@ -269,6 +307,9 @@ docker/  scripts/  tests/  docs/
   cleanly (the report is still produced).
 - `python -m clinkz actions <engagement_id> [--outcome sent|refused] [--raw]` —
   every state-changing request the run produced: "what did it do to my app?".
+- `python -m clinkz artifact-scan <engagement_id> [--raw]` — the disclosure gate,
+  re-run by hand: does this bundle still carry credential material? Exits
+  non-zero if so. Runs automatically at the end of every engagement.
 - `python -m clinkz trace inspect <engagement_id>` — render an execution trace.
 - `python -m clinkz tool-invoke <engagement_id> <seq> [--replay]` — inspect/replay
   one tool invocation.

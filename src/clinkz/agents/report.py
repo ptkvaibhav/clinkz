@@ -35,6 +35,7 @@ from clinkz.agents.base import BaseAgent
 
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
+from clinkz.engagement.secrets import redact, redact_structure
 from clinkz.llm.base import LLMClient
 from clinkz.models.engagement import AuthorizationRecord, EngagementWindow
 from clinkz.models.finding import (
@@ -313,7 +314,12 @@ class ReportAgent(BaseAgent):
             authentication=authentication,
         )
 
-        report_dict = report.model_dump(mode="json")
+        # The report is the artifact that actually reaches the client, so it
+        # goes through the same redaction chokepoint as the trace and the
+        # invocation records rather than being written raw. It used to be
+        # written raw: every OTHER writer redacted, and the one document
+        # designed to be handed over did not.
+        report_dict = redact_structure(report.model_dump(mode="json"))
 
         # Reports live alongside the rest of the engagement artifacts under
         # ``outputs/<engagement_id>/`` (same convention as trace.jsonl and the
@@ -330,7 +336,7 @@ class ReportAgent(BaseAgent):
         # Write Markdown output
         md_path = output_dir / f"report_{engagement_id}.md"
         md_path.write_text(
-            self._render_markdown(report, finding_models),
+            redact(self._render_markdown(report, finding_models)),
             encoding="utf-8",
         )
         self._logger.info("Markdown report written to %s", md_path)
@@ -658,12 +664,7 @@ class ReportAgent(BaseAgent):
                 )
                 for evidence in assertion.get("evidence") or []:
                     lines.append(f"  - {evidence}")
-                if auth.get("session_losses_detected"):
-                    lines.append(
-                        f"- **Session maintenance:** "
-                        f"{auth.get('session_losses_detected')} loss signal(s) detected, "
-                        f"{auth.get('reauthentications')} re-authentication(s) performed"
-                    )
+                lines.extend(ReportAgent._render_session_maintenance(auth))
             else:
                 lines.append(
                     "- **Authenticated state:** NOT established — this engagement "
@@ -690,6 +691,58 @@ class ReportAgent(BaseAgent):
                     f"{safety.get('halt_detail')}"
                 )
         lines.extend(["", "---", ""])
+
+    @staticmethod
+    def _render_session_maintenance(auth: dict[str, Any]) -> list[str]:
+        """Render session maintenance so the numbers explain themselves.
+
+        A client reading "15 loss signals, 0 re-authentications" cannot tell
+        whether the tool spent the engagement in a broken session or whether the
+        signals were never evidence of anything. A run once printed exactly that
+        line, and the truth was the second: every signal came from the engine's
+        own anonymous controls. Each number now says what it counted, and a
+        flagged check that ended without a re-login is named as the verified
+        false alarm it was rather than left looking like an unhandled failure.
+        """
+        losses = int(auth.get("session_losses_detected") or 0)
+        ignored = int(auth.get("control_responses_ignored") or 0)
+        pre_session = int(auth.get("pre_session_signals") or 0)
+        checks = int(auth.get("session_checks_performed") or 0)
+        false_alarms = int(auth.get("session_false_alarms") or 0)
+        reauths = int(auth.get("reauthentications") or 0)
+        if not (losses or ignored or pre_session or checks or reauths):
+            return []
+
+        detail = [
+            f"{losses} unauthenticated response(s) to session-bearing requests",
+            f"{checks} session verification(s)",
+            f"{reauths} re-authentication(s) performed",
+        ]
+        lines = [f"- **Session maintenance:** {'; '.join(detail)}."]
+        if false_alarms:
+            lines.append(
+                f"  - {false_alarms} flagged check(s) re-proved the session was still "
+                "authenticated; no re-login was needed."
+            )
+        if ignored:
+            lines.append(
+                f"  - {ignored} unauthenticated response(s) came from deliberately "
+                "session-free requests (anonymous controls and login-endpoint "
+                "detection) and are not evidence of session loss."
+            )
+        if pre_session:
+            lines.append(
+                f"  - {pre_session} unauthenticated response(s) preceded the first "
+                "established session (login and mechanism-detection traffic) and are "
+                "not evidence of session loss either."
+            )
+        if checks > reauths + false_alarms:
+            lines.append(
+                f"  - {checks - reauths - false_alarms} check(s) could not be resolved — "
+                "no usable credential, or re-authentication failed. Coverage after "
+                "that point may be unauthenticated."
+            )
+        return lines
 
     @staticmethod
     def _render_not_tested(lines: list[str], report: PentestReport) -> None:
