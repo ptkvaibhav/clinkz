@@ -268,6 +268,13 @@ async def learn_body_schema_from_representation(
     ``json_body`` params and a JSON content type) and returns how many were
     filled.
 
+    When the GET does not yield records — the route errors, or answers with
+    something that is not a collection — the response is still read for **field
+    names the error itself names** (:func:`field_names_from_error`). That
+    response has already arrived; reading it costs nothing and provokes nothing.
+    It is a weaker source than a representation and is used only where the
+    stronger one produced nothing.
+
     Only endpoints that have no body params already are touched: a shape read
     from the frontend's own source is more precise than one inferred from a
     representation, and never gets overwritten by it.
@@ -299,18 +306,16 @@ async def learn_body_schema_from_representation(
         if result is None:
             continue
         status, body, headers = result
-        if status < 200 or status >= 300 or not body:
+        if not body or len(body) > _MAX_BODY_BYTES:
             continue
-        content_type = (headers.get("content-type") or headers.get("Content-Type") or "").lower()
-        if "json" not in content_type and body.lstrip()[:1] not in ("{", "["):
-            continue
-        if len(body) > _MAX_BODY_BYTES:
-            continue
-        try:
-            payload = json.loads(body)
-        except (ValueError, TypeError):
-            continue
-        names = [n for n in record_field_names(payload) if n]
+        names = _representation_fields(status, body, headers)
+        source = "its own representation"
+        if not names:
+            # Nothing collection-shaped came back. The response we already have
+            # may still NAME the fields the route expects; that is the whole of
+            # what an error teaches, and it teaches it without a second request.
+            names = field_names_from_error(body)
+            source = "the field names its response quotes"
         if not names:
             continue
         for ep in by_route[route]:
@@ -324,12 +329,27 @@ async def learn_body_schema_from_representation(
             ep.content_type = ep.content_type or "application/json"
             filled += 1
             logger.info(
-                "Body schema for %s %s learned from its own representation: %s",
+                "Body schema for %s %s learned from %s: %s",
                 ep.method,
                 ep.url,
+                source,
                 ", ".join(names[:8]),
             )
     return filled
+
+
+def _representation_fields(status: int, body: str, headers: dict[str, str]) -> list[str]:
+    """Record field names from a successful JSON collection response, else ``[]``."""
+    if status < 200 or status >= 300:
+        return []
+    content_type = (headers.get("content-type") or headers.get("Content-Type") or "").lower()
+    if "json" not in content_type and body.lstrip()[:1] not in ("{", "["):
+        return []
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return []
+    return [n for n in record_field_names(payload) if n]
 
 
 def _has_body_params(endpoint: Endpoint) -> bool:

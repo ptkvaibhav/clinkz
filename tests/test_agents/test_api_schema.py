@@ -139,6 +139,29 @@ async def test_a_shape_read_from_source_is_never_overwritten() -> None:
     assert post.params == ["precise"]
 
 
+async def test_an_error_response_that_names_a_field_is_still_read() -> None:
+    """The weaker source, used only where the stronger one produced nothing.
+
+    The response has already arrived; reading it provokes nothing. This is what
+    a `{}`-POST probe was supposed to buy, without creating records to get it.
+    """
+    sent: list = []
+    probe = _probe(
+        {
+            ("GET", f"{BASE}/api/notes"): (
+                500,
+                'Error: WHERE parameter "captchaId" has invalid "undefined" value',
+                {"content-type": "text/html"},
+            )
+        },
+        sent,
+    )
+    post = Endpoint(url=f"{BASE}/api/notes", method="POST")
+    assert await learn_body_schema_from_representation([post], probe) == 1
+    assert "captchaId" in post.params
+    assert [m for m, _ in sent] == ["GET"]  # no extra request was made
+
+
 async def test_representation_sweep_only_uses_get() -> None:
     sent: list = []
     probe = _probe({}, sent)
