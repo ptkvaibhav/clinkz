@@ -61,12 +61,17 @@ logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "scan_system.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
-# Budget (seconds) a coverage-expansion pass is assumed to need. Measured
-# against a live SPA, one pass — full crawl, 80-URL rate-limited enrichment,
-# route discovery, schema learning — took about six minutes. Starting a pass
-# with less than this left is how the phase overruns and gets force-killed,
-# which loses the whole map instead of trimming it.
-_EXPANSION_MIN_REMAINING = 420
+# Measured costs of the scan's long steps, against a live SPA. These are what
+# the budget guards compare against: a guard has to know what the work it is
+# about to start COSTS, because "the clock has not run out yet" says nothing
+# about whether the step will finish before it does.
+#
+# One full HTTP pass = crawl + 80-URL rate-limited enrichment + route discovery
+# + directory fuzz + schema learning ≈ 6 min, of which the fuzz alone is ≈ 5 min
+# and logs nothing at all while it runs.
+_COST_EXPANSION_PASS = 420  # a whole re-scan for one coverage gap
+_COST_FUZZ = 330  # directory fuzzing
+_COST_CRAWL = 90  # crawl + enrichment
 
 
 class ScanAgent(BaseAgent):
@@ -123,8 +128,11 @@ class ScanAgent(BaseAgent):
         does: the orchestrator's phase timeout force-kills the agent and
         **discards its return value**, so an over-running scan delivers not a
         smaller map but no map at all — and the Exploit planner then has no
-        endpoints to plan against. Every optional step consults this and
-        degrades to "return what we have".
+        endpoints to plan against.
+
+        Prefer :meth:`_budget_allows` at any guard in front of work that takes
+        real time. This predicate only says the budget is *already* gone, which
+        is too late for a step that is about to spend five minutes.
         """
         return self._deadline is not None and time.monotonic() >= self._deadline
 
@@ -133,6 +141,36 @@ class ScanAgent(BaseAgent):
         if self._deadline is None:
             return float("inf")
         return max(0.0, self._deadline - time.monotonic())
+
+    def _budget_allows(self, seconds_needed: float, what: str) -> bool:
+        """Whether enough budget remains to FINISH *seconds_needed* of work.
+
+        This is the question a cooperative budget has to ask, and asking the
+        other one — "has the budget run out?" — is what made the first two
+        attempts at this fail identically. Directory fuzzing takes about five
+        minutes and logs nothing while it runs; started with 104 seconds left it
+        finished 17 seconds after the orchestrator had already given up and
+        thrown the whole attack surface away. The guard has to know what the
+        work costs, not just what the clock says.
+
+        Args:
+            seconds_needed: Measured cost of the step about to run.
+            what: Step name, for the log line when it is skipped.
+
+        Returns:
+            ``True`` when the step may run (always, when unbudgeted).
+        """
+        remaining = self._budget_remaining()
+        if remaining >= seconds_needed:
+            return True
+        self._logger.warning(
+            "Scan budget: skipping %s — %.0fs left, it needs about %.0fs. "
+            "Returning the surface mapped so far.",
+            what,
+            remaining,
+            seconds_needed,
+        )
+        return False
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -242,12 +280,11 @@ class ScanAgent(BaseAgent):
         # overruns, and the orchestrator's backstop force-kills the agent —
         # which loses the ENTIRE map rather than trimming it. Measured on a live
         # SPA, the first expansion pass alone took ~6 minutes.
-        if not coverage.sufficient and self._budget_remaining() < _EXPANSION_MIN_REMAINING:
+        if not coverage.sufficient and not self._budget_allows(
+            _COST_EXPANSION_PASS, "coverage expansion (Step 5)"
+        ):
             self._logger.warning(
-                "Step 5: SKIPPED — %.0fs of scan budget left, less than the %ds an expansion "
-                "pass needs; returning the surface mapped so far (%d gap(s) unexpanded: %s)",
-                self._budget_remaining(),
-                _EXPANSION_MIN_REMAINING,
+                "Step 5: SKIPPED — %d gap(s) left unexpanded: %s",
                 len(coverage.gaps),
                 "; ".join(coverage.gaps[:3]),
             )
@@ -455,8 +492,7 @@ class ScanAgent(BaseAgent):
         # this method is re-entered once per coverage gap, and a crawl started
         # past the deadline cannot deliver anything the caller will still be
         # alive to return.
-        if self._budget_exhausted():
-            self._logger.warning("HTTP scan of %s: crawl skipped — scan budget exhausted", url)
+        if not self._budget_allows(_COST_CRAWL, f"the crawl of {url}"):
             return HTTPScanResult(technologies_detected=list(tech_stack))
         try:
             crawl_tool, crawl_result = await self._resolver.try_until_sufficient(
@@ -525,9 +561,10 @@ class ScanAgent(BaseAgent):
             )
 
         # Fuzz using fallback chain. Directory fuzzing adds paths, never
-        # parameters, so it is the first thing to drop when time is short.
-        if self._budget_exhausted():
-            self._logger.warning("HTTP scan of %s: fuzz skipped — scan budget exhausted", url)
+        # parameters, so it is the first thing to drop when time is short — and
+        # it is the single most expensive step, running about five minutes while
+        # logging nothing, which is exactly how the phase overran unnoticed.
+        if not self._budget_allows(_COST_FUZZ, f"directory fuzzing of {url}"):
             fuzz_tool = ""
         else:
             try:
@@ -1624,8 +1661,17 @@ class ScanAgent(BaseAgent):
     ) -> list[ServiceScanResult]:
         """Run additional scans to fill coverage gaps.
 
-        For each gap, tries next tool in the fallback chain or adjusts parameters
-        (bigger wordlist, deeper crawl depth).
+        Every addressable gap re-runs the WHOLE HTTP scan for a service, with
+        the SAME arguments. So the second and third gap naming the same service
+        do byte-identical work: measured on a live SPA, three passes each
+        produced 112 routes and the same seven body schemas, at six minutes
+        apiece, and the third one is what pushed the phase past its budget and
+        got the entire attack surface thrown away.
+
+        Each (service, port) therefore gets **one** expansion pass, and each
+        pass is entered only when enough budget remains to finish it. A gap
+        naming a service already re-scanned is recorded rather than re-run —
+        this is a repeat, not extra coverage.
 
         Args:
             gaps: List of gap descriptions from coverage assessment.
@@ -1636,36 +1682,35 @@ class ScanAgent(BaseAgent):
         """
         additional: list[ServiceScanResult] = []
         target = recon_result.target
+        rescanned_ports: set[int] = set()
 
         for index, gap in enumerate(gaps):
-            # Each addressable gap re-runs the WHOLE HTTP scan — crawl,
-            # enrichment, route discovery, schema learning — so five gaps mean
-            # up to five more full passes. Checking the budget only on the way
-            # into this step is not enough: the first pass alone can consume
-            # what is left, and then the orchestrator's backstop force-kills the
-            # agent and the entire map is lost rather than trimmed.
-            if self._budget_exhausted():
-                self._logger.warning(
-                    "Coverage expansion: stopping after %d of %d gap(s) — scan budget "
-                    "exhausted; returning the surface mapped so far",
-                    index,
-                    len(gaps),
-                )
+            if not self._budget_allows(
+                _COST_EXPANSION_PASS, f"the remaining {len(gaps) - index} coverage gap(s)"
+            ):
                 break
             gap_lower = gap.lower()
             try:
-                if "endpoint" in gap_lower or "url" in gap_lower or "crawl" in gap_lower:
-                    # Re-crawl with deeper settings
+                addressable = any(
+                    token in gap_lower
+                    for token in ("endpoint", "url", "crawl", "directory", "fuzz")
+                )
+                if addressable:
                     http_services = [s for s in recon_result.services.services if s.is_http]
                     for svc in http_services:
-                        result = await self._scan_http_service(target, svc.port, [])
-                        additional.append(
-                            ServiceScanResult(service_type="http", port=svc.port, result=result)
-                        )
-                elif "directory" in gap_lower or "fuzz" in gap_lower:
-                    # Re-fuzz with bigger wordlist
-                    http_services = [s for s in recon_result.services.services if s.is_http]
-                    for svc in http_services:
+                        if svc.port in rescanned_ports:
+                            self._logger.info(
+                                "Coverage expansion: port %d already re-scanned this phase — "
+                                "gap '%s' would repeat identical work, not extend coverage",
+                                svc.port,
+                                gap[:80],
+                            )
+                            continue
+                        if not self._budget_allows(
+                            _COST_EXPANSION_PASS, f"re-scanning port {svc.port}"
+                        ):
+                            break
+                        rescanned_ports.add(svc.port)
                         result = await self._scan_http_service(target, svc.port, [])
                         additional.append(
                             ServiceScanResult(service_type="http", port=svc.port, result=result)

@@ -108,6 +108,37 @@ def test_scan_budget_expires_and_is_reported_as_remaining_time() -> None:
     assert agent._budget_remaining() == 0.0
 
 
+def test_a_budget_guard_asks_whether_the_work_will_finish() -> None:
+    """The distinction that made two consecutive live runs fail identically.
+
+    "Has the clock run out?" is not the question. Directory fuzzing costs about
+    five minutes and logs nothing while it runs; started with 104 seconds left,
+    the phase finished 17 seconds after the orchestrator had already given up
+    and discarded the entire attack surface. A guard in front of expensive work
+    has to know what that work COSTS.
+    """
+    import logging
+
+    from clinkz.agents.scan import _COST_CRAWL, _COST_EXPANSION_PASS, _COST_FUZZ, ScanAgent
+
+    agent = ScanAgent.__new__(ScanAgent)
+    agent._logger = logging.getLogger("test")
+
+    # 104 seconds left — the exact live case.
+    agent._deadline = time.monotonic() + 104
+    assert not agent._budget_exhausted(), "the old guard would have allowed all of this"
+    assert not agent._budget_allows(_COST_FUZZ, "fuzz")
+    assert not agent._budget_allows(_COST_EXPANSION_PASS, "expansion")
+    assert agent._budget_allows(_COST_CRAWL, "crawl")  # 90s fits in 104s
+
+    # Unbudgeted (direct invocation) allows everything.
+    agent._deadline = None
+    assert agent._budget_allows(_COST_EXPANSION_PASS, "expansion")
+
+    # Each cost is ordered by how expensive that step actually is.
+    assert _COST_CRAWL < _COST_FUZZ < _COST_EXPANSION_PASS
+
+
 @pytest.mark.parametrize("status", ["timeout", "halted"])
 def test_a_stopped_phase_keeps_the_result_it_already_delivered(status: str) -> None:
     """Both stop paths return the partial.
