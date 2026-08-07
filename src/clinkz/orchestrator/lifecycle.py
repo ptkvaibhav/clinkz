@@ -149,6 +149,11 @@ class AgentLifecycleManager:
         # provisioned by the Orchestrator preflight (docs/p6-oob-design.md). ``None``
         # ⇒ blind hypotheses defer exactly as before (the black-box floor).
         self._oob_collaborator: OOBCollaborator | None = None
+        # Optional P7 client-side execution oracle, wired onto the Exploit agent
+        # when the Orchestrator preflight resolved one. ``None`` ⇒ DOM-XSS /
+        # client-rendered XSS / CSP candidates stay unproven leads exactly as
+        # before (the black-box floor).
+        self._client_execution_oracle: object | None = None
         # Keyed by agent.name (e.g. "recon", "crawl", "exploit")
         self._records: dict[str, _AgentRecord] = {}
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -202,6 +207,12 @@ class AgentLifecycleManager:
         # object, not an agent-ctor arg); other agents never see it.
         if agent_type == "exploit" and self._oob_collaborator is not None:
             agent._collaborator = self._oob_collaborator  # type: ignore[attr-defined]
+
+        # Same for the P7 client-side execution oracle: it lets the DOM-XSS,
+        # client-rendered XSS and CSP classes confirm on a WITNESSED execution
+        # instead of recording an unproven lead. Absent ⇒ they record the lead.
+        if agent_type == "exploit" and self._client_execution_oracle is not None:
+            agent._client_execution_oracle = self._client_execution_oracle  # type: ignore[attr-defined]
 
         # Shut down any pre-existing agent with the same canonical name
         if agent.name in self._records:
