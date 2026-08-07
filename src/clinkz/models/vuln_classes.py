@@ -208,11 +208,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
         label="DOM-based Cross-Site Scripting",
         capability=_C.CLIENT_SIDE_ORACLE_REQUIRED,
         limitation=(
-            "DOM-based XSS executes in the browser, not in a response body. This "
-            "engine has no client-side execution oracle, so it can identify a "
-            "sink reachable from a controllable source but cannot witness the "
-            "script running. Candidates are reported as unproven leads. A manual "
-            "browser check, or a headless-browser oracle, is required to confirm."
+            "DOM-based XSS executes in the browser, not in a response body. With "
+            "the P7 client-side execution oracle enabled, a candidate is confirmed "
+            "only when an injected single-use nonce is returned from inside the "
+            "page's JavaScript context, with a never-injected control nonce "
+            "staying silent. Where that oracle is not available, this engine can "
+            "identify a sink reachable from a controllable source but cannot "
+            "witness the script running, and candidates are reported as unproven "
+            "leads requiring a manual browser check."
         ),
         title_tokens=(
             "dom xss",
@@ -355,10 +358,16 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
         label="Security Header & Transport Hygiene",
         capability=_C.SERVER_SIDE,
         limitation=(
-            "Content-Security-Policy is assessed as a declared policy only. "
-            "Whether a given policy is actually bypassable depends on how a "
-            "browser resolves it against the page's real script sources, which "
-            "requires a client-side oracle this engine does not have."
+            "Header presence and policy content are assessed from the response "
+            "itself. Whether a Content-Security-Policy is actually BYPASSABLE is a "
+            "question about how a browser resolves it, and is answered only when "
+            "the P7 client-side execution oracle is enabled — and then only for "
+            "the bypass shapes this engine can synthesize (a policy permitting "
+            "inline script, a reused/static nonce, or a same-origin endpoint that "
+            "reflects a parameter into its own JavaScript response). A policy for "
+            "which no shape applies is reported as not bypassed BY THOSE SHAPES, "
+            "which is a limit of this engine's coverage rather than a finding that "
+            "the policy is sound."
         ),
         title_tokens=("security header",),
         remediation=(
