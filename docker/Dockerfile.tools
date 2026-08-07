@@ -53,6 +53,14 @@ RUN ln -sf /usr/bin/httpx-toolkit /usr/local/bin/httpx
 # --break-system-packages required on Kali/Debian with PEP 668 enforcement
 RUN pip3 install --no-cache-dir --break-system-packages wafw00f
 
+# --- P7 client-side execution oracle: Playwright + Chromium ---
+# The oracle witnesses SCRIPT EXECUTION in a real engine, which is the one
+# observation an HTTP client structurally cannot make. Chromium is installed
+# with its own OS dependencies via `playwright install --with-deps` so the
+# image carries a browser that actually launches headless.
+RUN pip3 install --no-cache-dir --break-system-packages playwright && \
+    playwright install --with-deps chromium
+
 # Update nuclei templates (best-effort; skip if no network at build time)
 RUN nuclei -update-templates -silent || true
 

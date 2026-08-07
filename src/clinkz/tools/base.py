@@ -168,6 +168,22 @@ class ToolBase(ABC):
         """
         ...
 
+    @classmethod
+    def native_availability(cls) -> bool | None:
+        """Whether this tool is usable, for tools that are not a PATH binary.
+
+        The resolver decides availability by looking for a binary, which is the
+        right question for ``nmap`` and the wrong one for a tool whose runtime is
+        a Python package plus a downloaded browser. Overriding this lets such a
+        tool answer honestly instead of being forced into one of two lies:
+        "always available" (and failing at use) or "never available".
+
+        Returns:
+            ``True``/``False`` when the subclass can answer definitively, or
+            ``None`` — the default — to fall back to the binary check.
+        """
+        return None
+
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------

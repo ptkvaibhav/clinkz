@@ -67,6 +67,7 @@ _TOOL_MODULES = [
     "clinkz.tools.http_client",
     "clinkz.tools.auth",
     "clinkz.tools.installer",
+    "clinkz.browser.oracle",
 ]
 
 # ---------------------------------------------------------------------------
@@ -104,6 +105,14 @@ _CAPABILITY_KEYWORDS: dict[str, list[str]] = {
     "sqli_detection": ["sqli detect", "blind sql"],
     "database_fingerprinting": ["database fingerprint", "db fingerprint"],
     "http_request": ["http request", "http client", "http get", "http post"],
+    "client_side_execution": [
+        "headless browser",
+        "browser automation",
+        "playwright",
+        "puppeteer",
+        "render page",
+        "execute javascript",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -121,6 +130,11 @@ TOOL_CHAINS: dict[str, list[str]] = {
     "waf_detection": ["wafw00f"],
     "subdomain_discovery": ["subfinder", "amass", "knockpy"],
     "http_request": ["http_client"],
+    # P7 — the client-side execution oracle. Ranked like every other chain; the
+    # alternates are declared preference order, not a claim that they ship.
+    # ``find_tools_ranked`` filters to what is actually available, so an absent
+    # oracle yields an empty chain and the caller keeps its unproven lead.
+    "client_side_execution": ["playwright_chromium", "playwright_firefox", "selenium_chromium"],
 }
 
 # ---------------------------------------------------------------------------
@@ -381,6 +395,14 @@ class ToolResolver:
         """
         if tool_name in self._ALWAYS_AVAILABLE:
             return True
+
+        # A tool whose runtime is a Python package (P7's browser oracle) answers
+        # for itself; only a PATH binary falls through to the binary check.
+        cls = self._name_map.get(tool_name)
+        if cls is not None:
+            native = cls.native_availability()
+            if native is not None:
+                return native
 
         from clinkz.config import settings
 
