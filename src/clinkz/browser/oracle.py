@@ -60,16 +60,43 @@ run code written against this oracle. P6 has no comparable residual, because
 nothing on the target ever sees the collaborator's nonce channel; this is the
 price of an in-browser channel and the reason the binding name is random per
 load rather than fixed.
+
+## Where the browser runs, and why that is not a detail
+
+An oracle has to observe from a machine that can reach the target, and in this
+engine those are not the same machine. `TOOL_EXEC_MODE=docker` is the default —
+and the only mode with a port scanner — so every tool runs inside
+`clinkz-tools`, and `resolve_target_for_docker_mode` rewrites the operator's
+`http://localhost:8080` into `http://clinkz-dvwa:80`: a network alias that
+resolves on the shared bridge and nowhere else. A browser on the host cannot
+resolve that name or route to the bridge subnet, so a host-side oracle in a real
+engagement fails *every* navigation. Meanwhile local mode, where a host browser
+would work, has no `nmap` or `ffuf` on a developer machine. Neither mode could
+deliver P7, which is why it was reachable only from a driver that hand-built its
+own conditions.
+
+So the browser runs where the tools already run. The driving code lives in
+:mod:`clinkz.browser._container_runner`, which imports nothing from Clinkz and
+is delivered to the container's bare `python3` on stdin. Two runtimes call the
+same functions — in-process for local mode, `docker exec` for docker mode — so
+the rails a validation driver exercises are the rails a real engagement runs
+under. The transport is chosen by `TOOL_EXEC_MODE`, which is also what decides
+where `_run_subprocess_stdin` sends the command, so the two cannot disagree.
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from clinkz.browser.csp_policy import parse_csp, same_origin
+from clinkz.browser import _container_runner
+from clinkz.browser._container_runner import RESULT_SENTINEL
+from clinkz.browser.csp_policy import parse_csp
 from clinkz.browser.templates import (
     ClientWitnessTemplateId,
     build_witness_payload,
@@ -77,6 +104,8 @@ from clinkz.browser.templates import (
 )
 from clinkz.browser.witness import ExecutionWitness, WitnessRefusal, WitnessVerdict
 from clinkz.oob.templates import mint_nonce
+from clinkz.safety.action_log import OUTCOME_REFUSED, OUTCOME_SENT
+from clinkz.safety.destructive import subresource_guard_spec
 from clinkz.tools.base import ToolBase, ToolOutput
 
 #: How long to let a page settle after load before giving up on a callback. A
@@ -88,6 +117,30 @@ _NAV_TIMEOUT_MS = 20_000
 
 #: Bound on recorded console lines, so a chatty page cannot bloat an artifact.
 _MAX_CONSOLE_LINES = 25
+
+#: Drive Playwright in this process. Correct when the target is reachable from
+#: here — local exec mode, and the browser test suite's loopback fixture site.
+RUNTIME_IN_PROCESS = "in_process"
+
+#: Drive Playwright inside the tools container, which is where a docker-mode
+#: engagement's rewritten target address is actually routable.
+RUNTIME_CONTAINER = "container"
+
+#: Launch flags the container runtime needs and the host runtime must not be
+#: given gratuitously. Chromium's setuid sandbox cannot initialise as root
+#: inside a container, and ``/dev/shm`` is 64 MB there by default — large pages
+#: crash the renderer without this.
+_CONTAINER_LAUNCH_ARGS = ("--no-sandbox", "--disable-dev-shm-usage")
+
+#: Availability answers, keyed by the runtime they describe. The resolver asks
+#: repeatedly while ranking a capability chain, and the container answer costs a
+#: ``docker exec`` — an availability probe must not cost a process spawn per
+#: call. Keyed rather than a single flag so a changed exec mode re-probes.
+_AVAILABILITY_CACHE: dict[str, bool] = {}
+
+#: Pulls the runner's delimited result out of a stream Chromium, the Playwright
+#: driver and apt-installed libraries are all free to write to.
+_RESULT_RE = re.compile(rf"{re.escape(RESULT_SENTINEL)}(.*)")
 
 
 class ClientExecutionOutput(ToolOutput):
@@ -123,6 +176,10 @@ class PlaywrightExecutionOracle(ToolBase):
     * **CSP is never bypassed.** The context is built with ``bypass_csp=False``
       and the verdict records that it was, because an oracle that disabled CSP
       would confirm every policy ever written.
+    * **Every navigation is in the action log.** Not only a mutating one: what
+      is recorded is that a real engine was pointed at the target and ran its
+      code, and "what did it do to my app" is answered wrongly by a log in which
+      that does not appear.
     """
 
     capabilities = [
@@ -139,6 +196,7 @@ class PlaywrightExecutionOracle(ToolBase):
         timeout: int = 60,
         engagement_id: str | None = None,
         stage: str = "exploit",
+        runtime: str | None = None,
     ) -> None:
         if scope is None:
             from clinkz.models.scope import EngagementScope
@@ -147,10 +205,49 @@ class PlaywrightExecutionOracle(ToolBase):
         super().__init__(scope=scope, timeout=timeout)
         self._engagement_id = engagement_id
         self._stage = stage
+        self._runtime = runtime or self.default_runtime()
+
+    @staticmethod
+    def default_runtime() -> str:
+        """Where the browser should run, given how every other tool is executed.
+
+        Tied to ``TOOL_EXEC_MODE`` rather than configured separately, because
+        the target address an engagement holds is a consequence of that setting:
+        in docker mode it is a container-network alias, and a browser outside
+        that network cannot reach it. Letting the two be set independently would
+        allow exactly one combination that silently fails every navigation.
+        """
+        from clinkz.config import settings
+
+        return RUNTIME_CONTAINER if settings.tool_exec_mode == "docker" else RUNTIME_IN_PROCESS
+
+    @classmethod
+    def runtime_available(cls, runtime: str) -> bool:
+        """Whether Playwright and a launchable Chromium exist for *runtime*.
+
+        Answered about the machine the browser would actually run on. The
+        previous check asked the host unconditionally, which is the wrong
+        question in docker mode and answered it wrongly in both directions: it
+        reported the oracle absent on a host without Playwright even though the
+        tools image ships one, and would have reported it present on a
+        developer host that cannot route to the target.
+
+        Cached per runtime — see :data:`_AVAILABILITY_CACHE`.
+        """
+        cached = _AVAILABILITY_CACHE.get(runtime)
+        if cached is not None:
+            return cached
+        available = (
+            _container_oracle_available()
+            if runtime == RUNTIME_CONTAINER
+            else _container_runner.oracle_available()
+        )
+        _AVAILABILITY_CACHE[runtime] = available
+        return available
 
     @classmethod
     def native_availability(cls) -> bool | None:
-        """Whether the Python package AND a launchable browser are both present.
+        """Whether the oracle is usable, for the runtime this run would use.
 
         Answered honestly rather than optimistically, because the caller uses it
         to decide whether a class *can* be confirmed at all. Claiming the oracle
@@ -158,11 +255,7 @@ class PlaywrightExecutionOracle(ToolBase):
         run-time error in the middle of a methodology; claiming it never exists
         would silently disable P7 wherever it is genuinely installed.
         """
-        try:
-            import playwright.async_api  # noqa: F401
-        except Exception:  # noqa: BLE001 — any import failure means unusable
-            return False
-        return _chromium_binary_present()
+        return cls.runtime_available(cls.default_runtime())
 
     @property
     def name(self) -> str:
@@ -322,13 +415,18 @@ class PlaywrightExecutionOracle(ToolBase):
         from clinkz.agents._url_safety import is_state_changing_url
 
         if is_state_changing_url(args["url"]):
-            return self._refuse(
-                verdict,
-                WitnessRefusal.STATE_CHANGING_URL,
+            reason = (
                 "Navigating this URL would mutate target state; a browser that "
-                "renders it also runs its scripts, so it is refused outright.",
-                started,
+                "renders it also runs its scripts, so it is refused outright."
             )
+            self._log_navigation(
+                outcome=OUTCOME_REFUSED,
+                method=method,
+                url=args["url"],
+                category=WitnessRefusal.STATE_CHANGING_URL.value,
+                reason=reason,
+            )
+            return self._refuse(verdict, WitnessRefusal.STATE_CHANGING_URL, reason, started)
 
         if args["injection"] == "stored":
             # The payload is already on the target; this run only navigates and
@@ -376,6 +474,15 @@ class PlaywrightExecutionOracle(ToolBase):
                 field_names=[args["param"]] if args["param"] and method == "POST" else None,
             )
             if not decision.allowed:
+                self._log_navigation(
+                    outcome=OUTCOME_REFUSED,
+                    method=method,
+                    url=target_url,
+                    category=decision.category,
+                    reason=decision.reason,
+                    signal=decision.signal,
+                    body=post_body,
+                )
                 return self._refuse(
                     verdict,
                     WitnessRefusal.SAFETY_REFUSED,
@@ -383,12 +490,38 @@ class PlaywrightExecutionOracle(ToolBase):
                     started,
                 )
 
+        def _record_attempt() -> None:
+            """Record that this navigation actually went to the target.
+
+            Placed on the outcome rather than before the call, because the two
+            failure modes differ in what they did to the app.
+            ORACLE_UNAVAILABLE means no browser ever launched and not one byte
+            reached the target, so logging it would put an action in the log
+            that never happened — and this log is the artifact an operator reads
+            to answer "what did it do to my app". Every other outcome, including
+            a renderer that crashed mid-load, DID hand the page to an engine
+            that ran the target's code, and is recorded.
+            """
+            self._log_navigation(
+                outcome=OUTCOME_SENT,
+                method=method,
+                url=target_url,
+                reason=(
+                    f"P7 client-side execution oracle rendered this URL in a real "
+                    f"browser ({self._runtime} runtime)"
+                ),
+                body=post_body,
+            )
+
         try:
             await self._render(verdict, target_url, method, post_body, args["cookies"])
         except _OracleUnavailableError as exc:
             return self._refuse(verdict, WitnessRefusal.ORACLE_UNAVAILABLE, str(exc), started)
         except Exception as exc:  # noqa: BLE001 — a browser failure is a refusal, not a verdict
+            _record_attempt()
             return self._refuse(verdict, WitnessRefusal.NAVIGATION_FAILED, str(exc), started)
+        else:
+            _record_attempt()
         finally:
             if governor is not None:
                 governor.release()
@@ -481,6 +614,57 @@ class PlaywrightExecutionOracle(ToolBase):
             query = f"{query}&{placed}" if query else placed
         return urlunsplit((parts.scheme, parts.netloc, parts.path, query, "")), ""
 
+    def _scope_hosts(self, target_url: str) -> list[str]:
+        """Hostnames a subresource may be fetched from, beyond the page's origin.
+
+        The in-browser scope rail cannot call :meth:`EngagementScope.contains`,
+        because the decision has to be made synchronously inside a routing
+        callback that may be running in a container with nothing of Clinkz
+        importable. So the scope is projected to an explicit host list here.
+
+        The projection is one-directional: every host it lists is in scope, and
+        a host it omits is refused. Against a scope written as a CIDR or a
+        wildcard that is *stricter* than ``contains`` — which is the correct
+        direction for a guard whose failure mode is letting a hostile page steer
+        our browser somewhere the engagement does not cover. The cost of an
+        over-refusal is a subresource that does not load, recorded on the
+        verdict; the cost of an under-refusal is a request to a third party.
+        """
+        hosts = {(urlsplit(target_url).hostname or "").lower()}
+        for entry in getattr(self.scope, "targets", []) or []:
+            value = getattr(entry, "value", "") or ""
+            host = urlsplit(value).hostname if "://" in value else value.split(":", 1)[0]
+            if host:
+                hosts.add(host.lower())
+        return sorted(h for h in hosts if h)
+
+    def _build_job(
+        self,
+        verdict: WitnessVerdict,
+        url: str,
+        method: str,
+        post_body: str,
+        cookies: dict[str, str],
+    ) -> dict[str, Any]:
+        """Assemble the JSON job the runner executes, rails included."""
+        return {
+            "url": url,
+            "method": method,
+            "post_body": post_body,
+            "cookies": dict(cookies or {}),
+            "binding_name": verdict.binding_name,
+            "settle_ms": _SETTLE_MS,
+            "nav_timeout_ms": _NAV_TIMEOUT_MS,
+            "max_console_lines": _MAX_CONSOLE_LINES,
+            "launch_args": (
+                list(_CONTAINER_LAUNCH_ARGS) if self._runtime == RUNTIME_CONTAINER else []
+            ),
+            "guard": {
+                "allowed_hosts": self._scope_hosts(url),
+                **subresource_guard_spec(),
+            },
+        }
+
     async def _render(
         self,
         verdict: WitnessVerdict,
@@ -489,202 +673,159 @@ class PlaywrightExecutionOracle(ToolBase):
         post_body: str,
         cookies: dict[str, str],
     ) -> None:
-        """Drive the browser. The only place Playwright is imported."""
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError as exc:  # pragma: no cover - environment-dependent
+        """Run one witness attempt on the selected runtime and record what it saw."""
+        job = self._build_job(verdict, url, method, post_body, cookies)
+        # bypass_csp=False is the whole point of the CSP class: whatever runs,
+        # runs under the policy the target actually served. The runner builds
+        # every context that way and has no parameter through which a caller
+        # could ask otherwise.
+        verdict.bypass_csp_disabled = True
+
+        if self._runtime == RUNTIME_CONTAINER:
+            observation = await self._run_in_container(job)
+        else:
+            observation = await _container_runner.run_witness(job)
+
+        if observation.get("unavailable"):
             raise _OracleUnavailableError(
-                "Playwright is not installed. Install the optional oracle with "
-                "`pip install -e '.[browser]' && playwright install chromium`."
-            ) from exc
+                observation.get("error")
+                or "Playwright or its browser binary is missing where the oracle runs."
+            )
+        if observation.get("error"):
+            raise RuntimeError(observation["error"])
 
-        witnesses: list[ExecutionWitness] = []
-        console: list[str] = []
-        navigated = {"count": 0}
-        blocked_navs: list[str] = []
-        blocked_subs: list[str] = []
+        self._apply_observation(verdict, observation, url)
 
-        async with async_playwright() as pw:
-            try:
-                browser = await pw.chromium.launch(headless=True)
-            except Exception as exc:  # pragma: no cover - environment-dependent
-                raise _OracleUnavailableError(
-                    f"Chromium failed to launch ({exc}). Run `playwright install chromium`."
-                ) from exc
+    async def _run_in_container(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Execute the runner inside the tools container and read its result back.
 
-            # bypass_csp=False is the whole point of the CSP class: whatever runs,
-            # runs under the policy the target actually served.
-            context = await browser.new_context(bypass_csp=False, accept_downloads=False)
-            verdict.bypass_csp_disabled = True
-            try:
-                await self._install_channel(context, verdict, witnesses)
-                if cookies:
-                    await context.add_cookies(
-                        [
-                            {"name": k, "value": v, "domain": urlsplit(url).hostname, "path": "/"}
-                            for k, v in cookies.items()
-                        ]
-                    )
+        The runner's own source is piped to a bare ``python3`` — the tools image
+        has Playwright but no Clinkz install — and the job rides in ``argv``
+        because stdin is already carrying the program. Going through
+        :meth:`ToolBase._run_subprocess_stdin` is what puts the ``docker exec``
+        prefix on the command, honours the kill switch, and records the whole
+        invocation (source, job, stdout) in ``tool_invocations/`` like every
+        other tool's.
+        """
+        job_arg = base64.b64encode(json.dumps(job).encode("utf-8")).decode("ascii")
+        # What gets RECORDED is not what gets run. The job carries the
+        # engagement's session cookies, and base64 hides them from the redaction
+        # chokepoint completely: the redactor recognises credential material by
+        # its shape, and an encoded blob presents no shape at all — it is one
+        # opaque token rather than the `name=value` a cookie rule can match. So
+        # the curl path's cookies are redacted in the trace and these would not
+        # have been, landing a live PHPSESSID in a bundle whose disclosure gate
+        # then truthfully reports zero credential shapes about the wrong
+        # question. Cookie NAMES survive and VALUES do not, which is the rule
+        # everywhere else in the engagement.
+        traced_job = {**job, "cookies": {name: "[REDACTED]" for name in job.get("cookies") or {}}}
+        traced_arg = base64.b64encode(json.dumps(traced_job).encode("utf-8")).decode("ascii")
+        stdout, stderr, returncode = await self._run_subprocess_stdin(
+            ["python3", "-", job_arg],
+            _runner_source(),
+            trace_cmd=["python3", "-", traced_arg],
+        )
+        match = _RESULT_RE.search(stdout or "")
+        if match is None:
+            detail = (stderr or stdout or "").strip()[:500] or f"exit code {returncode}"
+            unavailable = "No module named" in detail or "ModuleNotFoundError" in detail
+            return {
+                **_container_runner._blank_result(),
+                "unavailable": unavailable,
+                "error": f"the container-side oracle returned no verdict: {detail}",
+            }
+        try:
+            return dict(json.loads(match.group(1)))
+        except json.JSONDecodeError as exc:
+            return {
+                **_container_runner._blank_result(),
+                "error": f"could not parse the container-side oracle result: {exc}",
+            }
 
-                page = await context.new_page()
-                page.on("console", lambda m: self._record_console(console, m))
-                # A dialog blocks the page forever in headless mode, and clicking
-                # "OK" is an interaction. Dismiss, never accept.
-                page.on("dialog", lambda d: _fire_and_forget(d.dismiss()))
+    def _apply_observation(
+        self, verdict: WitnessVerdict, observation: dict[str, Any], url: str
+    ) -> None:
+        """Map the runner's observation onto the verdict.
 
-                await page.route(
-                    "**/*",
-                    lambda route, request: _fire_and_forget(
-                        self._intercept(
-                            route,
-                            request,
-                            url,
-                            method,
-                            post_body,
-                            navigated,
-                            blocked_navs,
-                            blocked_subs,
-                        )
-                    ),
-                )
+        Note what crosses this boundary and what does not. The runner reports
+        *what happened* — calls received, requests refused, headers served. It
+        never reports a verdict, and :meth:`WitnessVerdict.decide` is still the
+        only thing that sets ``executed``, from the nonce equality checks it
+        performs here. Parsing the policy is likewise done on this side, because
+        the CSP vocabulary lives in :mod:`clinkz.browser.csp_policy` and a second
+        parser shipped into the container would be free to drift from it.
+        """
+        verdict.witnesses = [
+            ExecutionWitness(
+                value=w.get("value") or "",
+                frame_url=w.get("frame_url") or "",
+            )
+            for w in observation.get("witnesses") or []
+        ]
+        verdict.console_violations = list(observation.get("console") or [])
+        verdict.blocked_navigations = list(observation.get("blocked_navigations") or [])
+        verdict.blocked_subresources = list(observation.get("blocked_subresources") or [])
+        verdict.blocked_mutations = list(observation.get("blocked_mutations") or [])
+        verdict.final_url = observation.get("final_url") or ""
 
-                response = await page.goto(url, wait_until="load", timeout=_NAV_TIMEOUT_MS)
-                await page.wait_for_timeout(_SETTLE_MS)
-
-                verdict.final_url = page.url
-                if response is not None:
-                    policy = parse_csp(dict(response.headers or {}))
-                    verdict.policy_in_force = policy.raw
-                    verdict.policy_source = policy.source
-                if not verdict.policy_in_force:
-                    await self._read_meta_policy(page, verdict)
-            finally:
-                await context.close()
-                await browser.close()
-
-        verdict.witnesses = witnesses
-        verdict.console_violations = console
-        verdict.blocked_navigations = blocked_navs
-        verdict.blocked_subresources = blocked_subs
+        policy = parse_csp(dict(observation.get("response_headers") or {}))
+        verdict.policy_in_force = policy.raw
+        verdict.policy_source = policy.source
+        if not verdict.policy_in_force:
+            meta = parse_csp(None, meta_policies=list(observation.get("meta_policies") or []))
+            if meta.raw:
+                verdict.policy_in_force = meta.raw
+                verdict.policy_source = "meta"
 
         # A refused navigation leaves Chromium on an internal error page, so the
         # recorded landing URL would otherwise read as a failed load rather than
         # as the rail working. Say which it was.
-        if blocked_navs and verdict.final_url.startswith("chrome-error:"):
+        if verdict.blocked_navigations and verdict.final_url.startswith("chrome-error:"):
             verdict.final_url = (
                 f"{url} (page attempted to navigate away; refused — browser left on an error page)"
             )
 
-    async def _install_channel(
+    def _log_navigation(
         self,
-        context: Any,
-        verdict: WitnessVerdict,
-        witnesses: list[ExecutionWitness],
-    ) -> None:
-        """Install the Clinkz-owned witness function into every frame's main world.
-
-        The handler is Python. It records the call and returns nothing the page
-        can learn from — in particular it never echoes the nonce back, so the
-        channel is one-way and a page cannot use it as an oracle of its own.
-        """
-
-        def _on_call(source: dict[str, Any], value: Any = "") -> None:
-            frame_url = ""
-            try:
-                frame = source.get("frame") if isinstance(source, dict) else None
-                frame_url = getattr(frame, "url", "") or ""
-            except Exception:  # noqa: BLE001 — evidence only; never fails a run
-                frame_url = ""
-            witnesses.append(
-                ExecutionWitness(value=value if isinstance(value, str) else "", frame_url=frame_url)
-            )
-
-        await context.expose_binding(verdict.binding_name, _on_call)
-
-    async def _intercept(
-        self,
-        route: Any,
-        request: Any,
-        target_url: str,
+        *,
+        outcome: str,
         method: str,
-        post_body: str,
-        navigated: dict[str, int],
-        blocked_navs: list[str],
-        blocked_subs: list[str],
+        url: str,
+        category: str = "",
+        reason: str = "",
+        signal: str = "",
+        body: str = "",
     ) -> None:
-        """The per-request rail: scope, one-navigation, and the POST rewrite.
+        """Write one navigation to the engagement's action log, if one is active.
 
-        A rendered page is hostile input, and the most dangerous thing it can do
-        to a browser under our control is send it somewhere. So every request is
-        checked here, not only the one we asked for.
+        No-ops without a governor, which is the same rule every other rail
+        follows: outside an engagement — a smoke test, a replay, a driver —
+        there is no log to write to and the oracle behaves byte-identically.
+
+        Never raises, for the same reason :meth:`ToolBase._emit_trace_records`
+        does not: recording what happened must not be able to change what
+        happens. A failure here would otherwise surface as a NAVIGATION_FAILED
+        verdict — an oracle problem misreported as an observation about the
+        target.
         """
-        try:
-            url = request.url
-            is_nav = request.is_navigation_request()
+        from clinkz.safety.governor import get_active_governor
 
-            if is_nav:
-                navigated["count"] += 1
-                # Only the first navigation is ours. Anything after it was
-                # decided by the page.
-                if navigated["count"] > 1:
-                    if len(blocked_navs) < 10:
-                        blocked_navs.append(url)
-                    self._logger.info("P7: refusing page-initiated navigation to %s", url)
-                    await route.abort()
-                    return
-                if method == "POST" and url.split("#")[0] == target_url.split("#")[0]:
-                    await route.continue_(
-                        method="POST",
-                        post_data=post_body,
-                        headers={
-                            **request.headers,
-                            "content-type": "application/x-www-form-urlencoded",
-                        },
-                    )
-                    return
-
-            # Subresources: same-origin always, anything else must be in scope.
-            if not same_origin(url, target_url) and not self.scope.contains(url):
-                if len(blocked_subs) < 20:
-                    blocked_subs.append(url)
-                self._logger.debug("P7: aborting out-of-scope subresource %s", url)
-                await route.abort()
-                return
-
-            await route.continue_()
-        except Exception:  # noqa: BLE001 — a routing error must not hang the page
-            try:
-                await route.abort()
-            except Exception:  # noqa: BLE001
-                pass
-
-    @staticmethod
-    def _record_console(console: list[str], message: Any) -> None:
-        """Record CSP-related console lines as TARGET-AUTHORED evidence only."""
-        if len(console) >= _MAX_CONSOLE_LINES:
+        governor = get_active_governor()
+        if governor is None:
             return
         try:
-            text = message.text
-        except Exception:  # noqa: BLE001
-            return
-        if "Content Security Policy" in text or "Refused to" in text:
-            console.append(text[:300])
-
-    @staticmethod
-    async def _read_meta_policy(page: Any, verdict: WitnessVerdict) -> None:
-        """Read a `<meta http-equiv>` CSP when no header carried one."""
-        try:
-            policies = await page.eval_on_selector_all(
-                "meta[http-equiv]",
-                "els => els.filter(e => (e.getAttribute('http-equiv')||'').toLowerCase() "
-                "=== 'content-security-policy').map(e => e.getAttribute('content')||'')",
+            governor.record_navigation(
+                outcome=outcome,
+                method=method,
+                url=url,
+                stage=self._stage or self.category,
+                category=category,
+                reason=reason,
+                signal=signal,
+                body=body,
             )
-        except Exception:  # noqa: BLE001
-            return
-        parsed = parse_csp(None, meta_policies=list(policies or []))
-        if parsed.raw:
-            verdict.policy_in_force = parsed.raw
-            verdict.policy_source = "meta"
+        except Exception as exc:  # noqa: BLE001 — logging must never fail a run
+            self._logger.warning("Could not record P7 navigation in the action log: %s", exc)
 
     def _refuse(
         self,
@@ -726,63 +867,50 @@ class _OracleUnavailableError(RuntimeError):
     """Playwright or its browser binary is missing. A coverage gap, not a verdict."""
 
 
-def _chromium_binary_present() -> bool:
-    """Whether a downloaded Chromium exists in Playwright's browser registry.
+def _runner_source() -> str:
+    """The runner module's source, as it will be piped into the container.
 
-    Deliberately a filesystem check rather than a Playwright API call.
-    ``sync_playwright()`` raises when constructed inside a running event loop,
-    and :meth:`ToolResolver.is_available` is reachable from async code — so
-    asking the library "is chromium there" would itself be the thing that
-    reports it missing. Launching a browser to find out is worse: an
-    availability probe must not cost a process spawn.
-
-    Honours ``PLAYWRIGHT_BROWSERS_PATH`` and falls back to the per-platform
-    default registry directory used by the tools image and by developer
-    machines alike.
+    Read from disk on each use rather than cached, so an edit to the runner
+    takes effect without a restart — and, more importantly, so there is exactly
+    one artifact: the file the in-process runtime imports is byte-for-byte the
+    file the container executes.
     """
-    import os
-    from pathlib import Path
-
-    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-    if override in ("0", "false"):
-        # 0 means "next to the package" — resolve relative to playwright itself.
-        try:
-            import playwright
-
-            roots = [Path(playwright.__file__).parent / "driver" / "package" / ".local-browsers"]
-        except Exception:  # noqa: BLE001
-            return False
-    elif override:
-        roots = [Path(override)]
-    else:
-        local = os.environ.get("LOCALAPPDATA", "")
-        roots = [
-            Path(local) / "ms-playwright" if local else Path("~/.cache/ms-playwright"),
-            Path("~/.cache/ms-playwright").expanduser(),
-            Path("~/Library/Caches/ms-playwright").expanduser(),
-        ]
-
-    for root in roots:
-        try:
-            root = root.expanduser()
-            if not root.is_dir():
-                continue
-            for entry in root.iterdir():
-                if entry.name.startswith("chromium") and any(entry.rglob("chrome*")):
-                    return True
-        except Exception:  # noqa: BLE001 — an unreadable registry is an absent one
-            continue
-    return False
+    return (Path(__file__).parent / "_container_runner.py").read_text(encoding="utf-8")
 
 
-def _fire_and_forget(coro: Any) -> None:
-    """Schedule a coroutine from a sync Playwright event handler."""
-    import asyncio
+def _container_oracle_available() -> bool:
+    """Whether the tools container has Playwright and a launchable Chromium.
+
+    Asks the container the same question :func:`_container_runner.oracle_available`
+    answers locally, by sending it that very function. Synchronous and short —
+    the resolver calls availability from both sync and async contexts, so this
+    must not need an event loop, and :data:`_AVAILABILITY_CACHE` keeps it to one
+    ``docker exec`` per engagement.
+
+    Any failure — no docker, container stopped, no Playwright inside — is
+    ``False``: an oracle that cannot be reached is an absent one, and the
+    affected classes keep their unproven leads.
+    """
+    import subprocess
+
+    from clinkz.config import settings
 
     try:
-        asyncio.ensure_future(coro)
-    except Exception:  # noqa: BLE001
-        pass
+        result = subprocess.run(
+            ["docker", "exec", "-i", settings.docker_container, "python3", "-", "--probe"],
+            input=_runner_source().encode("utf-8"),
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:  # noqa: BLE001 — no docker, no container, no oracle
+        return False
+    match = _RESULT_RE.search(result.stdout.decode("utf-8", errors="replace"))
+    if match is None:
+        return False
+    try:
+        return bool(json.loads(match.group(1)).get("available"))
+    except json.JSONDecodeError:
+        return False
 
 
 __all__ = ["ClientExecutionOutput", "PlaywrightExecutionOracle"]

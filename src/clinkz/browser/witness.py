@@ -126,8 +126,15 @@ class WitnessVerdict(BaseModel):
             a blocked navigation leaves the browser on an error page, and
             ``final_url`` alone would then read as a failed run rather than as a
             rail doing its job.
-        blocked_subresources: Out-of-scope subresource URLs the page requested
-            and which were refused.
+        blocked_subresources: Subresource requests the page made that the rails
+            refused — out of scope, or carrying a token from the destructive
+            vocabulary. ``<img src="/logout">`` is a GET, and it destroys the
+            engagement's session; recorded rather than silently dropped so a
+            reviewer can see what the page did not get to load.
+        blocked_mutations: Page-initiated requests refused for using a method
+            outside GET/HEAD/OPTIONS. The one navigation Clinkz authorized is
+            exempt — it was classified and logged before the browser started —
+            so everything in this list is a mutation the *page* attempted.
         duration_ms: Wall time of the run.
     """
 
@@ -152,6 +159,7 @@ class WitnessVerdict(BaseModel):
     console_violations: list[str] = Field(default_factory=list)
     blocked_navigations: list[str] = Field(default_factory=list)
     blocked_subresources: list[str] = Field(default_factory=list)
+    blocked_mutations: list[str] = Field(default_factory=list)
     duration_ms: float = 0.0
 
     def decide(self) -> None:

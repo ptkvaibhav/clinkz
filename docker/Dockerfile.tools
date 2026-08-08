@@ -55,11 +55,31 @@ RUN pip3 install --no-cache-dir --break-system-packages wafw00f
 
 # --- P7 client-side execution oracle: Playwright + Chromium ---
 # The oracle witnesses SCRIPT EXECUTION in a real engine, which is the one
-# observation an HTTP client structurally cannot make. Chromium is installed
-# with its own OS dependencies via `playwright install --with-deps` so the
-# image carries a browser that actually launches headless.
+# observation an HTTP client structurally cannot make. It runs HERE rather than
+# on the host because the engagement's target address is a container-network
+# one: `resolve_target_for_docker_mode` rewrites http://localhost:8080 to
+# http://clinkz-dvwa:80, an alias only resolvable on the shared bridge. A
+# host-side browser cannot reach it, so the oracle has to live where every other
+# tool already does.
+#
+# The install is SELF-VERIFYING. `playwright install --with-deps` decides which
+# OS packages to add from /etc/os-release, and Kali is not one of the
+# distributions it carries a dependency list for — so it can exit 0 having
+# downloaded a browser that then fails to launch for want of a shared library.
+# An image that ships a Chromium which does not start would report "oracle
+# unavailable" at engagement time, i.e. a silent coverage loss discovered during
+# a live run. So the layer launches the browser it just installed, and falls
+# back to installing the distribution's own chromium package purely to pull in
+# the runtime library closure before trying once more. If it still cannot
+# launch, the BUILD fails here, loudly, where it is cheap to fix.
+ENV PLAYWRIGHT_LAUNCH_CHECK="from playwright.sync_api import sync_playwright\nwith sync_playwright() as p:\n    b = p.chromium.launch(args=['--no-sandbox', '--disable-dev-shm-usage'])\n    print('chromium launched:', b.version)\n    b.close()\n"
 RUN pip3 install --no-cache-dir --break-system-packages playwright && \
-    playwright install --with-deps chromium
+    (playwright install --with-deps chromium || playwright install chromium) && \
+    ( printf "$PLAYWRIGHT_LAUNCH_CHECK" | python3 - \
+      || ( apt-get update \
+           && apt-get install -y --no-install-recommends chromium \
+           && rm -rf /var/lib/apt/lists/* \
+           && printf "$PLAYWRIGHT_LAUNCH_CHECK" | python3 - ) )
 
 # Update nuclei templates (best-effort; skip if no network at build time)
 RUN nuclei -update-templates -silent || true

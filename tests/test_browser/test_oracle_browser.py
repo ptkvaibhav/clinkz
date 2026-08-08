@@ -19,19 +19,27 @@ import json
 
 import pytest
 
-from clinkz.browser.oracle import PlaywrightExecutionOracle
+from clinkz.browser.oracle import RUNTIME_IN_PROCESS, PlaywrightExecutionOracle
 from clinkz.browser.templates import ClientWitnessTemplateId as T
 from clinkz.browser.witness import WitnessRefusal, WitnessVerdict
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 
 from .conftest import STATIC_NONCE
 
+# The fixture site is a loopback server owned by this process, so these tests
+# pin the IN-PROCESS runtime explicitly rather than taking the configured
+# default. On a machine set to docker tool-mode the default is the container
+# runtime, and a browser in the tools container cannot reach the host's
+# 127.0.0.1 — the tests would fail for a reason that has nothing to do with what
+# they assert. The container runtime is exercised where it is actually
+# meaningful: against a target on the container network.
 pytestmark = [
     pytest.mark.p7_browser,
     pytest.mark.skipif(
-        not PlaywrightExecutionOracle.native_availability(),
+        not PlaywrightExecutionOracle.runtime_available(RUNTIME_IN_PROCESS),
         reason=(
-            "P7 oracle not installed (pip install -e '.[browser]' && playwright install chromium)"
+            "P7 oracle not installed here (pip install -e '.[browser]' && "
+            "playwright install chromium)"
         ),
     ),
 ]
@@ -43,7 +51,7 @@ SCOPE = EngagementScope(
 
 
 async def _run(url: str, **kw) -> WitnessVerdict:
-    oracle = PlaywrightExecutionOracle(scope=SCOPE)
+    oracle = PlaywrightExecutionOracle(scope=SCOPE, runtime=RUNTIME_IN_PROCESS)
     args = oracle.validate_input({"url": url, **kw})
     raw = await oracle.execute(args)
     return WitnessVerdict.model_validate(json.loads(raw)["verdict"])
@@ -90,7 +98,7 @@ class TestTheWitnessConfirmsOnlyExecution:
 
     async def test_other_query_parameters_survive_the_injection(self, fixture_site: str) -> None:
         """Placing the payload minimally must not drop the URL's own parameters."""
-        oracle = PlaywrightExecutionOracle(scope=SCOPE)
+        oracle = PlaywrightExecutionOracle(scope=SCOPE, runtime=RUNTIME_IN_PROCESS)
         args = oracle.validate_input(
             {"url": f"{fixture_site}/reflect?keep=1&other=2", "param": "q", "injection": "query"}
         )
