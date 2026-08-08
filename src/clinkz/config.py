@@ -230,6 +230,19 @@ class Settings(BaseModel):
         description="IPv4 the P6 DNS leg answers with (target-reachable address).",
     )
 
+    # --- P7: the client-side execution oracle -------------------------------
+    # Disabled by default, for the same reason the P6 collaborator is: an absent
+    # oracle must leave the black-box floor BYTE-IDENTICAL, so a direct
+    # methodology invocation (a smoke test, a replay, a driver) behaves the same
+    # everywhere. Auto-resolving it instead would make the suite launch a real
+    # browser on any machine that happens to have Playwright installed and not on
+    # CI — the same environment divergence that made a keyless gate report a
+    # different number than CI (LESSONS #35).
+    client_oracle_mode: Literal["disabled", "playwright"] = Field(
+        default="disabled",
+        description="P7 client-side execution oracle mode ('disabled' = no browser).",
+    )
+
     @classmethod
     def from_env(cls) -> Settings:
         """Construct Settings from environment variables.
@@ -293,6 +306,7 @@ class Settings(BaseModel):
             oob_http_port=int(os.getenv("OOB_HTTP_PORT", "18080")),
             oob_dns_port=int(os.getenv("OOB_DNS_PORT", "15353")),
             oob_advertised_ip=os.getenv("OOB_ADVERTISED_IP", "127.0.0.1"),
+            client_oracle_mode=os.getenv("CLIENT_ORACLE_MODE", "disabled"),  # type: ignore[arg-type]
         )
 
 

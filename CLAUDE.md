@@ -130,7 +130,9 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
 - **Exploit (v2)** — Anthropic Claude Opus (`LLM_PROVIDER_EXPLOIT=anthropic`). LLM
   plans exploits from scan+research → deterministic `_test_*` methods by tier →
   LLM reasons through results → adaptive retry/bypass → records capability outcome
-  to the persistent KB. All 19 `_test_*` methods are adaptive multi-phase
+  to the persistent KB. **P7** (`src/clinkz/browser/`, disabled by default via
+  `CLIENT_ORACLE_MODE`) is the client-side execution oracle the DOM-XSS,
+  client-rendered XSS and CSP classes confirm through. All 19 `_test_*` methods are adaptive multi-phase
   methodologies (six-phase injection family; four-phase behavioral family). The
   **deterministic check GATES the LLM** — no LLM verdict emits on its own; when
   phase-2 has empirically confirmed the primitive, phase-4 prefers the
@@ -248,7 +250,7 @@ language-agnostic `SourceModel` (per-tree ingestor via `select_ingestor`).
 
 Catalog classes: **EGRESS_FETCH** (→ `_test_ssrf`), **FILE_READ** (→ `_test_lfi`),
 **LOG_INTERPOLATION** (log4j → `_test_log4shell`, manifest-version-gated).
-Confirmation reduces to the same P1–P6 oracles the black-box methodologies use
+Confirmation reduces to the same P1–P7 oracles the black-box methodologies use
 (blind classes → **P6 out-of-band**), and is **raw-auditable**
 (`ConfirmationEvidence` = confirming excerpt + the control it was distinguished
 against). **Layer-2 capability learning**: a confirmed discovery finding writes a
@@ -281,6 +283,10 @@ reports the missing capability to the Orchestrator.
   exploit phase has no wall-clock deadline by default.
 - SQLite: `clinkz.db` (per-engagement state), `clinkz_knowledge.db` (cross-
   engagement KB incl. Layer-2 `capability_facts`/`capability_observations`).
+- **Playwright + Chromium** is an OPTIONAL extra (`pip install -e '.[browser]' &&
+  playwright install chromium`; baked into `docker/Dockerfile.tools`) backing the
+  P7 oracle. Optional on purpose: absent, the affected classes record unproven
+  leads exactly as before.
 - MCP Python SDK for tool servers; Docker for sandboxed tool execution
   (`clinkz-tools`; `TOOL_EXEC_MODE=local` for the in-process HTTP path).
 - Typer CLI; `clinkz trace inspect <engagement>` renders execution traces.
@@ -313,6 +319,9 @@ src/clinkz/
 ├── llm/              # base, factory, fallback, {anthropic,gemini,openai,ollama}_client
 ├── tools/            # ToolBase, resolver, mcp_client, auth, http_client, nmap/ffuf/…
 ├── oob/              # P6: templates (exfil guardrail), collaborator (receive-only)
+├── browser/          # P7 client-side execution oracle: templates (witness carrier),
+│                     #   witness (the verdict — page text NEVER decides), csp_policy
+│                     #   (what a served policy leaves reachable), oracle (Playwright)
 ├── observability/    # trace.py (JSONL), replay.py
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes, target, recon, scan, methodology, research,
@@ -389,6 +398,24 @@ LESSONS #17).
 - **Stack-conditioned branches** (`_is_php_stack`, engine fingerprints, dialect)
   are backed by a deterministic protocol artifact (a `PHPSESSID` cookie, a `.php`
   path, a header) — never the flaky LLM tech list alone (LESSONS #28).
+- **P7 confirms a CLIENT-SIDE effect, and only ever PROMOTES**
+  (`src/clinkz/browser/`, **detail →
+  [`docs/methodology/client-side-execution-p7.md`](docs/methodology/client-side-execution-p7.md)**).
+  A Clinkz-minted single-use nonce returns **by a call from inside the page's JS
+  context** to a Clinkz-owned in-page binding, while a second nonce minted
+  alongside and **injected nowhere** stays silent — inert reflected bytes cannot
+  call a function, which is the confounder that made every prior DOM-XSS
+  "confirmation" a phantom. The channel is a function call, **not** a network
+  callback, because `connect-src` is governed independently of `script-src` and a
+  beacon would report "did not execute" about a page that did. `bypass_csp` is
+  asserted OFF and recorded, so a CSP finding answers *did script execute under
+  the served policy*. **Everything the page authors is evidence, never a verdict
+  input** — `WitnessVerdict.decide()` reads three engine-owned booleans, so a
+  console line saying "Refused to execute" cannot suppress a witnessed execution.
+  Disabled by default (`CLIENT_ORACLE_MODE`), resolved by **capability**; absent,
+  broken or out-of-budget ⇒ the `UnprovenExploitLead` stands unchanged. **A
+  missing browser costs coverage, never honesty**, and there is no path from a P7
+  verdict to demoting or suppressing anything.
 - **Deterministic skills as contracts** — if the vuln is present, the `_test_*`
   method MUST find it. Verification-honest emission: emit only when the evidence
   proves the DEFINING security effect. **Never write an observation into evidence
@@ -510,7 +537,9 @@ LESSONS #17).
    `ANTHROPIC_API_KEY="" GEMINI_API_KEY="" GOOGLE_API_KEY="" OPENAI_API_KEY=""
    pytest tests/ -q --tb=short
    --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop
-   --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration`. Capture
+   --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration`.
+   The `p7_browser` tests self-skip without a Chromium install, so the gate is
+   identical on CI and on a machine that has one. Capture
    pytest's own exit code directly (`… > out.txt 2>&1; echo "EXIT=$?"`) — never
    pipe through `tail`/`&&` (LESSONS #24). Run the container gate (integration +
    the `dvwa_smoke`/`juiceshop_smoke`/`pipeline_smoke` suites) separately when

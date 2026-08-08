@@ -56,6 +56,10 @@ _EXPECTED_TOOLS = {
     "http_client",
     "web_authenticator",
     "tool_installer",
+    # P7 — the client-side execution oracle. Python-native rather than a PATH
+    # binary, so its availability is answered by ``native_availability`` instead
+    # of a ``which`` lookup.
+    "playwright_chromium",
 }
 
 # A sample capability → expected tool name mapping for lookup assertions
@@ -93,7 +97,7 @@ _CAPABILITY_TOOL_MAP: dict[str, str] = {
 
 _RECON_TOOLS = {"nmap", "subfinder", "httpx", "whatweb", "wafw00f"}
 _SCAN_TOOLS = {"ffuf", "katana"}
-_EXPLOIT_TOOLS = {"nikto", "nuclei", "sqlmap"}
+_EXPLOIT_TOOLS = {"nikto", "nuclei", "sqlmap", "playwright_chromium"}
 
 
 # ---------------------------------------------------------------------------

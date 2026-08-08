@@ -43,6 +43,7 @@ def test_tool_chains_keys_exist():
         "waf_detection",
         "subdomain_discovery",
         "http_request",
+        "client_side_execution",
     }
     assert set(TOOL_CHAINS.keys()) == expected_keys
 

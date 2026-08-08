@@ -464,6 +464,13 @@ class OrchestratorAgent:
             self._oob_collaborator = await self._provision_collaborator()
             lifecycle._oob_collaborator = self._oob_collaborator
 
+            # P7 client-side execution oracle (disabled by default). Resolved BY
+            # CAPABILITY and wired onto the Exploit agent, so DOM-XSS, a
+            # client-rendered reflected/stored XSS, and a served CSP can be
+            # confirmed on a WITNESSED execution. Absent ⇒ those classes record
+            # unproven leads exactly as before — the black-box floor is unchanged.
+            lifecycle._client_execution_oracle = self._provision_client_oracle(resolver, scope)
+
             self._state = state
             self._bus = bus
             self._lifecycle = lifecycle
@@ -1085,6 +1092,44 @@ class OrchestratorAgent:
     # ------------------------------------------------------------------
     # P6 out-of-band collaborator provisioning (docs/p6-oob-design.md §P6.1.3)
     # ------------------------------------------------------------------
+
+    def _provision_client_oracle(
+        self, resolver: ToolResolver, scope: EngagementScope
+    ) -> object | None:
+        """Resolve the P7 client-side execution oracle, or ``None`` (P7 disabled).
+
+        Same degradation discipline as the P6 collaborator: an oracle that is
+        disabled by configuration, absent from the tool chain, or not actually
+        installed is logged and skipped, and the engagement completes with the
+        affected classes recording unproven leads exactly as before.
+
+        The oracle is found BY CAPABILITY (``client_side_execution``) and never by
+        name, so a different browser backend registered for that capability is
+        picked up without a change here.
+        """
+        from clinkz.config import settings
+
+        if settings.client_oracle_mode == "disabled":
+            return None
+        match = resolver.find_tool("client_side_execution")
+        if match is None or not match.available or match.tool_class is None:
+            self._logger.warning(
+                "P7 client-side execution oracle requested (CLIENT_ORACLE_MODE=%s) but no "
+                "available tool provides 'client_side_execution' — DOM-XSS / CSP candidates "
+                "will be reported as unproven leads. Install with: "
+                "pip install -e '.[browser]' && playwright install chromium",
+                settings.client_oracle_mode,
+            )
+            return None
+        try:
+            oracle = match.tool_class(
+                scope=scope, engagement_id=self._engagement_id, stage="exploit"
+            )
+        except Exception as exc:  # noqa: BLE001 — an unusable oracle is an absent one
+            self._logger.warning("P7 oracle could not be constructed (%s) — skipping", exc)
+            return None
+        self._logger.info("P7 client-side execution oracle ready: %s", match.name)
+        return oracle
 
     async def _provision_collaborator(self) -> OOBCollaborator | None:
         """Provision + health-check the P6 collaborator, or ``None`` (P6 disabled).
