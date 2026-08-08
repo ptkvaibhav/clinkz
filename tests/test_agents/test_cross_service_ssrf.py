@@ -328,7 +328,7 @@ def test_research_lead_persisted_to_its_own_table_never_findings() -> None:
             await agent._confirm_cross_service_reach(PAGE_A, _xsvc_task(B_GENERIC))
         finally:
             await collab.stop()
-        await agent._persist_research_leads()
+        await agent._persist_research_leads([])
         # A lead is written ONLY via add_research_lead — never add_finding.
         agent.state.add_research_lead.assert_awaited()
         agent.state.add_finding.assert_not_called()
