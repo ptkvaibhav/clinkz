@@ -53,6 +53,7 @@ oracle set.
 | Topic | Doc |
 |---|---|
 | Out-of-band confirmation (P6) | [out-of-band-p6.md](out-of-band-p6.md) |
+| Client-side execution confirmation (P7) | [client-side-execution-p7.md](client-side-execution-p7.md) |
 | Carriers / request builder / planning / dispatch / emission integrity | [exploit-engine.md](exploit-engine.md) |
 | DVWA per-level honesty (the phantom control) | [dvwa-per-level-honesty.md](dvwa-per-level-honesty.md) |
 | The SQLi context ladder, measured (110 rungs, 0 confirmations) | [dvwa-sqli-context-ladder.md](dvwa-sqli-context-ladder.md) |

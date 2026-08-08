@@ -51,6 +51,13 @@ dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
 ]
+# The P7 client-side execution oracle. Kept OPTIONAL on purpose: without it the
+# engine behaves exactly as it did before — a DOM/CSP candidate stays an
+# UnprovenExploitLead instead of silently degrading to an inferred finding. An
+# absent browser must cost coverage, never honesty.
+browser = [
+    "playwright>=1.49.0",
+]
 
 [project.scripts]
 clinkz = "clinkz.cli:app"
@@ -66,6 +73,7 @@ markers = [
     "dvwa_smoke: live DVWA skill smoke tests (require running DVWA at localhost:8080)",
     "juiceshop_smoke: live Juice Shop skill smoke tests (require running Juice Shop at localhost:3000)",
     "pipeline_smoke: real-container full-pipeline smoke tests — blocking on CI when the underlying target is up",
+    "p7_browser: P7 client-side execution oracle tests requiring a real headless browser (pip install -e '.[browser]' && playwright install chromium)",
 ]
 
 [tool.ruff]
