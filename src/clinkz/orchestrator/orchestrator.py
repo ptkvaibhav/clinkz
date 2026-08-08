@@ -2429,10 +2429,18 @@ class OrchestratorAgent:
             if not self._session_sentinel.reauth_needed:
                 # A concurrent phase already handled this flag.
                 return
-            await self._verify_and_refresh_session()
+            await self._reauthenticate_under_lock()
 
-    async def _verify_and_refresh_session(self) -> None:
-        """The body of :meth:`_reauthenticate_running_agents`, under the lock."""
+    async def _reauthenticate_under_lock(self) -> None:
+        """The body of :meth:`_reauthenticate_running_agents`, under the lock.
+
+        Named for what it does rather than reusing ``_verify_and_refresh_session``,
+        which is a DIFFERENT method (the engagement-start one, three arguments,
+        above). Two same-named defs in one class do not collide loudly — the
+        later simply replaces the earlier — so this name previously made the
+        engagement-start method uncallable and every full ``clinkz scan`` died in
+        ``_establish_authenticated_state`` with an arity error.
+        """
         cred = self._reauth_credential
 
         if await self._session_still_proven(cred):
