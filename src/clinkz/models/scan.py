@@ -77,17 +77,20 @@ class Endpoint(BaseModel):
     session-indirection injection point is never reached. Empty by default, so
     the field is fully backward-compatible. See :class:`SessionVector`.
 
-    ``sets_cookies`` and ``has_form`` are **observed response features**: what
-    the crawl actually saw when it fetched this URL, as opposed to what its path
-    or parameters merely suggest. They exist so the Exploit planner can rank an
-    endpoint by whether a vuln-class's *precondition* is present there — a
-    session-token test can only measure a page that hands out a cookie, and a
-    CSRF test can only evaluate a page that renders a form. Ranking those
-    classes on a path substring instead put ``/vulnerabilities/weak_id/`` (which
-    sets ``dvwaSession`` on every visit) in the same tie bucket as
-    ``/security.php`` (which sets nothing), and the tie was broken by crawl
-    order. Only cookie *names* are recorded — never a value, which is
-    authentication material.
+    ``sets_cookies``, ``has_form`` and ``has_dom_source`` are **observed response
+    features**: what the crawl actually saw when it fetched this URL, as opposed
+    to what its path or parameters merely suggest. They exist so the Exploit
+    planner can rank an endpoint by whether a vuln-class's *precondition* is
+    present there — a session-token test can only measure a page that hands out
+    a cookie, a CSRF test can only evaluate a page that renders a form, and a
+    DOM-XSS test can only fire where the page's own JavaScript reads a DOM
+    source. Ranking those classes on a path substring instead put
+    ``/vulnerabilities/weak_id/`` (which sets ``dvwaSession`` on every visit) in
+    the same tie bucket as ``/security.php`` (which sets nothing), and the tie
+    was broken by crawl order. ``has_dom_source`` was added for the same reason
+    after a live run in which DOM-XSS ranked a ``.js`` asset above the
+    application's actual DOM-XSS route and never tested it. Only cookie *names*
+    are recorded — never a value, which is authentication material.
     """
 
     url: str
@@ -100,6 +103,7 @@ class Endpoint(BaseModel):
     session_setters: list[str] = Field(default_factory=list)
     sets_cookies: list[str] = Field(default_factory=list)
     has_form: bool = False
+    has_dom_source: bool = False
 
 
 class SessionVector(BaseModel):

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
+from clinkz.agents._dom_sources import body_reads_dom_source
 from clinkz.agents._route_discovery import (
     FetchResult,
     default_discoverers,
@@ -811,13 +812,20 @@ class ScanAgent(BaseAgent):
             if name not in names:
                 names.append(name)
         record = features.setdefault(
-            self._response_feature_key(page_url), {"sets_cookies": [], "has_form": False}
+            self._response_feature_key(page_url),
+            {"sets_cookies": [], "has_form": False, "has_dom_source": False},
         )
         for name in names:
             if name not in record["sets_cookies"]:
                 record["sets_cookies"].append(name)
         if "<form" in body.lower():
             record["has_form"] = True
+        # Whether the page's OWN JavaScript reads an attacker-controllable DOM
+        # source. This is the only signal that says "a DOM-XSS test could fire
+        # here" — the class's path words cannot, since a DOM sink is a property
+        # of what the page returned, not of what the route is called.
+        if body_reads_dom_source(body):
+            record["has_dom_source"] = True
 
     def _apply_response_feature_annotations(self, endpoints: list[Endpoint]) -> None:
         """Stamp recorded response features onto the endpoints they were seen on.
@@ -839,6 +847,8 @@ class ScanAgent(BaseAgent):
                 endpoint.sets_cookies = [*endpoint.sets_cookies, *cookies]
             if record["has_form"]:
                 endpoint.has_form = True
+            if record.get("has_dom_source"):
+                endpoint.has_dom_source = True
             annotated += 1
         self._logger.info(
             "Response features: annotated %d of %d endpoint(s) from %d observed page(s)",
