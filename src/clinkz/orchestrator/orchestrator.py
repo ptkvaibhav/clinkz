@@ -1106,19 +1106,33 @@ class OrchestratorAgent:
         The oracle is found BY CAPABILITY (``client_side_execution``) and never by
         name, so a different browser backend registered for that capability is
         picked up without a change here.
+
+        This is the seam that makes P7 a capability of the product rather than of
+        a driver script: it runs for every engagement unless
+        ``CLIENT_ORACLE_MODE=disabled``. The resolver answers availability for
+        the runtime the oracle would actually use — the tools container in docker
+        mode — so "available" means a browser that can reach this engagement's
+        target, not merely one installed somewhere.
         """
         from clinkz.config import settings
 
         if settings.client_oracle_mode == "disabled":
+            self._logger.info(
+                "P7 client-side execution oracle disabled by configuration — DOM-XSS, "
+                "client-rendered XSS and CSP candidates will record unproven leads"
+            )
             return None
         match = resolver.find_tool("client_side_execution")
         if match is None or not match.available or match.tool_class is None:
             self._logger.warning(
-                "P7 client-side execution oracle requested (CLIENT_ORACLE_MODE=%s) but no "
+                "P7 client-side execution oracle enabled (CLIENT_ORACLE_MODE=%s) but no "
                 "available tool provides 'client_side_execution' — DOM-XSS / CSP candidates "
-                "will be reported as unproven leads. Install with: "
+                "will be reported as unproven leads. In docker tool-mode the oracle runs "
+                "inside '%s'; rebuild it with: docker compose -f docker/docker-compose.yml "
+                "build tools. For local tool-mode install it here: "
                 "pip install -e '.[browser]' && playwright install chromium",
                 settings.client_oracle_mode,
+                settings.docker_container,
             )
             return None
         try:

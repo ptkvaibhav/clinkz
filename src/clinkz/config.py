@@ -231,16 +231,35 @@ class Settings(BaseModel):
     )
 
     # --- P7: the client-side execution oracle -------------------------------
-    # Disabled by default, for the same reason the P6 collaborator is: an absent
-    # oracle must leave the black-box floor BYTE-IDENTICAL, so a direct
-    # methodology invocation (a smoke test, a replay, a driver) behaves the same
-    # everywhere. Auto-resolving it instead would make the suite launch a real
-    # browser on any machine that happens to have Playwright installed and not on
-    # CI — the same environment divergence that made a keyless gate report a
-    # different number than CI (LESSONS #35).
-    client_oracle_mode: Literal["disabled", "playwright"] = Field(
-        default="disabled",
-        description="P7 client-side execution oracle mode ('disabled' = no browser).",
+    # Three states, because the two things that were previously conflated pull in
+    # opposite directions.
+    #
+    # A REAL ENGAGEMENT should confirm DOM-XSS, client-rendered XSS and CSP when
+    # a browser is available: an oracle that only a hand-built driver can reach
+    # is not a capability the product has. A DIRECT METHODOLOGY INVOCATION — a
+    # unit suite, a replay, a smoke cell — must never launch a browser, because
+    # then the engine behaves differently on a developer machine that has
+    # Playwright than on CI that does not, and that divergence is exactly what
+    # made a keyless gate report a different number than CI (LESSONS #35). It is
+    # also worth real time: self-resolving in the unit suites took them from
+    # 1.8 s to 21 s.
+    #
+    # So the switch is on WHO IS ASKING, not on what happens to be installed:
+    #
+    #   auto       — the default. The Orchestrator provisions the oracle for an
+    #                engagement it is running; a directly-invoked agent does not
+    #                resolve one for itself, so the black-box floor stays
+    #                byte-identical and the suites stay browser-free.
+    #   playwright — always, including self-resolution from a direct invocation.
+    #                What a live driver opts into.
+    #   disabled   — never, even in an engagement. The escape hatch for a run
+    #                that must not start a browser at all.
+    client_oracle_mode: Literal["auto", "disabled", "playwright"] = Field(
+        default="auto",
+        description=(
+            "P7 client-side execution oracle mode: 'auto' (engagements only), "
+            "'playwright' (also self-resolved on direct invocation), 'disabled'."
+        ),
     )
 
     @classmethod
@@ -306,7 +325,7 @@ class Settings(BaseModel):
             oob_http_port=int(os.getenv("OOB_HTTP_PORT", "18080")),
             oob_dns_port=int(os.getenv("OOB_DNS_PORT", "15353")),
             oob_advertised_ip=os.getenv("OOB_ADVERTISED_IP", "127.0.0.1"),
-            client_oracle_mode=os.getenv("CLIENT_ORACLE_MODE", "disabled"),  # type: ignore[arg-type]
+            client_oracle_mode=os.getenv("CLIENT_ORACLE_MODE", "auto"),  # type: ignore[arg-type]
         )
 
 

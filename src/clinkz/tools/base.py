@@ -288,7 +288,12 @@ class ToolBase(ABC):
         )
         return stdout, stderr, returncode
 
-    async def _run_subprocess_stdin(self, cmd: list[str], stdin_data: str) -> tuple[str, str, int]:
+    async def _run_subprocess_stdin(
+        self,
+        cmd: list[str],
+        stdin_data: str,
+        trace_cmd: list[str] | None = None,
+    ) -> tuple[str, str, int]:
         """Execute a command with data piped to stdin.
 
         Like :meth:`_run_subprocess` but feeds *stdin_data* to the process.
@@ -298,6 +303,16 @@ class ToolBase(ABC):
         Args:
             cmd: Command and arguments.
             stdin_data: Text to write to the process's stdin.
+            trace_cmd: What to RECORD in place of *cmd*, when the two must
+                differ. The redaction chokepoint works on values it can
+                recognise in the text it is given, so an argument that carries
+                credential material in an ENCODED form — base64, a packed blob —
+                passes through it untouched: it is one opaque token, not a
+                ``name=value`` a cookie rule can match. A caller that builds
+                such an argument is the only code that still knows what is
+                inside it, and so is the only code that can hand the recorder a
+                safe equivalent. Defaults to *cmd*, so every existing caller is
+                unchanged.
 
         Returns:
             (stdout, stderr, returncode)
@@ -313,10 +328,13 @@ class ToolBase(ABC):
             return halted
 
         exec_mode = settings.tool_exec_mode
-        if exec_mode == "docker":
-            cmd = ["docker", "exec", "-i", settings.docker_container, *cmd]
+        prefix = (
+            ["docker", "exec", "-i", settings.docker_container] if exec_mode == "docker" else []
+        )
+        cmd = [*prefix, *cmd]
+        recorded_cmd = [*prefix, *trace_cmd] if trace_cmd is not None else cmd
 
-        self._logger.debug("Executing (stdin): %s", " ".join(cmd))
+        self._logger.debug("Executing (stdin): %s", " ".join(recorded_cmd))
         stopwatch = Stopwatch()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -334,7 +352,7 @@ class ToolBase(ABC):
         stderr = stderr_bytes.decode(errors="replace")
 
         self._emit_trace_records(
-            cmd=cmd,
+            cmd=recorded_cmd,
             exec_mode=exec_mode,
             stdin=stdin_data,
             stdout=stdout,
