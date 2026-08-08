@@ -130,9 +130,16 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
 - **Exploit (v2)** — Anthropic Claude Opus (`LLM_PROVIDER_EXPLOIT=anthropic`). LLM
   plans exploits from scan+research → deterministic `_test_*` methods by tier →
   LLM reasons through results → adaptive retry/bypass → records capability outcome
-  to the persistent KB. **P7** (`src/clinkz/browser/`, disabled by default via
-  `CLIENT_ORACLE_MODE`) is the client-side execution oracle the DOM-XSS,
-  client-rendered XSS and CSP classes confirm through. All 19 `_test_*` methods are adaptive multi-phase
+  to the persistent KB. **P7** (`src/clinkz/browser/`) is the client-side
+  execution oracle the DOM-XSS, client-rendered XSS and CSP classes confirm
+  through. It runs **where the target is reachable**: in docker tool-mode the
+  browser is driven inside `clinkz-tools`, because
+  `resolve_target_for_docker_mode` has rewritten the target to a
+  container-network alias a host browser can neither resolve nor route to.
+  `CLIENT_ORACLE_MODE` is `auto` by default — the Orchestrator provisions it for
+  every engagement, while a **directly invoked** agent (unit suite, replay,
+  smoke cell) never self-resolves one, so the black-box floor stays
+  byte-identical. All 19 `_test_*` methods are adaptive multi-phase
   methodologies (six-phase injection family; four-phase behavioral family). The
   **deterministic check GATES the LLM** — no LLM verdict emits on its own; when
   phase-2 has empirically confirmed the primitive, phase-4 prefers the
@@ -283,10 +290,14 @@ reports the missing capability to the Orchestrator.
   exploit phase has no wall-clock deadline by default.
 - SQLite: `clinkz.db` (per-engagement state), `clinkz_knowledge.db` (cross-
   engagement KB incl. Layer-2 `capability_facts`/`capability_observations`).
-- **Playwright + Chromium** is an OPTIONAL extra (`pip install -e '.[browser]' &&
-  playwright install chromium`; baked into `docker/Dockerfile.tools`) backing the
-  P7 oracle. Optional on purpose: absent, the affected classes record unproven
-  leads exactly as before.
+- **Playwright + Chromium** backs the P7 oracle, and lives in
+  `docker/Dockerfile.tools` — where docker tool-mode actually drives it. That
+  layer is **self-verifying**: Kali is not a distribution Playwright carries a
+  dependency list for, so `--with-deps` can exit 0 having installed a browser
+  that never launches; the layer launches it at build time and fails the build
+  otherwise. For `TOOL_EXEC_MODE=local` it is an optional host extra
+  (`pip install -e '.[browser]' && playwright install chromium`). Optional on
+  purpose: absent, the affected classes record unproven leads exactly as before.
 - MCP Python SDK for tool servers; Docker for sandboxed tool execution
   (`clinkz-tools`; `TOOL_EXEC_MODE=local` for the in-process HTTP path).
 - Typer CLI; `clinkz trace inspect <engagement>` renders execution traces.
@@ -310,8 +321,9 @@ src/clinkz/
 │                     #   shared by the redactor and the gate), artifact_scan (the
 │                     #   disclosure gate over outputs/<id>/),
 │                     #   auth_state (detect / PROVE / maintain), dryrun
-├── safety/           # destructive (default-deny classifier), governor (rate, concurrency,
-│                     #   kill switch, blocking, window), action_log
+├── safety/           # destructive (default-deny classifier + subresource_guard_spec, the
+│                     #   vocabulary shipped INTO the browser), governor (rate, concurrency,
+│                     #   kill switch, blocking, window), action_log (+ browser navigations)
 ├── comms/            # AgentMessage, async bus, protocol
 ├── discovery/        # Δ-model: ingestor(s), catalog, intent, reachability, hypothesis, engine,
 │                     #   topology(+recall), recall, relations, versions
@@ -321,7 +333,9 @@ src/clinkz/
 ├── oob/              # P6: templates (exfil guardrail), collaborator (receive-only)
 ├── browser/          # P7 client-side execution oracle: templates (witness carrier),
 │                     #   witness (the verdict — page text NEVER decides), csp_policy
-│                     #   (what a served policy leaves reachable), oracle (Playwright)
+│                     #   (what a served policy leaves reachable), oracle (rails +
+│                     #   runtime choice), _container_runner (the browser-driving half —
+│                     #   ZERO clinkz imports, so it runs in the tools container)
 ├── observability/    # trace.py (JSONL), replay.py
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes, target, recon, scan, methodology, research,
@@ -412,10 +426,33 @@ LESSONS #17).
   the served policy*. **Everything the page authors is evidence, never a verdict
   input** — `WitnessVerdict.decide()` reads three engine-owned booleans, so a
   console line saying "Refused to execute" cannot suppress a witnessed execution.
-  Disabled by default (`CLIENT_ORACLE_MODE`), resolved by **capability**; absent,
-  broken or out-of-budget ⇒ the `UnprovenExploitLead` stands unchanged. **A
-  missing browser costs coverage, never honesty**, and there is no path from a P7
-  verdict to demoting or suppressing anything.
+  Resolved by **capability**; absent, broken or out-of-budget ⇒ the
+  `UnprovenExploitLead` stands unchanged. **A missing browser costs coverage,
+  never honesty**, and there is no path from a P7 verdict to demoting or
+  suppressing anything.
+- **An oracle must observe from a machine that can REACH the target.** The
+  browser runs where the tools run (docker mode ⇒ inside `clinkz-tools`), because
+  the engagement's address is itself a consequence of `TOOL_EXEC_MODE`: docker
+  mode rewrites `localhost:8080` to a bridge alias no host browser can resolve,
+  and local mode — where a host browser would work — has no port scanner. The
+  runtime is therefore **tied to `TOOL_EXEC_MODE`, never configured separately**,
+  so the one combination that silently fails every navigation cannot be selected.
+  `browser/_container_runner.py` carries the browser-driving half with **zero
+  clinkz imports** and both runtimes call it, so a driver and a real engagement
+  run the same rails.
+- **A browser is a new destructive surface, and its rails are structural.** Scope
+  is checked before launch; the governor authorizes the navigation exactly like
+  an HTTP probe; **every navigation is written to the action log** (a GET too —
+  what is recorded is that a real engine ran the target's code — tallied apart
+  from `state_changing_sent` so neither number needs qualifying). Inside the
+  page: only the FIRST navigation is ours and every later one is aborted; only
+  that authorized request may use a mutating method, so a page cannot
+  `fetch('/x',{method:'DELETE'})` what a blocked navigation could not; and a
+  **safe method is not automatically safe** — `<img src="/logout">` is a GET that
+  destroys the session, so subresource paths are matched against
+  `safety/destructive.py::subresource_guard_spec()`, the one vocabulary, shipped
+  into the browser as data. Nothing is ever clicked, filled, or submitted. Every
+  refusal is recorded on the verdict, never silent.
 - **Deterministic skills as contracts** — if the vuln is present, the `_test_*`
   method MUST find it. Verification-honest emission: emit only when the evidence
   proves the DEFINING security effect. **Never write an observation into evidence
@@ -439,6 +476,17 @@ LESSONS #17).
   confirming attempt runs is never the LLM's call** — gate it on a deterministic
   signal, or the class's only reachable outcome is the description
   ([client-side-logic](docs/methodology/client-side-logic.md)).
+- **One engagement is one target state, so a confirmation SUPERSEDES its lead.**
+  A lead saying "execution was not witnessed" and a confirmed finding saying it
+  was cannot both be true of the same `(endpoint, parameter, technique)` — a
+  deliverable carrying both reads as the report contradicting itself (engagement
+  `908b7130` shipped exactly that pair, from a driver that switched DVWA's level
+  underneath one engagement id). The confirmation wins and the lead is dropped
+  **before** it reaches the store, since the Report agent renders from the table.
+  Directional, like every other rule here: a witnessed effect outranks the
+  absence of one, and there is no path by which a lead suppresses a finding.
+  Matched narrowly — a different parameter, endpoint or technique survives — and
+  read from the FINAL finding list, so a demoted finding supersedes nothing.
 - **The suppression runs the same direction as emission: an LLM never overrules a
   deterministic oracle.** The FP cross-check may demote ONLY by naming a
   deterministic **contradiction in the evidence** that the code itself verified
