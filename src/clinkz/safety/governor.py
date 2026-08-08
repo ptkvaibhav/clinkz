@@ -46,7 +46,7 @@ from pydantic import BaseModel, ConfigDict
 
 from clinkz.engagement.gate import EngagementAbortedError
 from clinkz.models.engagement import EngagementWindow, SafetyPolicy
-from clinkz.safety.action_log import ActionLog
+from clinkz.safety.action_log import CATEGORY_BROWSER_NAVIGATION, ActionLog
 from clinkz.safety.destructive import (
     MUTATING_METHODS,
     classify_request,
@@ -409,6 +409,42 @@ class EngagementGovernor:
         """Release the concurrency slot acquired by an allowed :meth:`authorize`."""
         self._slots.release()
 
+    def record_navigation(
+        self,
+        *,
+        outcome: str,
+        method: str,
+        url: str,
+        stage: str = "",
+        category: str = "",
+        reason: str = "",
+        signal: str = "",
+        body: str = "",
+    ) -> None:
+        """Log one P7 browser navigation, allowed or refused.
+
+        Separate from :meth:`authorize` rather than folded into it, because the
+        two answer different questions. ``authorize`` decides whether a
+        *request* may be sent and logs it only when it mutates — the right rule
+        for a probe. A navigation is logged unconditionally: what is being
+        recorded is that a real engine was pointed at the target and ran its
+        code. An operator auditing "what did it do to my app" needs to see that
+        whether the method was POST or GET.
+
+        The tally is kept apart from the state-changing counters, so
+        ``state_changing_sent`` never has to be read as "…plus some GETs".
+        """
+        self.action_log.record_navigation(
+            outcome=outcome,
+            method=method,
+            url=url,
+            stage=stage,
+            category=category or CATEGORY_BROWSER_NAVIGATION,
+            reason=reason,
+            signal=signal,
+            body=body,
+        )
+
     def observe_response(
         self,
         *,
@@ -472,6 +508,7 @@ class EngagementGovernor:
             "requests_authorized": self._requests_authorized,
             "state_changing_sent": self.action_log.sent_count,
             "state_changing_refused": self.action_log.refused_count,
+            "browser_navigations": self.action_log.navigation_count,
             "rate_limit_wait_seconds": round(self._rate_wait_seconds, 1),
             "max_requests_per_second": self.policy.max_requests_per_second,
             "max_concurrent_requests": self.policy.max_concurrent_requests,

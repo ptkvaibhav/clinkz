@@ -803,6 +803,54 @@ def is_state_changing_request(url: str, method: str = "GET") -> bool:
     return classify_request(method, url).refused
 
 
+def subresource_guard_spec() -> dict[str, list[str]]:
+    """The destructive vocabulary, serialized for the P7 browser's request rail.
+
+    A rendered page issues requests this process never chose: an ``<img
+    src="/logout">``, a ``fetch('/admin/reset')``, a beacon. Those are the same
+    hazard :func:`classify_request` exists for, but the decision has to be made
+    *inside* the browser's routing callback — which, in docker tool-mode, is a
+    bare ``python3`` in the tools container with nothing of Clinkz importable.
+    So the vocabulary travels there as data rather than as a second copy of the
+    classifier: this module stays the one place the words live.
+
+    The projection is deliberately **coarser and stricter** than
+    :func:`classify_request`. That function weighs verb/noun co-occurrence
+    because it judges a request an operator's methodology intended to send;
+    this list is matched as bare tokens against a request the *page* chose, and
+    over-refusing there costs a subresource load while under-refusing costs the
+    engagement's session. Only vocabularies that are unambiguous **on their
+    own** are included — the weak sets (``disable``, ``close``, ``empty``,
+    ``clear``), the bare resource nouns (``user``, ``profile``) and the common
+    English verbs (``mail``, ``send``) are all left out, because a token match
+    on those would refuse ordinary page assets.
+
+    A refusal is never silent: the runner records every blocked request on the
+    verdict, so a stylesheet that happened to tokenize onto ``drop`` is visible
+    to a reviewer rather than quietly missing.
+
+    Returns:
+        ``blocked_path_tokens`` and ``blocked_query_keys``, both sorted so the
+        job a run sends is byte-stable across processes.
+    """
+    tokens: set[str] = set()
+    for vocabulary in (
+        _SESSION_DESTRUCTION_TOKENS,
+        _DELETION_TOKENS,
+        _CANCELLATION_TOKENS,
+        _PAYMENT_TOKENS,
+        _RESET_VERBS,
+        _REVOCATION_TOKENS,
+        _SECURITY_CONTROL_NOUNS,
+        _MESSAGING_STANDALONE,
+    ):
+        tokens |= vocabulary
+    return {
+        "blocked_path_tokens": sorted(tokens),
+        "blocked_query_keys": sorted(_STATE_CHANGING_QUERY_KEYS),
+    }
+
+
 __all__ = [
     "CATEGORY_BULK_MESSAGING",
     "CATEGORY_CANCELLATION",
@@ -820,4 +868,5 @@ __all__ = [
     "classify_form_submission",
     "classify_request",
     "is_state_changing_request",
+    "subresource_guard_spec",
 ]

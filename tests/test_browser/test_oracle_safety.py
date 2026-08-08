@@ -84,6 +84,8 @@ class TestGovernorDecides:
     async def test_a_governor_refusal_becomes_a_refusal_verdict(self, monkeypatch) -> None:
         from clinkz.safety.governor import RequestDecision
 
+        navigations: list[dict] = []
+
         class _Refusing:
             def __init__(self) -> None:
                 self.released = 0
@@ -97,6 +99,9 @@ class TestGovernorDecides:
             def observe_response(self, **k) -> None:
                 pass
 
+            def record_navigation(self, **k) -> None:
+                navigations.append(k)
+
         gov = _Refusing()
         monkeypatch.setattr("clinkz.safety.governor.get_active_governor", lambda: gov)
         oracle = _oracle()
@@ -104,6 +109,9 @@ class TestGovernorDecides:
         verdict = _verdict(await oracle.execute(args))
         assert verdict["refusal"] == WitnessRefusal.SAFETY_REFUSED.value
         assert "engagement halted" in verdict["refusal_detail"]
+        # The refusal is auditable: a navigation the rails stopped is recorded
+        # as such, not simply absent from the log.
+        assert [n["outcome"] for n in navigations] == ["refused"]
 
     async def test_a_refused_navigation_costs_no_concurrency_slot(self, monkeypatch) -> None:
         """A refusal acquires nothing, so it must release nothing — releasing a
@@ -111,6 +119,7 @@ class TestGovernorDecides:
         from clinkz.safety.governor import RequestDecision
 
         released: list[int] = []
+        navigations: list[dict] = []
 
         class _Refusing:
             async def authorize(self, *a, **k):
@@ -122,6 +131,9 @@ class TestGovernorDecides:
             def observe_response(self, **k) -> None:
                 pass
 
+            def record_navigation(self, **k) -> None:
+                navigations.append(k)
+
         monkeypatch.setattr("clinkz.safety.governor.get_active_governor", lambda: _Refusing())
         oracle = _oracle()
         args = oracle.validate_input({"url": "http://127.0.0.1:8080/reflect"})
@@ -132,6 +144,7 @@ class TestGovernorDecides:
         """A POST navigation must reach the action log as a POST, or 'what did it
         do to my app' answers wrongly."""
         seen: dict[str, object] = {}
+        navigations: list[dict] = []
         from clinkz.safety.governor import RequestDecision
 
         class _Recording:
@@ -146,6 +159,9 @@ class TestGovernorDecides:
 
             def observe_response(self, **k) -> None:
                 pass
+
+            def record_navigation(self, **k) -> None:
+                navigations.append(k)
 
         monkeypatch.setattr("clinkz.safety.governor.get_active_governor", lambda: _Recording())
         oracle = _oracle()
