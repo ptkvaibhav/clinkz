@@ -163,10 +163,16 @@ class TestNoOracleIsTheUnchangedFloor:
         assert "no client-side execution oracle (P7) was available" in lead.missing_observation
 
     @pytest.mark.asyncio
-    async def test_p7_is_disabled_by_default_so_no_tool_is_resolved(self) -> None:
+    async def test_a_directly_invoked_agent_does_not_resolve_an_oracle_for_itself(self) -> None:
         """The black-box floor must be byte-identical wherever Playwright happens
         to be installed — otherwise the suite reports a different result on a
-        developer machine than on CI."""
+        developer machine than on CI.
+
+        This is the DIRECT-invocation path, which is what a unit suite, a replay
+        and a smoke cell take. A real engagement gets its oracle wired on by the
+        orchestrator preflight instead, so the default ``auto`` mode leaves this
+        one browser-free while still giving ``clinkz scan`` a browser.
+        """
         agent = _make_agent(oracle=None)
         assert agent._p7_oracle() is None
 

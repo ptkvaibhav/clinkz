@@ -46,6 +46,16 @@ OUTCOME_SENT = "sent"
 OUTCOME_REFUSED = "refused"
 OUTCOME_FAILED = "failed"
 
+#: Category stamped on every P7 browser navigation.
+#:
+#: A browser navigation is logged even when the method is GET, which is a
+#: deliberate exception to the "only mutations are recorded" rule below. The
+#: reason is that the thing being recorded is not the request — it is handing a
+#: page to an engine that will *run the target's code*, fetch its subresources,
+#: and follow whatever it is told to. "What did it do to my app?" is answered
+#: wrongly by a log in which that does not appear.
+CATEGORY_BROWSER_NAVIGATION = "browser_navigation"
+
 
 class ActionRecord(BaseModel):
     """One state-changing request the engagement produced.
@@ -118,6 +128,7 @@ class ActionLog:
         signal: str = "",
         status_code: int = 0,
         body: str = "",
+        counter_key: str | None = None,
     ) -> ActionRecord:
         """Append one record and return it.
 
@@ -131,6 +142,10 @@ class ActionLog:
             signal: Deciding token/method for a refusal.
             status_code: Response status, for a sent request.
             body: Full request body; excerpted and digested, never stored whole.
+            counter_key: Which tally this record increments. Defaults to
+                *outcome*. Browser navigations pass their own key so that
+                :attr:`sent_count` keeps meaning "state-changing requests sent"
+                — a GET navigation belongs in the log but not in that number.
 
         Returns:
             The :class:`ActionRecord` as written.
@@ -138,7 +153,8 @@ class ActionLog:
         with self._lock:
             self._seq += 1
             seq = self._seq
-            self._counts[outcome] = self._counts.get(outcome, 0) + 1
+            key = counter_key or outcome
+            self._counts[key] = self._counts.get(key, 0) + 1
 
         record = ActionRecord(
             seq=seq,
@@ -173,6 +189,28 @@ class ActionLog:
         """Record a state-changing request the safety rails refused."""
         return self.record(outcome=OUTCOME_REFUSED, **kwargs)  # type: ignore[arg-type]
 
+    def record_navigation(self, *, outcome: str, **kwargs: object) -> ActionRecord:
+        """Record one P7 browser navigation — attempted, or refused before it ran.
+
+        Every navigation, not only a mutating one: see
+        :data:`CATEGORY_BROWSER_NAVIGATION`. The record lands in the same file
+        an operator already reads, and its tally is kept apart from the
+        state-changing counts so neither number has to be qualified.
+
+        Args:
+            outcome: ``sent`` for a navigation the rails allowed, ``refused``
+                for one they stopped.
+            **kwargs: As :meth:`record`; ``category`` defaults to the browser
+                navigation category and a refusal may override it with the
+                category that decided it.
+        """
+        kwargs.setdefault("category", CATEGORY_BROWSER_NAVIGATION)
+        return self.record(
+            outcome=outcome,
+            counter_key=f"navigation_{outcome}",
+            **kwargs,  # type: ignore[arg-type]
+        )
+
     # ------------------------------------------------------------------
     # Reading back
     # ------------------------------------------------------------------
@@ -186,6 +224,13 @@ class ActionLog:
     def refused_count(self) -> int:
         """How many were refused by the safety rails."""
         return self._counts.get(OUTCOME_REFUSED, 0)
+
+    @property
+    def navigation_count(self) -> int:
+        """How many browser navigations were logged, allowed and refused."""
+        return self._counts.get(f"navigation_{OUTCOME_SENT}", 0) + self._counts.get(
+            f"navigation_{OUTCOME_REFUSED}", 0
+        )
 
     def summary(self) -> dict[str, int]:
         """Counts by outcome — for the report and the run summary."""
@@ -247,6 +292,7 @@ class RefusalTally(BaseModel):
 
 
 __all__ = [
+    "CATEGORY_BROWSER_NAVIGATION",
     "OUTCOME_FAILED",
     "OUTCOME_REFUSED",
     "OUTCOME_SENT",

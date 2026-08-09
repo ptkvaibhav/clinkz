@@ -4,6 +4,17 @@ Driver: `scripts/live_p7_client_execution_validation.py`. Real containers, a rea
 Chromium, and the shipped methodology/emission code — no harness and no mocks.
 Run with `CLIENT_ORACLE_MODE=playwright` and `TOOL_EXEC_MODE=local`.
 
+> **This validated the primitive, not the product.** The driver runs the browser
+> in-process against `http://localhost:8080`, which is a set of conditions it
+> assembles for itself. A real engagement runs in docker tool-mode, where the
+> target has been rewritten to a container-network alias a host browser cannot
+> reach — so at the time of this run, every result below was reproducible only
+> through the driver, and `clinkz scan` confirmed none of it. The pipeline
+> wiring that closed that gap, and its own end-to-end validation through
+> `clinkz scan`, are in
+> [`p7-pipeline-validation.md`](p7-pipeline-validation.md). Keep both: this file
+> is the evidence about the *oracle*, that one about the *engagement*.
+
 ## Pre-flight
 
 - `clinkz-dvwa` up on `localhost:8080`, authenticated as `admin`.
