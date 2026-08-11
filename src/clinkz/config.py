@@ -80,6 +80,29 @@ class Settings(BaseModel):
         default=120.0, description="Hard timeout (seconds) for a single LLM call"
     )
 
+    # Output ceiling for a single LLM call. On a thinking-capable model this
+    # budget covers reasoning AND response text together, so a value sized for
+    # the answer alone lets a hard prompt spend the whole allowance thinking
+    # and return zero text blocks. The old 4096 did exactly that to the exploit
+    # planner. 16000 is the documented non-streaming ceiling — high enough to
+    # leave reasoning room, low enough to stay inside the SDK's HTTP timeout.
+    llm_max_output_tokens: int = Field(
+        default=16000, description="max_tokens for a single LLM call (covers thinking + text)"
+    )
+
+    # Prompt caching. Applies only where a caller supplied a stable prefix
+    # (llm.base.PromptSegments); a plain-string prompt is unaffected either way.
+    llm_prompt_cache_enabled: bool = Field(
+        default=True, description="Attach a cache breakpoint to run-stable prompt prefixes"
+    )
+    # "5m" (1.25x write premium) or "1h" (2.0x). Measured across the four P7
+    # engagements, the exploit agent's largest gap between consecutive Anthropic
+    # calls was 118s and NO gap exceeded 5 minutes, so the 5m entry never
+    # expires mid-run and 1h would double the write cost for nothing.
+    llm_prompt_cache_ttl: str = Field(
+        default="5m", description="Cache breakpoint TTL: '5m' or '1h'"
+    )
+
     # Per-provider retry budget (used by each LLMClient's backoff loop).
     # With fallback chains we keep each provider's budget low so we move to
     # the next provider quickly instead of burning minutes on a single one.
@@ -302,6 +325,10 @@ class Settings(BaseModel):
             report_llm_provider=_agent_provider("report", "gemini"),  # type: ignore[arg-type]
             llm_provider_default=global_default,  # type: ignore[arg-type]
             llm_request_timeout=float(os.getenv("LLM_REQUEST_TIMEOUT", "120.0")),
+            llm_max_output_tokens=int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "16000")),
+            llm_prompt_cache_enabled=os.getenv("LLM_PROMPT_CACHE_ENABLED", "true").lower()
+            not in ("0", "false", "no"),
+            llm_prompt_cache_ttl=os.getenv("LLM_PROMPT_CACHE_TTL", "5m"),
             llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
             llm_retry_base_delay=float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0")),
             llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),

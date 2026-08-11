@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from clinkz.llm.base import AgentAction, LLMClient, LLMMessage
+from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, PromptLike
 
 
 class OllamaClient(LLMClient):
@@ -34,5 +34,5 @@ class OllamaClient(LLMClient):
     async def research(self, query: str) -> str:
         raise NotImplementedError
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: PromptLike) -> str:
         raise NotImplementedError

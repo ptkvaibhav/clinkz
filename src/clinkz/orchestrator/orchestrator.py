@@ -361,9 +361,13 @@ class OrchestratorAgent:
             engagement_id = await state.create_engagement(scope.name, scope.model_dump(mode="json"))
             # Open the engagement-scoped trace writer before any agents spin up
             # so tool/LLM/handoff events from the very first phase are captured.
+            # Registered in the same breath as it is constructed: a writer that
+            # exists but is not the active one still creates the directory and
+            # an empty trace.jsonl, so the bundle looks traced and records
+            # nothing (see TraceWriter.activate).
             trace_writer = TraceWriter(engagement_id=engagement_id)
             set_active_trace_writer(trace_writer)
-            self._logger.info("TraceWriter opened: %s", trace_writer.path)
+            self._logger.info("TraceWriter opened and active: %s", trace_writer.path)
 
             # Install the production safety rails for this engagement. Every
             # outbound request now passes through the governor: paced, capped,

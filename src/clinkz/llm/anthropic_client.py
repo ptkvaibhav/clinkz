@@ -21,17 +21,112 @@ from anthropic import AsyncAnthropic
 from clinkz.config import settings
 from clinkz.llm.base import (
     AgentAction,
+    CallStats,
+    EmptyResponseError,
     LLMClient,
     LLMMessage,
+    PromptLike,
     RateLimitError,
     ServiceUnavailableError,
     ToolCall,
+    as_prompt_segments,
 )
 
 logger = logging.getLogger(__name__)
 
 _MAX_CALLS_PER_MINUTE: int = 50
 _RATE_LIMIT_PERIOD: float = 60.0
+
+#: Minimum cacheable prefix, in tokens, per model family. Below this the API
+#: silently declines to cache — no error, ``cache_creation_input_tokens: 0`` —
+#: so a breakpoint on a short prefix buys nothing and hides that it bought
+#: nothing. The floor is **not monotonic across generations**: it is 512 on the
+#: newest models and 4096 on Opus 4.6/4.5 and Haiku 4.5, so it has to be looked
+#: up rather than assumed. Prefix match is longest-first.
+_CACHE_MIN_PREFIX_TOKENS: tuple[tuple[str, int], ...] = (
+    ("claude-opus-4-6", 4096),
+    ("claude-opus-4-5", 4096),
+    ("claude-haiku-4-5", 4096),
+    ("claude-opus-4-7", 2048),
+    # Stated rather than left to the default, so the value the run depends on is
+    # the documented one for the model we actually ship with rather than a
+    # fallback that happens to agree with it today.
+    ("claude-sonnet-5", 1024),
+    ("claude-sonnet-4-6", 1024),
+    ("claude-opus-4-8", 1024),
+    ("claude-opus-5", 512),
+    ("claude-fable-5", 512),
+    ("claude-mythos-5", 512),
+)
+
+#: Fallback floor for a model we have no entry for. 1024 is the value for the
+#: Opus 4.8 / Sonnet 5 / Sonnet 4.6 generation and is the safe assumption: too
+#: high only costs a cache we could have had, while too low would attach
+#: breakpoints that never engage and report a hit rate that never materialises.
+_CACHE_MIN_PREFIX_TOKENS_DEFAULT: int = 1024
+
+#: Chars per token used only to decide whether a prefix clears the floor. A
+#: deliberate underestimate of tokens (4 chars/token) so a borderline prefix is
+#: judged too short rather than wrongly marked cacheable.
+_CHARS_PER_TOKEN: int = 4
+
+
+def cache_min_prefix_tokens(model: str) -> int:
+    """Return the minimum cacheable prefix, in tokens, for *model*."""
+    for prefix, floor in _CACHE_MIN_PREFIX_TOKENS:
+        if model.startswith(prefix):
+            return floor
+    return _CACHE_MIN_PREFIX_TOKENS_DEFAULT
+
+
+#: Conservative output rate, in tokens/second, used ONLY to derive a timeout
+#: floor. Deliberately pessimistic: a thinking-capable model spends part of the
+#: allowance reasoning, and the cost of guessing low is a timeout on a request
+#: that was about to succeed.
+_MIN_OUTPUT_TOKENS_PER_SECOND: float = 30.0
+
+#: Absolute ceiling on the derived floor. Matches the Anthropic SDK's own
+#: default client timeout, which is what a non-streaming request is bounded by
+#: anyway — deriving something longer would be a number no request can reach.
+_MAX_DERIVED_TIMEOUT_SECONDS: float = 600.0
+
+
+def request_timeout_for(max_output_tokens: int) -> float:
+    """Per-call timeout, never shorter than the configured output ceiling needs.
+
+    ``llm_request_timeout`` and ``llm_max_output_tokens`` are separate settings
+    that can silently contradict each other, and the default pair did: a
+    16000-token non-streaming completion cannot finish inside 120 s, so the
+    exploit planner's Anthropic call timed out three times and the chain fell
+    through to Gemini — quietly changing which model planned the engagement.
+    Measured directly: the same two planning calls that time out at 120 s both
+    complete at 600 s.
+
+    So the configured timeout is treated as a floor to raise, not a ceiling to
+    respect. The derived value is capped at the SDK's own default client
+    timeout, because a non-streaming request is bounded by that regardless.
+
+    Args:
+        max_output_tokens: The ``max_tokens`` this request actually carries.
+
+    Returns:
+        The timeout, in seconds, to bound this call with.
+    """
+    configured = float(settings.llm_request_timeout)
+    if max_output_tokens <= 0:
+        return configured
+    needed = min(max_output_tokens / _MIN_OUTPUT_TOKENS_PER_SECOND, _MAX_DERIVED_TIMEOUT_SECONDS)
+    if needed <= configured:
+        return configured
+    logger.info(
+        "Raising per-call timeout %.0fs -> %.0fs: max_tokens=%d cannot complete in the "
+        "configured window (non-streaming, ~%.0f tok/s floor)",
+        configured,
+        needed,
+        max_output_tokens,
+        _MIN_OUTPUT_TOKENS_PER_SECOND,
+    )
+    return needed
 
 
 class _RateLimiter:
@@ -106,6 +201,9 @@ class AnthropicClient(LLMClient):
         self._rate_limiter = _RateLimiter(_MAX_CALLS_PER_MINUTE, _RATE_LIMIT_PERIOD)
         self._total_input_tokens: int = 0
         self._total_output_tokens: int = 0
+        self._total_cache_creation_tokens: int = 0
+        self._total_cache_read_tokens: int = 0
+        self.last_call_stats: CallStats | None = None
 
     # ------------------------------------------------------------------
     # Schema / message conversion helpers
@@ -227,7 +325,7 @@ class AnthropicClient(LLMClient):
                 # deadline; op-level timeouts are the safety valve).
                 return await asyncio.wait_for(
                     self._client.messages.create(**kwargs),
-                    timeout=settings.llm_request_timeout,
+                    timeout=request_timeout_for(int(kwargs.get("max_tokens") or 0)),
                 )
             except Exception as exc:
                 last_exc = exc
@@ -250,22 +348,94 @@ class AnthropicClient(LLMClient):
 
         raise RateLimitError(f"Anthropic exhausted retries: {last_exc}")  # pragma: no cover
 
-    def _track_usage(self, response: Any) -> None:
-        """Accumulate token counts from an Anthropic response."""
+    def _track_usage(self, response: Any) -> CallStats:
+        """Accumulate token counts and publish stats for the call just served.
+
+        ``input_tokens`` from the API is the **uncached remainder only**, so it
+        is recorded as-is and the cache counters are kept beside it rather than
+        folded in — the sum is the real prompt size, and conflating them would
+        make a working cache look like a shrinking prompt.
+        """
+        stats = CallStats(provider="anthropic", model=self._model)
         usage = getattr(response, "usage", None)
-        if usage is None:
-            return
-        inp = getattr(usage, "input_tokens", 0) or 0
-        out = getattr(usage, "output_tokens", 0) or 0
-        self._total_input_tokens += inp
-        self._total_output_tokens += out
+        if usage is not None:
+            stats.input_tokens = getattr(usage, "input_tokens", 0) or 0
+            stats.output_tokens = getattr(usage, "output_tokens", 0) or 0
+            stats.cache_creation_input_tokens = (
+                getattr(usage, "cache_creation_input_tokens", 0) or 0
+            )
+            stats.cache_read_input_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+        stats.stop_reason = getattr(response, "stop_reason", None)
+
+        self._total_input_tokens += stats.input_tokens
+        self._total_output_tokens += stats.output_tokens
+        self._total_cache_creation_tokens += stats.cache_creation_input_tokens
+        self._total_cache_read_tokens += stats.cache_read_input_tokens
+        self.last_call_stats = stats
+
         logger.debug(
-            "Token usage — input: %d, output: %d | session total in/out: %d/%d",
-            inp,
-            out,
+            "Token usage — input: %d, output: %d, cache_write: %d, cache_read: %d "
+            "| session total in/out: %d/%d",
+            stats.input_tokens,
+            stats.output_tokens,
+            stats.cache_creation_input_tokens,
+            stats.cache_read_input_tokens,
             self._total_input_tokens,
             self._total_output_tokens,
         )
+        return stats
+
+    # ------------------------------------------------------------------
+    # Prompt assembly (incl. the cache breakpoint)
+    # ------------------------------------------------------------------
+
+    def _system_blocks_for(self, stable: str) -> list[dict[str, Any]] | None:
+        """Render the run-stable prefix as a system block, cached when worthwhile.
+
+        The breakpoint goes on the **last system block**, which is where the
+        rendered prompt order (``tools`` → ``system`` → ``messages``) puts the
+        boundary between what repeats and what does not.
+
+        A prefix under the model's minimum is still sent — it is real prompt
+        content — but carries no ``cache_control``, and says so in the log. An
+        unattachable breakpoint is not free: it costs a write premium on a
+        cache the API will decline to create, and it invites a hit-rate number
+        that was never going to arrive.
+        """
+        if not stable:
+            return None
+
+        block: dict[str, Any] = {"type": "text", "text": stable}
+        if not settings.llm_prompt_cache_enabled:
+            return [block]
+
+        floor = cache_min_prefix_tokens(self._model)
+        approx_tokens = len(stable) // _CHARS_PER_TOKEN
+        if approx_tokens < floor:
+            logger.info(
+                "Prompt cache not attached — stable prefix ~%d tokens is under the "
+                "%d-token minimum for %s; the request is unchanged and uncached",
+                approx_tokens,
+                floor,
+                self._model,
+            )
+            return [block]
+
+        cache_control: dict[str, Any] = {"type": "ephemeral"}
+        ttl = settings.llm_prompt_cache_ttl
+        if ttl and ttl != "5m":
+            cache_control["ttl"] = ttl
+        block["cache_control"] = cache_control
+        return [block]
+
+    @staticmethod
+    def _text_from(response: Any) -> str:
+        """Join every text block in a response, ignoring thinking/tool blocks."""
+        texts: list[str] = []
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                texts.append(block.text)
+        return "\n".join(texts)
 
     # ------------------------------------------------------------------
     # LLMClient interface
@@ -294,15 +464,18 @@ class AnthropicClient(LLMClient):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": api_messages,
-            "max_tokens": 4096,
+            "max_tokens": settings.llm_max_output_tokens,
         }
         if system_prompt:
-            kwargs["system"] = system_prompt
+            # The system prompt is the one span every turn of a ReAct loop
+            # repeats verbatim, so it is exactly the prefix worth a breakpoint.
+            system_blocks = self._system_blocks_for(system_prompt)
+            kwargs["system"] = system_blocks if system_blocks is not None else system_prompt
         if tools:
             kwargs["tools"] = self._to_anthropic_tools(tools)
 
         response = await self._call_with_backoff(**kwargs)
-        self._track_usage(response)
+        stats = self._track_usage(response)
 
         # Extract thought text and tool_use from content blocks
         thought = ""
@@ -320,6 +493,16 @@ class AnthropicClient(LLMClient):
 
         if tool_call:
             return AgentAction(thought=thought, tool_call=tool_call)
+        if not thought.strip():
+            # No text and no tool call: the turn produced nothing to reason from
+            # or act on. Same budget-exhaustion cause as generate_text, and the
+            # same reason not to hand it back as a well-formed empty action.
+            raise EmptyResponseError(
+                f"Anthropic returned neither text nor a tool call (model={self._model}, "
+                f"stop_reason={stats.stop_reason}, output_tokens={stats.output_tokens}, "
+                f"max_tokens={settings.llm_max_output_tokens})",
+                stop_reason=stats.stop_reason,
+            )
         return AgentAction(thought=thought, final_answer=thought)
 
     async def research(self, query: str) -> str:
@@ -358,28 +541,47 @@ class AnthropicClient(LLMClient):
         )
         return await self.generate_text(prompt)
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: PromptLike) -> str:
         """Generate free-form text from a prompt without tool calling.
 
         Args:
-            prompt: The input prompt.
+            prompt: A plain string, or :class:`PromptSegments` whose ``stable``
+                half is sent as a cache-marked system block.
 
         Returns:
-            Generated text content.
-        """
-        response = await self._call_with_backoff(
-            model=self._model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
-        )
-        self._track_usage(response)
+            Generated text content, never empty.
 
-        # Extract all text blocks
-        texts: list[str] = []
-        for block in response.content:
-            if block.type == "text":
-                texts.append(block.text)
-        return "\n".join(texts)
+        Raises:
+            EmptyResponseError: The response carried no text block. On a
+                thinking-capable model this is normally budget exhaustion —
+                ``max_tokens`` bounds thinking and text *together*, so a hard
+                enough prompt can consume the whole allowance before the first
+                visible token. Four DVWA engagements shipped with the exploit
+                planner silently receiving ``""`` this way.
+        """
+        segments = as_prompt_segments(prompt)
+
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": segments.volatile or segments.stable}],
+            "max_tokens": settings.llm_max_output_tokens,
+        }
+        system_blocks = self._system_blocks_for(segments.stable if segments.volatile else "")
+        if system_blocks is not None:
+            kwargs["system"] = system_blocks
+
+        response = await self._call_with_backoff(**kwargs)
+        stats = self._track_usage(response)
+
+        text = self._text_from(response)
+        if not text.strip():
+            raise EmptyResponseError(
+                f"Anthropic returned no text block (model={self._model}, "
+                f"stop_reason={stats.stop_reason}, output_tokens={stats.output_tokens}, "
+                f"max_tokens={settings.llm_max_output_tokens})",
+                stop_reason=stats.stop_reason,
+            )
+        return text
 
     # ------------------------------------------------------------------
     # Diagnostics
