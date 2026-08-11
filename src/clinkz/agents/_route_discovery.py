@@ -79,6 +79,11 @@ _MAX_DISCOVERY_PAGES = 25
 # Responses held by the per-run fetch memo. Bounded: an unbounded response cache
 # over a large crawl is a memory leak wearing a cache's clothes.
 _MAX_MEMO_ENTRIES = 200
+# Alias markers tolerated in a YAML spec before it is refused unparsed. safe_load
+# blocks code execution but not geometric anchor/alias expansion, and the byte cap
+# bounds the input rather than the expansion. A real OpenAPI document expresses
+# reuse with $ref, so this refuses nothing legitimate.
+_MAX_YAML_ALIASES = 64
 _MAX_BUNDLE_BYTES = 6_000_000  # bytes of each bundle scanned for routes
 _MAX_SPEC_BYTES = 5_000_000  # max spec body parsed as JSON
 _MAX_SPEC_PATHS = 1000  # max paths read from one spec
@@ -315,10 +320,26 @@ def _parse_yaml(body: str) -> object | None:
     the host under test, so a loader that can construct arbitrary Python objects
     hands the target code execution inside the scanner.
 
+    ``safe_load`` closes the code-execution door and leaves the *expansion* one:
+    a document of nested anchors and aliases (the YAML "billion laughs") is
+    entirely safe-tag-legal and expands geometrically in memory. The byte cap
+    the caller applies bounds the input, not the expansion, so a document that
+    reuses an alias more than a spec plausibly would is refused before it is
+    parsed at all. A real OpenAPI document expresses reuse with ``$ref``, not
+    with YAML anchors — this costs nothing legitimate.
+
     PyYAML is imported lazily and its absence degrades to JSON-only discovery
     rather than raising: an optional parser missing is a smaller surface, not a
     broken scan.
     """
+    alias_count = body.count("*")
+    if alias_count > _MAX_YAML_ALIASES:
+        logger.info(
+            "OpenAPI: refusing a YAML document with %d alias marker(s) — "
+            "a spec expresses reuse with $ref, not anchors",
+            alias_count,
+        )
+        return None
     try:
         import yaml
     except ImportError:

@@ -226,3 +226,26 @@ async def test_an_undeclared_output_is_a_dead_seam_not_an_empty_result(
     assert rec.dead_seam
     assert LedgerAlarm.DEAD_SEAM in rec.alarms
     assert any("DEAD SEAM" in r.getMessage() for r in caplog.records)
+
+
+def test_a_page_seed_must_match_scheme_as_well_as_host() -> None:
+    """The origin fence covers the scheme, per commit 840ddec's lesson.
+
+    These URLs come out of the target's own HTML, so a page can offer
+    `ftp://<same-host>/x`: netloc matches, and the protocol is one this
+    subsystem never intended to speak.
+    """
+    from clinkz.agents.scan import ScanAgent
+    from clinkz.models.scan import Endpoint
+
+    seeds = ScanAgent._discovery_page_seeds(
+        [
+            Endpoint(url="http://t/admin.html"),
+            Endpoint(url="ftp://t/secret"),
+            Endpoint(url="file:///etc/passwd"),
+            Endpoint(url="javascript:alert(1)"),
+            Endpoint(url="http://evil.example/x"),
+        ],
+        "http://t/",
+    )
+    assert seeds == ["http://t/admin.html"]

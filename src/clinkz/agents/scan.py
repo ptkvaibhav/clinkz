@@ -710,6 +710,13 @@ class ScanAgent(BaseAgent):
         the crawl-safety rule does not stop applying because a different
         subsystem is doing the fetching.
 
+        The origin comparison covers the SCHEME, not just the host. These URLs
+        were read out of the target's own HTML, so a page can offer
+        ``ftp://<same-host>/x`` — matching netloc while naming a protocol this
+        subsystem never intended to speak. Commit ``840ddec`` fixed exactly this
+        omission in the exploit planner's origin fence; a new fetcher must not
+        reintroduce it. Only ``http``/``https`` reach the fetch.
+
         Ordered by ``crawl_visit_priority`` for the same reason the enrichment
         budget is: the cap has to fall on the least informative pages, not on
         whichever ones a concurrent crawler happened to emit last.
@@ -721,6 +728,7 @@ class ScanAgent(BaseAgent):
         Returns:
             Deduplicated page URLs, best-first.
         """
+        base = urlparse(base_url)
         seen: set[str] = {base_url}
         pages: list[str] = []
         for ep in endpoints:
@@ -729,9 +737,12 @@ class ScanAgent(BaseAgent):
                 continue
             if is_state_changing_url(page):
                 continue
-            if urlparse(page).netloc != urlparse(base_url).netloc:
+            parsed = urlparse(page)
+            if parsed.scheme.lower() not in ("http", "https"):
                 continue
-            if path_extension(urlparse(page).path) in STATIC_ASSET_EXTENSIONS:
+            if parsed.netloc.lower() != base.netloc.lower():
+                continue
+            if path_extension(parsed.path) in STATIC_ASSET_EXTENSIONS:
                 continue
             seen.add(page)
             pages.append(page)

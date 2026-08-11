@@ -252,3 +252,23 @@ async def test_discovery_still_unions_and_drops_state_changing_routes() -> None:
         "http://t/", fetch, default_discoverers(["http://t/admin.html"])
     )
     assert not any("logout" in e.url for e in endpoints)
+
+
+@pytest.mark.asyncio
+async def test_a_yaml_alias_bomb_is_refused_before_it_is_parsed() -> None:
+    """safe_load blocks code execution, not geometric alias expansion.
+
+    The byte cap bounds the input, not what it expands to. A spec expresses
+    reuse with $ref, so refusing an anchor-heavy document costs nothing real.
+    """
+    bomb = "openapi: 3.0.0\na: &a [x,x,x,x,x,x,x,x,x]\n" + "".join(
+        f"b{i}: [{', '.join(['*a'] * 9)}]\n" for i in range(20)
+    )
+    fetch = _Fetcher(
+        {
+            "http://t/openapi.yaml": FetchResult(
+                status=200, body=bomb, headers={"content-type": "application/yaml"}
+            )
+        }
+    )
+    assert await OpenAPIDiscoverer().discover("http://t/", fetch) == []

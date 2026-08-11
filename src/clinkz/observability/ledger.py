@@ -107,10 +107,32 @@ class ComponentRecord:
     notes: list[str] = field(default_factory=list)
 
     def add_note(self, note: str) -> None:
-        """Append a bounded, deduplicated note."""
-        if not note or note in self.notes:
+        """Append a bounded, deduplicated, REDACTED note.
+
+        Redacted at ingestion rather than at each writer, because the notes go
+        two ways and only one of them is protected. ``report.json`` is written
+        through ``redact_structure``; :meth:`ContributionLedger.log_summary`
+        writes the same notes straight to the run log, which is not.
+
+        A note is not always a string this module authored. ``_run_sqlmap``
+        records ``str(exc)[:120]`` from a failed tool invocation, and a tool's
+        own error text can carry the argv that produced it — a ``--cookie``
+        bearing the engagement's live session. LESSONS #47 is exactly this
+        shape: a login curl's argv went verbatim into ``trace.jsonl`` because
+        redaction was applied at the writer someone remembered rather than at
+        the property. Applying it here makes every downstream consumer safe by
+        construction instead of by discipline.
+        """
+        if not note or len(self.notes) >= _MAX_NOTES:
             return
-        if len(self.notes) < _MAX_NOTES:
+        try:
+            from clinkz.engagement.secrets import redact
+
+            note = redact(note)
+        except Exception as exc:  # noqa: BLE001 — never raise from the data path
+            logger.debug("Ledger note redaction failed: %s", exc)
+            return
+        if note not in self.notes:
             self.notes.append(note)
 
     @property
