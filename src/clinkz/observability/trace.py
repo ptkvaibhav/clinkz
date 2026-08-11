@@ -20,6 +20,16 @@ The writer is process-local: a single TraceWriter instance is set as the
 every wired call site (ToolBase, ResilientLLMClient, BaseAgent, Orchestrator)
 fetches it via :func:`get_active_trace_writer` and emits events.
 
+**Construct-and-register is one step** (:meth:`TraceWriter.activate`), because
+doing only the first half is invisible: constructing a writer creates
+``outputs/<id>/`` and an empty ``trace.jsonl``, so the bundle looks traced while
+every event goes nowhere. Four engagements on disk are exactly that —
+``18cc9af6`` and ``908b7130`` shipped a report beside a zero-byte trace, from a
+driver that built a writer and dropped the reference. The trace is the evidence
+chain the grading rests on, so its absence must not be quiet: :meth:`close`
+reports an ERROR when a writer that was opened received nothing, and
+:meth:`activate` makes the half-done version unavailable.
+
 Why JSONL: append-only, each line is a complete event, trivial to grep/jq.
 Why "active writer" instead of dependency injection: the call sites we need
 to instrument (ToolBase, LLM clients) are constructed in too many places
@@ -119,7 +129,11 @@ class TraceWriter:
         path_override: Path | str | None = None,
     ) -> None:
         self.engagement_id = engagement_id
-        self.outputs_root = Path(outputs_root)
+        # Resolved once, at construction. ``outputs`` is a relative default, and
+        # a bundle must not be able to split across two directories because
+        # something changed the process CWD mid-engagement — the trace would go
+        # to one tree and the report to another, and each would look complete.
+        self.outputs_root = Path(outputs_root).resolve()
         if path_override is not None:
             self.path = Path(path_override)
         else:
@@ -128,6 +142,9 @@ class TraceWriter:
         self._fh: TextIO | None = self.path.open("a", encoding="utf-8")
         self._lock = threading.Lock()
         self._closed = False
+        #: Events actually written. Read by :meth:`close` — an opened trace that
+        #: received nothing is a broken evidence chain, not an idle engagement.
+        self._events_written = 0
         self.invocations = ToolInvocationRecorder(
             engagement_id=engagement_id,
             outputs_root=self.outputs_root,
@@ -349,6 +366,7 @@ class TraceWriter:
             try:
                 self._fh.write(line + "\n")
                 self._fh.flush()
+                self._events_written += 1
             except Exception as exc:  # noqa: BLE001 — tracing must never raise
                 logger.warning("TraceWriter write failed: %s", exc)
 
@@ -481,8 +499,23 @@ class TraceWriter:
             payload=payload,
         )
 
+    @property
+    def events_written(self) -> int:
+        """How many events reached the file. Zero at close is a defect."""
+        return self._events_written
+
     def close(self) -> None:
-        """Close the underlying file handle. Idempotent."""
+        """Close the underlying file handle, reporting an empty trace. Idempotent.
+
+        An opened-but-empty trace is worse than a missing one: the file is
+        there, the run "has" a trace, and the bundle reads as an engagement that
+        simply did nothing. Every case of it on disk came from a writer that was
+        constructed but never registered as active, so the events had nowhere to
+        go while the engagement ran normally around it.
+
+        Reported at ERROR rather than raised — the trace is evidence about the
+        run, and losing it must not also lose the run.
+        """
         if self._closed:
             return
         self._closed = True
@@ -493,12 +526,62 @@ class TraceWriter:
             except Exception:  # noqa: BLE001 — best-effort
                 pass
             self._fh = None
+        if self._events_written == 0:
+            logger.error(
+                "TraceWriter for engagement %s closed having written NO events — %s is "
+                "empty. The usual cause is a writer that was constructed but never "
+                "registered with set_active_trace_writer(); use TraceWriter.activate().",
+                self.engagement_id,
+                self.path,
+            )
 
     def __enter__(self) -> TraceWriter:
         return self
 
     def __exit__(self, *exc_info: Any) -> None:
         self.close()
+
+    @classmethod
+    @contextmanager
+    def activate(
+        cls,
+        engagement_id: str,
+        outputs_root: Path | str = _DEFAULT_OUTPUTS_ROOT,
+        *,
+        path_override: Path | str | None = None,
+    ) -> Iterator[TraceWriter]:
+        """Open a writer, make it the active one, and tear both down on exit.
+
+        The only way to get tracing that actually records anything, expressed as
+        one call. Construction alone is a trap: it creates ``outputs/<id>/`` and
+        an empty ``trace.jsonl``, so a caller that forgets
+        :func:`set_active_trace_writer` produces a bundle that looks traced and
+        carries nothing. That is not hypothetical — it is what
+        ``scripts/live_p7_client_execution_validation.py`` did, and engagements
+        ``18cc9af6`` and ``908b7130`` shipped a report next to a zero-byte trace
+        because of it.
+
+        The active writer is restored to whatever it was on entry rather than to
+        ``None``, so a nested activation cannot silently disable an outer one.
+
+        Args:
+            engagement_id: Engagement UUID — names the output directory.
+            outputs_root: Root directory for trace files.
+            path_override: Explicit trace file path (mainly for tests).
+
+        Yields:
+            The live writer, already registered as active.
+        """
+        writer = cls(engagement_id, outputs_root, path_override=path_override)
+        previous = get_active_trace_writer()
+        set_active_trace_writer(writer)
+        try:
+            yield writer
+        finally:
+            try:
+                writer.close()
+            finally:
+                set_active_trace_writer(previous)
 
 
 # ---------------------------------------------------------------------------
