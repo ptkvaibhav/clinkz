@@ -45,6 +45,49 @@ class ToolOutput(BaseModel):
     raw_output: str = ""
     error: str = ""
 
+    # ------------------------------------------------------------------
+    # Discovery contract
+    # ------------------------------------------------------------------
+    #
+    # A consumer that guesses a producer's field names is a seam that fails
+    # silently. ``_run_fuzz_tool`` read ``parsed.paths`` / ``parsed.directories``
+    # while :class:`~clinkz.tools.ffuf.FfufOutput` has only ``results``, so both
+    # ``hasattr`` checks were False, the seam returned ``[]``, and every ffuf hit
+    # was discarded — for as long as the seam had existed. Nothing failed: an
+    # empty list is indistinguishable from "the fuzzer found nothing".
+    #
+    # The contract inverts that. The PRODUCER declares what it contributes; the
+    # consumer calls a method that exists on every output type. A wrapper that
+    # forgets to declare it does not silently yield nothing — it answers
+    # ``declares_discovery() is False``, which the consumer logs loudly and the
+    # component ledger records as a structurally dead seam.
+
+    def discovered_urls(self) -> list[str]:
+        """URLs or paths this output contributes to the surface map.
+
+        Override in any output type whose tool discovers surface (crawlers,
+        fuzzers, probers). The base implementation returns nothing, which is
+        correct for outputs that carry no discovery items (an HTTP response, a
+        WAF verdict) and is distinguishable from a real empty result via
+        :meth:`declares_discovery`.
+
+        Returns:
+            Discovered URL/path strings, in the tool's own order.
+        """
+        return []
+
+    @classmethod
+    def declares_discovery(cls) -> bool:
+        """Whether this output type declares a discovery contract.
+
+        Returns:
+            True when the class overrides :meth:`discovered_urls`. A consumer
+            that asks a non-declaring output for surface is reading a seam that
+            can never deliver, and must say so rather than absorb the empty
+            list as a finding-free result.
+        """
+        return cls.discovered_urls is not ToolOutput.discovered_urls
+
 
 class ToolBase(ABC):
     """Abstract base class for all Clinkz tool wrappers.

@@ -29,6 +29,10 @@ class HttpxOutput(ToolOutput):
 
     results: list[HttpxResult] = []
 
+    def discovered_urls(self) -> list[str]:
+        """The URLs httpx confirmed were live."""
+        return [r.url for r in self.results if r.url]
+
 
 class HttpxTool(ToolBase):
     """httpx HTTP service prober.

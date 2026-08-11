@@ -59,11 +59,31 @@ from clinkz.models.vuln_classes import (
     ConfirmationCapability,
     for_finding,
 )
+from clinkz.observability.ledger import get_active_ledger
 from clinkz.safety.action_log import ActionLog, RefusalTally
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 
 logger = logging.getLogger(__name__)
+
+
+def _active_ledger_snapshot() -> dict[str, Any]:
+    """The component ledger as it stands, or ``{}`` when none is installed.
+
+    Read from the process-global active ledger rather than threaded through the
+    report task's payload, for the same reason the trace writer is: a directly
+    invoked ReportAgent — a smoke cell, a replay — has no engagement and must
+    render exactly as it did before, with an empty section rather than a
+    fabricated one.
+    """
+    ledger = get_active_ledger()
+    if ledger is None:
+        return {}
+    try:
+        return ledger.to_dict()
+    except Exception as exc:  # noqa: BLE001 — a report must never fail on its metadata
+        logger.warning("Component ledger snapshot failed: %s", exc)
+        return {}
 
 
 def _parse_authorization(raw: Any) -> AuthorizationRecord | None:
@@ -312,6 +332,7 @@ class ReportAgent(BaseAgent):
             ),
             safety_summary=safety,
             authentication=authentication,
+            component_ledger=_active_ledger_snapshot(),
         )
 
         # The report is the artifact that actually reaches the client, so it
@@ -543,6 +564,7 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_research_leads(lines, report.research_leads)
             ReportAgent._render_unproven_leads(lines, report.unproven_leads)
             ReportAgent._render_not_tested(lines, report)
+            ReportAgent._render_component_ledger(lines, report)
             return "\n".join(lines)
 
         lines.extend(["## Findings", ""])
@@ -576,7 +598,65 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_research_leads(lines, report.research_leads)
         ReportAgent._render_unproven_leads(lines, report.unproven_leads)
         ReportAgent._render_not_tested(lines, report)
+        ReportAgent._render_component_ledger(lines, report)
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_component_ledger(lines: list[str], report: PentestReport) -> None:
+        """Render the components that contributed nothing, and who covered.
+
+        Sits next to *What was NOT tested* and answers the neighbouring
+        question. That section says which classes were never attempted; this one
+        says which components ran and produced nothing — a distinction a reader
+        cannot otherwise make, because a component that contributes zero looks
+        exactly like a target that had nothing to find.
+
+        Silent when no ledger was installed (a directly invoked ReportAgent), and
+        silent when nothing alarmed — an all-clear line rather than a table.
+        """
+        ledger = report.component_ledger
+        if not ledger:
+            return
+        alarms = ledger.get("alarms") or []
+        summary = ledger.get("summary") or {}
+        lines.extend(["## Component contribution", ""])
+        if not alarms:
+            lines.extend(
+                [
+                    f"All {summary.get('components_tracked', 0)} tracked component(s) "
+                    "contributed at least one item. No fallback covered for a "
+                    "component that produced nothing.",
+                    "",
+                ]
+            )
+            return
+        lines.extend(
+            [
+                "The components below ran and contributed nothing, or were covered "
+                "for by a fallback. A finding total says nothing about which "
+                "components produced it, so they are named here.",
+                "",
+                "| Component | Kind | Invoked | Succeeded | Items | Alarm |",
+                "| --- | --- | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for rec in alarms:
+            if not isinstance(rec, dict):
+                continue
+            lines.append(
+                f"| {rec.get('component', '?')} | {rec.get('kind', '?')} | "
+                f"{rec.get('invocations', 0)} | {rec.get('successes', 0)} | "
+                f"{rec.get('items_contributed', 0)} | "
+                f"{', '.join(rec.get('alarms') or []) or '—'} |"
+            )
+        lines.append("")
+        for fb in ledger.get("fallbacks") or []:
+            if isinstance(fb, dict):
+                lines.append(
+                    f"- Fallback: **{fb.get('covered_by', '?')}** covered for "
+                    f"**{fb.get('component', '?')}** ({fb.get('reason') or 'no reason recorded'})"
+                )
+        lines.append("")
 
     @staticmethod
     def _render_header(lines: list[str], report: PentestReport) -> None:

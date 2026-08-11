@@ -71,6 +71,7 @@ Phase agents follow **deterministic step sequences with LLM checkpoints** (no fr
 - **Resilient LLM client** — Per-agent provider chains (Anthropic / Gemini / OpenAI) with automatic rotation on rate-limit/timeout
 - **MCP protocol support** — Connect external tool servers via the Model Context Protocol
 - **Execution traces** — Every engagement writes `outputs/<id>/trace.jsonl` with tool calls, LLM calls, and methodology phases; inspect via `clinkz trace inspect <id>`
+- **Component-contribution ledger** — Per component (LLM planner, each discovery tool, each parser seam, each provider in the fallback chain): invocations, successes, and *items contributed*. Anything invoked that contributed **zero**, and every fallback activation, is reported loudly in the run log and in `report.json` — so a fallback covering for a dead component can no longer make a run look healthy
 
 ## Quick Start
 
@@ -319,7 +320,7 @@ clinkz/
 │   ├── llm/             # LLM abstraction (Anthropic, Gemini, OpenAI, Ollama) + ResilientLLMClient
 │   ├── models/          # Pydantic v2 models (scope, engagement, vuln_classes, target,
 │   │                    # recon, scan, methodology, research, finding, report)
-│   ├── observability/   # Per-engagement JSONL execution trace
+│   ├── observability/   # Per-engagement JSONL execution trace + component ledger
 │   ├── orchestrator/    # OrchestratorAgent + AgentLifecycleManager
 │   ├── research/        # Runtime web search for CVEs / writeups
 │   └── tools/           # ToolBase + ToolResolver (capability + fallback chains),

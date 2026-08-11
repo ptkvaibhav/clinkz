@@ -31,7 +31,11 @@ from clinkz.agents._route_discovery import (
     run_route_discovery,
 )
 from clinkz.agents._url_safety import find_session_setter_urls, is_state_changing_url
-from clinkz.agents._url_shape import crawl_visit_priority
+from clinkz.agents._url_shape import (
+    STATIC_ASSET_EXTENSIONS,
+    crawl_visit_priority,
+    path_extension,
+)
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
 from clinkz.models.recon import (
@@ -50,6 +54,11 @@ from clinkz.models.scan import (
     SSHScanResult,
 )
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.ledger import (
+    ComponentKind,
+    record_contribution,
+    record_dead_seam,
+)
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 from clinkz.tools.resolver import ToolResolver
@@ -539,9 +548,20 @@ class ScanAgent(BaseAgent):
         # under-reports on modern single-page apps. Carries the engagement
         # session via _discovery_http_get and is purely additive: discovered
         # endpoints union into the crawl set, deduped by (url, method).
+        #
+        # Seeded from every page the crawl found, not only the origin root.
+        # Discovery used to read `<script src>` tags from the root document
+        # alone, so a script referenced only by `/admin.html` was structurally
+        # unreachable: the crawl fetched the file and the code that mines files
+        # was never handed it. The two halves were never joined — which is the
+        # whole authbypass gap, and it was never a parsing failure.
+        page_seeds = self._discovery_page_seeds(endpoints, url)
         try:
             discovered = await run_route_discovery(
-                url, self._discovery_http_get, default_discoverers(), log=self._logger
+                url,
+                self._discovery_http_get,
+                default_discoverers(page_seeds),
+                log=self._logger,
             )
         except Exception as exc:  # discovery must never abort the scan phase
             self._logger.warning("Route discovery failed: %s", exc)
@@ -576,7 +596,30 @@ class ScanAgent(BaseAgent):
                     url,
                 )
                 if fuzz_result:
-                    directories = [str(d) for d in fuzz_result]
+                    # Crawl-safety applies to fuzz hits exactly as it does to
+                    # crawl output: a wordlist finds `/logout.php` as readily as
+                    # `/admin`, and the enrichment/exploit phases GET whatever
+                    # lands here.
+                    safe_fuzz = [str(d) for d in fuzz_result if not is_state_changing_url(str(d))]
+                    dropped = len(fuzz_result) - len(safe_fuzz)
+                    if dropped:
+                        self._logger.info(
+                            "Crawl-safety: skipped %d state-changing path(s) from fuzz output",
+                            dropped,
+                        )
+                    directories = safe_fuzz
+                    # Fuzz hits have to become endpoints, not just directory
+                    # strings. `directories` reaches the state store and stops
+                    # there; the Exploit planner ranks over `HTTPScanResult.
+                    # endpoints`, so a path that only ever lands in the
+                    # directory list is discovered and then never attacked —
+                    # content discovery that finds `/admin` and does nothing
+                    # with it has not functioned either.
+                    known = {ep.url for ep in endpoints}
+                    for path_url in safe_fuzz:
+                        if path_url not in known:
+                            endpoints.append(Endpoint(url=path_url))
+                            known.add(path_url)
             except ValueError:
                 self._logger.warning("No fuzzing tools available")
 
@@ -644,16 +687,7 @@ class ScanAgent(BaseAgent):
         if match is None or match.tool_class is None or not match.available:
             return []
 
-        tool = match.tool_class(scope=self.scope)
-        args = tool.validate_input(self._build_tool_input(url))
-        raw = await tool.execute(args)
-        parsed = tool.parse_output(raw)
-
-        urls: list[str] = []
-        for field_name in ("endpoints", "urls"):
-            if hasattr(parsed, field_name):
-                urls.extend(str(u) for u in getattr(parsed, field_name))
-        return urls
+        return await self._run_discovery_tool("web_crawling", tool_name, url)
 
     async def _run_fuzz_tool(self, tool_name: str, url: str) -> list[str]:
         """Execute a fuzzing tool by name and return discovered paths.
@@ -663,23 +697,130 @@ class ScanAgent(BaseAgent):
             url: Target URL to fuzz.
 
         Returns:
-            List of discovered path strings.
+            List of discovered URL strings, one per surviving hit.
         """
-        match = self._resolver.find_tool("directory_fuzzing")
+        return await self._run_discovery_tool("directory_fuzzing", tool_name, url)
+
+    @staticmethod
+    def _discovery_page_seeds(endpoints: list[Endpoint], base_url: str) -> list[str]:
+        """Crawl-discovered pages whose scripts route discovery should also read.
+
+        Filtered to things worth fetching as *documents*: same-origin, not a
+        static asset, and never a state-changing URL — discovery GETs these, and
+        the crawl-safety rule does not stop applying because a different
+        subsystem is doing the fetching.
+
+        The origin comparison covers the SCHEME, not just the host. These URLs
+        were read out of the target's own HTML, so a page can offer
+        ``ftp://<same-host>/x`` — matching netloc while naming a protocol this
+        subsystem never intended to speak. Commit ``840ddec`` fixed exactly this
+        omission in the exploit planner's origin fence; a new fetcher must not
+        reintroduce it. Only ``http``/``https`` reach the fetch.
+
+        Ordered by ``crawl_visit_priority`` for the same reason the enrichment
+        budget is: the cap has to fall on the least informative pages, not on
+        whichever ones a concurrent crawler happened to emit last.
+
+        Args:
+            endpoints: The endpoint set as it stands after crawl + enrichment.
+            base_url: Origin root, already seeded by the discoverers themselves.
+
+        Returns:
+            Deduplicated page URLs, best-first.
+        """
+        base = urlparse(base_url)
+        seen: set[str] = {base_url}
+        pages: list[str] = []
+        for ep in endpoints:
+            page = (ep.url or "").split("#", 1)[0]
+            if not page or page in seen:
+                continue
+            if is_state_changing_url(page):
+                continue
+            parsed = urlparse(page)
+            if parsed.scheme.lower() not in ("http", "https"):
+                continue
+            if parsed.netloc.lower() != base.netloc.lower():
+                continue
+            if path_extension(parsed.path) in STATIC_ASSET_EXTENSIONS:
+                continue
+            seen.add(page)
+            pages.append(page)
+        pages.sort(key=crawl_visit_priority)
+        return pages
+
+    async def _run_discovery_tool(self, capability: str, tool_name: str, url: str) -> list[str]:
+        """Resolve a discovery tool by capability, run it, and read its contract.
+
+        The one seam every surface-discovery tool passes through. It reads the
+        producer's **declared** contract (:meth:`ToolOutput.discovered_urls`)
+        rather than guessing at field names.
+
+        That guess is not a hypothetical failure mode. This method's predecessor
+        read ``parsed.paths`` and ``parsed.directories``; ``FfufOutput`` carries
+        neither — it has ``results`` — so both ``hasattr`` checks were False and
+        the seam returned an empty list on every run since it was written. ffuf
+        executed, found paths, and had 100% of its output discarded, and nothing
+        anywhere failed: an empty list from a fuzzer is exactly what a target
+        with no hidden content looks like. Content discovery had never
+        functioned, and the crawler covered for it well enough that the totals
+        never looked wrong.
+
+        So the contract is declared on the producer and the two failure modes are
+        now distinguishable:
+
+        * the output type does not declare ``discovered_urls`` → a **dead seam**,
+          logged at WARNING and recorded on the ledger as structurally inert;
+        * the output type declares it and returns nothing → an honest empty
+          result, recorded as a zero contribution the end-of-run summary reports.
+
+        The *tool_name* the resolver's fallback chain nominated is honoured
+        rather than ignored. Both predecessors dropped it and re-resolved the
+        capability, so ``try_until_sufficient`` walking
+        ``katana → gospider → hakrawler`` ran katana three times: the chain was
+        declared, iterated, and had no effect.
+
+        Args:
+            capability: Capability to resolve (``"web_crawling"``, …).
+            tool_name: The chain entry to run. Falls back to capability
+                resolution when no wrapper is registered under that name.
+            url: Target URL.
+
+        Returns:
+            Discovered URL strings, or an empty list when no tool resolved.
+        """
+        match = self._resolver.find_tool_by_name(tool_name) if tool_name else None
+        if match is None or not match.available:
+            match = self._resolver.find_tool(capability)
         if match is None or match.tool_class is None or not match.available:
             return []
 
         tool = match.tool_class(scope=self.scope)
+        tool_name = tool.name
         args = tool.validate_input(self._build_tool_input(url))
         raw = await tool.execute(args)
         parsed = tool.parse_output(raw)
 
-        paths: list[str] = []
-        if hasattr(parsed, "paths"):
-            paths.extend(str(p) for p in parsed.paths)
-        if hasattr(parsed, "directories"):
-            paths.extend(str(d) for d in parsed.directories)
-        return paths
+        if not type(parsed).declares_discovery():
+            note = (
+                f"{type(parsed).__name__} declares no discovered_urls() contract — "
+                f"{tool_name}'s output cannot reach the surface map"
+            )
+            self._logger.warning("DEAD SEAM: %s (capability %s) — %s", tool_name, capability, note)
+            record_dead_seam(name=tool_name, kind=ComponentKind.TOOL, note=note)
+            return []
+
+        urls = [str(u) for u in parsed.discovered_urls() if str(u)]
+        record_contribution(
+            name=tool_name,
+            kind=ComponentKind.TOOL,
+            items=len(urls),
+            ok=bool(parsed.success),
+            note=f"capability={capability}",
+        )
+        if parsed.success and not urls:
+            self._logger.info("%s ran successfully and contributed 0 URL(s) for %s", tool_name, url)
+        return urls
 
     @staticmethod
     def _merge_crawl_endpoints_preferring_params(
@@ -1794,7 +1935,27 @@ class ScanAgent(BaseAgent):
                         await self.state.add_endpoint(
                             engagement_id=self.engagement_id,
                             url=ep.url,
+                            method=ep.method,
+                            parameters={name: "" for name in ep.params},
                             discovered_by=self.name,
+                            # The observed response features and the parameter
+                            # structure the Exploit planner ranks on. Without
+                            # them an Endpoint rebuilt from the store is missing
+                            # exactly the evidence the ranking reads, so a
+                            # replay scores every candidate on absent signals
+                            # and reports no change — which reads as "the fix
+                            # did nothing" rather than "nothing was asked".
+                            features={
+                                "param_locations": {
+                                    k: v.value if hasattr(v, "value") else str(v)
+                                    for k, v in (ep.param_locations or {}).items()
+                                },
+                                "session_setters": list(ep.session_setters or []),
+                                "sets_cookies": list(ep.sets_cookies or []),
+                                "has_form": ep.has_form,
+                                "has_dom_source": ep.has_dom_source,
+                                "content_type": ep.content_type or "",
+                            },
                         )
                     except Exception as exc:
                         self._logger.warning("Failed to persist endpoint %s: %s", ep.url, exc)

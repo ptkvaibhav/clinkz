@@ -142,6 +142,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_runbook_tech_technique
 _MIGRATIONS = [
     "ALTER TABLE targets ADD COLUMN service_type TEXT NOT NULL DEFAULT 'other'",
     "ALTER TABLE findings ADD COLUMN source_technique TEXT",
+    # The Exploit planner ranks a (class, endpoint) pair on OBSERVED response
+    # features and on parameter STRUCTURE. None of that survived the round-trip:
+    # the table stored a URL, a method and a flat parameter dict, so an Endpoint
+    # rebuilt from the store came back missing exactly the fields the ranking
+    # reads. A replay over recorded engagements therefore could not reproduce a
+    # ranking decision at all — it scored every endpoint on absent evidence and
+    # reported no change, which reads like "the fix did nothing" and is really
+    # "the question was never asked".
+    "ALTER TABLE endpoints ADD COLUMN param_locations TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE endpoints ADD COLUMN session_setters TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE endpoints ADD COLUMN sets_cookies TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE endpoints ADD COLUMN has_form INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE endpoints ADD COLUMN has_dom_source INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE endpoints ADD COLUMN content_type TEXT NOT NULL DEFAULT ''",
 ]
 
 
@@ -725,6 +739,8 @@ class StateStore:
         discovered_by: str = "",
         port: int | None = None,
         notes: str = "",
+        *,
+        features: dict[str, Any] | None = None,
     ) -> str:
         """Add a discovered endpoint, deduplicating on url+method.
 
@@ -748,12 +764,21 @@ class StateStore:
         eid = self._new_id()
         now = self._now()
         params_json = json.dumps(parameters or {})
+        feat = features or {}
+        loc_json = json.dumps(feat.get("param_locations") or {})
+        setters_json = json.dumps(feat.get("session_setters") or [])
+        cookies_json = json.dumps(feat.get("sets_cookies") or [])
+        has_form = 1 if feat.get("has_form") else 0
+        has_dom = 1 if feat.get("has_dom_source") else 0
+        content_type = str(feat.get("content_type") or "")
         try:
             await self._conn.execute(
                 "INSERT INTO endpoints "
                 "(id, engagement_id, url, method, parameters, status, "
-                "discovered_by, service_type, port, notes, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, 'discovered', ?, ?, ?, ?, ?, ?)",
+                "discovered_by, service_type, port, notes, created_at, updated_at, "
+                "param_locations, session_setters, sets_cookies, has_form, "
+                "has_dom_source, content_type) "
+                "VALUES (?, ?, ?, ?, ?, 'discovered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     eid,
                     engagement_id,
@@ -766,16 +791,47 @@ class StateStore:
                     notes,
                     now,
                     now,
+                    loc_json,
+                    setters_json,
+                    cookies_json,
+                    has_form,
+                    has_dom,
+                    content_type,
                 ),
             )
             await self._conn.commit()
             return eid
         except Exception:  # noqa: BLE001 — UNIQUE constraint = dedup
-            # Update existing record with merged info
+            # Update existing record with merged info. Observed features are
+            # OR-merged rather than overwritten: two crawl passes can see the
+            # same URL, and the pass that saw a form must not be erased by a
+            # later pass that did not look.
             await self._conn.execute(
-                "UPDATE endpoints SET parameters=?, notes=?, updated_at=? "
+                "UPDATE endpoints SET parameters=?, notes=?, updated_at=?, "
+                "param_locations=CASE WHEN ?='{}' THEN param_locations ELSE ? END, "
+                "session_setters=CASE WHEN ?='[]' THEN session_setters ELSE ? END, "
+                "sets_cookies=CASE WHEN ?='[]' THEN sets_cookies ELSE ? END, "
+                "has_form=MAX(has_form, ?), has_dom_source=MAX(has_dom_source, ?), "
+                "content_type=CASE WHEN ?='' THEN content_type ELSE ? END "
                 "WHERE engagement_id=? AND url=? AND method=?",
-                (params_json, notes, now, engagement_id, url, method),
+                (
+                    params_json,
+                    notes,
+                    now,
+                    loc_json,
+                    loc_json,
+                    setters_json,
+                    setters_json,
+                    cookies_json,
+                    cookies_json,
+                    has_form,
+                    has_dom,
+                    content_type,
+                    content_type,
+                    engagement_id,
+                    url,
+                    method,
+                ),
             )
             await self._conn.commit()
             # Return existing ID
@@ -817,6 +873,23 @@ class StateStore:
         for row in rows:
             d = dict(row)
             d["parameters"] = json.loads(d["parameters"])
+            # Ranking features, deserialised back into the shapes an Endpoint
+            # takes. Read defensively: a row written before the migration has
+            # the column defaults, and a row written by an older build has no
+            # column at all.
+            for key, default in (
+                ("param_locations", {}),
+                ("session_setters", []),
+                ("sets_cookies", []),
+            ):
+                raw = d.get(key)
+                try:
+                    d[key] = json.loads(raw) if isinstance(raw, str) and raw else default
+                except (ValueError, TypeError):
+                    d[key] = default
+            d["has_form"] = bool(d.get("has_form"))
+            d["has_dom_source"] = bool(d.get("has_dom_source"))
+            d["content_type"] = d.get("content_type") or ""
             results.append(d)
         return results
 

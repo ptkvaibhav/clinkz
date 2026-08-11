@@ -38,6 +38,16 @@ class FfufOutput(ToolOutput):
     results: list[FfufResult] = []
     command_line: str = ""
 
+    def discovered_urls(self) -> list[str]:
+        """The URLs ffuf resolved, one per surviving hit.
+
+        ffuf reports a hit as a fully-resolved URL (the wordlist entry already
+        substituted into the ``FUZZ`` placeholder), so the result rows are the
+        discovery items directly — there is no separate ``paths`` collection to
+        read, which is precisely what the old duck-typed seam assumed.
+        """
+        return [r.url for r in self.results if r.url]
+
 
 class FfufTool(ToolBase):
     """ffuf directory and parameter fuzzer.
