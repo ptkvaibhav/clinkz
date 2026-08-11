@@ -31,7 +31,11 @@ from clinkz.agents._route_discovery import (
     run_route_discovery,
 )
 from clinkz.agents._url_safety import find_session_setter_urls, is_state_changing_url
-from clinkz.agents._url_shape import crawl_visit_priority
+from clinkz.agents._url_shape import (
+    STATIC_ASSET_EXTENSIONS,
+    crawl_visit_priority,
+    path_extension,
+)
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
 from clinkz.models.recon import (
@@ -544,9 +548,20 @@ class ScanAgent(BaseAgent):
         # under-reports on modern single-page apps. Carries the engagement
         # session via _discovery_http_get and is purely additive: discovered
         # endpoints union into the crawl set, deduped by (url, method).
+        #
+        # Seeded from every page the crawl found, not only the origin root.
+        # Discovery used to read `<script src>` tags from the root document
+        # alone, so a script referenced only by `/admin.html` was structurally
+        # unreachable: the crawl fetched the file and the code that mines files
+        # was never handed it. The two halves were never joined — which is the
+        # whole authbypass gap, and it was never a parsing failure.
+        page_seeds = self._discovery_page_seeds(endpoints, url)
         try:
             discovered = await run_route_discovery(
-                url, self._discovery_http_get, default_discoverers(), log=self._logger
+                url,
+                self._discovery_http_get,
+                default_discoverers(page_seeds),
+                log=self._logger,
             )
         except Exception as exc:  # discovery must never abort the scan phase
             self._logger.warning("Route discovery failed: %s", exc)
@@ -685,6 +700,43 @@ class ScanAgent(BaseAgent):
             List of discovered URL strings, one per surviving hit.
         """
         return await self._run_discovery_tool("directory_fuzzing", tool_name, url)
+
+    @staticmethod
+    def _discovery_page_seeds(endpoints: list[Endpoint], base_url: str) -> list[str]:
+        """Crawl-discovered pages whose scripts route discovery should also read.
+
+        Filtered to things worth fetching as *documents*: same-origin, not a
+        static asset, and never a state-changing URL — discovery GETs these, and
+        the crawl-safety rule does not stop applying because a different
+        subsystem is doing the fetching.
+
+        Ordered by ``crawl_visit_priority`` for the same reason the enrichment
+        budget is: the cap has to fall on the least informative pages, not on
+        whichever ones a concurrent crawler happened to emit last.
+
+        Args:
+            endpoints: The endpoint set as it stands after crawl + enrichment.
+            base_url: Origin root, already seeded by the discoverers themselves.
+
+        Returns:
+            Deduplicated page URLs, best-first.
+        """
+        seen: set[str] = {base_url}
+        pages: list[str] = []
+        for ep in endpoints:
+            page = (ep.url or "").split("#", 1)[0]
+            if not page or page in seen:
+                continue
+            if is_state_changing_url(page):
+                continue
+            if urlparse(page).netloc != urlparse(base_url).netloc:
+                continue
+            if path_extension(urlparse(page).path) in STATIC_ASSET_EXTENSIONS:
+                continue
+            seen.add(page)
+            pages.append(page)
+        pages.sort(key=crawl_visit_priority)
+        return pages
 
     async def _run_discovery_tool(self, capability: str, tool_name: str, url: str) -> list[str]:
         """Resolve a discovery tool by capability, run it, and read its contract.
@@ -1872,7 +1924,27 @@ class ScanAgent(BaseAgent):
                         await self.state.add_endpoint(
                             engagement_id=self.engagement_id,
                             url=ep.url,
+                            method=ep.method,
+                            parameters={name: "" for name in ep.params},
                             discovered_by=self.name,
+                            # The observed response features and the parameter
+                            # structure the Exploit planner ranks on. Without
+                            # them an Endpoint rebuilt from the store is missing
+                            # exactly the evidence the ranking reads, so a
+                            # replay scores every candidate on absent signals
+                            # and reports no change — which reads as "the fix
+                            # did nothing" rather than "nothing was asked".
+                            features={
+                                "param_locations": {
+                                    k: v.value if hasattr(v, "value") else str(v)
+                                    for k, v in (ep.param_locations or {}).items()
+                                },
+                                "session_setters": list(ep.session_setters or []),
+                                "sets_cookies": list(ep.sets_cookies or []),
+                                "has_form": ep.has_form,
+                                "has_dom_source": ep.has_dom_source,
+                                "content_type": ep.content_type or "",
+                            },
                         )
                     except Exception as exc:
                         self._logger.warning("Failed to persist endpoint %s: %s", ep.url, exc)

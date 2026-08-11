@@ -58,7 +58,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
@@ -72,6 +72,13 @@ logger = logging.getLogger(__name__)
 
 # --- Bounds (safety: untrusted response bodies) ----------------------------
 _MAX_BUNDLES = 12  # JS bundles fetched per shell (shell scripts + chunk refs)
+# Extra crawl-discovered pages whose <script src> tags are read for bundle seeds,
+# on top of the origin root. Bounded because this multiplies page GETs; the memo
+# below means each is fetched at most once for the whole discovery run.
+_MAX_DISCOVERY_PAGES = 25
+# Responses held by the per-run fetch memo. Bounded: an unbounded response cache
+# over a large crawl is a memory leak wearing a cache's clothes.
+_MAX_MEMO_ENTRIES = 200
 _MAX_BUNDLE_BYTES = 6_000_000  # bytes of each bundle scanned for routes
 _MAX_SPEC_BYTES = 5_000_000  # max spec body parsed as JSON
 _MAX_SPEC_PATHS = 1000  # max paths read from one spec
@@ -113,6 +120,18 @@ _SPEC_PATHS = (
     "/v2/api-docs",
     "/api-docs/swagger.json",
     "/api/openapi.json",
+    # YAML is the other half of the OpenAPI ecosystem, and its absence here was
+    # a real loss rather than a stylistic gap: a live run FETCHED a 10.4 KB spec
+    # and threw it away, because the whole discoverer was JSON-only — the paths
+    # it asked for and the parser it ran both. A spec we successfully retrieved
+    # and then discarded over its serialisation format is the most expensive
+    # kind of miss: the network cost was paid and nothing was learned.
+    "/openapi.yaml",
+    "/openapi.yml",
+    "/swagger.yaml",
+    "/swagger.yml",
+    "/api-docs/swagger.yaml",
+    "/api/openapi.yaml",
 )
 
 # Conventional GraphQL endpoint locations. A path convention is not an
@@ -170,6 +189,89 @@ class RouteDiscoverer(Protocol):
 # ---------------------------------------------------------------------------
 
 
+class _MemoFetch:
+    """A bounded memo over a :data:`FetchFn`, shared across one discovery run.
+
+    Two things make this load-bearing rather than a micro-optimisation.
+
+    First, the two bundle discoverers each fetch the shell and then each fetch
+    the same ``<script src>`` bundles, because ``visited`` is local to a single
+    ``discover()`` call. That duplication was already being paid.
+
+    Second, seeding discovery from every discovered page (rather than only the
+    origin root) multiplies page fetches by the size of the crawl. Memoising the
+    GETs is what makes per-page seeding affordable at all: each page and each
+    bundle is fetched at most once for the whole run, however many discoverers
+    ask for it.
+
+    Bounded on purpose — an unbounded response cache over a large crawl is a
+    memory leak wearing a cache's clothes.
+    """
+
+    def __init__(self, fetch: FetchFn, max_entries: int = _MAX_MEMO_ENTRIES) -> None:
+        self._fetch = fetch
+        self._max_entries = max_entries
+        self._cache: dict[str, FetchResult | None] = {}
+        self.hits = 0
+        self.misses = 0
+
+    async def __call__(self, url: str) -> FetchResult | None:
+        if url in self._cache:
+            self.hits += 1
+            return self._cache[url]
+        self.misses += 1
+        result = await self._fetch(url)
+        if len(self._cache) < self._max_entries:
+            self._cache[url] = result
+        return result
+
+
+async def _collect_script_seeds(
+    base_url: str, fetch: FetchFn, pages: Sequence[str] = ()
+) -> list[str]:
+    """Union the ``<script src>`` URLs referenced by the root AND by *pages*.
+
+    Route discovery used to read scripts from the origin root's HTML and nothing
+    else. A ``<script src>`` that only appears on ``/admin.html`` was therefore
+    structurally unreachable — the crawler fetched the file, the miner never saw
+    it, and the two were never joined. That is the whole authbypass gap: the
+    file was retrieved and the code that reads files was never handed it.
+
+    The only pre-existing escape hatch was the chunk-literal walk, which reaches
+    a script whose URL appears as a quoted literal *inside an already-fetched
+    root bundle* — a webpack split-chunk, not a second page's own script tag.
+
+    Bounded by :data:`_MAX_DISCOVERY_PAGES` and ordered root-first, so the seed
+    list degrades to exactly the previous behaviour when no pages are supplied.
+
+    Args:
+        base_url: Origin root — always seeded first.
+        fetch: Session-carrying GET (memoised by the caller).
+        pages: Additional same-origin page URLs from the crawl.
+
+    Returns:
+        Deduplicated, same-origin ``.js`` URLs in discovery order.
+    """
+    seeds: list[str] = []
+    seen: set[str] = set()
+
+    async def _absorb(page_url: str) -> None:
+        res = await fetch(page_url)
+        if res is None or not res.body:
+            return
+        for js_url in StaticBundleDiscoverer._bundle_urls(res.body, page_url):
+            if js_url not in seen:
+                seen.add(js_url)
+                seeds.append(js_url)
+
+    await _absorb(base_url)
+    for page in list(pages)[:_MAX_DISCOVERY_PAGES]:
+        if not page or page == base_url or not _same_origin(page, base_url):
+            continue
+        await _absorb(page)
+    return seeds
+
+
 def _same_origin(url: str, base_url: str) -> bool:
     """True if *url* resolves to the same scheme+host+port as *base_url*."""
     a = urlsplit(urljoin(base_url, url))
@@ -184,6 +286,49 @@ def _looks_like_json(res: FetchResult) -> bool:
         return True
     body = (res.body or "").lstrip()
     return body[:1] in ("{", "[")
+
+
+def _looks_like_yaml(res: FetchResult) -> bool:
+    """True if a response is plausibly a YAML document rather than an HTML shell.
+
+    Deliberately narrower than "not JSON". YAML's grammar accepts almost any
+    text as a scalar, so handing a SPA's HTML shell to a YAML parser succeeds
+    and returns a string — which is why the caller's real gate is the
+    ``openapi``/``swagger`` key, and why this only has to exclude the obvious
+    HTML case cheaply.
+    """
+    ct = (res.headers.get("content-type") or "").lower()
+    if "yaml" in ct or "yml" in ct:
+        return True
+    if "html" in ct:
+        return False
+    body = (res.body or "").lstrip()
+    if body[:1] in ("<",):
+        return False
+    return bool(body)
+
+
+def _parse_yaml(body: str) -> object | None:
+    """Safe-load a YAML document, or ``None`` if it will not parse.
+
+    ``safe_load`` only — never ``yaml.load``. The input is a document served by
+    the host under test, so a loader that can construct arbitrary Python objects
+    hands the target code execution inside the scanner.
+
+    PyYAML is imported lazily and its absence degrades to JSON-only discovery
+    rather than raising: an optional parser missing is a smaller surface, not a
+    broken scan.
+    """
+    try:
+        import yaml
+    except ImportError:
+        logger.info("OpenAPI: PyYAML is not installed — YAML specs are not read")
+        return None
+    try:
+        return yaml.safe_load(body)
+    except Exception as exc:  # noqa: BLE001 — any parser error means "not a spec"
+        logger.debug("OpenAPI: YAML parse failed: %s", exc)
+        return None
 
 
 def _route_to_endpoint(raw: str, base_url: str) -> Endpoint | None:
@@ -271,20 +416,27 @@ def _structural_key(ep: Endpoint) -> str:
 
 
 class StaticBundleDiscoverer:
-    """Recover routes from a SPA's static JavaScript bundles."""
+    """Recover routes from a SPA's static JavaScript bundles.
+
+    Args:
+        pages: Same-origin page URLs from the crawl whose ``<script src>`` tags
+            are read for bundle seeds alongside the origin root's. Empty (the
+            default) reproduces the previous root-only behaviour exactly.
+    """
 
     name = "static_bundle"
 
-    async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
-        shell = await fetch(base_url)
-        if shell is None or not shell.body:
-            return []
+    def __init__(self, pages: Sequence[str] = ()) -> None:
+        self.pages = tuple(pages)
 
-        # Breadth-first over bundles: start from the shell's <script src>
-        # bundles, then follow same-origin .js chunk references found inside
-        # them (webpack/vite split chunks hold lazy-route service calls). The
-        # whole walk is bounded by _MAX_BUNDLES fetched bundles.
-        queue: list[str] = self._bundle_urls(shell.body, base_url)
+    async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
+        # Breadth-first over bundles: start from the <script src> bundles of the
+        # root AND of every crawl-discovered page, then follow same-origin .js
+        # chunk references found inside them (webpack/vite split chunks hold
+        # lazy-route service calls). The walk is bounded by _MAX_BUNDLES.
+        queue: list[str] = await _collect_script_seeds(base_url, fetch, self.pages)
+        if not queue:
+            return []
         visited: set[str] = set()
         endpoints: list[Endpoint] = []
         seen: set[str] = set()
@@ -396,21 +548,28 @@ class OpenAPIDiscoverer:
 
     @staticmethod
     def _parse_spec(res: FetchResult) -> dict | None:
-        """Return the spec dict iff *res* is a real OpenAPI/Swagger JSON doc.
+        """Return the spec dict iff *res* is a real OpenAPI/Swagger doc.
 
-        Guards the SPA-200 trap: a JSON content-type (or a JSON-shaped body) is
-        required, the body must parse, and an ``openapi``/``swagger`` key must
-        be present.
+        Accepts both serialisations the ecosystem actually uses. The gate that
+        matters is unchanged and is the last one: the parsed document must carry
+        an ``openapi``/``swagger`` key. That is what guards the SPA-200 trap — a
+        single-page app answers 200 with an HTML shell at every path, and HTML
+        parses as a YAML scalar quite happily, so the *format* check cannot be
+        the thing keeping junk out. Only the spec marker can.
         """
-        if not _looks_like_json(res):
-            return None
         body = res.body or ""
-        if len(body) > _MAX_SPEC_BYTES:
+        if not body or len(body) > _MAX_SPEC_BYTES:
             return None
-        try:
-            data = json.loads(body)
-        except (ValueError, TypeError):
-            return None
+
+        data: object | None = None
+        if _looks_like_json(res):
+            try:
+                data = json.loads(body)
+            except (ValueError, TypeError):
+                data = None
+        if data is None and _looks_like_yaml(res):
+            data = _parse_yaml(body)
+
         if not isinstance(data, dict):
             return None
         if "openapi" not in data and "swagger" not in data:
@@ -630,12 +789,13 @@ class JSCallSiteDiscoverer:
 
     name = "js_call_site"
 
-    async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
-        shell = await fetch(base_url)
-        if shell is None or not shell.body:
-            return []
+    def __init__(self, pages: Sequence[str] = ()) -> None:
+        self.pages = tuple(pages)
 
-        queue: list[str] = StaticBundleDiscoverer._bundle_urls(shell.body, base_url)
+    async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
+        queue: list[str] = await _collect_script_seeds(base_url, fetch, self.pages)
+        if not queue:
+            return []
         visited: set[str] = set()
         endpoints: list[Endpoint] = []
         seen: set[str] = set()
@@ -821,11 +981,18 @@ class GraphQLDiscoverer:
 # ---------------------------------------------------------------------------
 
 
-def default_discoverers() -> list[RouteDiscoverer]:
-    """The discoverers run by default, richest-source-last for union stability."""
+def default_discoverers(pages: Sequence[str] = ()) -> list[RouteDiscoverer]:
+    """The discoverers run by default, richest-source-last for union stability.
+
+    Args:
+        pages: Crawl-discovered same-origin page URLs. Only the two BUNDLE
+            discoverers take them: OpenAPI and GraphQL probe origin-rooted path
+            conventions, so re-running those from every page would multiply the
+            request count for an identical set of conventional URLs.
+    """
     return [
-        JSCallSiteDiscoverer(),
-        StaticBundleDiscoverer(),
+        JSCallSiteDiscoverer(pages),
+        StaticBundleDiscoverer(pages),
         OpenAPIDiscoverer(),
         GraphQLDiscoverer(),
     ]
@@ -844,9 +1011,16 @@ async def run_route_discovery(
     state-changing routes (``is_state_changing_url`` — logout / WAF toggles) so
     the shared engagement session is never poisoned, and dedupes by structural
     identity (method + path + param names, ignoring values).
+
+    Every discoverer shares ONE memoised fetch for the run, so the shell, each
+    page and each bundle costs at most one GET however many discoverers ask for
+    it. Two discoverers were already re-fetching the same bundles; per-page
+    seeding would have multiplied that by the size of the crawl.
     """
     log = log or logger
     discoverers = discoverers if discoverers is not None else default_discoverers()
+    memo = _MemoFetch(fetch)
+    fetch = memo
 
     collected: list[Endpoint] = []
     for discoverer in discoverers:
@@ -888,8 +1062,11 @@ async def run_route_discovery(
         unique.append(ep)
 
     log.info(
-        "Route discovery: %d unique endpoint(s) from %d discoverer(s)",
+        "Route discovery: %d unique endpoint(s) from %d discoverer(s) "
+        "(%d GET(s), %d served from the run memo)",
         len(unique),
         len(discoverers),
+        memo.misses,
+        memo.hits,
     )
     return unique
