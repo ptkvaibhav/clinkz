@@ -137,17 +137,29 @@ class MockLLM(LLMClient):
 
 
 class _MockCrawlOutput(ToolOutput):
-    """Mock crawler output with URLs."""
+    """Mock crawler output, shaped like the real ``KatanaOutput``.
 
-    endpoints: list[str] = []
+    These mocks used to invent whatever field names the consumer happened to
+    read — ``endpoints``/``urls`` here, ``paths``/``directories`` below. That is
+    how a green suite covered for a seam that discarded 100% of ffuf's output:
+    the tests asserted the consumer against a producer no real tool resembled.
+    ``FfufOutput`` has never had a ``paths`` field. A mock must mirror the real
+    model's contract, or it tests the mock.
+    """
+
     urls: list[str] = []
+
+    def discovered_urls(self) -> list[str]:
+        return list(self.urls)
 
 
 class _MockFuzzOutput(ToolOutput):
-    """Mock fuzzer output with paths."""
+    """Mock fuzzer output, shaped like the real ``FfufOutput``."""
 
-    paths: list[str] = []
-    directories: list[str] = []
+    results: list[dict[str, Any]] = []
+
+    def discovered_urls(self) -> list[str]:
+        return [str(r.get("url", "")) for r in self.results if r.get("url")]
 
 
 class _MockNmapScriptOutput(ToolOutput):
@@ -189,7 +201,7 @@ class _MockCrawlTool(ToolBase):
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
-            endpoints=[
+            urls=[
                 "http://10.0.0.1/index.php",
                 "http://10.0.0.1/login.php",
                 "http://10.0.0.1/about.php",
@@ -228,7 +240,11 @@ class _MockFuzzTool(ToolBase):
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
-            paths=["/admin", "/backup", "/config"],
+            results=[
+                {"url": "http://10.0.0.1/admin"},
+                {"url": "http://10.0.0.1/backup"},
+                {"url": "http://10.0.0.1/config"},
+            ],
         )
 
 
@@ -275,6 +291,26 @@ class _MockNmapTool(ToolBase):
 # ---------------------------------------------------------------------------
 
 
+def _wire_by_name(resolver: Any, cap_map: dict[str, tuple[type[ToolBase], str]]) -> None:
+    """Give a mocked resolver a working ``find_tool_by_name``.
+
+    ``try_until_sufficient`` walks a chain of tool NAMES, and the discovery seam
+    now honours the name it is handed instead of re-resolving the capability and
+    running the same tool on every iteration. A ``MagicMock(spec=...)`` answers
+    ``find_tool_by_name`` with a truthy mock, so a factory that does not wire it
+    hands the seam a tool class that is itself a mock.
+    """
+    by_name = {name: cls for cls, name in cap_map.values()}
+
+    def _find_by_name(tool_name: str) -> ToolMatch | None:
+        cls = by_name.get(tool_name)
+        if cls is None:
+            return None
+        return ToolMatch(name=tool_name, source="local", available=True, tool_class=cls)
+
+    resolver.find_tool_by_name.side_effect = _find_by_name
+
+
 def _make_resolver() -> ToolResolver:
     """Build a mock ToolResolver with crawl, fuzz, and nmap tools."""
     resolver = MagicMock(spec=ToolResolver)
@@ -308,6 +344,7 @@ def _make_resolver() -> ToolResolver:
         return name, result
 
     resolver.try_until_sufficient = AsyncMock(side_effect=_try_until_sufficient)
+    _wire_by_name(resolver, _cap_map)
     return resolver
 
 
@@ -321,7 +358,7 @@ def _make_insufficient_resolver() -> ToolResolver:
                 tool_name=self.name,
                 success=True,
                 raw_output=raw_output,
-                endpoints=["http://10.0.0.1/index.php", "http://10.0.0.1/login.php"],
+                urls=["http://10.0.0.1/index.php", "http://10.0.0.1/login.php"],
             )
 
     _cap_map: dict[str, tuple[type[ToolBase], str]] = {
@@ -352,6 +389,7 @@ def _make_insufficient_resolver() -> ToolResolver:
         return name, result
 
     resolver.try_until_sufficient = AsyncMock(side_effect=_try_until_sufficient)
+    _wire_by_name(resolver, _cap_map)
     return resolver
 
 
@@ -466,7 +504,7 @@ class _PoisonCrawlTool(_MockCrawlTool):
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
-            endpoints=[
+            urls=[
                 "http://10.0.0.1/index.php",
                 "http://10.0.0.1/vulnerabilities/sqli/?id=1&Submit=Submit",
                 "http://10.0.0.1/security.php?phpids=on",
@@ -507,6 +545,7 @@ def _make_poison_resolver() -> ToolResolver:
         return name, result
 
     resolver.try_until_sufficient = AsyncMock(side_effect=_try_until_sufficient)
+    _wire_by_name(resolver, _cap_map)
     return resolver
 
 
@@ -928,6 +967,7 @@ def _make_capturing_resolver(crawl_cls: type[ToolBase], fuzz_cls: type[ToolBase]
         return ToolMatch(name=name, source="local", available=True, tool_class=cls)
 
     resolver.find_tool.side_effect = _find_tool
+    _wire_by_name(resolver, cap_map)
     return resolver
 
 

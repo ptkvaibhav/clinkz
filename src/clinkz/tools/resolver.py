@@ -326,6 +326,37 @@ class ToolResolver:
         tool_name = self._class_to_name(cls) or "unknown"
         return ToolMatch(name=tool_name, source="local", available=False, tool_class=cls)
 
+    def find_tool_by_name(self, tool_name: str) -> ToolMatch | None:
+        """Return the ToolMatch for one specific tool, by binary name.
+
+        The companion to :meth:`find_tool`, and the piece
+        :meth:`try_until_sufficient` was missing. That method walks a chain of
+        tool NAMES and hands each one to a callback — but a callback that
+        answers by calling ``find_tool(capability)`` re-resolves the same
+        first-available class on every iteration, so a chain of four crawlers
+        runs the first crawler four times. The declared fallback order was
+        nominal for as long as the callbacks ignored their ``tool_name``
+        argument, which is all of them.
+
+        Args:
+            tool_name: Binary name as it appears in ``TOOL_CHAINS``.
+
+        Returns:
+            A ToolMatch for that exact tool, or ``None`` when no local wrapper
+            is registered under that name (chain entries name tools we have no
+            wrapper for — ``gospider``, ``feroxbuster`` — which is a preference
+            order, not a claim that they ship).
+        """
+        cls = self._name_map.get(tool_name)
+        if cls is None:
+            return None
+        return ToolMatch(
+            name=tool_name,
+            source="local",
+            available=self.is_available(tool_name),
+            tool_class=cls,
+        )
+
     def find_tools(self, capability: str) -> list[ToolMatch]:
         """Return ALL tools registered for a capability (MCP + local).
 
