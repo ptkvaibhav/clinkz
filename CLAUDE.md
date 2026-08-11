@@ -336,7 +336,9 @@ src/clinkz/
 │                     #   (what a served policy leaves reachable), oracle (rails +
 │                     #   runtime choice), _container_runner (the browser-driving half —
 │                     #   ZERO clinkz imports, so it runs in the tools container)
-├── observability/    # trace.py (JSONL), replay.py, corpus_replay.py (offline gate)
+├── observability/    # trace.py (JSONL), replay.py, corpus_replay.py (offline gate),
+│                     #   ledger.py (what each component CONTRIBUTED — the silent-
+│                     #   degradation gate)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes, target, recon, scan, methodology, research,
                       #   finding, report
@@ -574,6 +576,30 @@ LESSONS #17).
   a per-technology capability fact; confidence is a decayed corroboration PRIOR
   from confirming observations only and never gates emission. The older
   technique-success loop is retired (read-only for the report's history).
+- **A total is not evidence about its parts** (`observability/ledger.py`, **detail
+  → [`docs/lessons/silent-degradation-and-the-dead-seam.md`](docs/lessons/silent-degradation-and-the-dead-seam.md)**).
+  Three defects shipped with one shape — an empty LLM planner absorbed by the
+  class floor, a timeout absorbed by provider fallback, 100% of ffuf's output
+  discarded by a duck-typed seam and absorbed by the crawler. Each time a
+  component produced NOTHING, a fallback covered, findings still appeared, and
+  no gate fired. The ledger records per component invocations, successes and
+  **items contributed**, and reports at WARNING (run log + `report.json` +
+  the report's *Component contribution* section) every component invoked that
+  contributed zero. Four alarm classes stay apart because they have different
+  fixes — `DEAD_SEAM` (the consumer cannot read this producer), `SILENT`
+  (succeeded, contributed nothing), `ALL_FAILED`, `FALLBACK_ACTIVATED` — and
+  *declared but never invoked* is tracked separately, since a capability the run
+  never reached for did not degrade. **Absent by default** like the governor,
+  and it never raises from the data path.
+- **A consumer never guesses a producer's field names.** The PRODUCER declares
+  what it contributes (`ToolOutput.discovered_urls` / `declares_discovery`); a
+  wrapper that declares nothing is a loud dead seam, not an empty list. Never
+  `getattr(parsed, "field", default)` over a model — the default is what turns a
+  typo into a permanently dead capability (`sqlmap`'s `injectable` vs
+  `vulnerable` returned False on every run for years). **A mock mirrors the real
+  model's contract**, never the consumer's assumption about it: `_MockFuzzOutput`
+  declared `paths`/`directories`, names no real tool has ever carried, so the
+  suite asserted a contract only the mock honoured.
 - **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl` (tool
   calls, LLM calls, agent steps, handoffs, methodology-phase events). `outputs/`
   is local-only by policy — never committed.

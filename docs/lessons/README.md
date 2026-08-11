@@ -2,7 +2,7 @@
 
 The complete narratives for every entry in
 [`.claude/LESSONS.md`](../../.claude/LESSONS.md) (the lean index). Each lesson has
-a **stable id** (`#14`–`#34`) cited elsewhere as `LESSONS #N` — the ids are
+a **stable id** (`#14`–`#50`) cited elsewhere as `LESSONS #N` — the ids are
 historical and MUST NOT be renumbered (the sequence begins at #14; earlier ids are
 retired). Append new lessons with the next id and add a one-line pointer to the
 index.
@@ -247,3 +247,14 @@ The second fix added `_EXPANSION_MIN_REMAINING` to that entry check, and I wrote
 The same trace showed a second defect worth naming: coverage expansion ran the **identical** scan three times. Every addressable gap calls `_scan_http_service` with the same arguments, and the LLM had named three crawl/fuzz-shaped gaps, so three passes each produced the same 112 routes and the same seven body schemas at six minutes apiece. Eighteen minutes to learn nothing, and the third pass is what killed the phase. A retry loop that cannot vary its inputs is not retrying, it is repeating.
 
 Lessons: (a) **verify the premise against the running target before building on it** — the stated cause and the actual cause were different subsystems, and the fix for the stated one would have shipped into a pipeline that could not have shown it working; (b) a cooperative budget must be expressed as *"is there enough left to finish the next unit of work"*, never *"has it run out"*, or the guard fires only after the damage; (c) when a supervisor's timeout discards a return value, every phase under it needs its own budget — or make the supervisor keep the partial, which is cheap and was done here too; (d) an unreachable probe is indistinguishable from a clean result unless something asserts reachability, so resolve a planned URL against a known origin and **drop** it when there is none rather than probing blind; and (e) the container gate must run **serially** — running it while a live engagement held the single-tenant tools container produced three false failures (recon: 0 open ports; scan: 3 endpoints), which reads exactly like a regression in the code under test.
+
+<a id="lesson-50"></a>
+
+## #50
+
+**A total is not evidence about its parts, and a consumer that guesses a producer's field names fails silently forever.**
+
+Full narrative, including the complete tool-wrapper audit, the four recorded
+DVWA runs' planner outage, and the three defects found in the corpus gate by
+actually running it:
+[`silent-degradation-and-the-dead-seam.md`](silent-degradation-and-the-dead-seam.md).
