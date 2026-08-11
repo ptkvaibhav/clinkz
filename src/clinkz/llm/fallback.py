@@ -30,12 +30,16 @@ from clinkz.config import Settings
 from clinkz.config import settings as global_settings
 from clinkz.llm.base import (
     AgentAction,
+    CallStats,
     LLMClient,
     LLMMessage,
     LLMTimeoutError,
     LLMUnavailableError,
+    LLMUsageTotals,
+    PromptLike,
     RateLimitError,
     ServiceUnavailableError,
+    flatten_prompt,
 )
 from clinkz.llm.factory import AGENT_PROVIDER_SETTINGS, get_llm_client
 
@@ -141,6 +145,9 @@ class ResilientLLMClient(LLMClient):
 
         self._clients: dict[str, LLMClient] = {}
         self._last_used_provider: str | None = None
+        #: Cost/cache accounting for every call this agent made, so the run can
+        #: report a measured hit rate rather than an assumed one.
+        self.run_totals = LLMUsageTotals()
         self._logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self._logger.info(
             "ResilientLLMClient initialised — role=%s profile=%s chain=%s",
@@ -182,11 +189,12 @@ class ResilientLLMClient(LLMClient):
     async def research(self, query: str) -> str:
         return await self._dispatch("research", query)
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: PromptLike) -> str:
         from clinkz.observability.trace import Stopwatch, get_active_trace_writer
 
         writer = get_active_trace_writer()
         stopwatch = Stopwatch()
+        flat = flatten_prompt(prompt)
         try:
             response = await self._dispatch("generate_text", prompt)
         except Exception as exc:
@@ -195,23 +203,69 @@ class ResilientLLMClient(LLMClient):
                     stage=self.agent_role,
                     provider=self._last_used_provider or "exhausted",
                     model=self._resolve_model(self._last_used_provider),
-                    prompt_summary=prompt,
+                    prompt_summary=flat,
                     response_summary=f"<error: {type(exc).__name__}: {exc}>",
                     duration_ms=stopwatch.elapsed_ms,
                     extra={"profile": self.profile, "chain": self.fallback_chain},
                 )
             raise
+        stats = self._collect_call_stats()
         if writer is not None:
             writer.llm_call(
                 stage=self.agent_role,
                 provider=self._last_used_provider or "unknown",
                 model=self._resolve_model(self._last_used_provider),
-                prompt_summary=prompt,
+                prompt_summary=flat,
                 response_summary=response,
                 duration_ms=stopwatch.elapsed_ms,
-                extra={"profile": self.profile, "chain": self.fallback_chain},
+                tokens=stats.billed_prompt_tokens + stats.output_tokens if stats else None,
+                extra={
+                    "profile": self.profile,
+                    "chain": self.fallback_chain,
+                    **self._cache_trace_fields(stats),
+                },
             )
         return response
+
+    # ------------------------------------------------------------------
+    # Call accounting (cost + cache)
+    # ------------------------------------------------------------------
+
+    def _collect_call_stats(self) -> CallStats | None:
+        """Read back what the provider that just served the call reported.
+
+        Folded into the run totals here rather than at each provider, because
+        this is the one place that knows *which* provider actually ran after
+        the chain resolved.
+        """
+        provider = self._last_used_provider
+        if provider is None:
+            return None
+        client = self._clients.get(provider)
+        stats = getattr(client, "last_call_stats", None)
+        if stats is None:
+            return None
+        self.run_totals.add(stats)
+        return stats
+
+    @staticmethod
+    def _cache_trace_fields(stats: CallStats | None) -> dict[str, Any]:
+        """Trace fields for one call's cache behaviour.
+
+        Recorded per call so a hit rate can be *derived from the trace* after
+        the fact instead of asserted. ``cache_read``/``cache_write`` of zero on
+        a provider that reports no cache accounting is a "not reported", which
+        is why ``provider`` rides along.
+        """
+        if stats is None:
+            return {}
+        return {
+            "input_tokens": stats.input_tokens,
+            "output_tokens": stats.output_tokens,
+            "cache_write_tokens": stats.cache_creation_input_tokens,
+            "cache_read_tokens": stats.cache_read_input_tokens,
+            "stop_reason": stats.stop_reason,
+        }
 
     # ------------------------------------------------------------------
     # Core dispatch with fallback

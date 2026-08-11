@@ -27,9 +27,11 @@ from clinkz.llm.base import (
     LLMClient,
     LLMMessage,
     LLMTimeoutError,
+    PromptLike,
     RateLimitError,
     ServiceUnavailableError,
     ToolCall,
+    flatten_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -444,20 +446,23 @@ class GeminiClient(LLMClient):
         self._track_usage(response)
         return response.text
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: PromptLike) -> str:
         """Generate free-form text from a prompt without tool calling.
 
         Args:
-            prompt: The input prompt.
+            prompt: A plain string, or segments. Gemini has no explicit
+                cache breakpoint here, so segments are flattened and the
+                request is byte-identical to the string form.
 
         Returns:
             Generated text content.
         """
+        contents = flatten_prompt(prompt)
 
         def _make_coro() -> Coroutine[Any, Any, Any]:
             return self._client.aio.models.generate_content(
                 model=self._model_name,
-                contents=prompt,
+                contents=contents,
             )
 
         response = await self._call_with_backoff(_make_coro)

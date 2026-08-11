@@ -19,9 +19,11 @@ from clinkz.llm.base import (
     AgentAction,
     LLMClient,
     LLMMessage,
+    PromptLike,
     RateLimitError,
     ServiceUnavailableError,
     ToolCall,
+    flatten_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -189,15 +191,18 @@ class OpenAIClient(LLMClient):
         )
         return await self.generate_text(prompt)
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: PromptLike) -> str:
         """Generate text from a plain prompt without tool calling.
 
         Args:
-            prompt: The input prompt.
+            prompt: A plain string, or segments. No explicit cache
+                breakpoint here, so segments are flattened and the request
+                is byte-identical to the string form.
 
         Returns:
             Generated text content.
         """
+        prompt = flatten_prompt(prompt)
         try:
             response: ChatCompletion = await self._create(
                 model=self._agent_model,
