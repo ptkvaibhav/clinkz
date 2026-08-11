@@ -190,6 +190,11 @@ class PentestReport(BaseModel):
     #: Authentication outcome — mechanism, roles, and the assertion that proved
     #: the session (or the absence of one).
     authentication: dict[str, object] = Field(default_factory=dict)
+    #: Per-component contribution ledger — what each component was asked to do
+    #: and how many items it actually contributed. Carries the run's silent
+    #: components and fallback activations, so a deliverable can never again
+    #: report a healthy total over a component that produced nothing.
+    component_ledger: dict[str, object] = Field(default_factory=dict)
 
     @property
     def finding_counts(self) -> dict[str, int]:
