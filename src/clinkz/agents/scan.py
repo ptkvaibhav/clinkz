@@ -50,6 +50,11 @@ from clinkz.models.scan import (
     SSHScanResult,
 )
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.ledger import (
+    ComponentKind,
+    record_contribution,
+    record_dead_seam,
+)
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 from clinkz.tools.resolver import ToolResolver
@@ -576,7 +581,30 @@ class ScanAgent(BaseAgent):
                     url,
                 )
                 if fuzz_result:
-                    directories = [str(d) for d in fuzz_result]
+                    # Crawl-safety applies to fuzz hits exactly as it does to
+                    # crawl output: a wordlist finds `/logout.php` as readily as
+                    # `/admin`, and the enrichment/exploit phases GET whatever
+                    # lands here.
+                    safe_fuzz = [str(d) for d in fuzz_result if not is_state_changing_url(str(d))]
+                    dropped = len(fuzz_result) - len(safe_fuzz)
+                    if dropped:
+                        self._logger.info(
+                            "Crawl-safety: skipped %d state-changing path(s) from fuzz output",
+                            dropped,
+                        )
+                    directories = safe_fuzz
+                    # Fuzz hits have to become endpoints, not just directory
+                    # strings. `directories` reaches the state store and stops
+                    # there; the Exploit planner ranks over `HTTPScanResult.
+                    # endpoints`, so a path that only ever lands in the
+                    # directory list is discovered and then never attacked —
+                    # content discovery that finds `/admin` and does nothing
+                    # with it has not functioned either.
+                    known = {ep.url for ep in endpoints}
+                    for path_url in safe_fuzz:
+                        if path_url not in known:
+                            endpoints.append(Endpoint(url=path_url))
+                            known.add(path_url)
             except ValueError:
                 self._logger.warning("No fuzzing tools available")
 
@@ -644,16 +672,7 @@ class ScanAgent(BaseAgent):
         if match is None or match.tool_class is None or not match.available:
             return []
 
-        tool = match.tool_class(scope=self.scope)
-        args = tool.validate_input(self._build_tool_input(url))
-        raw = await tool.execute(args)
-        parsed = tool.parse_output(raw)
-
-        urls: list[str] = []
-        for field_name in ("endpoints", "urls"):
-            if hasattr(parsed, field_name):
-                urls.extend(str(u) for u in getattr(parsed, field_name))
-        return urls
+        return await self._run_discovery_tool("web_crawling", tool_name, url)
 
     async def _run_fuzz_tool(self, tool_name: str, url: str) -> list[str]:
         """Execute a fuzzing tool by name and return discovered paths.
@@ -663,23 +682,82 @@ class ScanAgent(BaseAgent):
             url: Target URL to fuzz.
 
         Returns:
-            List of discovered path strings.
+            List of discovered URL strings, one per surviving hit.
         """
-        match = self._resolver.find_tool("directory_fuzzing")
+        return await self._run_discovery_tool("directory_fuzzing", tool_name, url)
+
+    async def _run_discovery_tool(self, capability: str, tool_name: str, url: str) -> list[str]:
+        """Resolve a discovery tool by capability, run it, and read its contract.
+
+        The one seam every surface-discovery tool passes through. It reads the
+        producer's **declared** contract (:meth:`ToolOutput.discovered_urls`)
+        rather than guessing at field names.
+
+        That guess is not a hypothetical failure mode. This method's predecessor
+        read ``parsed.paths`` and ``parsed.directories``; ``FfufOutput`` carries
+        neither — it has ``results`` — so both ``hasattr`` checks were False and
+        the seam returned an empty list on every run since it was written. ffuf
+        executed, found paths, and had 100% of its output discarded, and nothing
+        anywhere failed: an empty list from a fuzzer is exactly what a target
+        with no hidden content looks like. Content discovery had never
+        functioned, and the crawler covered for it well enough that the totals
+        never looked wrong.
+
+        So the contract is declared on the producer and the two failure modes are
+        now distinguishable:
+
+        * the output type does not declare ``discovered_urls`` → a **dead seam**,
+          logged at WARNING and recorded on the ledger as structurally inert;
+        * the output type declares it and returns nothing → an honest empty
+          result, recorded as a zero contribution the end-of-run summary reports.
+
+        The *tool_name* the resolver's fallback chain nominated is honoured
+        rather than ignored. Both predecessors dropped it and re-resolved the
+        capability, so ``try_until_sufficient`` walking
+        ``katana → gospider → hakrawler`` ran katana three times: the chain was
+        declared, iterated, and had no effect.
+
+        Args:
+            capability: Capability to resolve (``"web_crawling"``, …).
+            tool_name: The chain entry to run. Falls back to capability
+                resolution when no wrapper is registered under that name.
+            url: Target URL.
+
+        Returns:
+            Discovered URL strings, or an empty list when no tool resolved.
+        """
+        match = self._resolver.find_tool_by_name(tool_name) if tool_name else None
+        if match is None or not match.available:
+            match = self._resolver.find_tool(capability)
         if match is None or match.tool_class is None or not match.available:
             return []
 
         tool = match.tool_class(scope=self.scope)
+        tool_name = tool.name
         args = tool.validate_input(self._build_tool_input(url))
         raw = await tool.execute(args)
         parsed = tool.parse_output(raw)
 
-        paths: list[str] = []
-        if hasattr(parsed, "paths"):
-            paths.extend(str(p) for p in parsed.paths)
-        if hasattr(parsed, "directories"):
-            paths.extend(str(d) for d in parsed.directories)
-        return paths
+        if not type(parsed).declares_discovery():
+            note = (
+                f"{type(parsed).__name__} declares no discovered_urls() contract — "
+                f"{tool_name}'s output cannot reach the surface map"
+            )
+            self._logger.warning("DEAD SEAM: %s (capability %s) — %s", tool_name, capability, note)
+            record_dead_seam(name=tool_name, kind=ComponentKind.TOOL, note=note)
+            return []
+
+        urls = [str(u) for u in parsed.discovered_urls() if str(u)]
+        record_contribution(
+            name=tool_name,
+            kind=ComponentKind.TOOL,
+            items=len(urls),
+            ok=bool(parsed.success),
+            note=f"capability={capability}",
+        )
+        if parsed.success and not urls:
+            self._logger.info("%s ran successfully and contributed 0 URL(s) for %s", tool_name, url)
+        return urls
 
     @staticmethod
     def _merge_crawl_endpoints_preferring_params(
