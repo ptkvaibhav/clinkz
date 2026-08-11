@@ -307,7 +307,7 @@ reports the missing capability to the Orchestrator.
 ```
 src/clinkz/
 ├── cli.py            # Typer CLI: scan / abort / actions / artifact-scan / trace inspect /
-│                     #   tool-invoke / step-replay
+│                     #   tool-invoke / step-replay / corpus-replay
 ├── config.py         # Settings (env vars, per-agent LLM overrides)
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
@@ -336,7 +336,7 @@ src/clinkz/
 │                     #   (what a served policy leaves reachable), oracle (rails +
 │                     #   runtime choice), _container_runner (the browser-driving half —
 │                     #   ZERO clinkz imports, so it runs in the tools container)
-├── observability/    # trace.py (JSONL), replay.py
+├── observability/    # trace.py (JSONL), replay.py, corpus_replay.py (offline gate)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes, target, recon, scan, methodology, research,
                       #   finding, report
@@ -362,6 +362,11 @@ docker/  scripts/  tests/  docs/
 - `python -m clinkz tool-invoke <engagement_id> <seq> [--replay]` — inspect/replay
   one tool invocation.
 - `python -m clinkz step-replay <engagement_id> <step_id>` — re-run one agent step.
+- `python -m clinkz corpus-replay [--rebuild]` — **offline** parser regression gate:
+  re-parses every recorded `tool_invocations/` stdout and diffs against
+  `tests/fixtures/corpus_replay_baseline.json`; exits non-zero on drift. Sends
+  nothing — unlike `tool-invoke --replay`, which RE-EXECUTES the recorded
+  command against the live target and always exits 0.
 - `docker compose -f docker/docker-compose.yml up -d` — start the test targets.
 
 ## Code Style
