@@ -47,6 +47,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -240,6 +241,49 @@ def _wafw00f_tool() -> Any:
     return Wafw00fTool(scope=_replay_scope())
 
 
+def _parse_ffuf(record: InvocationRecord) -> dict[str, Any]:
+    """Summarise an ffuf parse, ending at the contract the consumer reads.
+
+    Deliberately a summary rather than a full ``model_dump``. Two reasons, and
+    the second is the important one:
+
+    * a dump of every hit's nine fields across 300 recorded fuzz runs makes the
+      committed baseline ~20 MB, which is a corpus copy rather than a digest;
+    * the assertion that matters is ``discovered_urls()`` — the declared
+      contract the consumption seam reads. A baseline that captured every field
+      *except* that one would go green while the exact defect this gate exists
+      to catch reappeared.
+
+    ``command_line`` is excluded: it carries the session ``Cookie:`` header and
+    is an input, not a parse result.
+    """
+    from clinkz.tools.ffuf import FfufTool
+
+    parsed = FfufTool(scope=_replay_scope()).parse_output(record.stdout)
+    return {
+        "success": parsed.success,
+        "error": parsed.error,
+        "hits": len(parsed.results),
+        # The contract, not just the rows behind it.
+        "discovered_urls": sorted(parsed.discovered_urls()),
+        "statuses": sorted({r.status for r in parsed.results}),
+    }
+
+
+def _parse_httpx(record: InvocationRecord) -> dict[str, Any]:
+    """Summarise an httpx parse, ending at the same declared contract."""
+    from clinkz.tools.httpx_tool import HttpxTool
+
+    parsed = HttpxTool(scope=_replay_scope()).parse_output(record.stdout)
+    return {
+        "success": parsed.success,
+        "error": parsed.error,
+        "hits": len(parsed.results),
+        "discovered_urls": sorted(parsed.discovered_urls()),
+        "statuses": sorted({r.status_code for r in parsed.results}),
+    }
+
+
 #: tool_name → a pure function from a record to a canonical parse summary.
 #: A tool absent from this map is counted as unreplayable and reported, never
 #: silently passed — an unreplayable record is missing coverage, not a success.
@@ -249,6 +293,13 @@ PARSERS: dict[str, Any] = {
     "katana": _parse_via_tool(_katana_tool),
     "whatweb": _parse_via_tool(_whatweb_tool),
     "wafw00f": _parse_via_tool(_wafw00f_tool),
+    # ffuf was missing here, and the omission rhymes with the defect that
+    # motivated it: 304 recorded ffuf invocations sat in the corpus reported as
+    # `no-parser`, so the parser regression gate had a hole at exactly the tool
+    # whose consumption seam was dead. A gate that does not cover a parser
+    # cannot notice that parser breaking.
+    "ffuf": _parse_ffuf,
+    "httpx": _parse_httpx,
 }
 
 
@@ -293,6 +344,30 @@ class ReplayReport:
             )
             parts.append(f"no-parser=[{unreplayable}]")
         return " ".join(parts)
+
+
+#: A redaction fingerprint's salted hash prefix. Deliberately unstable across
+#: processes — that is what makes a fingerprint correlate inside one bundle and
+#: replay nowhere — so it cannot be part of a comparison key.
+_FINGERPRINT_RE = re.compile(r"(sha256=)[0-9a-f]{6,}")
+
+
+def _stabilise(value: Any) -> Any:
+    """Blank the salt out of any redaction fingerprint, recursively.
+
+    The corpus gate asks one question: does this recorded stdout still parse to
+    the same structure? A salted hash answers a different question, and answers
+    it differently every process — so comparing it turns a parser gate into a
+    coin flip. Both sides are normalised, so parser drift is still caught while
+    the deliberately-unstable part is ignored.
+    """
+    if isinstance(value, str):
+        return _FINGERPRINT_RE.sub(r"\1<salted>", value)
+    if isinstance(value, dict):
+        return {k: _stabilise(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_stabilise(v) for v in value]
+    return value
 
 
 def parse_record(record: InvocationRecord) -> dict[str, Any] | None:
@@ -362,7 +437,22 @@ def replay_corpus(
     *,
     engagements: list[str] | None = None,
 ) -> ReplayReport:
-    """Re-parse the corpus and compare against *baseline*."""
+    """Re-parse the corpus and compare against *baseline*.
+
+    Both sides are redacted before comparison. The baseline is a committed
+    artifact so it is written through the redaction chokepoint — but the live
+    re-parse was compared raw, which makes the gate compare a redacted value
+    against an unredacted one and report a parser regression that is really an
+    asymmetry in the harness.
+
+    It stayed latent only because no covered parser's output happened to carry
+    credential-shaped material; adding ffuf (whose ``command_line`` includes the
+    session ``Cookie:`` header) turned every single ffuf record into a false
+    mismatch. Redacting the actual keeps the committed baseline safe AND makes
+    the comparison like-for-like.
+    """
+    from clinkz.engagement.secrets import redact_structure
+
     entries: dict[str, Any] = baseline.get("entries", {})
     report = ReplayReport()
     seen: set[str] = set()
@@ -376,14 +466,14 @@ def replay_corpus(
             continue
         seen.add(record.key)
 
-        expected = entries.get(record.key)
+        expected = _stabilise(entries.get(record.key))
         if expected is None:
             report.new_keys += 1
             continue
 
         report.checked += 1
         try:
-            actual = parser(record)
+            actual = _stabilise(redact_structure(parser(record)))
         except Exception as exc:  # noqa: BLE001 — a throwing parser is the regression
             report.errored.append(
                 {

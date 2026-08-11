@@ -27,6 +27,10 @@ class KatanaOutput(ToolOutput):
 
     urls: list[str] = []
 
+    def discovered_urls(self) -> list[str]:
+        """Every URL the crawl reached."""
+        return list(self.urls)
+
 
 class KatanaTool(ToolBase):
     """Katana web crawler.

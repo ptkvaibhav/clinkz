@@ -29,6 +29,9 @@ dependencies = [
     "mcp[cli]>=1.0.0,<2",
     "defusedxml>=0.7.1",
     "PyJWT>=2.13.0",
+    # Half the OpenAPI ecosystem serves YAML. Read with safe_load only — the
+    # document comes from the host under test.
+    "PyYAML>=6.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

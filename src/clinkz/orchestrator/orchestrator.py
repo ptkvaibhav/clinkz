@@ -80,6 +80,10 @@ from clinkz.models.recon import (
     WebReconResult,
 )
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.ledger import (
+    ContributionLedger,
+    set_active_ledger,
+)
 from clinkz.observability.trace import (
     TraceWriter,
     set_active_trace_writer,
@@ -286,6 +290,9 @@ class OrchestratorAgent:
         self._credentials: CredentialSet = credentials or CredentialSet()
         self._authorization: AuthorizationRecord | None = None
         self._governor: EngagementGovernor | None = None
+        # Records what each component actually contributed, so a fallback that
+        # covers for a dead one cannot make the run look healthy.
+        self._ledger: ContributionLedger | None = None
         # Watches every response for signs the session has been lost, so half an
         # engagement cannot run silently unauthenticated.
         self._session_sentinel = SessionSentinel()
@@ -368,6 +375,15 @@ class OrchestratorAgent:
             trace_writer = TraceWriter(engagement_id=engagement_id)
             set_active_trace_writer(trace_writer)
             self._logger.info("TraceWriter opened and active: %s", trace_writer.path)
+
+            # Install the component-contribution ledger for this engagement.
+            # Absent by default like the governor: a directly-invoked
+            # methodology, a smoke cell or a replay installs none, every hook
+            # no-ops, and behaviour is byte-identical. Only a real engagement
+            # measures what each component contributed.
+            ledger = ContributionLedger(engagement_id=engagement_id)
+            set_active_ledger(ledger)
+            self._ledger = ledger
 
             # Install the production safety rails for this engagement. Every
             # outbound request now passes through the governor: paced, capped,
@@ -656,6 +672,15 @@ class OrchestratorAgent:
                         await self._oob_collaborator.stop()
                     self._oob_collaborator = None
                     lifecycle._oob_collaborator = None
+                # The degradation gate. Reported BEFORE the trace writer closes
+                # so the summary is part of the run log an operator reads, and
+                # unconditionally — including on a halt, where a component that
+                # contributed nothing is more informative, not less.
+                ledger.log_summary(self._logger)
+                summary["component_ledger"] = ledger.to_dict()
+                set_active_ledger(None)
+                self._ledger = None
+
                 # Always close + unset the trace writer so module-level state
                 # cannot leak between back-to-back engagements (relevant in
                 # tests and long-running daemon processes).

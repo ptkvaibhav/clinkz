@@ -42,6 +42,12 @@ from clinkz.llm.base import (
     flatten_prompt,
 )
 from clinkz.llm.factory import AGENT_PROVIDER_SETTINGS, get_llm_client
+from clinkz.observability.ledger import (
+    ComponentKind,
+    declare_component,
+    record_contribution,
+    record_fallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -281,8 +287,15 @@ class ResilientLLMClient(LLMClient):
         quirk.
         """
         last_error: Exception | None = None
+        # The provider we actually reached for first. A later provider serving
+        # the call is a fallback ACTIVATION, and it is recorded — this is the
+        # exact mechanism that absorbed an LLM timeout so completely that the
+        # engagement produced an answer and no gate noticed the primary had
+        # produced nothing.
+        first_attempted: str = ""
 
         for provider in self.fallback_chain:
+            declare_component(name=f"llm:{provider}", kind=ComponentKind.LLM_PROVIDER)
             if not self._has_api_key(provider):
                 env_var = _API_KEY_ENV.get(provider) or "<no env var>"
                 self._logger.warning(
@@ -293,17 +306,39 @@ class ResilientLLMClient(LLMClient):
                 )
                 continue
 
+            if not first_attempted:
+                first_attempted = provider
+
             try:
                 client = self._get_or_create_client(provider)
             except Exception as exc:
                 self._logger.warning("Could not instantiate %s: %s", provider, exc)
                 last_error = exc
+                record_contribution(
+                    name=f"llm:{provider}",
+                    kind=ComponentKind.LLM_PROVIDER,
+                    ok=False,
+                    note=f"instantiation failed: {type(exc).__name__}",
+                )
                 continue
 
             try:
                 fn = getattr(client, method)
                 result = await fn(*args, **kwargs)
                 self._last_used_provider = provider
+                record_contribution(
+                    name=f"llm:{provider}",
+                    kind=ComponentKind.LLM_PROVIDER,
+                    items=1,
+                    ok=True,
+                    note=f"{self.agent_role}.{method}",
+                )
+                if provider != first_attempted:
+                    record_fallback(
+                        component=f"llm:{first_attempted}",
+                        covered_by=f"llm:{provider}",
+                        reason=type(last_error).__name__ if last_error else "chain rotation",
+                    )
                 return result
             except (RateLimitError, ServiceUnavailableError, LLMTimeoutError) as exc:
                 self._logger.warning(
@@ -312,6 +347,12 @@ class ResilientLLMClient(LLMClient):
                     type(exc).__name__,
                 )
                 last_error = exc
+                record_contribution(
+                    name=f"llm:{provider}",
+                    kind=ComponentKind.LLM_PROVIDER,
+                    ok=False,
+                    note=type(exc).__name__,
+                )
                 continue
             except Exception as exc:
                 self._logger.error(
@@ -321,6 +362,12 @@ class ResilientLLMClient(LLMClient):
                     exc,
                 )
                 last_error = exc
+                record_contribution(
+                    name=f"llm:{provider}",
+                    kind=ComponentKind.LLM_PROVIDER,
+                    ok=False,
+                    note=type(exc).__name__,
+                )
                 continue
 
         raise LLMUnavailableError(
