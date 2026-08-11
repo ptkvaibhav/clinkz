@@ -66,6 +66,7 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from clinkz.agents._js_api_mining import ApiCallSite, mine_api_call_sites
 from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.models.scan import Endpoint, ParamLocation
+from clinkz.observability.ledger import ComponentKind, record_contribution
 
 logger = logging.getLogger(__name__)
 
@@ -849,11 +850,29 @@ async def run_route_discovery(
 
     collected: list[Endpoint] = []
     for discoverer in discoverers:
+        name = getattr(discoverer, "name", type(discoverer).__name__)
         try:
             found = await discoverer.discover(base_url, fetch)
         except Exception as exc:  # noqa: BLE001 — one bad discoverer must not abort the rest
-            log.warning("Route discoverer %s failed: %s", getattr(discoverer, "name", "?"), exc)
+            log.warning("Route discoverer %s failed: %s", name, exc)
+            record_contribution(
+                name=f"discoverer:{name}",
+                kind=ComponentKind.DISCOVERER,
+                ok=False,
+                note=type(exc).__name__,
+            )
             continue
+        # Per-discoverer contribution, not the union total. Four discoverers
+        # feeding one list means three of them can return nothing while the
+        # union still looks healthy — which is how a fetched OpenAPI spec can be
+        # discarded without the endpoint count ever looking wrong.
+        record_contribution(
+            name=f"discoverer:{name}",
+            kind=ComponentKind.DISCOVERER,
+            items=len(found or []),
+            ok=True,
+            note=f"base={base_url}",
+        )
         if found:
             collected.extend(found)
 
