@@ -28,10 +28,22 @@ See [docs/adding-tools.md](docs/adding-tools.md) for the full guide. In short:
 3. Register capabilities in the `CAPABILITIES` class attribute
 4. Add a test in `tests/test_tools/test_your_tool.py` using fixture data
 5. Save sample output in `tests/fixtures/`
+6. Add the tool to `PARSERS` in `src/clinkz/observability/corpus_replay.py` so the
+   offline parser gate actually covers it — a tool absent from that map is
+   counted as `no-parser` and its parser can break unnoticed
+
+When you mock a tool output in a test, **mirror the real model's fields**. A mock
+shaped to what the consumer happens to read makes the suite assert a contract only
+the mock honours.
 
 All tool wrappers must:
 - Return Pydantic models (never raw strings)
 - Call `_check_scope()` in `validate_input()` for scope enforcement
+- **Override `discovered_urls()` if the tool discovers surface** (crawler, fuzzer,
+  prober). The consumer seam reads this declared contract; it never guesses at
+  field names. A wrapper that discovers URLs and does not declare it is reported
+  as a DEAD SEAM rather than silently contributing nothing — which is exactly
+  what ffuf did for the whole life of its seam
 - Use `_run_subprocess()` for process execution
 
 ## Adding a New Agent
