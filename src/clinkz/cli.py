@@ -7,6 +7,7 @@ Commands:
     trace inspect - Render an engagement execution trace
     tool-invoke   - Inspect or replay one recorded tool invocation
     step-replay   - Re-run one recorded agent step in isolation
+    corpus-replay - Offline: re-parse the recorded tool corpus, diff vs baseline
 
 The pipeline runs end-to-end via ``scan``; there are no single-phase run
 commands (the Orchestrator owns phase sequencing). ``trace inspect`` /
@@ -739,6 +740,88 @@ def _format_trace_record(record: dict) -> str:
         summary = (payload.get("payload_summary") or "").replace("\n", " ")[:80]
         return f"[{short_ts}] {stage:>8} METH  {skill}/p{phase_num}:{phase_name:<22}  {summary!r}"
     return f"[{short_ts}] {stage:>8} {cat:<5} {json.dumps(payload, default=str)[:140]}"
+
+
+# ---------------------------------------------------------------------------
+# corpus-replay (offline parser regression gate)
+# ---------------------------------------------------------------------------
+
+
+@app.command("corpus-replay")
+def corpus_replay(
+    rebuild: Annotated[
+        bool,
+        typer.Option("--rebuild", help="Regenerate the committed baseline from the corpus."),
+    ] = False,
+    engagement: Annotated[
+        list[str] | None,
+        typer.Option("--engagement", help="Limit to these engagement ids (repeatable)."),
+    ] = None,
+    outputs_root: Annotated[
+        Path, typer.Option("--outputs-root", help="Root dir containing engagement subdirs.")
+    ] = Path("outputs"),
+    baseline_path: Annotated[
+        Path, typer.Option("--baseline", help="Baseline digest to compare against.")
+    ] = Path("tests/fixtures/corpus_replay_baseline.json"),
+    per_tool_cap: Annotated[
+        int, typer.Option("--per-tool-cap", help="Max unique records per tool when rebuilding.")
+    ] = 400,
+) -> None:
+    """Re-parse the recorded tool corpus offline and diff against the baseline.
+
+    Sends nothing. Unlike ``tool-invoke --replay``, which re-executes the
+    recorded command against the live target, this only re-runs the parsers
+    over bytes already on disk — so it is safe to run against a corpus recorded
+    from a client engagement, and it exits non-zero when a parse changed.
+
+    A green run covers parser behaviour against traffic already seen. It says
+    nothing about a probe shape the corpus does not contain; new methodology
+    still needs live confirmation.
+    """
+    from clinkz.observability.corpus_replay import (
+        build_baseline,
+        load_baseline,
+        replay_corpus,
+    )
+
+    if rebuild:
+        baseline = build_baseline(outputs_root, engagements=engagement, per_tool_cap=per_tool_cap)
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(json.dumps(baseline, indent=1, sort_keys=True), encoding="utf-8")
+        typer.echo(
+            f"Wrote {len(baseline['entries'])} entries to {baseline_path} "
+            f"({baseline_path.stat().st_size / 1024:.1f} KB)"
+        )
+        return
+
+    baseline = load_baseline(baseline_path)
+    if baseline is None:
+        typer.echo(f"No baseline at {baseline_path}. Run with --rebuild first.", err=True)
+        raise typer.Exit(code=2)
+
+    report = replay_corpus(baseline, outputs_root, engagements=engagement)
+    typer.echo(report.summary())
+
+    if report.checked == 0:
+        typer.echo(
+            "Nothing was checked — the corpus is absent or shares no records with "
+            "the baseline. That is not a pass.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    for entry in report.mismatched[:20]:
+        typer.echo("")
+        typer.echo(f"MISMATCH {entry['key']}  {entry['path']}")
+        typer.echo(f"  expected: {json.dumps(entry['expected'], sort_keys=True)[:400]}")
+        typer.echo(f"  actual:   {json.dumps(entry['actual'], sort_keys=True)[:400]}")
+    for entry in report.errored[:20]:
+        typer.echo("")
+        typer.echo(f"ERROR {entry['key']}  {entry['path']}: {entry['error']}")
+
+    if not report.ok:
+        raise typer.Exit(code=1)
+    typer.echo("OK — every recorded response still parses to the same result.")
 
 
 def main() -> None:

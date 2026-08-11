@@ -416,7 +416,7 @@ async def _emit_engagement(base: str, dvwa: DVWA, scope: Any, oracle: Any, resul
         from clinkz.agents.exploit import ExploitAgent, PageAnalysis
         from clinkz.agents.report import ReportAgent
         from clinkz.llm.factory import get_llm_client
-        from clinkz.observability.trace import TraceWriter
+        from clinkz.observability.trace import TraceWriter, set_active_trace_writer
         from clinkz.state import StateStore
         from clinkz.tools.resolver import ToolResolver
     except Exception as exc:  # noqa: BLE001
@@ -434,7 +434,13 @@ async def _emit_engagement(base: str, dvwa: DVWA, scope: Any, oracle: Any, resul
         engagement_id = await state.create_engagement(
             "P7 client-side execution oracle — DVWA xss_d", scope.model_dump(mode="json")
         )
-        TraceWriter(engagement_id)
+        # Constructed AND registered, in that order, like every other driver
+        # here. Building a writer alone still creates ``outputs/<id>/`` and an
+        # empty ``trace.jsonl``, so the previous bare ``TraceWriter(...)`` left a
+        # bundle that looked traced and recorded nothing: engagements 18cc9af6
+        # and 908b7130 each shipped a report beside a zero-byte trace.
+        trace = TraceWriter(engagement_id)
+        set_active_trace_writer(trace)
         agent = ExploitAgent(
             llm=llm,
             tools=[],
@@ -477,7 +483,10 @@ async def _emit_engagement(base: str, dvwa: DVWA, scope: Any, oracle: Any, resul
             }
         )
         print(f"  report json : {rep.get('json_path')}")
+        print(f"  trace       : {trace.path} ({trace.events_written} events)")
         results["engagement_id"] = engagement_id
+        trace.close()
+        set_active_trace_writer(None)
         return engagement_id
 
 
