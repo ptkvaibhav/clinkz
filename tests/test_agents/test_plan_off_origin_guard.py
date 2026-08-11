@@ -68,6 +68,18 @@ class TestPlannerRefusesAnUndiscoveredHost:
             "https://evil.example/collect",
             "http://169.254.169.254/latest/meta-data/",
             "http://172.20.0.9/vulnerabilities/sqli/",
+            # Every scheme is fenced, not just http/https. Fencing only those
+            # two sent these down the relative branch, where ``urljoin``
+            # returns a foreign-scheme reference unchanged — the destination
+            # survived the check written to refuse it.
+            "file:///etc/passwd",
+            "ftp://evil.example/x",
+            "gopher://evil.example/",
+            "ws://evil.example/",
+            "sftp://evil.example/x",
+            "javascript:fetch('http://evil.example')",
+            # Userinfo wearing the target's name in front of the attacker's host.
+            f"http://{TARGET_ORIGIN.removeprefix('http://')}@evil.example/x",
         ],
     )
     def test_an_off_origin_absolute_url_yields_no_task(self, url: str) -> None:
@@ -97,6 +109,25 @@ class TestPlannerRefusesAnUndiscoveredHost:
         )
         assert plan is not None
         assert plan.tasks[0].endpoint_url == f"{TARGET_ORIGIN}/vulnerabilities/xss_r/"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            f"{TARGET_ORIGIN}:80/vulnerabilities/sqli/",
+            f"{TARGET_ORIGIN.upper()}/vulnerabilities/sqli/",
+            f"{TARGET_ORIGIN.replace('http://', 'http://172.20.0.4'.upper() and 'HTTP://')}"
+            "/vulnerabilities/sqli/",
+        ],
+    )
+    def test_an_equivalent_spelling_of_a_discovered_origin_survives(self, url: str) -> None:
+        """Over-refusal costs coverage, so the comparison is on a normalised origin.
+
+        ``http://host:80`` and ``http://host`` are one origin; so are ``HTTP://``
+        and ``http://``. A string compare would drop legitimate tasks and call it
+        safety.
+        """
+        plan = _agent()._parse_plan_response(_plan_response(url), _endpoints(), [], [])
+        assert plan is not None
 
     def test_a_second_discovered_host_is_not_collateral(self) -> None:
         """A multi-host engagement plans across every origin the scan found.
