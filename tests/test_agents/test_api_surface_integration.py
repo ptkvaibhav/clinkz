@@ -48,6 +48,8 @@ class _Planner:
     from clinkz.agents.exploit import ExploitAgent
 
     _plan_base_origin = staticmethod(ExploitAgent._plan_base_origin)
+    _plan_known_origins = staticmethod(ExploitAgent._plan_known_origins)
+    _is_off_origin_absolute = staticmethod(ExploitAgent._is_off_origin_absolute)
     _absolutize_planned_url = ExploitAgent._absolutize_planned_url
 
 
@@ -55,15 +57,19 @@ def test_a_planned_path_is_resolved_against_the_discovered_origin() -> None:
     planner = _Planner()
     endpoints = [Endpoint(url=f"{BASE}/api/a"), Endpoint(url=f"{BASE}/api/b")]
     origin = planner._plan_base_origin(endpoints)
+    known = planner._plan_known_origins(endpoints)
     assert origin == BASE
-    assert planner._absolutize_planned_url("/rest/user/login", origin) == f"{BASE}/rest/user/login"
-    # Already absolute — untouched.
-    assert planner._absolutize_planned_url(f"{BASE}/x", origin) == f"{BASE}/x"
+    assert (
+        planner._absolutize_planned_url("/rest/user/login", origin, known)
+        == f"{BASE}/rest/user/login"
+    )
+    # Already absolute, and on a discovered origin — untouched.
+    assert planner._absolutize_planned_url(f"{BASE}/x", origin, known) == f"{BASE}/x"
 
 
 def test_a_relative_url_with_no_known_origin_is_dropped_not_probed_blind() -> None:
     planner = _Planner()
-    assert planner._absolutize_planned_url("/rest/user/login", "") == ""
+    assert planner._absolutize_planned_url("/rest/user/login", "", frozenset()) == ""
 
 
 def test_the_plan_origin_is_a_function_of_the_set_not_its_order() -> None:
