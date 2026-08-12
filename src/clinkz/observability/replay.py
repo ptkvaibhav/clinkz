@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from clinkz.config import outputs_root as configured_outputs_root
 from clinkz.models.scope import EngagementScope
 from clinkz.observability.invocations import StepInputRecorder
 
@@ -136,12 +137,12 @@ class StepReplayer:
         engagement_id: str,
         step_id: str,
         *,
-        outputs_root: Path | str = Path("outputs"),
+        outputs_root: Path | str | None = None,
         llm_provider: str | None = None,
     ) -> None:
         self.engagement_id = engagement_id
         self.step_id = step_id
-        self.outputs_root = Path(outputs_root)
+        self.outputs_root = Path(outputs_root or configured_outputs_root())
         self.llm_provider = llm_provider
         self._step_inputs = StepInputRecorder(
             engagement_id=engagement_id,
@@ -419,7 +420,7 @@ def replay_step_sync(
     engagement_id: str,
     step_id: str,
     *,
-    outputs_root: Path | str = Path("outputs"),
+    outputs_root: Path | str | None = None,
     llm_provider: str | None = None,
 ) -> ReplayResult:
     """Synchronous wrapper around :meth:`StepReplayer.replay` for the CLI."""

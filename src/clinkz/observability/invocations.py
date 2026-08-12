@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from clinkz.config import outputs_root as configured_outputs_root
 from clinkz.engagement.secrets import redact_structure
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,8 @@ class ToolInvocationRecorder:
 
     Args:
         engagement_id: Engagement UUID — used to name the output directory.
-        outputs_root: Root directory for invocation files. Defaults to ``outputs``.
+        outputs_root: Root directory for invocation files. ``None`` reads the
+            configured root (``outputs`` unless ``--out`` redirected it).
         dir_override: Explicit invocation directory (overrides the default layout).
             Mainly used by tests.
     """
@@ -116,7 +118,7 @@ class ToolInvocationRecorder:
     def __init__(
         self,
         engagement_id: str,
-        outputs_root: Path | str = Path("outputs"),
+        outputs_root: Path | str | None = None,
         *,
         dir_override: Path | str | None = None,
     ) -> None:
@@ -124,7 +126,8 @@ class ToolInvocationRecorder:
         if dir_override is not None:
             self.dir = Path(dir_override)
         else:
-            self.dir = Path(outputs_root) / engagement_id / "tool_invocations"
+            root = Path(outputs_root or configured_outputs_root())
+            self.dir = root / engagement_id / "tool_invocations"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._seq = 0
         self._lock = threading.Lock()
@@ -176,7 +179,7 @@ class StepInputRecorder:
     def __init__(
         self,
         engagement_id: str,
-        outputs_root: Path | str = Path("outputs"),
+        outputs_root: Path | str | None = None,
         *,
         dir_override: Path | str | None = None,
     ) -> None:
@@ -184,7 +187,8 @@ class StepInputRecorder:
         if dir_override is not None:
             self.dir = Path(dir_override)
         else:
-            self.dir = Path(outputs_root) / engagement_id / "step_inputs"
+            root = Path(outputs_root or configured_outputs_root())
+            self.dir = root / engagement_id / "step_inputs"
         self.dir.mkdir(parents=True, exist_ok=True)
 
     def record(self, step_id: str, payload: dict[str, Any]) -> Path:
