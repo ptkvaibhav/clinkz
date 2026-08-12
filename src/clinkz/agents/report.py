@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clinkz.agents.base import BaseAgent
+from clinkz.config import outputs_root as configured_outputs_root
 
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
@@ -341,6 +342,8 @@ class ReportAgent(BaseAgent):
                 scope_out=scope_out,
                 safety=safety,
                 authentication=authentication,
+                graybox_source=dict(input_data.get("graybox_source") or {}),
+                resumed_from=str(input_data.get("resumed_from") or ""),
             ),
             safety_summary=safety,
             authentication=authentication,
@@ -358,7 +361,7 @@ class ReportAgent(BaseAgent):
         # ``outputs/<engagement_id>/`` (same convention as trace.jsonl and the
         # tool-invocation records). Writing to the cwd would litter the repo
         # root with per-engagement dumps.
-        output_dir = Path("outputs") / engagement_id
+        output_dir = configured_outputs_root() / engagement_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Write JSON output
@@ -399,6 +402,8 @@ class ReportAgent(BaseAgent):
         scope_out: list[str],
         safety: dict[str, Any],
         authentication: dict[str, Any],
+        graybox_source: dict[str, Any] | None = None,
+        resumed_from: str = "",
     ) -> list[NotTestedItem]:
         """Assemble the honest-limits section from the run's own artifacts.
 
@@ -414,11 +419,53 @@ class ReportAgent(BaseAgent):
             scope_out: Explicitly excluded scope entries.
             safety: The governor's stats dict.
             authentication: The authentication summary dict.
+            graybox_source: What happened to the ``--source`` tree, when one was
+                supplied. Empty on a black-box engagement.
+            resumed_from: The engagement this deliverable was regenerated from,
+                when ``clinkz scan --resume`` produced it.
 
         Returns:
             One :class:`NotTestedItem` per limitation, most client-relevant first.
         """
         items: list[NotTestedItem] = []
+
+        # A supplied source tree that was NOT ingested. Stated first: it changes
+        # how every other section should be read, because a gray-box engagement
+        # that fell back to black-box produces artifacts identical to a run that
+        # was never given source at all.
+        graybox = graybox_source or {}
+        if graybox and not graybox.get("ingested"):
+            items.append(
+                NotTestedItem(
+                    item=(
+                        "Gray-box source analysis of "
+                        f"{graybox.get('source_dir', 'the source tree')}"
+                    ),
+                    category=NotTestedCategory.SOURCE_NOT_INGESTED,
+                    reason=(
+                        f"A source tree was supplied but was not ingested — "
+                        f"{graybox.get('reason') or 'no reason recorded'}. The engagement "
+                        "ran fully black-box: no source-derived hypothesis was tested, so "
+                        "any vulnerability only reachable via a code path this engine "
+                        "would have found in the source was not examined."
+                    ),
+                )
+            )
+
+        if resumed_from:
+            items.append(
+                NotTestedItem(
+                    item="Everything not already proven when the original run stopped",
+                    category=NotTestedCategory.ENGAGEMENT_HALTED,
+                    reason=(
+                        f"This deliverable was regenerated from the persisted state of "
+                        f"engagement {resumed_from} rather than produced by a fresh test. "
+                        "No request was sent to the target. It reports exactly what that "
+                        "engagement had already proven and persisted before it stopped; "
+                        "coverage it had not reached is absent here and was not retried."
+                    ),
+                )
+            )
 
         for entry in scope_out:
             items.append(
@@ -884,6 +931,7 @@ class ReportAgent(BaseAgent):
             return
 
         headings = {
+            NotTestedCategory.SOURCE_NOT_INGESTED: ("Gray-box source supplied but not analysed"),
             NotTestedCategory.OUT_OF_SCOPE: "Excluded by the client",
             NotTestedCategory.NOT_PERMITTED: "Techniques not authorized",
             NotTestedCategory.NO_CLIENT_SIDE_ORACLE: ("Not confirmable — no client-side oracle"),
@@ -892,13 +940,26 @@ class ReportAgent(BaseAgent):
             NotTestedCategory.ENGAGEMENT_HALTED: "Cut short when the engagement halted",
             NotTestedCategory.UNAUTHENTICATED: "Limited by the sessions available",
         }
+        rendered: set[str] = set()
         for category, heading in headings.items():
             group = [item for item in report.not_tested if item.category == category]
             if not group:
                 continue
+            rendered.add(str(category))
             lines.extend([f"### {heading}", ""])
             for item in group:
                 lines.append(f"- **{item.item}** — {item.reason}")
+            lines.append("")
+
+        # A category with no heading is rendered anyway, under its raw name. The
+        # section exists to say what was NOT tested; dropping an entry because a
+        # renderer was not updated alongside the enum would delete a limitation
+        # from a client deliverable — the one failure this section cannot have.
+        orphans = [item for item in report.not_tested if str(item.category) not in rendered]
+        if orphans:
+            lines.extend(["### Other limitations", ""])
+            for item in orphans:
+                lines.append(f"- **{item.item}** [{item.category}] — {item.reason}")
             lines.append("")
         lines.extend(["---", ""])
 

@@ -18,6 +18,7 @@ dispatch as it did through the old hard-wired call.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -78,6 +79,87 @@ def _looks_js(root: Path) -> bool:
     return any(_first_matching_file(root, f"*{suffix}") for suffix in _JS_SUFFIXES)
 
 
+@dataclass(frozen=True)
+class IngestorSelection:
+    """Which ingestor a source tree selected, and whether anything MATCHED.
+
+    The distinction the bare :func:`select_ingestor` cannot express. That
+    function returns the Java ingestor both when a Java tree was recognised and
+    when nothing was recognised at all, so a gray-box run over a Python or Go
+    checkout produced an empty :class:`SourceModel` that is byte-identical to a
+    Java tree with no sinks in it. The engagement then reports black-box results
+    while the operator believes their ``--source`` was read.
+
+    Args:
+        ingestor: The ingestor to run. Populated even on a miss (it is the
+            historical Java fallback), so callers that only want to ingest are
+            unaffected.
+        matched: Whether a language was actually detected.
+        language: The detected language (``java`` / ``javascript``), or ``""``.
+        reason: Operator-facing explanation, rendered in the report when
+            *matched* is ``False``.
+    """
+
+    ingestor: SourceIngestor
+    matched: bool
+    language: str
+    reason: str
+
+
+def detect_ingestor(root: str | Path) -> IngestorSelection:
+    """Detect the source language at *root* and report whether it matched.
+
+    Deterministic and read-only — the same signals :func:`select_ingestor` has
+    always used, with the "nothing matched" case named instead of folded into
+    the Java fallback.
+
+    Args:
+        root: The source tree (or single file) named by ``--source``.
+
+    Returns:
+        An :class:`IngestorSelection`. On a miss ``ingestor`` is still the Java
+        fallback, so behaviour for a caller that ignores ``matched`` is
+        unchanged.
+    """
+    root = Path(root)
+    if not root.exists():
+        return IngestorSelection(
+            ingestor=JavaSourceIngestor(),
+            matched=False,
+            language="",
+            reason=f"the source path does not exist: {root}",
+        )
+    if root.is_file():
+        if root.suffix == _JAVA_SUFFIX:
+            return IngestorSelection(JavaSourceIngestor(), True, "java", "")
+        if root.suffix in _JS_SUFFIXES:
+            return IngestorSelection(JsSourceIngestor(), True, "javascript", "")
+        return IngestorSelection(
+            ingestor=JavaSourceIngestor(),
+            matched=False,
+            language="",
+            reason=(
+                f"'{root.name}' is not a source file this engine can ingest "
+                f"(supported: {_JAVA_SUFFIX}, {', '.join(sorted(_JS_SUFFIXES))})"
+            ),
+        )
+    if _looks_java(root):
+        return IngestorSelection(JavaSourceIngestor(), True, "java", "")
+    if _looks_js(root):
+        return IngestorSelection(JsSourceIngestor(), True, "javascript", "")
+    return IngestorSelection(
+        ingestor=JavaSourceIngestor(),
+        matched=False,
+        language="",
+        reason=(
+            f"no Java or JavaScript/TypeScript project was detected under {root} "
+            "(looked for pom.xml / build.gradle / *.java, and package.json / "
+            "*.js / *.mjs / *.cjs / *.ts). Those are the only two languages this "
+            "engine has a source ingestor for"
+        ),
+    )
+
+
 def select_ingestor(root: str | Path) -> SourceIngestor:
     """Return the ingestor for the project language at *root* (deterministic).
 
@@ -86,16 +168,9 @@ def select_ingestor(root: str | Path) -> SourceIngestor:
     ingestor; when neither is detected the default is the Java ingestor — the
     unchanged fallback, so a non-source or empty ``source_dir`` behaves exactly as it
     did when the call was hard-wired.
+
+    Callers that need to know whether anything actually matched — so the run can
+    say "your source tree was not ingested" rather than silently returning
+    black-box results — should use :func:`detect_ingestor` instead.
     """
-    root = Path(root)
-    if root.is_file():
-        if root.suffix == _JAVA_SUFFIX:
-            return JavaSourceIngestor()
-        if root.suffix in _JS_SUFFIXES:
-            return JsSourceIngestor()
-        return JavaSourceIngestor()
-    if _looks_java(root):
-        return JavaSourceIngestor()
-    if _looks_js(root):
-        return JsSourceIngestor()
-    return JavaSourceIngestor()
+    return detect_ingestor(root).ingestor
