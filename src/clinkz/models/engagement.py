@@ -61,6 +61,186 @@ def _require_nonempty(value: str, field: str) -> str:
     return stripped
 
 
+#: The attestation an operator must reproduce VERBATIM to declare a benchmark
+#: target. It is long and specific on purpose: a boolean flag can be set by a
+#: config template somebody copied, and a sentence this exact cannot be typed by
+#: accident. This is the "impossible to enable implicitly" requirement made
+#: structural rather than documented.
+BENCHMARK_ACKNOWLEDGEMENT: str = (
+    "I confirm this target is a disposable benchmark instance holding no real "
+    "data, and I accept that destructive actions will be performed against it."
+)
+
+
+def never_overridable_categories() -> frozenset[str]:
+    """Destructive categories a benchmark profile may NEVER permit.
+
+    The line is not "how bad is it" — every category a profile CAN permit is bad
+    for the client, which is precisely what a throwaway target makes acceptable.
+    The line is WHO it damages: these two damage the ENGAGEMENT rather than the
+    target. Destroying the shared session or flipping the application's security
+    posture mid-run makes every later observation a measurement of a different
+    application, which is how a run silently produces confident nonsense. A
+    disposable target does not make a corrupted engagement worth having, so no
+    profile can opt into these.
+
+    Read from :mod:`clinkz.safety.destructive` at call time rather than imported
+    at module scope: this module is imported by the engagement gate, which the
+    safety package imports, so a module-level import would close a cycle. Reading
+    the names lazily keeps the destructive module the ONE vocabulary — the
+    alternative, restating the category strings here, is a second copy that
+    drifts.
+    """
+    from clinkz.safety.destructive import (
+        CATEGORY_SECURITY_CONTROL,
+        CATEGORY_SESSION_DESTRUCTION,
+    )
+
+    return frozenset({CATEGORY_SESSION_DESTRUCTION, CATEGORY_SECURITY_CONTROL})
+
+
+def overridable_categories() -> frozenset[str]:
+    """Every category a profile may name.
+
+    Enumerated rather than derived as "everything else", so adding a category to
+    the classifier does not silently make it permittable — a new destructive
+    category is a decision about what a benchmark declaration may authorise, and
+    it should be made on purpose.
+    """
+    from clinkz.safety.destructive import (
+        CATEGORY_BULK_MESSAGING,
+        CATEGORY_CANCELLATION,
+        CATEGORY_CREDENTIAL_CHANGE,
+        CATEGORY_DATA_RESET,
+        CATEGORY_DELETION,
+        CATEGORY_IDENTITY_CHANGE,
+        CATEGORY_KEY_REVOCATION,
+        CATEGORY_PAYMENT,
+        CATEGORY_UNSAFE_METHOD,
+    )
+
+    return frozenset(
+        {
+            CATEGORY_DELETION,
+            CATEGORY_CREDENTIAL_CHANGE,
+            CATEGORY_IDENTITY_CHANGE,
+            CATEGORY_PAYMENT,
+            CATEGORY_CANCELLATION,
+            CATEGORY_KEY_REVOCATION,
+            CATEGORY_BULK_MESSAGING,
+            CATEGORY_DATA_RESET,
+            CATEGORY_UNSAFE_METHOD,
+        }
+    )
+
+
+class BenchmarkProfile(BaseModel):
+    """Explicit opt-in to destructive testing against a disposable target.
+
+    The destructive refusal is the contract with the client and stays exactly as
+    it is — :class:`SafetyPolicy` still carries no switch that disables it, and
+    the client-safe default is untouched. What this model adds is a *separate,
+    fully explicit* declaration that a specific target is a throwaway benchmark,
+    naming the categories it permits one by one.
+
+    Chaining and business logic are why it exists. Both need state-changing
+    requests, and the destructive blocklist correctly refuses ``DELETE`` and
+    identity change — correct against a client's production application, and the
+    reason two Juice Shop challenges are unreachable. Loosening the default would
+    trade a real safety property for benchmark coverage. Declaring the benchmark
+    instead trades nothing.
+
+    **It cannot be enabled implicitly.** There is no ``enabled`` flag to flip and
+    no partially-populated shape: constructing this model at all requires
+
+      * ``target_is_throwaway`` to be ``True`` — ``False`` is a validation error,
+        because "a disabled profile" is spelled by not having one;
+      * ``acknowledgement`` to reproduce :data:`BENCHMARK_ACKNOWLEDGEMENT`
+        verbatim;
+      * at least one category, each from :data:`OVERRIDABLE_CATEGORIES` and none
+        from :data:`NEVER_OVERRIDABLE_CATEGORIES`;
+      * a named declaring party and a reference.
+
+    Attributes:
+        target_is_throwaway: Must be ``True``.
+        acknowledgement: Must equal :data:`BENCHMARK_ACKNOWLEDGEMENT`.
+        permitted_categories: The destructive categories permitted, named one by
+            one, from :func:`overridable_categories`. A wildcard is deliberately
+            not accepted: the point is that the operator wrote down which harms
+            they are authorising.
+        declared_by: Who declared the target disposable.
+        declared_reference: The record (ticket, lab id, README line) that backs it.
+        notes: Free-text context for the report header.
+    """
+
+    target_is_throwaway: bool
+    acknowledgement: str
+    permitted_categories: list[str]
+    declared_by: str
+    declared_reference: str
+    notes: str = ""
+
+    @field_validator("declared_by", "declared_reference")
+    @classmethod
+    def _nonblank_declaration(cls, v: str, info: object) -> str:
+        field_name = getattr(info, "field_name", "field")
+        return _require_nonempty(v, str(field_name))
+
+    @model_validator(mode="after")
+    def _fully_explicit(self) -> BenchmarkProfile:
+        if not self.target_is_throwaway:
+            raise ValueError(
+                "'target_is_throwaway' must be true. A benchmark profile with it set "
+                "false is not a disabled profile — omit the profile entirely to test "
+                "with the client-safe destructive refusals in force."
+            )
+        if self.acknowledgement.strip() != BENCHMARK_ACKNOWLEDGEMENT:
+            raise ValueError(
+                "'acknowledgement' must reproduce the benchmark attestation verbatim:\n"
+                f"  {BENCHMARK_ACKNOWLEDGEMENT}"
+            )
+        cleaned = [c.strip().lower() for c in self.permitted_categories if c and c.strip()]
+        if not cleaned:
+            raise ValueError(
+                "'permitted_categories' must name at least one destructive category. "
+                "There is no wildcard: the profile records which harms were authorised."
+            )
+        forbidden = sorted(set(cleaned) & never_overridable_categories())
+        if forbidden:
+            raise ValueError(
+                f"these categories can never be permitted, on any target: "
+                f"{', '.join(forbidden)}. They damage the ENGAGEMENT rather than the "
+                f"target — destroying the shared session or flipping the application's "
+                f"security posture makes every later observation a measurement of a "
+                f"different application."
+            )
+        allowed = overridable_categories()
+        unknown = sorted(set(cleaned) - allowed)
+        if unknown:
+            raise ValueError(
+                f"unknown destructive categor{'y' if len(unknown) == 1 else 'ies'}: "
+                f"{', '.join(unknown)}. Permitted names are: {', '.join(sorted(allowed))}"
+            )
+        object.__setattr__(self, "permitted_categories", cleaned)
+        return self
+
+    def permits_category(self, category: str) -> bool:
+        """Whether this profile permits *category*."""
+        return (category or "").strip().lower() in set(self.permitted_categories)
+
+    def header_lines(self) -> list[str]:
+        """The report-header block. Rendered verbatim; never summarised away."""
+        return [
+            "BENCHMARK PROFILE ACTIVE — destructive testing was explicitly authorised.",
+            f"Declared by: {self.declared_by} (reference: {self.declared_reference})",
+            f"Attestation: {self.acknowledgement}",
+            "Destructive categories permitted: " + ", ".join(sorted(self.permitted_categories)),
+            "Categories that remain refused on any target: "
+            + ", ".join(sorted(never_overridable_categories())),
+            *([f"Notes: {self.notes}"] if self.notes else []),
+        ]
+
+
 class AuthorizationRecord(BaseModel):
     """Who authorized this engagement, and on what terms.
 
@@ -80,6 +260,14 @@ class AuthorizationRecord(BaseModel):
             an empty list is rejected.
         emergency_contact: Who to call the moment something goes wrong.
         notes: Free-text caveats agreed with the client.
+        benchmark_profile: An explicit declaration that this target is a
+            disposable benchmark, permitting named destructive categories.
+            ``None`` — the default, and the only shape a client engagement ever
+            has — means the destructive refusals are fully in force. It lives on
+            the authorization record rather than on
+            :class:`SafetyPolicy` because it is not a tuning knob: it is part of
+            what was authorised, so it is captured where authorisation is
+            captured and rendered where authorisation is rendered.
     """
 
     authorizing_party: str
@@ -89,6 +277,7 @@ class AuthorizationRecord(BaseModel):
     permitted_techniques: list[str]
     emergency_contact: str
     notes: str = ""
+    benchmark_profile: BenchmarkProfile | None = None
 
     @field_validator(
         "authorizing_party",
@@ -334,9 +523,13 @@ class CredentialSet(BaseModel):
 
 
 __all__ = [
+    "BENCHMARK_ACKNOWLEDGEMENT",
     "AuthorizationRecord",
+    "BenchmarkProfile",
     "CredentialSet",
     "EngagementWindow",
     "RoleCredential",
     "SafetyPolicy",
+    "never_overridable_categories",
+    "overridable_categories",
 ]
