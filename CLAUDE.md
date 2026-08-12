@@ -332,7 +332,8 @@ reports the missing capability to the Orchestrator.
 src/clinkz/
 ├── cli.py            # Typer CLI: scan / abort / actions / artifact-scan / trace inspect /
 │                     #   tool-invoke / step-replay / corpus-replay
-├── config.py         # Settings (env vars, per-agent LLM overrides)
+├── config.py         # Settings (env vars, per-agent LLM overrides, outputs_root —
+│                     #   read via outputs_root() at CALL time, never as a default arg)
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
 ├── agents/           # recon, scan, exploit, research, critic, report, _route_discovery,
@@ -348,7 +349,10 @@ src/clinkz/
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
 │                     #   planner, composition (THE ORACLE — the decoy control), impact
-├── engagement/       # gate (the refusals), secrets (credentials + redaction chokepoint),
+├── engagement/       # gate (the refusals), cli_inputs (operator flags -> validated models:
+│                     #   target/scope classification, authorization assembly),
+│                     #   resume (rebuild a stopped run's REPORT, never its testing),
+│                     #   secrets (credentials + redaction chokepoint),
 │                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
 │                     #   shared by the redactor and the gate), artifact_scan (the
 │                     #   disclosure gate over outputs/<id>/),
@@ -358,7 +362,9 @@ src/clinkz/
 │                     #   kill switch, blocking, window), action_log (+ browser navigations),
 │                     #   benchmark (the explicit throwaway-target opt-in — absent by default)
 ├── comms/            # AgentMessage, async bus, protocol
-├── discovery/        # Δ-model: ingestor(s), catalog, intent, reachability, hypothesis, engine,
+├── discovery/        # Δ-model: ingestor(s) (detect_ingestor reports a MISS; a tree in an
+│                     #   uningestable language is stated in the report, not silently
+│                     #   black-box), catalog, intent, reachability, hypothesis, engine,
 │                     #   topology(+recall), recall, relations, versions
 ├── knowledge/        # KnowledgeBase, persistent_kb, seeders, MITRE/OWASP datasets, payloads,
 │                     #   component_cves (published CVE ↔ observed version — a LEAD, never
@@ -384,12 +390,24 @@ docker/  scripts/  tests/  docs/
 
 ## Commands
 
-- `python -m clinkz scan --target <domain> --scope <scope.json>
-  --authorization <auth.json> [--credentials <creds.json>] [--dry-run]
-  [--rate N] [--max-concurrency N]` — full pentest (recon → scan/research/
-  exploit → report). The only end-to-end command. **Refuses to start without an
-  authorization record**; `--dry-run` enumerates what it WOULD do and sends
-  nothing.
+- `python -m clinkz scan --target <url|host|ip|cidr> [--scope <entry|scope.json>]
+  [--exclude <entry>] [--authorization <auth.json> | --auth-* flags |
+  --auth-prompt] [--creds <creds.json>] [--source <tree>] [--benchmark-profile
+  <bp.json>] [--dry-run] [--rate-limit N] [--max-concurrency N] [--out <dir>]
+  [--resume <id>]` — full pentest (recon → scan/research/exploit → report). The
+  only end-to-end command. **Refuses to start without an authorization record**
+  (`--auth-*` flags refuse with EVERY missing field named — the record has no
+  partial shape); `--dry-run` enumerates what it WOULD do, including whether the
+  `--source` tree is ingestable, and sends nothing. `--out` redirects the whole
+  bundle by setting `settings.outputs_root`, which every writer resolves at CALL
+  time — a default argument would be bound at import and silently ignore it.
+  `--resume` rebuilds an interrupted engagement's report from its persisted
+  findings and sends nothing; it does not resume TESTING (phase coverage is not
+  persisted, findings are), and the regenerated report says so in its own
+  *What was NOT tested* section. **The exit-code contract is the interface**
+  (`cli.py::EXIT_CODES`, rendered into `--help`, asserted by the test suite):
+  0 completed · 1 failed · 2 bad input · 3 refused before testing · 4 halted ·
+  5 completed but the bundle FAILED the disclosure gate.
 - `python -m clinkz abort <engagement_id>` — kill switch: halt immediately and
   cleanly (the report is still produced).
 - `python -m clinkz actions <engagement_id> [--outcome sent|refused] [--raw]` —
