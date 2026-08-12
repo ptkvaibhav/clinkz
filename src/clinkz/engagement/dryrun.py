@@ -167,7 +167,12 @@ def build_dry_run_plan(
             "No engagement window was set. Consider agreeing one so the run has a hard stop."
         )
 
-    plan.in_scope = [f"{t.value} ({t.type.value})" for t in scope.targets]
+    # Notes render on BOTH sides. They were rendered only for exclusions, so a
+    # note explaining why a host is IN scope - the side that decides what gets
+    # touched - was the one an operator could not see.
+    plan.in_scope = [
+        f"{t.value} ({t.type.value})" + (f" - {t.notes}" if t.notes else "") for t in scope.targets
+    ]
     plan.out_of_scope = [
         f"{e.value} ({e.type.value})" + (f" - {e.notes}" if e.notes else "") for e in scope.excluded
     ]

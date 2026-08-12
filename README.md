@@ -123,23 +123,44 @@ This brings up:
 
 ### Running a Scan
 
+`clinkz scan --help` is the reference: it states what the engine proves, what it
+refuses, every flag, and the exit-code contract.
+
 ```bash
 # See what an engagement WOULD do -- sends nothing
-clinkz scan --target https://app.example.com --scope scope.json --dry-run
+clinkz scan --target https://app.example.com --dry-run
 
 # A real engagement. --authorization is REQUIRED (or an "authorization" block
-# inside the scope file); there is no flag that skips it.
+# inside the scope file, or the six --auth-* flags, or --auth-prompt); there is
+# no flag that skips it.
 clinkz scan --target https://app.example.com \
     --scope scope.json \
     --authorization auth.json \
-    --credentials ../acme-creds.json \
-    --rate 3 --max-concurrency 2
+    --creds ../acme-creds.json \
+    --rate-limit 3 --max-concurrency 2
 
-# Against a local benchmark
-clinkz scan --target http://localhost:8080 --authorization auth.json
+# --target takes a URL, a hostname, an IP or a CIDR block. --scope adds more
+# in-scope entries (or names a scope document); --exclude carves hosts out and
+# takes precedence.
+clinkz scan --target 10.10.10.0/24 --exclude 10.10.10.1 -a auth.json
+
+# No authorization file to hand? Be asked for the record instead.
+clinkz scan --target app.example.com --auth-prompt
+
+# Gray-box: hand it the application's source tree. The language is detected
+# automatically, and if no ingestor matches, the run continues black-box and
+# the report says so rather than looking like a gray-box result.
+clinkz scan --target https://app.example.com -a auth.json --source ~/src/app
+
+# Write the artifact bundle somewhere other than ./outputs
+clinkz scan --target http://localhost:8080 -a auth.json --out /srv/engagements
 
 # Override the orchestrator LLM provider for a single run
 clinkz scan --target http://localhost:8080 -a auth.json --provider anthropic
+
+# Rebuild the report of a run that was interrupted, from its persisted
+# findings. Sends nothing, and the report states that it was regenerated.
+clinkz scan --target unused --resume <engagement_id>
 
 # Halt a running engagement immediately and cleanly (the report is still produced)
 clinkz abort <engagement_id>
@@ -154,6 +175,17 @@ clinkz artifact-scan <engagement_id>
 # Inspect the execution trace afterwards
 clinkz trace inspect <engagement_id>
 ```
+
+**Exit codes** (`clinkz scan`), so a wrapper can tell the cases apart:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Completed — with findings or without. The report was written. |
+| `1` | Started, then failed. |
+| `2` | Operator input was unusable: a bad flag, a missing or invalid file. |
+| `3` | Refused **before** testing: no authorization record, outside the window, or the authenticated-state assertion failed. |
+| `4` | Halted mid-run by the kill switch or blocking detection. The report was still written. |
+| `5` | Completed, but the artifact bundle **failed the disclosure gate** — do not share it until `clinkz artifact-scan` is clean. |
 
 `auth.json`:
 
