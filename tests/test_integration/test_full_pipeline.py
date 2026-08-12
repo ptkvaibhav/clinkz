@@ -41,8 +41,12 @@ from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.models.target import Host, Service
 from clinkz.orchestrator.orchestrator import OrchestratorAgent
 from clinkz.state import StateStore
-from clinkz.tools.base import ToolBase, ToolOutput
+from clinkz.tools.base import ToolBase
+from clinkz.tools.katana import KatanaOutput
+from clinkz.tools.nmap import NmapOutput
 from clinkz.tools.resolver import ToolMatch, ToolResolver
+from clinkz.tools.subfinder import SubfinderOutput
+from clinkz.tools.whatweb import WhatWebOutput, WhatWebScanResult
 from tests.authorization_fixtures import TEST_AUTHORIZATION
 
 # ---------------------------------------------------------------------------
@@ -333,21 +337,20 @@ class _ReportLLM(LLMClient):
 # ---------------------------------------------------------------------------
 
 
-class _SubfinderOutput(ToolOutput):
-    subdomains: list[str] = []
+# Mock tool outputs are the REAL models — see tests/test_tools/test_mock_shape_audit.py.
+#
+# These were four local ``ToolOutput`` subclasses declaring whatever the author
+# assumed the consumer read. ``_WebFingerprintOutput.tech_stack`` is the clearest
+# instance: no fingerprinting wrapper in this codebase has ever carried a
+# ``tech_stack`` field, so ``ReconAgent._step_web_recon`` — which reads the
+# producer's declared components — extracted nothing from it, on every run, while
+# the test asserted the fingerprinting step "worked". Same defect, same
+# concealment, as ``FfufOutput``'s invented ``paths``.
 
-
-class _NmapOutput(ToolOutput):
-    hosts: list[Host] = []
-    open_ports: list[int] = []
-
-
-class _WebFingerprintOutput(ToolOutput):
-    tech_stack: list[str] = []
-
-
-class _KatanaCrawlOutput(ToolOutput):
-    urls: list[str] = []
+_SubfinderOutput = SubfinderOutput
+_NmapOutput = NmapOutput
+_WebFingerprintOutput = WhatWebOutput
+_KatanaCrawlOutput = KatanaOutput
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +493,15 @@ class _IntTestWhatwebTool(ToolBase):
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
-            tech_stack=["nginx 1.24", "Bootstrap 5", "jQuery 3"],
+            results=[
+                WhatWebScanResult(
+                    target=f"http://{TARGET_IP}/",
+                    http_status=200,
+                    technologies=["nginx", "Bootstrap", "jQuery"],
+                    versions={"nginx": "1.24", "Bootstrap": "5", "jQuery": "3"},
+                    server="nginx/1.24",
+                )
+            ],
         )
 
 

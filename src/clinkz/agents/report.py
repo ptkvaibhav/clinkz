@@ -39,6 +39,7 @@ from clinkz.engagement.secrets import redact, redact_structure
 from clinkz.llm.base import LLMClient
 from clinkz.models.engagement import AuthorizationRecord, EngagementWindow
 from clinkz.models.finding import (
+    ChainResearchLead,
     CrossServiceResearchLead,
     Finding,
     FindingStatus,
@@ -257,11 +258,14 @@ class ReportAgent(BaseAgent):
         # ``cross_service``.
         lead_models: list[CrossServiceResearchLead] = []
         unproven_models: list[UnprovenExploitLead] = []
+        chain_lead_models: list[ChainResearchLead] = []
         for ld in leads_raw:
             kind = ld.get("lead_kind") or "cross_service"
             try:
                 if kind == "unproven_exploit":
                     unproven_models.append(UnprovenExploitLead.model_validate(ld))
+                elif kind == "chain":
+                    chain_lead_models.append(ChainResearchLead.model_validate(ld))
                 else:
                     lead_models.append(CrossServiceResearchLead.model_validate(ld))
             except Exception as exc:
@@ -319,6 +323,14 @@ class ReportAgent(BaseAgent):
             findings=finding_models,
             research_leads=lead_models,
             unproven_leads=unproven_models,
+            chain_leads=chain_lead_models,
+            # The link-by-link view of every confirmed chain, handed in by the
+            # orchestrator from the exploit result. Never a second source of
+            # findings: each chain is already in ``findings``, emitted through
+            # the same chokepoint, so this renders composition and counts nothing.
+            confirmed_chains=[
+                c for c in (input_data.get("confirmed_chains") or []) if isinstance(c, dict)
+            ],
             authorization=authorization,
             engagement_window=window,
             rules_of_engagement=list(input_data.get("rules_of_engagement") or []),
@@ -531,6 +543,9 @@ class ReportAgent(BaseAgent):
         """
         lines: list[str] = [f"# Penetration Test Report — {report.engagement_name}", ""]
         ReportAgent._render_header(lines, report)
+        unconfirmed = (
+            len(report.unproven_leads) + len(report.research_leads) + len(report.chain_leads)
+        )
         lines.extend(
             [
                 "## Summary",
@@ -538,9 +553,9 @@ class ReportAgent(BaseAgent):
                 f"- **Risk rating:** "
                 f"{report.executive_summary.risk_rating if report.executive_summary else 'N/A'}",
                 f"- **Confirmed findings:** {len(findings)}",
-                f"- **Unconfirmed leads:** "
-                f"{len(report.unproven_leads) + len(report.research_leads)} "
-                "(not counted above)",
+                f"- **Confirmed attack chains:** {len(report.confirmed_chains)} "
+                "(each is also one of the findings above, never counted twice)",
+                f"- **Unconfirmed leads:** {unconfirmed} (not counted above)",
                 "",
                 "---",
                 "",
@@ -563,6 +578,7 @@ class ReportAgent(BaseAgent):
             )
             ReportAgent._render_research_leads(lines, report.research_leads)
             ReportAgent._render_unproven_leads(lines, report.unproven_leads)
+            ReportAgent._render_chain_leads(lines, report.chain_leads)
             ReportAgent._render_not_tested(lines, report)
             ReportAgent._render_component_ledger(lines, report)
             return "\n".join(lines)
@@ -595,8 +611,10 @@ class ReportAgent(BaseAgent):
             lines.append(f"**Remediation:** {f.remediation or 'N/A'}")
             lines.extend(["", "---", ""])
 
+        ReportAgent._render_chains(lines, report.confirmed_chains)
         ReportAgent._render_research_leads(lines, report.research_leads)
         ReportAgent._render_unproven_leads(lines, report.unproven_leads)
+        ReportAgent._render_chain_leads(lines, report.chain_leads)
         ReportAgent._render_not_tested(lines, report)
         ReportAgent._render_component_ledger(lines, report)
         return "\n".join(lines)
@@ -696,6 +714,23 @@ class ReportAgent(BaseAgent):
             if record.notes:
                 lines.append(f"- **Notes:** {record.notes}")
             lines.append("")
+
+            # The benchmark declaration, rendered as prominently as the
+            # authorization it lives on. A run in which destructive categories
+            # were permitted is a materially different run, and a reader must not
+            # have to infer that from an action-log count.
+            if record.benchmark_profile is not None:
+                lines.extend(["> **" + record.benchmark_profile.header_lines()[0] + "**", ""])
+                lines.extend([f"- {line}" for line in record.benchmark_profile.header_lines()[1:]])
+                lines.extend(
+                    [
+                        "",
+                        "> Every request this permitted is in the action log, tagged with "
+                        "the category that would otherwise have refused it "
+                        "(`clinkz actions <engagement-id>`).",
+                        "",
+                    ]
+                )
 
         window = report.engagement_window
         lines.extend(
@@ -950,6 +985,131 @@ class ReportAgent(BaseAgent):
                     "```",
                     f"probe: {lead.raw_probe}",
                     f"observation: {lead.raw_null_observation}",
+                    "```",
+                    "",
+                    "---",
+                    "",
+                ]
+            )
+
+    @staticmethod
+    def _render_chains(lines: list[str], chains: list[dict[str, object]]) -> None:
+        """Render the link-by-link view of every CONFIRMED chain.
+
+        The chains are already in the findings section — each was emitted through
+        the same chokepoint as every other finding — so this section adds no
+        count and no claim. What it adds is the composition: which step produced
+        what, which oracle proved each link, and the decoy the carriage was
+        distinguished against. A chain finding's severity is an escalation, and a
+        reader is entitled to check the escalation against the links it rests on.
+        """
+        if not chains:
+            return
+        lines.extend(
+            [
+                "## Confirmed attack chains — composition detail",
+                "",
+                "> Each chain below is **already counted once** in the findings section; "
+                "this is the link-by-link view. A chain is confirmed only when every "
+                "link was independently confirmed by one of this engine's oracles AND "
+                "the carried artifact was accepted while an equivalently-shaped decoy "
+                "was refused. The severity is escalated from what the chain "
+                "DEMONSTRATED, never from what the composition could in principle lead "
+                "to.",
+                "",
+            ]
+        )
+        for i, chain in enumerate(chains, 1):
+            links = chain.get("links") or []
+            lines.extend(
+                [
+                    f"### C{i}. {chain.get('chain_kind', 'chain')}",
+                    "",
+                    f"- **Severity:** {str(chain.get('severity', '')).upper()} "
+                    f"(escalated from {chain.get('base_severity', '')})",
+                    f"- **Composed grade (weakest link):** {chain.get('composed_grade', '')}",
+                    f"- **Demonstrated impact:** {chain.get('impact_statement', '')}",
+                    "",
+                    "**Links:**",
+                    "",
+                ]
+            )
+            for link in links if isinstance(links, list) else []:
+                if not isinstance(link, dict):
+                    continue
+                lines.append(
+                    f"{link.get('ordinal', '?')}. `{link.get('kind', '')}` "
+                    f"**{link.get('test_method', '')}** on {link.get('endpoint', '')} "
+                    f"— confirmed by {link.get('confirmation_primitive', 'n/a')} "
+                    f"— {link.get('description', '')}"
+                )
+                composition = link.get("composition")
+                if isinstance(composition, dict):
+                    lines.extend(
+                        [
+                            "",
+                            "   **Decoy control:**",
+                            "   ```",
+                            f"   carried:   {composition.get('carried_kind', '')} "
+                            f"(fingerprint {composition.get('carried_fingerprint', '')})",
+                            f"   decoy:     fingerprint "
+                            f"{composition.get('decoy_fingerprint', '')} — "
+                            f"{composition.get('decoy_shape', '')}",
+                            f"   signal:    {composition.get('acceptance_signal', '')}",
+                            f"   real:      status={composition.get('real_status')} "
+                            f"accepted={composition.get('real_accepted')}",
+                            f"   decoy:     status={composition.get('decoy_status')} "
+                            f"accepted={composition.get('decoy_accepted')}",
+                            "   ```",
+                        ]
+                    )
+            lines.extend(["", "---", ""])
+
+    @staticmethod
+    def _render_chain_leads(lines: list[str], leads: list[ChainResearchLead]) -> None:
+        """Render the dedicated 'Unproven attack chains (UNCONFIRMED)' section.
+
+        Third lead type, third separate section, same hard line. This one is the
+        most important of the three to keep separate: two confirmed findings sit
+        next to each other in a result list and a narrative connecting them writes
+        itself, so a composition that could not be proven has to be visibly a
+        composition that could not be proven. Each lead names the exact link that
+        stopped it, which is what makes it worth an operator's time rather than a
+        shrug.
+        """
+        if not leads:
+            return
+        lines.extend(
+            [
+                "## Unproven attack chains (candidate compositions — UNCONFIRMED)",
+                "",
+                "> These compositions were worth trying and were **not proven**. They are "
+                "**NOT findings**, are **not counted** in the totals above, and no "
+                "escalated impact is claimed. Most often the carried artifact was "
+                "accepted but so was an equivalently-shaped decoy the target never "
+                "issued — which means the endpoint accepts the SHAPE rather than the "
+                "value, so its acceptance says nothing about what was recovered.",
+                "",
+            ]
+        )
+        for i, lead in enumerate(leads, 1):
+            lines.extend(
+                [
+                    f"### X{i}. {lead.candidate_chain}",
+                    "",
+                    f"- **Why unconfirmed:** {lead.why_unconfirmed}",
+                    f"- **Link that stopped it:** {lead.unconfirmed_link}",
+                    f"- **Carried artifact:** {lead.carried_artifact_kind} "
+                    f"(fingerprint {lead.carried_artifact_fingerprint})",
+                    "",
+                    "**Links:**",
+                    "",
+                    *[f"- {line}" for line in lead.links],
+                    "",
+                    "**Raw evidence:**",
+                    "```",
+                    f"observed: {lead.raw_observation}",
+                    f"missing:  {lead.missing_observation}",
                     "```",
                     "",
                     "---",

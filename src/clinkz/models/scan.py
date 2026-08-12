@@ -104,6 +104,14 @@ class Endpoint(BaseModel):
     sets_cookies: list[str] = Field(default_factory=list)
     has_form: bool = False
     has_dom_source: bool = False
+    #: Whether this response served a Content-Security-Policy governing script.
+    #: The same kind of observation as the three above, added for the same
+    #: reason: "is this policy bypassable" is a question only about a response
+    #: that HAS one, and a route whose path says ``csp`` while serving no policy
+    #: is not that class's surface. Recorded as a boolean, never the policy text
+    #: — the methodology re-reads the policy verbatim at probe time, so a stale
+    #: copy cannot become the thing a finding is asserted against.
+    serves_csp: bool = False
 
 
 class SessionVector(BaseModel):

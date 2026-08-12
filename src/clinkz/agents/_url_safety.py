@@ -42,9 +42,15 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlsplit
+from urllib.parse import urlparse, urlsplit
 
-from clinkz.safety.destructive import classify_form_submission, is_state_changing_request
+from clinkz.agents._origin import resolve_same_origin
+from clinkz.safety.benchmark import benchmark_override
+from clinkz.safety.destructive import (
+    classify_form_submission,
+    classify_request,
+    is_state_changing_request,
+)
 
 # Path fragments that change application/session state on their own. ``logout``
 # / ``signout`` drop the session; both are universal, not DVWA-specific. Kept
@@ -87,8 +93,19 @@ def is_state_changing_url(url: str) -> bool:
 
     path = parts.path.lower()
     if any(fragment in path for fragment in _STATE_CHANGING_PATH_FRAGMENTS):
+        # Session destruction, deliberately before the profile is consulted. A
+        # benchmark profile cannot permit it — the model refuses to construct one
+        # that names the category — and the fast path must not be the way round
+        # that. Visiting a logout link poisons the shared engagement session,
+        # which makes every later observation a measurement of a different
+        # application, on a throwaway target exactly as on a client's.
         return True
 
+    verdict = benchmark_override(classify_request("GET", url))
+    if not verdict.refused:
+        return False
+    # Kept for the unchanged no-profile path: identical to the verdict above, and
+    # the call the module's contract documents.
     return is_state_changing_request(url)
 
 
@@ -155,8 +172,14 @@ def is_destructive_form_submission(form: dict[str, Any], action_url: str = "") -
         describes, never less. Callers wanting the category and the deciding
         signal — for an action-log entry or a report line — should call the
         classifier directly and read the :class:`~clinkz.safety.destructive.DestructiveVerdict`.
+
+        An engagement that declared its target a disposable benchmark can permit
+        named categories (:class:`~clinkz.models.engagement.BenchmarkProfile`).
+        The classifier still runs and still names the category and signal; the
+        profile is applied to its verdict afterwards, and with no profile
+        installed — every client engagement — this function is unchanged.
     """
-    return classify_form_submission(form, action_url).refused
+    return benchmark_override(classify_form_submission(form, action_url)).refused
 
 
 # ---------------------------------------------------------------------------
@@ -200,23 +223,21 @@ def find_session_setter_urls(page_url: str, body: str) -> list[str]:
     """
     if not body:
         return []
-    try:
-        origin = urlsplit(page_url)
-    except ValueError:
-        return []
     found: list[str] = []
     seen: set[str] = set()
     for raw in _SESSION_SETTER_TOKEN_RE.findall(body):
         token = raw.strip()
         if "." not in token and "/" not in token:
             continue
-        candidate = urljoin(page_url, token)
-        if candidate in seen:
+        # The shared fence (:mod:`clinkz.agents._origin`), not a local
+        # ``(scheme, netloc)`` compare: netloc is case- and default-port-
+        # sensitive, so the local version refused ``http://HOST/x`` and
+        # ``http://host:80/x`` as foreign while admitting nothing extra.
+        candidate = resolve_same_origin(token, page_url)
+        if candidate is None or candidate in seen:
             continue
         seen.add(candidate)
         parsed = urlparse(candidate)
-        if (parsed.scheme, parsed.netloc) != (origin.scheme, origin.netloc):
-            continue
         last_seg = parsed.path.rsplit("/", 1)[-1]
         if not _is_session_setter_basename(last_seg):
             continue

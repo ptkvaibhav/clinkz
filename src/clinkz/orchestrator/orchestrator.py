@@ -91,6 +91,7 @@ from clinkz.observability.trace import (
 from clinkz.oob import CallbackShape, OOBCollaborator
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.orchestrator.target_resolver import resolve_target_for_docker_mode
+from clinkz.safety.benchmark import set_active_benchmark_profile
 from clinkz.safety.governor import EngagementGovernor, set_active_governor
 from clinkz.state import StateStore
 from clinkz.tools.docker_preflight import ensure_container_ready
@@ -293,6 +294,10 @@ class OrchestratorAgent:
         # Records what each component actually contributed, so a fallback that
         # covers for a dead one cannot make the run look healthy.
         self._ledger: ContributionLedger | None = None
+        # The composition view of every CONFIRMED chain the exploit phase proved.
+        # Carried to the report so it can render the links; the chains themselves
+        # are ordinary findings and are counted there, never here.
+        self._confirmed_chains: list[dict[str, Any]] = []
         # Watches every response for signs the session has been lost, so half an
         # engagement cannot run silently unauthenticated.
         self._session_sentinel = SessionSentinel()
@@ -399,6 +404,21 @@ class OrchestratorAgent:
             governor.add_response_observer(self._session_sentinel.observe)
             set_active_governor(governor)
             self._governor = governor
+
+            # The engagement's benchmark profile, if the authorization record
+            # carries one. ``None`` — every client engagement — leaves the
+            # destructive refusals fully in force, and the profile model refuses
+            # to exist at all without an explicit throwaway declaration, so there
+            # is no path by which this is enabled implicitly.
+            #
+            # Installed HERE, beside the governor and inside the try whose
+            # ``finally`` clears it, rather than earlier next to the gate. Both
+            # are process-global rails, and installing one of them before the
+            # block that guarantees its removal is a fail-open: a raise from the
+            # container check or the provider-chain validation would leave the
+            # profile installed, and the NEXT engagement in the same process
+            # would inherit permissive destructive rails it never declared.
+            set_active_benchmark_profile(self._authorization.benchmark_profile)
             self._logger.info(
                 "Safety rails active — %.1f req/s, %d concurrent, halt-on-blocking=%s, "
                 "kill switch: %s",
@@ -607,6 +627,20 @@ class OrchestratorAgent:
                     added,
                 )
 
+                # Confirmed chains: the composition view, carried to the report.
+                # Read off the exploit result rather than the findings table
+                # because a chain's LINKS are not a finding field — every chain
+                # here is already one of the findings just reconciled, and the
+                # report renders this section without counting it again.
+                self._confirmed_chains = [
+                    c for c in (exploit_result.get("confirmed_chains") or []) if isinstance(c, dict)
+                ]
+                if self._confirmed_chains:
+                    self._logger.info(
+                        "Chaining: %d confirmed chain(s) — each already counted once as a finding",
+                        len(self._confirmed_chains),
+                    )
+
                 # =============================================================
                 # PHASE 3: REPORT (sequential)
                 # =============================================================
@@ -637,6 +671,11 @@ class OrchestratorAgent:
                         else None,
                         "safety": governor.stats(),
                         "authentication": self._authentication_summary(),
+                        # The link-by-link view of every CONFIRMED chain. The
+                        # chains themselves are already in ``findings`` — emitted
+                        # through the same chokepoint — so this renders the
+                        # composition and is never counted again.
+                        "confirmed_chains": self._confirmed_chains,
                     },
                     honor_halt=False,
                 )
@@ -661,6 +700,7 @@ class OrchestratorAgent:
                 # into the next engagement in the same process (and between
                 # tests).
                 set_active_governor(None)
+                set_active_benchmark_profile(None)
                 self._governor = None
                 clear_secrets()
 

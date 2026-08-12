@@ -14,7 +14,7 @@ from xml.etree.ElementTree import Element  # noqa: S405 — type only, parsing u
 from defusedxml import ElementTree as ET  # noqa: N817 — ET is the canonical ElementTree alias
 
 from clinkz.models.target import Host, Service, ServiceProtocol
-from clinkz.tools.base import ToolBase, ToolOutput
+from clinkz.tools.base import DetectedComponent, ToolBase, ToolOutput
 
 
 class NmapOutput(ToolOutput):
@@ -22,6 +22,37 @@ class NmapOutput(ToolOutput):
 
     hosts: list[Host] = []
     open_ports: list[int] = []
+
+    def detected_components(self) -> list[DetectedComponent]:
+        """Every service banner ``-sV`` resolved to a product, with its version.
+
+        The richest version source the engine has: ``product``/``version`` come
+        from nmap's own signature match, so they are already split and need no
+        parsing. Carries the port, because a service-layer component is only
+        meaningful with the port it answers on — two versions of the same
+        product on two ports is a real and common shape.
+        """
+        seen: set[tuple[str, str, int]] = set()
+        components: list[DetectedComponent] = []
+        for host in self.hosts:
+            for svc in host.services:
+                name = (svc.product or "").strip()
+                if not name:
+                    continue
+                version = (svc.version or "").strip()
+                key = (name.lower(), version, svc.port)
+                if key in seen:
+                    continue
+                seen.add(key)
+                components.append(
+                    DetectedComponent(
+                        name=name,
+                        version=version,
+                        source="nmap:service",
+                        port=svc.port,
+                    )
+                )
+        return components
 
 
 class NmapTool(ToolBase):

@@ -417,6 +417,100 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # but its verdict is not an observation we made and cannot be
         # re-derived from the evidence we recorded, so it is a lead.
         "effect_asserted_by_external_tool_not_witnessed_in_band",
+        # A fingerprinted component reports a version inside a published CVE's
+        # affected range, and this engine has NO oracle for that CVE's defining
+        # effect. A version number is not an exploit: the banner may be wrong,
+        # the fix may be back-ported, and the vulnerable code path may be
+        # unreachable. The version match is real and worth an operator's time;
+        # the exploitation claim is not made at all.
+        "version_match_only_no_oracle_for_this_cve",
+        # Same version match, and this engine DOES have an oracle — which ran
+        # against the live target and did not witness the effect. Recorded so
+        # the difference between "we could not test this" and "we tested it and
+        # saw nothing" is visible in the deliverable, because they call for
+        # opposite follow-up. A version match never rescues a failed
+        # confirmation.
+        "version_match_oracle_ran_and_did_not_confirm",
+    }
+)
+
+
+class ChainResearchLead(BaseModel):
+    """A composition that could not be PROVEN — the chaining lead type.
+
+    The third structurally-distinct lead, and the same hard line as the other
+    two: not a :class:`Finding`, no path to ``_persist_finding``, never counted
+    in coverage, rendered under its own heading.
+
+    It exists because chaining's failure mode is the one most likely to
+    manufacture a finding. Two confirmed findings sit next to each other in a
+    result list and a narrative connecting them writes itself — "SQL injection
+    disclosed the password hashes, therefore account takeover". The composition
+    itself is what needs evidence, and when the decoy-substitution control did
+    not run, or ran and did not discriminate, or one link rests on inference,
+    the honest artifact is this: the operator gets the chain that was worth
+    trying and the exact link that stopped it.
+
+    Attributes:
+        candidate_chain: The composition, as an ordered human-readable chain.
+        why_unconfirmed: One of :data:`CHAIN_WHY_UNCONFIRMED`.
+        unconfirmed_link: WHICH link stopped it, named — the field that makes
+            this lead actionable rather than a shrug. "Link 2 (carriage of a
+            credential at /rest/user/login) is not confirmed: an
+            equivalently-shaped decoy was accepted too."
+        chain_kind: The composition shape that was attempted.
+        carried_artifact_kind: What the chain intended to carry.
+        carried_artifact_fingerprint: Salted fingerprint of the carried value —
+            correlates the lead with the finding that produced the artifact and
+            replays nowhere. NEVER the value itself: a chain carries exactly the
+            material a report must not reproduce.
+        links: One line per link, with its confirmation state.
+        raw_observation: What WAS observed, verbatim and bounded.
+        missing_observation: What was NOT observed and would be required.
+        discovered_at: When the lead was recorded.
+    """
+
+    candidate_chain: str
+    why_unconfirmed: str
+    unconfirmed_link: str = ""
+    chain_kind: str = ""
+    carried_artifact_kind: str = ""
+    carried_artifact_fingerprint: str = ""
+    links: list[str] = Field(default_factory=list)
+    raw_observation: str = ""
+    missing_observation: str = ""
+    discovered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    lead_kind: str = "chain"
+
+
+#: The closed vocabulary of WHY a chain stayed a lead. Closed for the same reason
+#: as the other two: a free-text reason drifts into a justification, and a
+#: justification reads like a finding.
+CHAIN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
+    {
+        # The artifact was presented at the next step and was NOT accepted. The
+        # two findings are both real; they simply do not compose.
+        "carried_artifact_not_accepted",
+        # The artifact was accepted AND so was an equivalently-shaped decoy the
+        # target never issued. The endpoint accepts the SHAPE, so its acceptance
+        # is not evidence about the value we recovered. This is the control that
+        # keeps chaining from manufacturing findings, and it is the reason a
+        # chain lead is common rather than exceptional.
+        "decoy_also_accepted_composition_not_discriminating",
+        # A link rests on inference rather than on a P1–P7 oracle, so the chain
+        # cannot be confirmed however well the composition carried.
+        "link_not_independently_confirmed",
+        # The composition would have required a request the safety rails refuse
+        # (a destructive verb, an identity change) and no benchmark profile
+        # permitted it.
+        "carriage_refused_by_safety_rails",
+        # Planned but never carried — the phase ran out of budget, or the
+        # carriage surface (a login endpoint, a session-discriminating URL) was
+        # never discovered.
+        "carriage_not_attempted",
+        # Nothing carriable came out of the head link: the class declares a yield
+        # but this particular finding's evidence held no artifact of that kind.
+        "no_artifact_recovered",
     }
 )
 
@@ -472,4 +566,13 @@ class ExploitResult(BaseModel):
     # witnessed (today: DOM-XSS reachability without a client-side execution
     # oracle). Same hard line as ``research_leads``: never a finding, never counted.
     unproven_leads: list[UnprovenExploitLead] = Field(default_factory=list)
+    # Compositions that were worth carrying and could not be PROVEN — most often
+    # because an equivalently-shaped decoy was accepted too, which is the control
+    # that keeps chaining from turning two adjacent findings into a story. Same
+    # hard line again: a different TYPE, a separate field, never counted.
+    chain_leads: list[ChainResearchLead] = Field(default_factory=list)
+    # Chains every link of which is independently confirmed AND whose composition
+    # survived the decoy control. Each is also emitted as a Finding through the
+    # normal chokepoint; this field carries the structured form for the report.
+    confirmed_chains: list[dict[str, Any]] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

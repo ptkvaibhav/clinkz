@@ -115,15 +115,22 @@ class TestDispatchTableIsInSync:
     def test_every_dispatchable_name_is_actually_dispatchable(self) -> None:
         """The guard is only as good as the vocabulary it validates against.
 
-        A name in ``DISPATCHABLE_TEST_METHODS`` but not in ``_execute_task``'s
-        ``method_map`` would be admitted by the parser and then dropped at
+        A name in ``DISPATCHABLE_TEST_METHODS`` that ``_execute_task`` cannot
+        resolve to a handler would be admitted by the parser and then dropped at
         dispatch — the exact hole this guard exists to close, one level in.
-        """
-        import inspect
 
-        source = inspect.getsource(ExploitAgent._execute_task)
+        This used to grep ``_execute_task``'s SOURCE for ``"name": self.name``,
+        because the dispatcher rebuilt its own dict of bound methods and the
+        declared vocabulary and the dispatch table were two lists that had to be
+        kept in step by hand. They are one list now: the dispatcher resolves
+        ``getattr(self, task.test_method)`` gated on this very frozenset. So the
+        check is on the actual binding rather than on a string appearing in
+        source — a test that reads source can pass while the binding is broken,
+        and can fail while it is fine.
+        """
         for name in DISPATCHABLE_TEST_METHODS:
-            assert f'"{name}": self.{name}' in source, f"{name} is not in method_map"
+            handler = getattr(ExploitAgent, name, None)
+            assert callable(handler), f"{name} is dispatchable but resolves to no handler"
 
     def test_every_dispatchable_name_is_a_real_method(self) -> None:
         for name in DISPATCHABLE_TEST_METHODS:

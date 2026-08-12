@@ -30,9 +30,12 @@ from clinkz.models.recon import (
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.models.target import Host, Service
 from clinkz.state import StateStore
-from clinkz.tools.base import ToolBase, ToolOutput
-from clinkz.tools.nmap import NmapTool
+from clinkz.tools.base import ToolBase
+from clinkz.tools.http_client import HTTPClientOutput
+from clinkz.tools.nmap import NmapOutput, NmapTool
 from clinkz.tools.resolver import ToolMatch, ToolResolver
+from clinkz.tools.wafw00f import WafDetectionResult, Wafw00fOutput
+from clinkz.tools.whatweb import WhatWebOutput, WhatWebScanResult
 
 # ---------------------------------------------------------------------------
 # Shared test scope
@@ -96,29 +99,31 @@ class MockLLM(LLMClient):
 # ---------------------------------------------------------------------------
 
 
-class _MockNmapOutput(ToolOutput):
-    """Mock nmap output with hosts and open_ports."""
+# A mock at a tool seam returns the REAL output model, never a look-alike.
+#
+# All four of these used to be local ``ToolOutput`` subclasses carrying whatever
+# the author assumed the consumer read, and three of them concealed a dead seam
+# exactly as ``_MockFuzzOutput``'s invented ``paths``/``directories`` did:
+#
+#   * ``_MockWhatWebOutput.results`` held plain ``dict``s, while
+#     :class:`~clinkz.tools.whatweb.WhatWebOutput` holds
+#     :class:`WhatWebScanResult` objects. ``_step_web_recon`` extracts
+#     technologies with ``hasattr(r, "technologies")``, which is ``False`` for a
+#     dict — so the fingerprinting seam contributed ZERO technologies in every
+#     test that asserted it worked.
+#   * ``_MockWafw00fOutput`` had the same shape, so
+#     ``getattr(wr, "waf_detected", False)`` was ``False`` on every element and
+#     the WAF branch was never really exercised.
+#   * ``_MockHTTPOutput`` declared ``response_headers`` alone, so the body
+#     fingerprinting that reads ``response_body`` silently took the ``getattr``
+#     default and contributed nothing.
+#
+# Using the real models means a field rename in a wrapper breaks these tests,
+# which is the entire point of having them.
 
-    hosts: list[Host] = []
-    open_ports: list[int] = []
 
-
-class _MockWhatWebOutput(ToolOutput):
-    """Mock whatweb output."""
-
-    results: list[dict[str, Any]] = []
-
-
-class _MockWafw00fOutput(ToolOutput):
-    """Mock wafw00f output."""
-
-    results: list[dict[str, Any]] = []
-
-
-class _MockHTTPOutput(ToolOutput):
-    """Mock HTTP client output."""
-
-    response_headers: dict[str, str] = {}
+#: The real :class:`NmapOutput`, aliased for readability at the call sites.
+_MockNmapOutput = NmapOutput
 
 
 # ---------------------------------------------------------------------------
@@ -230,12 +235,20 @@ class _MockWhatWebTool(ToolBase):
     async def execute(self, args: dict[str, Any]) -> str:
         return "mock whatweb output"
 
-    def parse_output(self, raw_output: str) -> _MockWhatWebOutput:
-        return _MockWhatWebOutput(
+    def parse_output(self, raw_output: str) -> WhatWebOutput:
+        return WhatWebOutput(
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
-            results=[{"technologies": ["nginx", "PHP"]}],
+            results=[
+                WhatWebScanResult(
+                    target="http://10.0.0.1/",
+                    http_status=200,
+                    technologies=["nginx", "PHP"],
+                    versions={"nginx": "1.24", "PHP": "8.1"},
+                    server="nginx/1.24",
+                )
+            ],
         )
 
 
@@ -262,12 +275,12 @@ class _MockWafw00fTool(ToolBase):
     async def execute(self, args: dict[str, Any]) -> str:
         return "no waf detected"
 
-    def parse_output(self, raw_output: str) -> _MockWafw00fOutput:
-        return _MockWafw00fOutput(
+    def parse_output(self, raw_output: str) -> Wafw00fOutput:
+        return Wafw00fOutput(
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
-            results=[{"waf_detected": False}],
+            results=[WafDetectionResult(target="http://10.0.0.1/", waf_detected=False)],
         )
 
 
@@ -454,7 +467,15 @@ def _make_fallback_resolver() -> ToolResolver:
 
 
 class _MockHTTPClientTool:
-    """Stand-in for HTTPClientTool to avoid real network calls."""
+    """Stand-in for HTTPClientTool to avoid real network calls.
+
+    ``parse_output`` returns the real :class:`HTTPClientOutput`. It used to
+    return a bare ``MagicMock``, which is the most permissive fiction available:
+    every attribute read succeeds and every one of them is truthy, so
+    ``getattr(parsed, "response_body", "")`` handed a ``MagicMock`` to
+    ``_fingerprint_from_body`` — a function that takes a string — and the test
+    could not have failed no matter what the consumer read.
+    """
 
     def __init__(self, **kwargs: Any) -> None:
         pass
@@ -465,10 +486,15 @@ class _MockHTTPClientTool:
     async def execute(self, args: dict[str, Any]) -> str:
         return '{"status_code": 200}'
 
-    def parse_output(self, raw_output: str) -> MagicMock:
-        mock = MagicMock()
-        mock.response_headers = {"Server": "nginx/1.24", "X-Powered-By": "PHP/8.1"}
-        return mock
+    def parse_output(self, raw_output: str) -> HTTPClientOutput:
+        return HTTPClientOutput(
+            tool_name="http_client",
+            success=True,
+            raw_output=raw_output,
+            status_code=200,
+            response_headers={"Server": "nginx/1.24", "X-Powered-By": "PHP/8.1"},
+            response_body="<html><title>Test target</title></html>",
+        )
 
 
 # ---------------------------------------------------------------------------

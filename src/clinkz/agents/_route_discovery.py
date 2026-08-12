@@ -64,6 +64,7 @@ from typing import Protocol, runtime_checkable
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from clinkz.agents._js_api_mining import ApiCallSite, mine_api_call_sites
+from clinkz.agents._origin import resolve_same_origin, same_origin
 from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.models.scan import Endpoint, ParamLocation
 from clinkz.observability.ledger import ComponentKind, record_contribution
@@ -277,11 +278,10 @@ async def _collect_script_seeds(
     return seeds
 
 
-def _same_origin(url: str, base_url: str) -> bool:
-    """True if *url* resolves to the same scheme+host+port as *base_url*."""
-    a = urlsplit(urljoin(base_url, url))
-    b = urlsplit(base_url)
-    return (a.scheme, a.hostname, a.port) == (b.scheme, b.hostname, b.port)
+#: The origin fence, shared with the exploit planner and the scan crawler
+#: (:mod:`clinkz.agents._origin`). Local name kept so the call sites below read
+#: the way they always did; the logic is no longer this module's to re-derive.
+_same_origin = same_origin
 
 
 def _looks_like_json(res: FetchResult) -> bool:
@@ -370,13 +370,10 @@ def _route_to_endpoint(raw: str, base_url: str) -> Endpoint | None:
     if not raw:
         return None
     path_and_query = raw if raw.startswith("/") else "/" + raw
-    parsed = urlsplit(urljoin(base_url, path_and_query))
-    if (parsed.scheme, parsed.hostname, parsed.port) != (
-        urlsplit(base_url).scheme,
-        urlsplit(base_url).hostname,
-        urlsplit(base_url).port,
-    ):
+    resolved = resolve_same_origin(path_and_query, base_url)
+    if resolved is None:
         return None
+    parsed = urlsplit(resolved)
 
     path = parsed.path
     # Reject bare prefixes (need at least one resource segment).
@@ -863,11 +860,10 @@ class JSCallSiteDiscoverer:
         layer would refuse them anyway, but nothing out of scope should reach a
         plan in the first place.
         """
-        raw = site.url_template
-        parsed = urlsplit(urljoin(base_url, raw))
-        base = urlsplit(base_url)
-        if (parsed.scheme, parsed.hostname, parsed.port) != (base.scheme, base.hostname, base.port):
+        resolved = resolve_same_origin(site.url_template, base_url)
+        if resolved is None:
             return None
+        parsed = urlsplit(resolved)
         path = parsed.path
         # The miner names its interpolations explicitly, so a trailing slash is
         # just the code's own style — never an implicit collection id.

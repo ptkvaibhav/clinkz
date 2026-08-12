@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
 from clinkz.models.recon import (
+    DetectedComponent,
     PortScanResult,
     ReconResult,
     ReconService,
@@ -33,8 +34,10 @@ from clinkz.models.recon import (
     Technology,
     TechStack,
     WebReconResult,
+    dedupe_components,
 )
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.ledger import ComponentKind, record_contribution, record_dead_seam
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 from clinkz.tools.resolver import ToolResolver
@@ -380,6 +383,30 @@ class ReconAgent(BaseAgent):
                             )
                         )
 
+            # The service scanner is the richest component source the engine
+            # has: ``-sV`` resolves a banner to a product AND a version through
+            # nmap's own signature database, already split. Read through the
+            # declared contract, not off ``parsed.hosts`` again — a wrapper that
+            # forgets to declare it is a dead seam that says so.
+            components: list[DetectedComponent] = []
+            if type(parsed).declares_components():
+                components = parsed.detected_components()
+                record_contribution(
+                    name=match.name,
+                    kind=ComponentKind.TOOL,
+                    items=len(components),
+                    note=f"service scan: {sum(1 for c in components if c.version)} versioned",
+                )
+            else:
+                record_dead_seam(
+                    name=match.name,
+                    kind=ComponentKind.PARSER_SEAM,
+                    note=(
+                        f"{type(parsed).__name__} declares no component contract — service "
+                        "versions cannot reach the component inventory"
+                    ),
+                )
+
             await self.state.log_action(
                 engagement_id=self.engagement_id,
                 phase="recon",
@@ -392,6 +419,7 @@ class ReconAgent(BaseAgent):
                 services=services,
                 raw_output=raw,
                 tool_used=match.name,
+                components=dedupe_components(components),
             )
 
         except Exception as exc:
@@ -485,6 +513,7 @@ class ReconAgent(BaseAgent):
 
         fingerprints: list[dict[str, Any]] = []
         technologies_found: list[str] = []
+        components: list[DetectedComponent] = []
         headers: dict[str, str] = {}
         waf_detected = False
         waf_name: str | None = None
@@ -505,15 +534,41 @@ class ReconAgent(BaseAgent):
                     fp_data = fp_parsed.model_dump()
                     fingerprints.append({"url": url, "tool": fp_match.name, "data": fp_data})
 
-                    # Extract technologies from whatweb/httpx results
-                    if hasattr(fp_parsed, "results"):
-                        for r in fp_parsed.results:
-                            if hasattr(r, "technologies"):
-                                technologies_found.extend(r.technologies)
-                            if hasattr(r, "tech"):
-                                technologies_found.extend(r.tech)
-
-                    self._logger.info("Fingerprinted %s with %s", url, fp_match.name)
+                    # The PRODUCER declares what it fingerprinted. This used to
+                    # read ``hasattr(r, "technologies")`` then ``hasattr(r,
+                    # "tech")`` over ``parsed.results`` — two field names because
+                    # two wrappers spell it differently, and a third spelling
+                    # would have contributed nothing with nothing said about it.
+                    # It also read names only, so the versions whatweb had
+                    # already parsed were never consumed by anything.
+                    if not type(fp_parsed).declares_components():
+                        note = (
+                            f"{type(fp_parsed).__name__} declares no component contract — "
+                            "no technology or version can reach recon from this tool"
+                        )
+                        self._logger.warning(
+                            "Fingerprint seam is DEAD: %s returns %s", fp_match.name, note
+                        )
+                        record_dead_seam(
+                            name=fp_match.name, kind=ComponentKind.PARSER_SEAM, note=note
+                        )
+                    else:
+                        found = fp_parsed.detected_components()
+                        components.extend(found)
+                        technologies_found.extend(c.name for c in found)
+                        record_contribution(
+                            name=fp_match.name,
+                            kind=ComponentKind.TOOL,
+                            items=len(found),
+                            note=f"{sum(1 for c in found if c.version)} with a version",
+                        )
+                        self._logger.info(
+                            "Fingerprinted %s with %s — %d component(s), %d with a version",
+                            url,
+                            fp_match.name,
+                            len(found),
+                            sum(1 for c in found if c.version),
+                        )
                 except Exception as exc:
                     self._logger.warning("Fingerprinting %s failed: %s", url, exc)
 
@@ -569,6 +624,7 @@ class ReconAgent(BaseAgent):
         technologies_found = sorted(set(technologies_found))
 
         return WebReconResult(
+            components=dedupe_components(components),
             fingerprints=fingerprints,
             waf_detected=waf_detected,
             waf_name=waf_name,
@@ -724,6 +780,15 @@ class ReconAgent(BaseAgent):
         Returns:
             ReconResult ready for consumption by Orchestrator/downstream agents.
         """
+        # The unified inventory: service banners first (nmap's signature match
+        # is the more precise version source), then whatever the web-layer
+        # fingerprinter added. ``dedupe_components`` prefers whichever observer
+        # actually had a version, so an unversioned duplicate never displaces a
+        # versioned one — a downstream CVE lookup keys on this, and "nginx, no
+        # version" is not an answer when another tool said "nginx 1.24.0".
+        inventory = dedupe_components(
+            [*services.components, *(web_info.components if web_info else [])]
+        )
         return ReconResult(
             target=target,
             ports=ports,
@@ -731,4 +796,5 @@ class ReconAgent(BaseAgent):
             web_info=web_info,
             tech_stack=tech_stack,
             llm_summary=summary,
+            components=inventory,
         )

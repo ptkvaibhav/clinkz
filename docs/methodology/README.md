@@ -8,7 +8,7 @@ summary + a pointer to each of these files. Nothing was dropped in the move.
 
 ## The shared adaptive patterns (W2.1)
 
-All 19 `_test_*` methods are adaptive multi-phase methodologies, not deterministic
+All 24 `_test_*` methods are adaptive multi-phase methodologies, not deterministic
 one-shot skills:
 
 - **Payload-injection family** — six-phase reflection / fingerprint / synthesize /
@@ -19,7 +19,8 @@ one-shot skills:
   `_test_javascript_attacks`.
 - **Behavioral family** — four-phase hypothesis / observe / analyze / emit
   pattern: `_test_csrf`, `_test_brute_force`, `_test_weak_session`,
-  `_test_security_headers`.
+  `_test_security_headers`, `_test_csp`, `_test_crypto`,
+  `_test_input_validation`, `_test_secrets_exposure`, `_test_mass_assignment`.
 
 The **deterministic check GATES the LLM**: the LLM reasons/ranks/synthesizes; a
 deterministic signal decides emission. When phase-2 has empirically confirmed the
@@ -47,6 +48,14 @@ oracle set.
 | Client-side security logic (WSTG-CLNT-11) | [client-side-logic.md](client-side-logic.md) |
 | JWT (Tier-2) | [jwt.md](jwt.md) |
 | SSRF (Tier-2) | [ssrf.md](ssrf.md) |
+| CSP bypass | [phase3-new-classes.md](phase3-new-classes.md) |
+| Cryptography (recovered / forged token) | [phase3-new-classes.md](phase3-new-classes.md) |
+| Input validation (client-only constraints) | [phase3-new-classes.md](phase3-new-classes.md) |
+| Secrets & configuration exposure | [phase3-new-classes.md](phase3-new-classes.md) |
+| Mass assignment / privesc on create | [phase3-new-classes.md](phase3-new-classes.md) |
+| Business logic: workflow sequence bypass | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
+| Business logic: numeric constraint violation | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
+| Business logic: single-use action replayed | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
 
 ## Cross-cutting
 
@@ -54,6 +63,7 @@ oracle set.
 |---|---|
 | Out-of-band confirmation (P6) | [out-of-band-p6.md](out-of-band-p6.md) |
 | Client-side execution confirmation (P7) | [client-side-execution-p7.md](client-side-execution-p7.md) |
+| Chaining (the decoy control) + business logic + the benchmark profile | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
 | Carriers / request builder / planning / dispatch / emission integrity | [exploit-engine.md](exploit-engine.md) |
 | DVWA per-level honesty (the phantom control) | [dvwa-per-level-honesty.md](dvwa-per-level-honesty.md) |
 | The SQLi context ladder, measured (110 rungs, 0 confirmations) | [dvwa-sqli-context-ladder.md](dvwa-sqli-context-ladder.md) |

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from clinkz.models.engagement import AuthorizationRecord, EngagementWindow
 from clinkz.models.finding import (
+    ChainResearchLead,
     CrossServiceResearchLead,
     Finding,
     Severity,
@@ -170,6 +171,16 @@ class PentestReport(BaseModel):
     # Single-service unproven leads — same separation, same guarantee: a candidate
     # whose defining effect was never witnessed is a different TYPE than a finding.
     unproven_leads: list[UnprovenExploitLead] = Field(default_factory=list)
+    # Compositions that were worth carrying and could not be PROVEN — most often
+    # because an equivalently-shaped decoy was accepted too. Third lead type,
+    # third separate field, same guarantee.
+    chain_leads: list[ChainResearchLead] = Field(default_factory=list)
+    #: The link-by-link view of every CONFIRMED chain. Each chain is ALSO in
+    #: ``findings`` — it was emitted through the same chokepoint as everything
+    #: else — so this field renders the composition and is never counted again.
+    #: ``finding_counts`` reads ``findings`` alone, which is what keeps a chain
+    #: from inflating the totals it is built out of.
+    confirmed_chains: list[dict[str, object]] = Field(default_factory=list)
     methodology: str = ""
     appendices: dict[str, str] = Field(default_factory=dict)
 
