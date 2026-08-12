@@ -1723,7 +1723,11 @@ class TestSessionMethodologyIntegration:
         """A quote written to the session slot errors the trigger query → finding."""
         agent = _make_agent(_ScriptedLLM(answers=[""]))  # silent → deterministic
         agent._methodology_llm = agent.llm
-        agent._run_sqlmap = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        # ``None`` — sqlmap unavailable / not confirming. The real method returns
+        # ``SqlmapOutput | None``; it used to return ``bool``, and a stub still
+        # returning ``False`` would be a mock declaring the consumer's old
+        # assumption rather than the producer's contract.
+        agent._run_sqlmap = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
         async def fake_probe(_page, _param, value):  # type: ignore[no-untyped-def]
             # The trigger reflects the session value and runs the query on it.
@@ -1756,7 +1760,11 @@ class TestSessionMethodologyIntegration:
         """A trigger that only reflects ID: {payload} (no query effect) → non-finding."""
         agent = _make_agent(_ScriptedLLM(answers=[""]))
         agent._methodology_llm = agent.llm
-        agent._run_sqlmap = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        # ``None`` — sqlmap unavailable / not confirming. The real method returns
+        # ``SqlmapOutput | None``; it used to return ``bool``, and a stub still
+        # returning ``False`` would be a mock declaring the consumer's old
+        # assumption rather than the producer's contract.
+        agent._run_sqlmap = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
         async def fake_probe(_page, _param, value):  # type: ignore[no-untyped-def]
             # Reflects the value in ID (so phase 1 sees divergence) but the query

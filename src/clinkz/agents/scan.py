@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
 from clinkz.agents._dom_sources import body_reads_dom_source
+from clinkz.agents._origin import same_origin
 from clinkz.agents._route_discovery import (
     FetchResult,
     default_discoverers,
@@ -710,12 +711,14 @@ class ScanAgent(BaseAgent):
         the crawl-safety rule does not stop applying because a different
         subsystem is doing the fetching.
 
-        The origin comparison covers the SCHEME, not just the host. These URLs
+        The origin comparison covers the SCHEME, not just the host — these URLs
         were read out of the target's own HTML, so a page can offer
-        ``ftp://<same-host>/x`` — matching netloc while naming a protocol this
-        subsystem never intended to speak. Commit ``840ddec`` fixed exactly this
-        omission in the exploit planner's origin fence; a new fetcher must not
-        reintroduce it. Only ``http``/``https`` reach the fetch.
+        ``ftp://<same-host>/x``, matching netloc while naming a protocol this
+        subsystem never intended to speak. That is delegated to the shared fence
+        (:mod:`clinkz.agents._origin`) rather than written here: the same
+        omission was made independently by this fetcher and by the exploit
+        planner (``840ddec``) within one week, which makes it a missing
+        abstraction rather than two mistakes.
 
         Ordered by ``crawl_visit_priority`` for the same reason the enrichment
         budget is: the cap has to fall on the least informative pages, not on
@@ -728,7 +731,6 @@ class ScanAgent(BaseAgent):
         Returns:
             Deduplicated page URLs, best-first.
         """
-        base = urlparse(base_url)
         seen: set[str] = {base_url}
         pages: list[str] = []
         for ep in endpoints:
@@ -737,12 +739,9 @@ class ScanAgent(BaseAgent):
                 continue
             if is_state_changing_url(page):
                 continue
-            parsed = urlparse(page)
-            if parsed.scheme.lower() not in ("http", "https"):
+            if not same_origin(page, base_url):
                 continue
-            if parsed.netloc.lower() != base.netloc.lower():
-                continue
-            if path_extension(parsed.path) in STATIC_ASSET_EXTENSIONS:
+            if path_extension(urlparse(page).path) in STATIC_ASSET_EXTENSIONS:
                 continue
             seen.add(page)
             pages.append(page)

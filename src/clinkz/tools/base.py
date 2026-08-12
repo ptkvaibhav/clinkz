@@ -23,6 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from clinkz.models.recon import DetectedComponent
 from clinkz.models.scope import EngagementScope
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,44 @@ class ToolOutput(BaseModel):
             list as a finding-free result.
         """
         return cls.discovered_urls is not ToolOutput.discovered_urls
+
+    # ------------------------------------------------------------------
+    # Fingerprint contract
+    # ------------------------------------------------------------------
+    #
+    # The same inversion as the discovery contract above, applied to the other
+    # seam that was reading a producer by guesswork. ``ReconAgent._step_web_recon``
+    # extracted technologies with
+    #
+    #     if hasattr(r, "technologies"): ...
+    #     if hasattr(r, "tech"): ...
+    #
+    # over ``parsed.results`` — two spellings, because two wrappers happened to
+    # name the field differently, and a third wrapper naming it a third way would
+    # have contributed nothing with no error. It also read ONLY the names:
+    # ``WhatWebScanResult.versions`` has always been parsed and never once been
+    # consumed, which is why no engagement could test a dependency against a
+    # known CVE. The producer declares the whole observation now, version
+    # included.
+
+    def detected_components(self) -> list[DetectedComponent]:
+        """Software components this output identified on the target.
+
+        Override in any output type whose tool fingerprints software (web
+        fingerprinters, service scanners, probers). The base implementation
+        returns nothing, which is correct for outputs carrying no fingerprint
+        (a crawl result, a WAF verdict) and is distinguishable from a real empty
+        result via :meth:`declares_components`.
+
+        Returns:
+            Components in the tool's own order, deduplicated by the wrapper.
+        """
+        return []
+
+    @classmethod
+    def declares_components(cls) -> bool:
+        """Whether this output type declares a fingerprint contract."""
+        return cls.detected_components is not ToolOutput.detected_components
 
 
 class ToolBase(ABC):

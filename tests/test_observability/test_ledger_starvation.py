@@ -30,6 +30,7 @@ from clinkz.observability.ledger import (
 )
 from clinkz.tools.base import ToolBase, ToolOutput
 from clinkz.tools.ffuf import FfufOutput, FfufTool
+from clinkz.tools.resolver import ToolMatch
 
 
 def _report(**kwargs: Any) -> PentestReport:
@@ -97,21 +98,19 @@ class _WorkingFuzzer(FfufTool):
         )
 
 
-class _FakeMatch:
-    def __init__(self, tool_class: type[ToolBase]) -> None:
-        self.tool_class = tool_class
-        self.available = True
-        self.name = "ffuf"
+def _FakeMatch(tool_class: type[ToolBase]) -> ToolMatch:  # noqa: N802
+    """A real :class:`ToolMatch` — see the audit note in ``test_discovery_seam``."""
+    return ToolMatch(name="ffuf", source="local", available=True, tool_class=tool_class)
 
 
 class _FakeResolver:
     def __init__(self, tool_class: type[ToolBase]) -> None:
         self._cls = tool_class
 
-    def find_tool(self, capability: str) -> _FakeMatch:
+    def find_tool(self, capability: str) -> ToolMatch:
         return _FakeMatch(self._cls)
 
-    def find_tool_by_name(self, tool_name: str) -> _FakeMatch:
+    def find_tool_by_name(self, tool_name: str) -> ToolMatch:
         return _FakeMatch(self._cls)
 
 

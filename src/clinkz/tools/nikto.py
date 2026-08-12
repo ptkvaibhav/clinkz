@@ -37,7 +37,15 @@ class NiktoTool(ToolBase):
     Runs: nikto -h <target> -p <port> -Format xml -output /dev/stdout -nointeractive
     """
 
-    capabilities = ["web_vulnerability_scanning", "misconfiguration_detection", "header_analysis"]
+    # ``vulnerability_scanning`` is the key ``TOOL_CHAINS`` names this tool
+    # under, as nuclei's fallback. Declaring only ``web_vulnerability_scanning``
+    # meant the chain listed nikto and could never reach it.
+    capabilities = [
+        "vulnerability_scanning",
+        "web_vulnerability_scanning",
+        "misconfiguration_detection",
+        "header_analysis",
+    ]
     category = "exploit"
 
     @property

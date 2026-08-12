@@ -29,6 +29,7 @@ from clinkz.tools.base import ToolBase, ToolOutput
 from clinkz.tools.ffuf import FfufOutput, FfufTool
 from clinkz.tools.httpx_tool import HttpxOutput
 from clinkz.tools.katana import KatanaOutput
+from clinkz.tools.resolver import ToolMatch
 
 _FIXTURE = Path(__file__).parent.parent / "fixtures" / "real_ffuf.json"
 
@@ -122,21 +123,26 @@ def test_a_non_discovery_output_is_honest_about_declaring_nothing() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _FakeMatch:
-    def __init__(self, tool_class: type[ToolBase] | None, available: bool = True) -> None:
-        self.tool_class = tool_class
-        self.available = available
-        self.name = "fake"
+def _FakeMatch(tool_class: type[ToolBase] | None, available: bool = True) -> ToolMatch:  # noqa: N802
+    """A real :class:`ToolMatch`, not a look-alike.
+
+    The predecessor was a hand-rolled class carrying ``tool_class``/``available``/
+    ``name`` — the three attributes the consumer happens to read today. It
+    omitted ``source``, so a consumer branching on local-vs-MCP would have got an
+    ``AttributeError`` in production and a pass here. Same audit rule as the
+    tool-output mocks: derive the shape from the producer.
+    """
+    return ToolMatch(name="fake", source="local", available=available, tool_class=tool_class)
 
 
 class _FakeResolver:
     def __init__(self, tool_class: type[ToolBase] | None) -> None:
         self._cls = tool_class
 
-    def find_tool(self, capability: str) -> _FakeMatch:
+    def find_tool(self, capability: str) -> ToolMatch:
         return _FakeMatch(self._cls)
 
-    def find_tool_by_name(self, tool_name: str) -> _FakeMatch | None:
+    def find_tool_by_name(self, tool_name: str) -> ToolMatch | None:
         return _FakeMatch(self._cls)
 
 

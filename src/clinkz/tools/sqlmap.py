@@ -8,9 +8,32 @@ Only use read-only detection flags in automated mode.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from clinkz.tools.base import ToolBase, ToolOutput
+
+#: Sentences sqlmap prints when it has CONCLUDED a parameter is injectable.
+#: Deliberately narrow: every one of these appears only after sqlmap has decided,
+#: never in the progress chatter it emits while testing.
+_INJECTABLE_MARKERS: tuple[str, ...] = (
+    "identified the following injection point",
+    "is vulnerable",
+    "appears to be injectable",
+    "injection point(s) with a total",
+)
+
+#: Sentences sqlmap prints when it has concluded the opposite. Checked FIRST and
+#: allowed to win: sqlmap's negative conclusion is unambiguous, and a run can
+#: contain a heuristic "appears to be injectable" note that its own final verdict
+#: then retracts.
+_NOT_INJECTABLE_MARKERS: tuple[str, ...] = (
+    "all tested parameters do not appear to be injectable",
+    "all tested parameters appear to be not injectable",
+)
+
+#: ``back-end DBMS: MySQL >= 5.0.12`` → ``MySQL >= 5.0.12``.
+_DBMS_RE = re.compile(r"back-end DBMS:\s*(.+)", re.IGNORECASE)
 
 
 class SqlmapOutput(ToolOutput):
@@ -166,10 +189,73 @@ class SqlmapTool(ToolBase):
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def parse_output(self, raw_output: str) -> SqlmapOutput:
-        vulnerable = "is vulnerable" in raw_output.lower() or "parameter" in raw_output.lower()
+        """Parse sqlmap's console output into its verdict and the evidence for it.
+
+        The predecessor was::
+
+            vulnerable = "is vulnerable" in lower or "parameter" in lower
+
+        The second clause matches ``testing for SQL injection on GET parameter
+        'id'``, which sqlmap prints on EVERY run before it knows anything — so
+        ``vulnerable`` was ``True`` whenever sqlmap executed at all, whatever it
+        found. That is worse than the dead seam it replaced: a seam that always
+        returns ``False`` costs coverage, while a verdict that is always ``True``
+        manufactures leads on every parameter this engine's own oracle declined.
+
+        The verdict now keys on sqlmap's own conclusion markers, and the negative
+        marker wins: sqlmap prints ``all tested parameters do not appear to be
+        injectable`` when it is finished and found nothing, and that sentence
+        contains none of the positive markers but is unambiguous about the
+        answer.
+
+        ``injection_types``, ``dbms`` and ``payloads`` have been on the model
+        since it was written and were never populated by anything. They are
+        parsed here because they are the whole reason a lead built from this is
+        useful: an operator needs the technique and the payload to re-derive the
+        result, and "sqlmap said yes" is not re-derivable.
+
+        Args:
+            raw_output: sqlmap's stdout (``--batch`` console output).
+
+        Returns:
+            :class:`SqlmapOutput` whose ``vulnerable`` reflects sqlmap's stated
+            conclusion, never merely the fact that it ran.
+        """
+        text = raw_output or ""
+        lowered = text.lower()
+
+        if not text.strip():
+            return SqlmapOutput(tool_name=self.name, success=False, raw_output=text)
+
+        if any(marker in lowered for marker in _NOT_INJECTABLE_MARKERS):
+            vulnerable = False
+        else:
+            vulnerable = any(marker in lowered for marker in _INJECTABLE_MARKERS)
+
+        injection_types: list[str] = []
+        payloads: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("type:"):
+                value = stripped.split(":", 1)[1].strip()
+                if value and value not in injection_types:
+                    injection_types.append(value)
+            elif stripped.lower().startswith("payload:"):
+                value = stripped.split(":", 1)[1].strip()
+                if value and value not in payloads:
+                    payloads.append(value)
+
+        dbms = ""
+        match = _DBMS_RE.search(text)
+        if match:
+            dbms = match.group(1).strip()
+
         return SqlmapOutput(
             tool_name=self.name,
             success=True,
-            raw_output=raw_output,
+            raw_output=text,
             vulnerable=vulnerable,
+            injection_types=injection_types,
+            dbms=dbms,
+            payloads=payloads,
         )
