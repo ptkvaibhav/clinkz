@@ -611,6 +611,17 @@ LESSONS #17).
   `None` on every call ever made). The map is built in module-import order, which
   was invisible while every chained capability had one implementer and became a
   silent preference inversion the moment a fallback became real.
+- **Resolving is not the same as being used, and an unused capability states its
+  reason.** `tests/test_tools/test_tool_wiring_decisions.py` accounts for every
+  chained capability as either wired (with its caller) or deliberately unwired
+  (with a substantive reason, verified against the source so it cannot become
+  documentation of a wish). `vulnerability_scanning` (nuclei/nikto) stays unwired
+  because its output is verdicts we would have to confirm ourselves — and the
+  confirmable subset, version matching, is what `component_cves.py` already does
+  with an explicit affected-range predicate. `subdomain_discovery` (subfinder)
+  stays unwired because it expands the TARGET SET, and the target set is the
+  authorization boundary: acting on a discovered subdomain would test a host the
+  client never authorised.
 - **One origin fence** (`agents/_origin.py`). The scheme dimension was missed
   twice in one week by two code paths — that is a missing abstraction, not two
   mistakes, because the host comparison is the obvious half and each new call
