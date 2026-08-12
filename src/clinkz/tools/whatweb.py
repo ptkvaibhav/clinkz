@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from clinkz.tools.base import ToolBase, ToolOutput
+from clinkz.tools.base import DetectedComponent, ToolBase, ToolOutput
 
 
 class WhatWebScanResult(BaseModel):
@@ -29,6 +29,32 @@ class WhatWebOutput(ToolOutput):
 
     results: list[WhatWebScanResult] = []
     technologies: dict[str, list[str]] = {}  # url -> list of tech names
+
+    def detected_components(self) -> list[DetectedComponent]:
+        """Every plugin hit, carrying its version where WhatWeb reported one.
+
+        ``versions`` has been parsed since this wrapper was written and consumed
+        by nothing: the recon seam read technology NAMES only, so a version
+        WhatWeb had already told us sat in the model unread and no engagement
+        could test a dependency against a known CVE. The version is part of the
+        observation, so it is part of what the producer declares.
+        """
+        seen: set[tuple[str, str]] = set()
+        components: list[DetectedComponent] = []
+        for result in self.results:
+            for tech in result.technologies:
+                name = (tech or "").strip()
+                if not name:
+                    continue
+                version = (result.versions.get(name) or "").strip()
+                key = (name.lower(), version)
+                if key in seen:
+                    continue
+                seen.add(key)
+                components.append(
+                    DetectedComponent(name=name, version=version, source="whatweb:plugin")
+                )
+        return components
 
 
 class WhatWebTool(ToolBase):

@@ -10,7 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from clinkz.tools.base import ToolBase, ToolOutput
+from clinkz.tools.base import DetectedComponent, ToolBase, ToolOutput
+from clinkz.tools.component_names import split_name_version
 
 
 class HttpxResult(BaseModel):
@@ -33,6 +34,30 @@ class HttpxOutput(ToolOutput):
         """The URLs httpx confirmed were live."""
         return [r.url for r in self.results if r.url]
 
+    def detected_components(self) -> list[DetectedComponent]:
+        """Technologies httpx's ``-tech-detect`` named, plus the server banner.
+
+        httpx reports a technology as one string with the version already inside
+        it (``nginx:1.24.0``, ``Express 4.17.1``), so the name/version split is
+        done here — at the wrapper that knows the tool's own format — rather than
+        by every consumer guessing at it.
+        """
+        seen: set[tuple[str, str]] = set()
+        components: list[DetectedComponent] = []
+        for result in self.results:
+            for raw in [*result.tech, result.webserver]:
+                name, version = split_name_version(raw)
+                if not name:
+                    continue
+                key = (name.lower(), version)
+                if key in seen:
+                    continue
+                seen.add(key)
+                components.append(
+                    DetectedComponent(name=name, version=version, source="httpx:tech")
+                )
+        return components
+
 
 class HttpxTool(ToolBase):
     """httpx HTTP service prober.
@@ -40,7 +65,20 @@ class HttpxTool(ToolBase):
     Runs: httpx -u <url> -json -title -tech-detect -status-code
     """
 
-    capabilities = ["http_probing", "technology_detection", "service_fingerprinting", "alive_check"]
+    # ``web_fingerprinting`` is declared because ``TOOL_CHAINS`` names httpx as
+    # whatweb's fallback for it — and a chain entry the tool does not declare is
+    # a fallback that cannot fire. ``find_tool("web_fingerprinting")`` reads the
+    # capability map, so before this line the chain read
+    # ``["whatweb", "wappalyzer", "httpx"]`` and could resolve exactly one of
+    # them: with whatweb absent the capability failed outright rather than
+    # falling back to the tool declared to cover it.
+    capabilities = [
+        "http_probing",
+        "web_fingerprinting",
+        "technology_detection",
+        "service_fingerprinting",
+        "alive_check",
+    ]
     category = "recon"
 
     @property

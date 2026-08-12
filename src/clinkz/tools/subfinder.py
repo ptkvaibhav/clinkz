@@ -22,7 +22,16 @@ class SubfinderTool(ToolBase):
     Runs: subfinder -d <domain> -silent -o -
     """
 
-    capabilities = ["subdomain_enumeration", "passive_recon", "dns_enumeration"]
+    # ``subdomain_discovery`` is the key ``TOOL_CHAINS`` declares for this
+    # capability, and nothing declared it: ``find_tool("subdomain_discovery")``
+    # returned ``None`` on every call for as long as the chain has existed, so
+    # the capability was not merely un-fallen-back-to but entirely unreachable.
+    capabilities = [
+        "subdomain_discovery",
+        "subdomain_enumeration",
+        "passive_recon",
+        "dns_enumeration",
+    ]
     category = "recon"
 
     @property
