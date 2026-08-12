@@ -249,6 +249,39 @@ class StateStore:
         logger.info("Created engagement: %s (%s)", name, eid)
         return eid
 
+    async def get_engagement(self, engagement_id: str) -> dict[str, Any] | None:
+        """Read one engagement row back, or ``None`` when the id is unknown.
+
+        Args:
+            engagement_id: Engagement UUID.
+
+        Returns:
+            A dict with ``id``, ``name``, ``scope`` (the deserialized scope),
+            ``status``, ``created_at`` and ``updated_at``; ``None`` if no such
+            engagement exists.
+        """
+        cursor = await self._conn.execute(
+            "SELECT id, name, scope_json, status, created_at, updated_at "
+            "FROM engagements WHERE id=?",
+            (engagement_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        try:
+            scope = json.loads(row[2])
+        except json.JSONDecodeError:
+            logger.warning("Engagement %s has an unreadable scope_json", engagement_id)
+            scope = {}
+        return {
+            "id": row[0],
+            "name": row[1],
+            "scope": scope,
+            "status": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+        }
+
     async def update_engagement_status(self, engagement_id: str, status: str) -> None:
         """Update the status of an engagement (e.g., 'completed', 'failed').
 
