@@ -125,6 +125,15 @@ class Settings(BaseModel):
     # State store
     db_path: Path = Field(default=Path("clinkz.db"))
 
+    # Where every per-engagement artifact bundle is written: the trace, the
+    # action log, the tool-invocation records, the halt sentinel and the report
+    # all land under ``<outputs_root>/<engagement_id>/``. Read through
+    # :func:`outputs_root` at CALL time, never captured as a default argument —
+    # ``clinkz scan --out`` sets this after import, and a default evaluated at
+    # import would freeze the old path while the operator believed they had
+    # redirected the bundle.
+    outputs_root: Path = Field(default=Path("outputs"))
+
     # Tool execution
     tool_timeout: int = Field(default=300, description="Max seconds per tool invocation")
 
@@ -334,6 +343,7 @@ class Settings(BaseModel):
             llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),
             gemini_max_rpm=int(os.getenv("GEMINI_MAX_RPM", "30")),
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
+            outputs_root=Path(os.getenv("CLINKZ_OUTPUTS_ROOT", "outputs")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
             exploit_max_plan_tasks=int(os.getenv("EXPLOIT_MAX_PLAN_TASKS", "150")),
             exploit_phase_budget=float(os.getenv("EXPLOIT_PHASE_BUDGET", "0.0")),
@@ -358,3 +368,19 @@ class Settings(BaseModel):
 
 # Module-level singleton — imported everywhere as `from clinkz.config import settings`
 settings = Settings.from_env()
+
+
+def outputs_root() -> Path:
+    """The root directory every engagement artifact bundle is written under.
+
+    A function rather than a constant because ``clinkz scan --out`` assigns
+    ``settings.outputs_root`` after this module is imported. Every writer that
+    used to carry ``outputs_root: Path = Path("outputs")`` as a default argument
+    now resolves through here at call time instead: a default argument is bound
+    once at import, so the operator's ``--out`` would have been accepted, logged,
+    and then ignored by the writers it was supposed to redirect.
+
+    Returns:
+        The configured outputs root (``outputs`` unless overridden).
+    """
+    return settings.outputs_root
