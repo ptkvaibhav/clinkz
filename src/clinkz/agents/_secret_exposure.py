@@ -40,7 +40,12 @@ import re
 
 from pydantic import BaseModel
 
-from clinkz.engagement.credential_shapes import ShapeHit, find_shapes, fingerprint
+from clinkz.engagement.credential_shapes import (
+    ShapeHit,
+    find_shapes,
+    fingerprint,
+    redact_shapes,
+)
 
 #: Shape kinds that are credential material by construction. ``cookie`` is
 #: excluded on purpose: a ``Set-Cookie`` in a response is the application issuing
@@ -77,6 +82,12 @@ _INTERNAL_HOST_RE = re.compile(
     r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
     r"|169\.254\.\d{1,3}\.\d{1,3}"
     r"|[a-z0-9-]+\.(?:internal|local|svc\.cluster\.local))\b"
+)
+
+#: Auth schemes that prefix a token in an ``Authorization`` header value. Used to
+#: recover the bare token, which is the form :func:`find_shapes` fingerprints.
+_AUTH_SCHEME_PREFIXES: frozenset[str] = frozenset(
+    {"bearer", "basic", "token", "apikey", "digest", "negotiate", "jwt"}
 )
 
 #: Minimum distinct internal markers before a document counts as operational.
@@ -119,12 +130,63 @@ class OperationalDisclosure(BaseModel):
 
 
 def _context_around(text: str, hit: ShapeHit) -> str:
-    """Up to 60 chars around *hit*, with the matched value blanked out."""
+    """Up to 60 chars around *hit*, with every credential shape blanked out.
+
+    The window is run back through :func:`redact_shapes` after the matched value
+    is removed, because blanking only the hit is not enough: a config document
+    lists its secrets adjacent to one another, so the ±30 characters around one
+    API key routinely contain the next one, and that neighbour would ride into
+    the evidence in the clear. The disclosure gate would catch it on the way to
+    disk — but a control that depends on a later control is not the control it
+    claims to be, and this one exists precisely so the report can describe a
+    leak without reproducing it.
+    """
     start = max(0, hit.start - 30)
     end = min(len(text), hit.start + hit.length + 30)
     before = text[start : hit.start]
     after = text[hit.start + hit.length : end]
-    return f"{before}<REDACTED:{hit.kind}>{after}".replace("\n", " ").strip()
+    window = f"{before}<REDACTED:{hit.kind}>{after}"
+    return redact_shapes(window).replace("\n", " ").strip()
+
+
+def _supplied_fingerprints(values: list[str] | None) -> set[str]:
+    """Fingerprints of every credential ATOM this engagement supplied.
+
+    The self-echo guard's whole job is comparing what came back against what we
+    sent, and the two are not spelled the same way. ``_session_headers`` holds
+    ``"Bearer eyJhbG…"`` — scheme and token together — while
+    :func:`find_shapes` matches the bare ``eyJhbG…`` and fingerprints THAT. So
+    fingerprinting the header value as one string produced a hash that could
+    never match, and the guard missed its primary case: our own bearer token,
+    echoed by a debug endpoint, reported as the target's leak at high severity.
+    Which is the one outcome the guard was written to prevent, on exactly the
+    kind of endpoint this class is pointed at.
+
+    Each supplied value therefore contributes several fingerprints: the value
+    whole, the value minus any auth scheme, and each token inside a
+    semicolon-separated cookie string. Over-matching here is safe in the only
+    direction that matters — the cost is missing a genuine leak that happens to
+    be byte-identical to something we sent, which we could not attribute to the
+    target anyway.
+    """
+    prints: set[str] = set()
+    for raw in values or []:
+        value = (raw or "").strip()
+        if not value:
+            continue
+        prints.add(fingerprint(value))
+        head, _, tail = value.partition(" ")
+        if tail and head.lower().rstrip(":") in _AUTH_SCHEME_PREFIXES:
+            prints.add(fingerprint(tail.strip()))
+        for chunk in value.split(";"):
+            atom = chunk.strip()
+            if not atom:
+                continue
+            prints.add(fingerprint(atom))
+            _, sep, cookie_value = atom.partition("=")
+            if sep and cookie_value.strip():
+                prints.add(fingerprint(cookie_value.strip()))
+    return prints
 
 
 def served_secrets(
@@ -148,7 +210,7 @@ def served_secrets(
     """
     if not body:
         return []
-    ours = {fingerprint(value) for value in (supplied_material or []) if value}
+    ours = _supplied_fingerprints(supplied_material)
     found: list[ServedSecret] = []
     for hit in find_shapes(body):
         if hit.kind not in _DEFINITE_SECRET_KINDS:

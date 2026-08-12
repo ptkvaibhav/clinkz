@@ -14,6 +14,8 @@ the class is refusing to claim.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from clinkz.agents._crypto_tokens import (
@@ -344,6 +346,39 @@ class TestSecretsExposure:
         # ...and with a DIFFERENT token supplied, the target's own is reported.
         assert served_secrets(body, supplied_material=["some-other-token"])
 
+    def test_the_guard_matches_the_form_the_agent_actually_supplies(self) -> None:
+        """The security review found this one, and it defeated the guard entirely.
+
+        ``_session_headers`` holds ``"Bearer eyJhbG…"`` — scheme and token
+        together — while ``find_shapes`` matches the bare ``eyJhbG…`` and
+        fingerprints THAT. Fingerprinting the header value as one string gave a
+        hash that could never match, so the guard missed its PRIMARY case: our
+        own bearer token, echoed by a debug endpoint, reported as the target's
+        leak at high severity — on exactly the kind of endpoint this class is
+        pointed at.
+        """
+        body = f'{{"echo": {{"authorization": "Bearer {_JWT}"}}}}'
+        assert served_secrets(body, supplied_material=[f"Bearer {_JWT}"]) == []
+        # The cookie spelling too: the jar is handed over as one header string.
+        assert served_secrets(f"leaked={_JWT}", supplied_material=[f"sid=abc; jwt={_JWT}"]) == []
+        # And the guard must still not swallow a token we never sent.
+        assert served_secrets(body, supplied_material=["Bearer a-different-token"])
+
+    def test_an_adjacent_secret_does_not_ride_into_the_excerpt(self) -> None:
+        """Config documents list their secrets next to each other.
+
+        The excerpt blanks the matched value; the ±30-character window around it
+        routinely contains the NEXT one. The disclosure gate would catch that on
+        the way to disk, but a control that depends on a later control is not
+        the control it claims to be — and this excerpt exists precisely so a
+        report can describe a leak without reproducing it.
+        """
+        second = _JWT.replace("dBjftJeZ", "ZZZZZZZZ")
+        body = f'{{"a": "{_JWT}", "b": "{second}"}}'
+        for found in served_secrets(body):
+            assert _JWT not in found.excerpt_context
+            assert second not in found.excerpt_context
+
     def test_an_ordinary_bundle_discloses_nothing(self) -> None:
         """Minified JavaScript is full of alarming-looking strings."""
         body = (
@@ -587,3 +622,33 @@ def test_each_new_class_is_authorization_gated(method: str) -> None:
     vc = for_method(method)
     assert vc is not None
     assert vc.key and vc in VULN_CLASSES
+
+
+# ===========================================================================
+# The anonymous control carries the same rails as every other probe
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_the_anonymous_control_still_honours_the_destructive_gate() -> None:
+    """A new ``_http_*`` helper must not quietly opt out of the registry.
+
+    The destructive-endpoint registry is documented as living in "the ``_http_*``
+    helpers — the only layer every probe carrier passes through". Being
+    sessionless makes the anonymous control unable to poison the shared session,
+    which is most of what the registry protects; it does not make the sentence
+    above true. A query-bearing URL on a registered destructive endpoint was
+    refused through ``_http_get`` and sent through ``_http_get_anonymous``.
+    """
+    from clinkz.agents.exploit import ExploitAgent
+
+    agent = ExploitAgent.__new__(ExploitAgent)
+    agent._logger = logging.getLogger("test.anon")
+    agent.engagement_id = "anon"
+    agent.scope = None  # never reached: the refusal happens before the tool is built
+    url = "http://t/settings?tab=account"
+    agent._destructive_endpoints = {ExploitAgent._endpoint_key(url)}
+    agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
+
+    resp = await agent._http_get_anonymous(url)
+    assert resp.status == 0, "a registered destructive endpoint must be refused, not fetched"
