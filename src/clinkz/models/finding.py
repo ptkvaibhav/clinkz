@@ -417,6 +417,20 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # but its verdict is not an observation we made and cannot be
         # re-derived from the evidence we recorded, so it is a lead.
         "effect_asserted_by_external_tool_not_witnessed_in_band",
+        # A fingerprinted component reports a version inside a published CVE's
+        # affected range, and this engine has NO oracle for that CVE's defining
+        # effect. A version number is not an exploit: the banner may be wrong,
+        # the fix may be back-ported, and the vulnerable code path may be
+        # unreachable. The version match is real and worth an operator's time;
+        # the exploitation claim is not made at all.
+        "version_match_only_no_oracle_for_this_cve",
+        # Same version match, and this engine DOES have an oracle — which ran
+        # against the live target and did not witness the effect. Recorded so
+        # the difference between "we could not test this" and "we tested it and
+        # saw nothing" is visible in the deliverable, because they call for
+        # opposite follow-up. A version match never rescues a failed
+        # confirmation.
+        "version_match_oracle_ran_and_did_not_confirm",
     }
 )
 

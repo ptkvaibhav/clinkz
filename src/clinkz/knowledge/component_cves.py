@@ -165,20 +165,15 @@ KNOWN_COMPONENT_CVES: tuple[KnownComponentCVE, ...] = (
         ),
         reference="NVD CVE-2022-22965 (Spring Framework < 5.3.18 / < 5.2.20)",
     ),
-    KnownComponentCVE(
-        cve_id="CVE-2023-44487",
-        component=r"nginx|apache|httpd|envoy|haproxy|node|express",
-        affected="*",
-        title="HTTP/2 Rapid Reset — denial of service via stream cancellation",
-        severity="high",
-        proving_observation=(
-            "a sustained availability impact under concurrent stream cancellation. "
-            "Proving it means running a denial-of-service attack, which the "
-            "engagement safety rails refuse to send — so this is reported as a "
-            "version match only, and always will be"
-        ),
-        reference="NVD CVE-2023-44487 (HTTP/2 protocol-level)",
-    ),
+    # CVE-2023-44487 (HTTP/2 Rapid Reset) was drafted here and deliberately
+    # REMOVED. It is protocol-level, so its honest entry is an unbounded ``*``
+    # against every web server — which matches unconditionally and therefore
+    # carries no information about the target under test. A lead that is equally
+    # true of every host in the world is the version-match form of a phantom: it
+    # fills the operator's worklist without distinguishing anything, and its own
+    # proving observation would be a denial-of-service attack the safety rails
+    # refuse to send. An entry nothing could ever act on does not belong in a
+    # deliverable. See ``test_an_unbounded_entry_must_name_a_specific_component``.
     KnownComponentCVE(
         cve_id="CVE-2021-23337",
         component=r"^lodash$",
