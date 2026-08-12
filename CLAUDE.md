@@ -139,13 +139,15 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   `CLIENT_ORACLE_MODE` is `auto` by default — the Orchestrator provisions it for
   every engagement, while a **directly invoked** agent (unit suite, replay,
   smoke cell) never self-resolves one, so the black-box floor stays
-  byte-identical. All 19 `_test_*` methods are adaptive multi-phase
+  byte-identical. All 24 `_test_*` methods are adaptive multi-phase
   methodologies (six-phase injection family; four-phase behavioral family). The
   **deterministic check GATES the LLM** — no LLM verdict emits on its own; when
   phase-2 has empirically confirmed the primitive, phase-4 prefers the
   deterministic build. **Per-methodology detail (oracles, phantom fixes,
   live-validation, N/A-by-construction) →
-  [`docs/methodology/`](docs/methodology/README.md).**
+  [`docs/methodology/`](docs/methodology/README.md); the five Phase-3 classes and
+  the control each confirms against →
+  [`docs/methodology/phase3-new-classes.md`](docs/methodology/phase3-new-classes.md).**
 - **Critic** — validates findings before the report (CVSS, FP elimination,
   evidence, repro); can reject back to Exploit.
 - **Report** — zero LLM calls; emits JSON + a Markdown summary from the state
@@ -315,7 +317,10 @@ src/clinkz/
 │                     #   _js_api_mining (what does the frontend CALL?), _api_schema
 │                     #   (what does the live target ACCEPT? — safe methods only),
 │                     #   _json_body (addressing a field INSIDE a structure),
-│                     #   _url_safety (may we fetch it?), _url_shape (in what order?)
+│                     #   _url_safety (may we fetch it?), _url_shape (in what order?),
+│                     #   _origin (THE scheme+host fence — one helper, six call sites),
+│                     #   _secret_exposure / _input_validation / _mass_assignment /
+│                     #   _crypto_tokens (the four new classes' pure logic, offline-testable)
 ├── engagement/       # gate (the refusals), secrets (credentials + redaction chokepoint),
 │                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
 │                     #   shared by the redactor and the gate), artifact_scan (the
@@ -327,9 +332,13 @@ src/clinkz/
 ├── comms/            # AgentMessage, async bus, protocol
 ├── discovery/        # Δ-model: ingestor(s), catalog, intent, reachability, hypothesis, engine,
 │                     #   topology(+recall), recall, relations, versions
-├── knowledge/        # KnowledgeBase, persistent_kb, seeders, MITRE/OWASP datasets, payloads
+├── knowledge/        # KnowledgeBase, persistent_kb, seeders, MITRE/OWASP datasets, payloads,
+│                     #   component_cves (published CVE ↔ observed version — a LEAD, never
+│                     #   a finding; see the dependency→CVE rule below)
 ├── llm/              # base, factory, fallback, {anthropic,gemini,openai,ollama}_client
-├── tools/            # ToolBase, resolver, mcp_client, auth, http_client, nmap/ffuf/…
+├── tools/            # ToolBase (discovery + fingerprint contracts), resolver, mcp_client,
+│                     #   auth, http_client, component_names (one name/version split rule),
+│                     #   nmap/ffuf/whatweb/httpx/sqlmap/…
 ├── oob/              # P6: templates (exfil guardrail), collaborator (receive-only)
 ├── browser/          # P7 client-side execution oracle: templates (witness carrier),
 │                     #   witness (the verdict — page text NEVER decides), csp_policy
@@ -576,6 +585,43 @@ LESSONS #17).
   a per-technology capability fact; confidence is a decayed corroboration PRIOR
   from confirming observations only and never gates emission. The older
   technique-success loop is retired (read-only for the report's history).
+- **A CVE match on a version string is a LEAD, never a finding**
+  (`knowledge/component_cves.py`). The dependency→CVE path runs
+  fingerprint → component+version inventory (`ReconResult.components`) → known
+  CVE → **our own oracle on the live target**. A match either becomes an
+  `ExploitTask` for the class whose oracle can witness that CVE's effect — and
+  the CVE is then CONTEXT on a normally-proven finding — or an
+  `UnprovenExploitLead` saying we have no oracle. A third outcome does not
+  exist. Same rule that demoted the sqlmap-only SQLi: somebody else's conclusion
+  is not an observation we made. An **unversioned** component matches nothing
+  version-bounded (a deliberate recall loss), and an entry that would match
+  unconditionally — an unbounded `*` over an alternation of generic servers — is
+  refused by a gate, because a lead equally true of every host says nothing
+  about this one.
+- **The PRODUCER declares what it fingerprinted, too.** `detected_components()` /
+  `declares_components()` is the discovery contract's twin, for the seam that
+  used to read `hasattr(r, "technologies")` then `hasattr(r, "tech")` — two
+  spellings because two wrappers differ, and a third would have contributed
+  nothing silently. A non-declaring wrapper is a loud `DEAD_SEAM`, never an
+  empty list.
+- **A tool named in a `TOOL_CHAINS` entry must DECLARE that capability, and the
+  resolver reads the declared ORDER.** `find_tool` resolves through the
+  capability map, so a chain entry the wrapper does not declare is a fallback
+  that cannot fire (httpx, nikto — and `subdomain_discovery`, which resolved to
+  `None` on every call ever made). The map is built in module-import order, which
+  was invisible while every chained capability had one implementer and became a
+  silent preference inversion the moment a fallback became real.
+- **One origin fence** (`agents/_origin.py`). The scheme dimension was missed
+  twice in one week by two code paths — that is a missing abstraction, not two
+  mistakes, because the host comparison is the obvious half and each new call
+  site re-derives only the obvious half.
+- **A mock at a tool or parser seam returns the REAL output model.** Gated by
+  `tests/test_tools/test_mock_shape_audit.py`: a test-local `ToolOutput`
+  subclass is refused unless allow-listed *with a reason*, and the only entries
+  are the deliberately-broken producers that ARE the dead-seam alarm's negative
+  control. A test that can only pass against a fiction is worse than no test,
+  because it is counted as coverage.
+
 - **A total is not evidence about its parts** (`observability/ledger.py`, **detail
   → [`docs/lessons/silent-degradation-and-the-dead-seam.md`](docs/lessons/silent-degradation-and-the-dead-seam.md)**).
   Three defects shipped with one shape — an empty LLM planner absorbed by the

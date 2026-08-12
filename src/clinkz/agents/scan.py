@@ -38,6 +38,7 @@ from clinkz.agents._url_shape import (
     path_extension,
 )
 from clinkz.agents.base import BaseAgent
+from clinkz.browser.csp_policy import parse_csp
 from clinkz.llm.base import LLMClient
 from clinkz.models.recon import (
     ReconResult,
@@ -953,7 +954,12 @@ class ScanAgent(BaseAgent):
                 names.append(name)
         record = features.setdefault(
             self._response_feature_key(page_url),
-            {"sets_cookies": [], "has_form": False, "has_dom_source": False},
+            {
+                "sets_cookies": [],
+                "has_form": False,
+                "has_dom_source": False,
+                "serves_csp": False,
+            },
         )
         for name in names:
             if name not in record["sets_cookies"]:
@@ -966,6 +972,16 @@ class ScanAgent(BaseAgent):
         # of what the page returned, not of what the route is called.
         if body_reads_dom_source(body):
             record["has_dom_source"] = True
+        # Whether a Content-Security-Policy governed script on this response.
+        # Same kind of observation as the three above: "is this policy
+        # bypassable" is only a question about a response that HAS one, and a
+        # route whose name says ``csp`` while serving none is not that class's
+        # surface. Parsed with the same code the methodology uses, so the
+        # ranking signal and the methodology agree on what "a policy" is; the
+        # boolean is all that is kept, and the policy text is re-read at probe
+        # time so a stale copy can never be what a finding is asserted against.
+        if headers and parse_csp(headers).present:
+            record["serves_csp"] = True
 
     def _apply_response_feature_annotations(self, endpoints: list[Endpoint]) -> None:
         """Stamp recorded response features onto the endpoints they were seen on.
@@ -989,6 +1005,8 @@ class ScanAgent(BaseAgent):
                 endpoint.has_form = True
             if record.get("has_dom_source"):
                 endpoint.has_dom_source = True
+            if record.get("serves_csp"):
+                endpoint.serves_csp = True
             annotated += 1
         self._logger.info(
             "Response features: annotated %d of %d endpoint(s) from %d observed page(s)",
