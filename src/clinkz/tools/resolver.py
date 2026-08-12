@@ -306,8 +306,8 @@ class ToolResolver:
                     mcp_client=self._mcp_clients.get(server_key),
                 )
 
-        # Local tools
-        matches = self._capability_map.get(capability, [])
+        # Local tools, in the capability's DECLARED preference order.
+        matches = self._chain_ordered(capability)
         if not matches:
             return None
 
@@ -325,6 +325,46 @@ class ToolResolver:
         cls = matches[0]
         tool_name = self._class_to_name(cls) or "unknown"
         return ToolMatch(name=tool_name, source="local", available=False, tool_class=cls)
+
+    def _chain_ordered(self, capability: str) -> list[type[ToolBase]]:
+        """Candidate classes for *capability*, ordered by :data:`TOOL_CHAINS`.
+
+        ``_capability_map`` is built by walking ``ToolBase.__subclasses__()``, so
+        its order is MODULE IMPORT order — which is alphabetical, arbitrary with
+        respect to preference, and was never the declared chain. That went
+        unnoticed for as long as every chained capability resolved to exactly one
+        wrapper: with one candidate, any order is the right order.
+
+        The moment a fallback becomes real the defect becomes live. Declaring
+        ``web_fingerprinting`` on the httpx wrapper (so the chain's stated
+        fallback could actually fire) made ``find_tool`` return httpx ahead of
+        whatweb, silently inverting a preference the chain states explicitly.
+        A declared order that the resolver does not read is not an order.
+
+        Tools not named in the chain keep their existing relative position after
+        the named ones — a capability with no chain entry (``login``,
+        ``dom_rendering``) is unaffected, and a wrapper that declares a chained
+        capability without being listed in the chain is a usable last resort
+        rather than an error.
+
+        Args:
+            capability: The capability being resolved.
+
+        Returns:
+            Candidate classes, best-first.
+        """
+        candidates = list(self._capability_map.get(capability, []))
+        chain = TOOL_CHAINS.get(capability)
+        if not chain or len(candidates) < 2:
+            return candidates
+        rank = {name: position for position, name in enumerate(chain)}
+        return sorted(
+            candidates,
+            key=lambda cls: (
+                rank.get(self._class_to_name(cls) or "", len(chain)),
+                candidates.index(cls),
+            ),
+        )
 
     def find_tool_by_name(self, tool_name: str) -> ToolMatch | None:
         """Return the ToolMatch for one specific tool, by binary name.
@@ -381,7 +421,7 @@ class ToolResolver:
                     )
                 )
 
-        for cls in self._capability_map.get(capability, []):
+        for cls in self._chain_ordered(capability):
             tool_name = self._class_to_name(cls)
             if tool_name:
                 results.append(

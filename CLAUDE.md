@@ -139,13 +139,31 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   `CLIENT_ORACLE_MODE` is `auto` by default — the Orchestrator provisions it for
   every engagement, while a **directly invoked** agent (unit suite, replay,
   smoke cell) never self-resolves one, so the black-box floor stays
-  byte-identical. All 19 `_test_*` methods are adaptive multi-phase
+  byte-identical. All 24 `_test_*` methods are adaptive multi-phase
   methodologies (six-phase injection family; four-phase behavioral family). The
   **deterministic check GATES the LLM** — no LLM verdict emits on its own; when
   phase-2 has empirically confirmed the primitive, phase-4 prefers the
   deterministic build. **Per-methodology detail (oracles, phantom fixes,
   live-validation, N/A-by-construction) →
-  [`docs/methodology/`](docs/methodology/README.md).**
+  [`docs/methodology/`](docs/methodology/README.md); the five Phase-3 classes and
+  the control each confirms against →
+  [`docs/methodology/phase3-new-classes.md`](docs/methodology/phase3-new-classes.md);
+  chaining + business logic + the benchmark profile →
+  [`docs/methodology/chaining-and-business-logic.md`](docs/methodology/chaining-and-business-logic.md).**
+- **Chaining (`src/clinkz/chaining/`)** — a first-class capability, not a
+  post-processing pass. A chain is an ordered composition where step N's OUTPUT
+  becomes step N+1's INPUT, graded by its WEAKEST link (`compose_soundness`,
+  reused from cross-service, not reinvented), emitted CONFIRMED only when EVERY
+  link is independently confirmed by a P1–P7 oracle. Runs after the FP pass, so a
+  demoted finding can never head a chain, and it **only ever ADDS**: a chain is a
+  new finding alongside its components, which keep the severity their own oracles
+  gave them. Every SSRF so far proved the FETCH and stopped; pointing the same
+  channel at an internal address is the second observation that turns a primitive
+  into an incident.
+- **Business logic** (`agents/_business_logic.py` + three `_test_*` classes) — Δ
+  where the developer's intent is the APPLICATION. Intent is inferred from the
+  app's own surface and every finding states the intent, its EVIDENCE, and the
+  observation exceeding it.
 - **Critic** — validates findings before the report (CVSS, FP elimination,
   evidence, repro); can reject back to Exploit.
 - **Report** — zero LLM calls; emits JSON + a Markdown summary from the state
@@ -155,9 +173,12 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   NOT tested"** section (excluded hosts, unauthorized techniques, classes with no
   client-side oracle / no methodology, safety-rail refusals, any halt) — built
   from the registry and the run's own action log so it cannot drift. Findings and
-  **research-leads are separate types in separate fields**: `CrossServiceResearchLead` (unproven A→B chains) and
-  `UnprovenExploitLead` (single-service, effect not witnessed) render in their own
-  UNCONFIRMED sections and are never counted in the totals.
+  **research-leads are separate types in separate fields**: `CrossServiceResearchLead` (unproven A→B chains),
+  `UnprovenExploitLead` (single-service, effect not witnessed) and
+  `ChainResearchLead` (a composition the decoy control did not discriminate)
+  render in their own UNCONFIRMED sections and are never counted in the totals. A
+  CONFIRMED chain is counted ONCE — as an ordinary finding — and its link-by-link
+  composition renders in a separate section that adds no count.
 
 ## Engagement Setup + Production Safety (`src/clinkz/engagement/`, `src/clinkz/safety/`)
 
@@ -243,7 +264,10 @@ detail → `docs/productization-engagement-safety.md`.**
 - **`models/vuln_classes.py` is the client-facing class registry** (label,
   capability, limitation, remediation), asserted in sync with the Exploit Agent's
   dispatch table: a class it dispatches but the registry has never heard of is
-  BOTH invisible in the report and ungated by authorization.
+  BOTH invisible in the report and ungated by authorization. `DISCOVERY_CLASSES`
+  and `COMPOSITION_CLASSES` (`attack_chain`) emit findings without a dispatch
+  entry — they are never *planned against an endpoint* — so they are held apart
+  from that sync assertion and gated by registry KEY instead.
 
 ## Gray-box Discovery Engine (`src/clinkz/discovery/`)
 
@@ -315,7 +339,15 @@ src/clinkz/
 │                     #   _js_api_mining (what does the frontend CALL?), _api_schema
 │                     #   (what does the live target ACCEPT? — safe methods only),
 │                     #   _json_body (addressing a field INSIDE a structure),
-│                     #   _url_safety (may we fetch it?), _url_shape (in what order?)
+│                     #   _url_safety (may we fetch it?), _url_shape (in what order?),
+│                     #   _origin (THE scheme+host fence — one helper, six call sites),
+│                     #   _secret_exposure / _input_validation / _mass_assignment /
+│                     #   _crypto_tokens (the four new classes' pure logic, offline-testable)
+│                     #   _business_logic (intent inferred from the app's OWN surface,
+│                     #   with the evidence — offline-testable)
+├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
+│                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
+│                     #   planner, composition (THE ORACLE — the decoy control), impact
 ├── engagement/       # gate (the refusals), secrets (credentials + redaction chokepoint),
 │                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
 │                     #   shared by the redactor and the gate), artifact_scan (the
@@ -323,13 +355,18 @@ src/clinkz/
 │                     #   auth_state (detect / PROVE / maintain), dryrun
 ├── safety/           # destructive (default-deny classifier + subresource_guard_spec, the
 │                     #   vocabulary shipped INTO the browser), governor (rate, concurrency,
-│                     #   kill switch, blocking, window), action_log (+ browser navigations)
+│                     #   kill switch, blocking, window), action_log (+ browser navigations),
+│                     #   benchmark (the explicit throwaway-target opt-in — absent by default)
 ├── comms/            # AgentMessage, async bus, protocol
 ├── discovery/        # Δ-model: ingestor(s), catalog, intent, reachability, hypothesis, engine,
 │                     #   topology(+recall), recall, relations, versions
-├── knowledge/        # KnowledgeBase, persistent_kb, seeders, MITRE/OWASP datasets, payloads
+├── knowledge/        # KnowledgeBase, persistent_kb, seeders, MITRE/OWASP datasets, payloads,
+│                     #   component_cves (published CVE ↔ observed version — a LEAD, never
+│                     #   a finding; see the dependency→CVE rule below)
 ├── llm/              # base, factory, fallback, {anthropic,gemini,openai,ollama}_client
-├── tools/            # ToolBase, resolver, mcp_client, auth, http_client, nmap/ffuf/…
+├── tools/            # ToolBase (discovery + fingerprint contracts), resolver, mcp_client,
+│                     #   auth, http_client, component_names (one name/version split rule),
+│                     #   nmap/ffuf/whatweb/httpx/sqlmap/…
 ├── oob/              # P6: templates (exfil guardrail), collaborator (receive-only)
 ├── browser/          # P7 client-side execution oracle: templates (witness carrier),
 │                     #   witness (the verdict — page text NEVER decides), csp_policy
@@ -576,6 +613,94 @@ LESSONS #17).
   a per-technology capability fact; confidence is a decayed corroboration PRIOR
   from confirming observations only and never gates emission. The older
   technique-success loop is retired (read-only for the report's history).
+- **A CVE match on a version string is a LEAD, never a finding**
+  (`knowledge/component_cves.py`). The dependency→CVE path runs
+  fingerprint → component+version inventory (`ReconResult.components`) → known
+  CVE → **our own oracle on the live target**. A match either becomes an
+  `ExploitTask` for the class whose oracle can witness that CVE's effect — and
+  the CVE is then CONTEXT on a normally-proven finding — or an
+  `UnprovenExploitLead` saying we have no oracle. A third outcome does not
+  exist. Same rule that demoted the sqlmap-only SQLi: somebody else's conclusion
+  is not an observation we made. An **unversioned** component matches nothing
+  version-bounded (a deliberate recall loss), and an entry that would match
+  unconditionally — an unbounded `*` over an alternation of generic servers — is
+  refused by a gate, because a lead equally true of every host says nothing
+  about this one.
+- **The PRODUCER declares what it fingerprinted, too.** `detected_components()` /
+  `declares_components()` is the discovery contract's twin, for the seam that
+  used to read `hasattr(r, "technologies")` then `hasattr(r, "tech")` — two
+  spellings because two wrappers differ, and a third would have contributed
+  nothing silently. A non-declaring wrapper is a loud `DEAD_SEAM`, never an
+  empty list.
+- **A tool named in a `TOOL_CHAINS` entry must DECLARE that capability, and the
+  resolver reads the declared ORDER.** `find_tool` resolves through the
+  capability map, so a chain entry the wrapper does not declare is a fallback
+  that cannot fire (httpx, nikto — and `subdomain_discovery`, which resolved to
+  `None` on every call ever made). The map is built in module-import order, which
+  was invisible while every chained capability had one implementer and became a
+  silent preference inversion the moment a fallback became real.
+- **Resolving is not the same as being used, and an unused capability states its
+  reason.** `tests/test_tools/test_tool_wiring_decisions.py` accounts for every
+  chained capability as either wired (with its caller) or deliberately unwired
+  (with a substantive reason, verified against the source so it cannot become
+  documentation of a wish). `vulnerability_scanning` (nuclei/nikto) stays unwired
+  because its output is verdicts we would have to confirm ourselves — and the
+  confirmable subset, version matching, is what `component_cves.py` already does
+  with an explicit affected-range predicate. `subdomain_discovery` (subfinder)
+  stays unwired because it expands the TARGET SET, and the target set is the
+  authorization boundary: acting on a discovered subdomain would test a host the
+  client never authorised.
+- **One origin fence** (`agents/_origin.py`). The scheme dimension was missed
+  twice in one week by two code paths — that is a missing abstraction, not two
+  mistakes, because the host comparison is the obvious half and each new call
+  site re-derives only the obvious half.
+- **A mock at a tool or parser seam returns the REAL output model.** Gated by
+  `tests/test_tools/test_mock_shape_audit.py`: a test-local `ToolOutput`
+  subclass is refused unless allow-listed *with a reason*, and the only entries
+  are the deliberately-broken producers that ARE the dead-seam alarm's negative
+  control. A test that can only pass against a fiction is worse than no test,
+  because it is counted as coverage.
+
+- **Two confirmed findings do not imply the chain between them, and neither does
+  a successful second request.** A carriage is proven against a control: the real
+  artifact ACCEPTED and an **equivalently-shaped decoy the target never issued**
+  REFUSED (`chaining/composition.py`). An accept-everything endpoint cannot
+  produce that observation, and a guess cannot either. Decoy accepted too ⇒ the
+  endpoint accepts the SHAPE not the VALUE, and the honest outcome is a
+  `ChainResearchLead` naming the link — never a finding with a caveat. The
+  carriage's primitive is **P4**, so chaining introduces no new confirmation
+  primitive and inherits the zero-FP boundary rather than widening it.
+- **A yield is what a class's confirmation PROVES, never what the class is named
+  after.** Reflected XSS is *about* stealing a session and this engine has never
+  demonstrated exfiltrating one, so it declares no yield and says why
+  (`chaining/vocabulary.py::NO_YIELD_REASON`) — declaring the aspiration would
+  head a chain whose next link could not be carried, and a chain that cannot be
+  carried cannot be falsified. Every dispatchable class is in one table or the
+  other. Artifacts are harvested at ONE seam (`_persist_finding`, driven by the
+  DECLARED yield), and the carried VALUE is excluded from serialisation — a chain
+  carries exactly the material a report must not reproduce, so the evidence
+  quotes a shape and a salted fingerprint. Escalation is a function of the
+  DEMONSTRATION: only a confirmed composition escalates, and a chain never LOWERS
+  what a single link already earned.
+- **Business-logic intent must be EVIDENCED from the application's own surface**
+  (`agents/_business_logic.py`) — a field in the server's own representation, the
+  value range that representation shows, or the app's own words when it refuses.
+  Unevidenced ⇒ a lead: unusual-but-intended looks exactly like a flaw from
+  outside (a negative balance may be a credit note), and what an application
+  *should* do is an opinion. Every finding states intent + evidence + the
+  observation exceeding it, built at ONE seam. **The status code is never the
+  effect** — the read-back is, because an API that accepts `quantity=-1` and
+  stores `1` enforced the constraint, and an idempotent handler answers 200 to a
+  replay.
+- **The destructive refusal is the contract, and the benchmark profile does not
+  loosen it** (`models/engagement.py::BenchmarkProfile`, `safety/benchmark.py`).
+  No flag and no partial shape: a verbatim attestation, an explicit per-category
+  list (no wildcard), a declaring party and a reference, or the model refuses to
+  construct. **Session destruction and security-posture toggles are never
+  permittable on any target** — they damage the ENGAGEMENT, not the target.
+  Permission is by the category that DECIDED the refusal, never an alias. Absent
+  by default like the governor; every permitted request is logged
+  `benchmark_permitted:<category>` and the profile is in the report header.
 - **A total is not evidence about its parts** (`observability/ledger.py`, **detail
   → [`docs/lessons/silent-degradation-and-the-dead-seam.md`](docs/lessons/silent-degradation-and-the-dead-seam.md)**).
   Three defects shipped with one shape — an empty LLM planner absorbed by the

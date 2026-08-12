@@ -47,6 +47,11 @@ from pydantic import BaseModel, ConfigDict
 from clinkz.engagement.gate import EngagementAbortedError
 from clinkz.models.engagement import EngagementWindow, SafetyPolicy
 from clinkz.safety.action_log import CATEGORY_BROWSER_NAVIGATION, ActionLog
+from clinkz.safety.benchmark import (
+    benchmark_override,
+    get_active_benchmark_profile,
+    override_category,
+)
 from clinkz.safety.destructive import (
     MUTATING_METHODS,
     classify_request,
@@ -212,6 +217,7 @@ class EngagementGovernor:
         self._consecutive_blocks = 0
         self._state_changes_sent = 0
         self._requests_authorized = 0
+        self._benchmark_permitted = 0
         self._rate_wait_seconds = 0.0
         # Extra watchers fed every response. The session sentinel registers here
         # rather than the governor importing it, which keeps the safety package
@@ -357,6 +363,25 @@ class EngagementGovernor:
             return decision
 
         verdict = classify_request(verb, url, field_names=names, labels=labels)
+        # An engagement that declared its target a disposable benchmark may permit
+        # named destructive categories. Applied AFTER classification, never inside
+        # it: the classifier still names the category and the deciding signal, so
+        # the action-log entry below can say exactly what was permitted and what
+        # would otherwise have refused it. With no profile installed — every client
+        # engagement — this is a no-op and the refusal below is unchanged.
+        permitted_category = override_category(verdict)
+        if permitted_category:
+            self._benchmark_permitted += 1
+            self.action_log.record_sent(
+                method=verb,
+                url=url,
+                stage=stage,
+                category=f"benchmark_permitted:{permitted_category}",
+                reason=benchmark_override(verdict).reason,
+                signal=verdict.signal,
+                body=body,
+            )
+            verdict = benchmark_override(verdict)
         if verdict.refused:
             decision = RequestDecision(
                 allowed=False,
@@ -504,11 +529,22 @@ class EngagementGovernor:
 
     def stats(self) -> dict[str, object]:
         """Runtime counters for the report and the run summary."""
+        profile = get_active_benchmark_profile()
         return {
             "requests_authorized": self._requests_authorized,
             "state_changing_sent": self.action_log.sent_count,
             "state_changing_refused": self.action_log.refused_count,
             "browser_navigations": self.action_log.navigation_count,
+            # Kept as its own counter rather than folded into
+            # ``state_changing_sent``: "how many requests would have been refused
+            # without the benchmark declaration" is the question an operator asks
+            # when reviewing what the run was allowed to do, and a number that
+            # needs qualifying is a number nobody trusts.
+            "benchmark_permitted_requests": self._benchmark_permitted,
+            "benchmark_profile_active": profile is not None,
+            "benchmark_permitted_categories": (
+                sorted(profile.permitted_categories) if profile else []
+            ),
             "rate_limit_wait_seconds": round(self._rate_wait_seconds, 1),
             "max_requests_per_second": self.policy.max_requests_per_second,
             "max_concurrent_requests": self.policy.max_concurrent_requests,

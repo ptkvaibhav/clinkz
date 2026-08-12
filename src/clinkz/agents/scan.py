@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
 from clinkz.agents._dom_sources import body_reads_dom_source
+from clinkz.agents._origin import same_origin
 from clinkz.agents._route_discovery import (
     FetchResult,
     default_discoverers,
@@ -37,6 +38,7 @@ from clinkz.agents._url_shape import (
     path_extension,
 )
 from clinkz.agents.base import BaseAgent
+from clinkz.browser.csp_policy import parse_csp
 from clinkz.llm.base import LLMClient
 from clinkz.models.recon import (
     ReconResult,
@@ -710,12 +712,14 @@ class ScanAgent(BaseAgent):
         the crawl-safety rule does not stop applying because a different
         subsystem is doing the fetching.
 
-        The origin comparison covers the SCHEME, not just the host. These URLs
+        The origin comparison covers the SCHEME, not just the host — these URLs
         were read out of the target's own HTML, so a page can offer
-        ``ftp://<same-host>/x`` — matching netloc while naming a protocol this
-        subsystem never intended to speak. Commit ``840ddec`` fixed exactly this
-        omission in the exploit planner's origin fence; a new fetcher must not
-        reintroduce it. Only ``http``/``https`` reach the fetch.
+        ``ftp://<same-host>/x``, matching netloc while naming a protocol this
+        subsystem never intended to speak. That is delegated to the shared fence
+        (:mod:`clinkz.agents._origin`) rather than written here: the same
+        omission was made independently by this fetcher and by the exploit
+        planner (``840ddec``) within one week, which makes it a missing
+        abstraction rather than two mistakes.
 
         Ordered by ``crawl_visit_priority`` for the same reason the enrichment
         budget is: the cap has to fall on the least informative pages, not on
@@ -728,7 +732,6 @@ class ScanAgent(BaseAgent):
         Returns:
             Deduplicated page URLs, best-first.
         """
-        base = urlparse(base_url)
         seen: set[str] = {base_url}
         pages: list[str] = []
         for ep in endpoints:
@@ -737,12 +740,9 @@ class ScanAgent(BaseAgent):
                 continue
             if is_state_changing_url(page):
                 continue
-            parsed = urlparse(page)
-            if parsed.scheme.lower() not in ("http", "https"):
+            if not same_origin(page, base_url):
                 continue
-            if parsed.netloc.lower() != base.netloc.lower():
-                continue
-            if path_extension(parsed.path) in STATIC_ASSET_EXTENSIONS:
+            if path_extension(urlparse(page).path) in STATIC_ASSET_EXTENSIONS:
                 continue
             seen.add(page)
             pages.append(page)
@@ -954,7 +954,12 @@ class ScanAgent(BaseAgent):
                 names.append(name)
         record = features.setdefault(
             self._response_feature_key(page_url),
-            {"sets_cookies": [], "has_form": False, "has_dom_source": False},
+            {
+                "sets_cookies": [],
+                "has_form": False,
+                "has_dom_source": False,
+                "serves_csp": False,
+            },
         )
         for name in names:
             if name not in record["sets_cookies"]:
@@ -967,6 +972,16 @@ class ScanAgent(BaseAgent):
         # of what the page returned, not of what the route is called.
         if body_reads_dom_source(body):
             record["has_dom_source"] = True
+        # Whether a Content-Security-Policy governed script on this response.
+        # Same kind of observation as the three above: "is this policy
+        # bypassable" is only a question about a response that HAS one, and a
+        # route whose name says ``csp`` while serving none is not that class's
+        # surface. Parsed with the same code the methodology uses, so the
+        # ranking signal and the methodology agree on what "a policy" is; the
+        # boolean is all that is kept, and the policy text is re-read at probe
+        # time so a stale copy can never be what a finding is asserted against.
+        if headers and parse_csp(headers).present:
+            record["serves_csp"] = True
 
     def _apply_response_feature_annotations(self, endpoints: list[Endpoint]) -> None:
         """Stamp recorded response features onto the endpoints they were seen on.
@@ -990,6 +1005,8 @@ class ScanAgent(BaseAgent):
                 endpoint.has_form = True
             if record.get("has_dom_source"):
                 endpoint.has_dom_source = True
+            if record.get("serves_csp"):
+                endpoint.serves_csp = True
             annotated += 1
         self._logger.info(
             "Response features: annotated %d of %d endpoint(s) from %d observed page(s)",

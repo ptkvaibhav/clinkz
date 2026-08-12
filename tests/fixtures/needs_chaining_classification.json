@@ -1,0 +1,182 @@
+{
+  "_about": {
+    "purpose": "Seven multi-step OWASP Juice Shop challenges, classified by the LINKS each needs and this engine's coverage of each link. The value of this artifact is the per-link coverage column, which is checked against the engine's own tables by tests/test_chaining/test_needs_chaining_classification.py — so it cannot quietly drift as classes are added.",
+    "premise_status": "UNVERIFIED AGAINST A LIVE INSTANCE. The repository contains no pre-existing NEEDS_CHAINING list (grepped: no match anywhere in src/, tests/, docs/). This classification was derived from the chain-kind taxonomy in src/clinkz/chaining/ plus Juice Shop's published challenge set. Which challenges a given Juice Shop build actually ships, and whether each solves the way described here, is a question about a running target and is deferred to the Phase-5 live gate. Nothing in src/ reads this file; it is an analysis artifact and a test fixture, which is also why it lives in tests/fixtures rather than in src/ — a methodology must never carry a benchmark's vocabulary.",
+    "coverage_vocabulary": {
+      "confirmed_today": "This engine has a methodology that confirms this link's defining effect today, and it is dispatchable.",
+      "chain_carriage": "This link is the composition itself, proven by the chaining decoy control (P4).",
+      "lead_only": "A methodology exists and reaches this observation, but its defining effect is not witnessable by this engine, so it produces an unproven lead.",
+      "no_methodology": "No methodology reaches this link at all."
+    }
+  },
+  "challenges": [
+    {
+      "label": "Login Support Team",
+      "mechanism": "A support-team credential is disclosed in an artifact the application serves; authenticating with it is the second step.",
+      "chain_kind": "credential_to_access",
+      "required_links": [
+        {
+          "ordinal": 1,
+          "description": "Recover credential material from a served artifact",
+          "artifact": "credential",
+          "producing_class": "_test_secrets_exposure",
+          "coverage": "confirmed_today"
+        },
+        {
+          "ordinal": 2,
+          "description": "The application accepts the recovered credential as authentication, while an equivalently-shaped decoy is refused",
+          "artifact": "credential",
+          "producing_class": "",
+          "coverage": "chain_carriage"
+        }
+      ],
+      "blocking_gap": ""
+    },
+    {
+      "label": "Forgotten Developer's Backup File",
+      "mechanism": "A path-traversal primitive reaches a backup file outside the served directory; the credential material inside it is then used to authenticate.",
+      "chain_kind": "file_read_to_credential",
+      "required_links": [
+        {
+          "ordinal": 1,
+          "description": "Read a file the application does not intend to serve",
+          "artifact": "file_content",
+          "producing_class": "_test_lfi",
+          "coverage": "confirmed_today"
+        },
+        {
+          "ordinal": 2,
+          "description": "The application accepts a credential parsed out of that file, while an equivalently-shaped decoy is refused",
+          "artifact": "credential",
+          "producing_class": "",
+          "coverage": "chain_carriage"
+        }
+      ],
+      "blocking_gap": ""
+    },
+    {
+      "label": "Forged Signed JWT",
+      "mechanism": "Key material is recovered from a served artifact, a token is rebuilt under the application's own scheme, and the server accepts it while refusing a same-shaped control.",
+      "chain_kind": "token_to_impersonation",
+      "required_links": [
+        {
+          "ordinal": 1,
+          "description": "Recover the signing key material",
+          "artifact": "signing_key",
+          "producing_class": "_test_secrets_exposure",
+          "coverage": "confirmed_today"
+        },
+        {
+          "ordinal": 2,
+          "description": "Forge a token under the application's own scheme and have it accepted while a broken-signature control is refused",
+          "artifact": "session_token",
+          "producing_class": "_test_jwt",
+          "coverage": "confirmed_today"
+        },
+        {
+          "ordinal": 3,
+          "description": "The application serves the impersonated principal's own view to the forged token",
+          "artifact": "session_token",
+          "producing_class": "",
+          "coverage": "chain_carriage"
+        }
+      ],
+      "blocking_gap": ""
+    },
+    {
+      "label": "Forged Coupon",
+      "mechanism": "The coupon encoding is recovered from client-reachable code, a valid code is rebuilt, and the application accepts it at checkout.",
+      "chain_kind": "credential_to_access",
+      "required_links": [
+        {
+          "ordinal": 1,
+          "description": "Recover the plaintext scheme behind an opaque token the application issues",
+          "artifact": "credential",
+          "producing_class": "_test_crypto",
+          "coverage": "confirmed_today"
+        },
+        {
+          "ordinal": 2,
+          "description": "The application accepts a value rebuilt under that scheme while refusing a same-shaped random control",
+          "artifact": "credential",
+          "producing_class": "",
+          "coverage": "chain_carriage"
+        },
+        {
+          "ordinal": 3,
+          "description": "Apply the accepted coupon to a basket and complete the order",
+          "artifact": "admin_capability",
+          "producing_class": "_test_state_sequence",
+          "coverage": "confirmed_today"
+        }
+      ],
+      "blocking_gap": "The third link needs a completed checkout, which is a state-changing flow the client-safe rails refuse on a real target. It is reachable only under an explicit benchmark profile naming the payment and cancellation categories."
+    },
+    {
+      "label": "Reset a named user's password via their security answer",
+      "mechanism": "The answer to a security question is recoverable from public application data; the forgot-password flow then accepts it and issues a new credential.",
+      "chain_kind": "credential_to_access",
+      "required_links": [
+        {
+          "ordinal": 1,
+          "description": "Recover the security answer from data the application itself publishes",
+          "artifact": "credential",
+          "producing_class": "",
+          "coverage": "no_methodology"
+        },
+        {
+          "ordinal": 2,
+          "description": "The reset flow accepts the recovered answer and issues a credential",
+          "artifact": "credential",
+          "producing_class": "",
+          "coverage": "chain_carriage"
+        }
+      ],
+      "blocking_gap": "Link 1 is OSINT over application content: reading a product description or a review and matching it to a person's security answer. That is a semantic association this engine has no methodology for, and inventing one that guessed would send password-reset requests against a real account."
+    },
+    {
+      "label": "Manipulate another user's basket",
+      "mechanism": "An identifier belonging to another principal is accepted on a write, so an item is added to a basket that is not ours.",
+      "chain_kind": "credential_to_access",
+      "required_links": [
+        {
+          "ordinal": 1,
+          "description": "Cross an authorization boundary on a read to establish that another principal's object is addressable",
+          "artifact": "identity",
+          "producing_class": "_test_idor",
+          "coverage": "confirmed_today"
+        },
+        {
+          "ordinal": 2,
+          "description": "The same identifier is accepted on a WRITE, and the object is read back carrying our value while a control that omitted it does not",
+          "artifact": "admin_capability",
+          "producing_class": "_test_mass_assignment",
+          "coverage": "confirmed_today"
+        }
+      ],
+      "blocking_gap": "Both links are confirmable, but they compose through an identifier rather than through a carried secret, so the decoy-substitution oracle does not apply: an equivalently-shaped decoy identifier may legitimately name a real object. This chain is planned and reported as a lead rather than confirmed."
+    },
+    {
+      "label": "Server-side request forgery reaching an internal service",
+      "mechanism": "A confirmed fetch primitive is pointed at an internal address, and content that address serves comes back.",
+      "chain_kind": "fetch_to_internal_reach",
+      "required_links": [
+        {
+          "ordinal": 1,
+          "description": "Confirm the server fetches a URL we choose",
+          "artifact": "internal_response",
+          "producing_class": "_test_ssrf",
+          "coverage": "confirmed_today"
+        },
+        {
+          "ordinal": 2,
+          "description": "Content from an internal address returns through the channel, while an equivalently-shaped non-resolving decoy address returns none of it",
+          "artifact": "internal_endpoint",
+          "producing_class": "",
+          "coverage": "chain_carriage"
+        }
+      ],
+      "blocking_gap": ""
+    }
+  ]
+}

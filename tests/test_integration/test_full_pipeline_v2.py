@@ -54,8 +54,11 @@ from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.models.target import Host, Service
 from clinkz.orchestrator.orchestrator import OrchestratorAgent
 from clinkz.state import StateStore
-from clinkz.tools.base import ToolBase, ToolOutput
+from clinkz.tools.base import ToolBase
+from clinkz.tools.katana import KatanaOutput
+from clinkz.tools.nmap import NmapOutput
 from clinkz.tools.resolver import ToolMatch, ToolResolver
+from clinkz.tools.whatweb import WhatWebOutput, WhatWebScanResult
 from tests.authorization_fixtures import TEST_AUTHORIZATION
 
 # ---------------------------------------------------------------------------
@@ -258,8 +261,23 @@ class _ScanLLM(LLMClient):
 # ---------------------------------------------------------------------------
 
 
-class _MockToolOutput(ToolOutput):
-    data: dict[str, Any] = {}
+# Every tool below returns its REAL output model.
+#
+# They all used to return one local ``_MockToolOutput`` that nested everything
+# under a ``data`` dict — a shape no tool wrapper in this codebase has ever had.
+# The consequence was that this "full pipeline" test exercised almost none of
+# the pipeline it is named for:
+#
+#   * ``ReconAgent._step_port_scan`` reads ``hasattr(parsed, "open_ports")``
+#     then ``hasattr(parsed, "hosts")`` — both ``False`` against ``data``, so
+#     the recon phase saw ZERO open ports and ZERO services on every run.
+#   * ``KatanaOutput`` declares ``discovered_urls``; a ``data={"urls": ...}``
+#     output declares nothing, so the crawl seam was structurally dead — the
+#     precise defect (``declares_discovery() is False``) that the ffuf seam had
+#     for its entire existence.
+#
+# The test passed throughout, because a pipeline that finds nothing and a
+# pipeline that is wired to nothing produce the same empty list.
 
 
 class _MockNmapTool(ToolBase):
@@ -291,7 +309,7 @@ class _MockNmapTool(ToolBase):
     async def execute(self, args: dict[str, Any]) -> str:
         return "mock nmap output"
 
-    def parse_output(self, raw_output: str) -> ToolOutput:
+    def parse_output(self, raw_output: str) -> NmapOutput:
         host = Host(
             ip=TARGET_IP,
             hostnames=[],
@@ -302,11 +320,12 @@ class _MockNmapTool(ToolBase):
                 Service(port=3306, name="mysql", product="MySQL", version="5.7.36"),
             ],
         )
-        return _MockToolOutput(
+        return NmapOutput(
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
-            data={"hosts": [host.model_dump()], "open_ports": [80, 443, 3306]},
+            hosts=[host],
+            open_ports=[80, 443, 3306],
         )
 
 
@@ -339,12 +358,20 @@ class _MockWhatwebTool(ToolBase):
     async def execute(self, args: dict[str, Any]) -> str:
         return "Apache 2.4.49, PHP 8.1"
 
-    def parse_output(self, raw_output: str) -> ToolOutput:
-        return _MockToolOutput(
+    def parse_output(self, raw_output: str) -> WhatWebOutput:
+        return WhatWebOutput(
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
-            data={"tech_stack": ["Apache 2.4.49", "PHP 8.1"]},
+            results=[
+                WhatWebScanResult(
+                    target=f"http://{TARGET_IP}/",
+                    http_status=200,
+                    technologies=["Apache", "PHP"],
+                    versions={"Apache": "2.4.49", "PHP": "8.1"},
+                    server="Apache/2.4.49",
+                )
+            ],
         )
 
 
@@ -378,13 +405,13 @@ class _MockKatanaTool(ToolBase):
         base = f"http://{TARGET_IP}"
         return f"{base}/\n{base}/login.php\n{base}/vulnerabilities/sqli/"
 
-    def parse_output(self, raw_output: str) -> ToolOutput:
+    def parse_output(self, raw_output: str) -> KatanaOutput:
         urls = [ln.strip() for ln in raw_output.splitlines() if ln.strip()]
-        return _MockToolOutput(
+        return KatanaOutput(
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
-            data={"urls": urls},
+            urls=urls,
         )
 
 

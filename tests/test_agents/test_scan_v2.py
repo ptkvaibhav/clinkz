@@ -46,8 +46,12 @@ from clinkz.models.scan import (
     WebForm,
 )
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
+from clinkz.models.target import Host, Service
 from clinkz.state import StateStore
-from clinkz.tools.base import ToolBase, ToolOutput
+from clinkz.tools.base import ToolBase
+from clinkz.tools.ffuf import FfufOutput, FfufResult
+from clinkz.tools.katana import KatanaOutput
+from clinkz.tools.nmap import NmapOutput
 from clinkz.tools.resolver import ToolMatch, ToolResolver
 
 # ---------------------------------------------------------------------------
@@ -136,36 +140,23 @@ class MockLLM(LLMClient):
 # ---------------------------------------------------------------------------
 
 
-class _MockCrawlOutput(ToolOutput):
-    """Mock crawler output, shaped like the real ``KatanaOutput``.
+# Mock tools at a parser seam return the REAL output model.
+#
+# These used to be local ``ToolOutput`` subclasses carrying whatever field names
+# the consumer happened to read — ``endpoints``/``urls``, ``paths``/
+# ``directories``, ``raw_text``. That is how a green suite covered for a seam
+# that discarded 100% of ffuf's output: the tests asserted the consumer against
+# a producer no real tool resembled. ``FfufOutput`` has never had a ``paths``
+# field, and no tool output has ever had ``raw_text``.
+#
+# Shaping them "like" the real model was the intermediate fix and it is still
+# a copy that can drift. Being the real model cannot drift: a field rename in
+# ``ffuf.py`` or ``katana.py`` now breaks these tests, which is what a test at a
+# seam is for.
 
-    These mocks used to invent whatever field names the consumer happened to
-    read — ``endpoints``/``urls`` here, ``paths``/``directories`` below. That is
-    how a green suite covered for a seam that discarded 100% of ffuf's output:
-    the tests asserted the consumer against a producer no real tool resembled.
-    ``FfufOutput`` has never had a ``paths`` field. A mock must mirror the real
-    model's contract, or it tests the mock.
-    """
-
-    urls: list[str] = []
-
-    def discovered_urls(self) -> list[str]:
-        return list(self.urls)
-
-
-class _MockFuzzOutput(ToolOutput):
-    """Mock fuzzer output, shaped like the real ``FfufOutput``."""
-
-    results: list[dict[str, Any]] = []
-
-    def discovered_urls(self) -> list[str]:
-        return [str(r.get("url", "")) for r in self.results if r.get("url")]
-
-
-class _MockNmapScriptOutput(ToolOutput):
-    """Mock nmap script output."""
-
-    raw_text: str = ""
+_MockCrawlOutput = KatanaOutput
+_MockFuzzOutput = FfufOutput
+_MockNmapScriptOutput = NmapOutput
 
 
 # ---------------------------------------------------------------------------
@@ -236,14 +227,21 @@ class _MockFuzzTool(ToolBase):
         return "mock fuzz output"
 
     def parse_output(self, raw_output: str) -> _MockFuzzOutput:
+        # Real ``FfufResult`` objects, not ``{"url": ...}`` dicts. ffuf reports a
+        # hit as url + status + length + words + lines and the model requires all
+        # five, so a dict carrying only ``url`` no longer validates — which is
+        # exactly the drift this test exists to catch.
         return _MockFuzzOutput(
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
             results=[
-                {"url": "http://10.0.0.1/admin"},
-                {"url": "http://10.0.0.1/backup"},
-                {"url": "http://10.0.0.1/config"},
+                FfufResult(url=url, status=200, length=length, words=12, lines=3)
+                for url, length in (
+                    ("http://10.0.0.1/admin", 1024),
+                    ("http://10.0.0.1/backup", 512),
+                    ("http://10.0.0.1/config", 256),
+                )
             ],
         )
 
@@ -279,10 +277,26 @@ class _MockNmapTool(ToolBase):
         return "mock nmap output"
 
     def parse_output(self, raw_output: str) -> _MockNmapScriptOutput:
+        # Carries real hosts/services. The predecessor declared a ``raw_text``
+        # field no nmap output has ever had and populated no hosts at all, so
+        # the service-version extraction in ``_scan_ssh``/``_scan_database``
+        # (``if hasattr(parsed, "hosts")``) was never once exercised by this
+        # suite — the branch existed, was covered on paper, and could not run.
         return _MockNmapScriptOutput(
             tool_name=self.name,
             success=True,
             raw_output=raw_output,
+            hosts=[
+                Host(
+                    ip="10.0.0.1",
+                    services=[
+                        Service(port=21, name="ftp", product="vsftpd", version="2.3.4"),
+                        Service(port=22, name="ssh", product="OpenSSH", version="8.9p1"),
+                        Service(port=3306, name="mysql", product="MySQL", version="5.7.36"),
+                    ],
+                )
+            ],
+            open_ports=[21, 22, 3306],
         )
 
 
