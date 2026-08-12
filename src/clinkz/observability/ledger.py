@@ -70,6 +70,14 @@ class ComponentKind(StrEnum):
     PARSER_SEAM = "parser_seam"
     DISCOVERER = "discoverer"
     METHODOLOGY = "methodology"
+    #: A component whose input is the engine's OWN confirmed output rather than
+    #: the target — the chain planner is the first. Its silent-degradation mode is
+    #: distinct and worth naming: it can be invoked on every run, succeed on every
+    #: run, and compose nothing because the vocabulary it reads has a gap. That
+    #: reads as "no chains existed" and is indistinguishable from a healthy run
+    #: against an application with no chains, which is exactly the shape this
+    #: ledger exists to make visible.
+    COMPOSER = "composer"
 
 
 class LedgerAlarm(StrEnum):

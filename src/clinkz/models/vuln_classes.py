@@ -557,6 +557,92 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
             "and the same filter must apply to update as to create."
         ),
     ),
+    VulnClass(
+        key="state_sequence_bypass",
+        test_method="_test_state_sequence",
+        label="Business Logic: Workflow Sequence Bypass",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "Confirmed only when the application's OWN surface evidences the "
+            "ordering: a workflow field carrying both stages in the server's "
+            "representation, or the application's own words refusing an "
+            "out-of-order request) AND the resource is read back in the "
+            "terminal state after a request that skipped the prerequisite. An "
+            "acceptance status alone never confirms: many APIs answer 200 and "
+            "perform no transition. Where the ordering cannot be evidenced from "
+            "the application's own surface the result is an unproven lead, "
+            "because an ordering this engine merely assumes is an opinion about "
+            "how the business should work."
+        ),
+        title_tokens=(
+            "workflow sequence bypass",
+            "state sequence",
+            "out of sequence",
+        ),
+        remediation=(
+            "Enforce the workflow server-side as a state machine: each transition validates the "
+            "object's CURRENT persisted state before it is applied, and an illegal transition is "
+            "rejected rather than accepted-and-ignored. Do not infer the current step from the "
+            "request, the client's flow, or a hidden field, and apply the same check at every "
+            "entry point that can advance the object, including internal and administrative ones."
+        ),
+    ),
+    VulnClass(
+        key="constraint_violation",
+        test_method="_test_constraint_violation",
+        label="Business Logic: Numeric Constraint Violation",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "Distinct from the client-only input-validation class, which tests a "
+            "constraint the page DECLARES in an HTML attribute. This one tests a "
+            "constraint the application's own DATA evidences: a quantity field "
+            "whose observed records never fall below a bound. Confirmed only "
+            "when the violating value is accepted AND read back on the persisted "
+            "record, while the endpoint accepts the valid boundary value and "
+            "refuses a malformed control. An API that accepts a negative "
+            "quantity and clamps it has behaved correctly, and only the "
+            "read-back can tell the two apart."
+        ),
+        title_tokens=(
+            "constraint violation",
+            "numeric constraint",
+            "quantity constraint",
+        ),
+        remediation=(
+            "Validate business ranges server-side at the point of persistence, not only at the "
+            "edge: a quantity, price, or balance has a domain the application owns, and it must be "
+            "checked against that domain wherever it can be written. Prefer a type that cannot "
+            "hold an invalid value (an unsigned or bounded type, a database CHECK constraint) so a "
+            "new code path cannot bypass the check by omission, and reject rather than silently "
+            "clamping, so the caller learns the value was wrong."
+        ),
+    ),
+    VulnClass(
+        key="repeatability",
+        test_method="_test_repeatability",
+        label="Business Logic: Single-Use Action Replayed",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "Confirmed only when the application's own surface declares the "
+            "action single-use (a consumption marker on its own object, or its "
+            "own words refusing a repeat) AND the second application's EFFECT "
+            "is observed to accumulate. An idempotent handler answers 200 to a "
+            "replay and changes nothing, which is correct behaviour, so a status "
+            "code cannot distinguish the two and this class does not try."
+        ),
+        title_tokens=(
+            "single-use action replayed",
+            "repeatability",
+            "replayed action",
+        ),
+        remediation=(
+            "Make single-use actions consume a server-side token or mark the record consumed "
+            "inside the same transaction that applies the effect, so a concurrent or repeated "
+            "request cannot apply it twice. Enforce it at the database with a uniqueness "
+            "constraint rather than with an application-level check-then-act, which is a race "
+            "under load even when it reads correctly."
+        ),
+    ),
 )
 
 #: Classes proven by the gray-box discovery engine rather than by a black-box
@@ -567,7 +653,7 @@ DISCOVERY_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="log4shell",
         test_method="_test_log4shell",
-        label="Log4Shell — JNDI lookup in a logged value (CVE-2021-44228)",
+        label="Log4Shell: JNDI lookup in a logged value (CVE-2021-44228)",
         capability=_C.OUT_OF_BAND,
         title_tokens=("log4shell", "cve-2021-44228"),
         remediation=(
@@ -578,6 +664,43 @@ DISCOVERY_CLASSES: tuple[VulnClass, ...] = (
             "bundles its own vulnerable copy, and restrict outbound egress "
             "from application hosts so a residual lookup cannot reach an "
             "attacker-controlled server."
+        ),
+    ),
+)
+
+#: Classes proven by COMPOSING confirmed steps rather than by a single ``_test_*``
+#: dispatch. A confirmed chain is emitted as an ordinary finding through the
+#: normal chokepoint: it is a vulnerability, and a report has to be able to
+#: describe and remediate it: but it has no entry in the Exploit Agent's ranking
+#: tables, because it is never *planned* against an endpoint. Held apart from the
+#: dispatch-sync assertion for that reason, exactly like :data:`DISCOVERY_CLASSES`.
+COMPOSITION_CLASSES: tuple[VulnClass, ...] = (
+    VulnClass(
+        key="attack_chain",
+        test_method="",
+        label="Confirmed Attack Chain",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "A chain is emitted as confirmed only when EVERY link is "
+            "independently confirmed by one of this engine's own oracles AND the "
+            "composition itself survived a control: the artifact carried from one "
+            "step to the next was accepted, while an equivalently-shaped decoy "
+            "the target never issued was refused. Two confirmed findings do not "
+            "imply the chain between them, and where the decoy was accepted too "
+            "the endpoint accepts the shape rather than the value, so the "
+            "composition is reported as an unproven chain lead naming the link "
+            "that stopped it. The severity is escalated from what the chain "
+            "DEMONSTRATED and never from what the composition could in principle "
+            "lead to."
+        ),
+        title_tokens=("confirmed attack chain",),
+        remediation=(
+            "Remediate the first link: it is what makes the rest reachable: and treat the "
+            "chain as evidence that the later controls are not independent of it. Where a "
+            "recovered credential or token was accepted, rotate it and audit for prior use, "
+            "because a value this test recovered was recoverable before the test. Then re-check "
+            "each subsequent link on its own merits: a chain is a demonstration that they compose, "
+            "not a statement that only the first one is wrong."
         ),
     ),
 )
@@ -602,14 +725,22 @@ UNIMPLEMENTED_CLASSES: tuple[VulnClass, ...] = (
         ),
     ),
     VulnClass(
-        key="business_logic",
+        key="business_logic_domain_specific",
         test_method="",
-        label="Business Logic Flaws",
+        label="Business Logic Flaws: domain-specific abuse",
         capability=_C.NOT_IMPLEMENTED,
         limitation=(
-            "No methodology. Business-logic abuse depends on what the "
-            "application is FOR, which is not derivable from its HTTP surface. "
-            "Requires a human tester with domain context. Not tested."
+            "Three business-logic classes ARE tested: workflow sequence bypass, "
+            "numeric constraint violation, and single-use action replay. Each "
+            "confirms only where the application's own surface evidences the "
+            "rule being broken: a workflow field, a value range its own records "
+            "show, a consumption marker or its own refusal wording. What remains "
+            "untested is abuse that depends on domain knowledge the HTTP surface "
+            "does not carry: pricing and discount interactions, fraud and "
+            "abuse-of-function flows, and any rule that exists only in a "
+            "contract or a policy document. Those require a human tester with "
+            "domain context, and this engine deliberately makes no claim about "
+            "them rather than inferring what the application ought to do."
         ),
     ),
     VulnClass(
@@ -625,7 +756,12 @@ UNIMPLEMENTED_CLASSES: tuple[VulnClass, ...] = (
     ),
 )
 
-_ALL: tuple[VulnClass, ...] = (*VULN_CLASSES, *DISCOVERY_CLASSES, *UNIMPLEMENTED_CLASSES)
+_ALL: tuple[VulnClass, ...] = (
+    *VULN_CLASSES,
+    *DISCOVERY_CLASSES,
+    *COMPOSITION_CLASSES,
+    *UNIMPLEMENTED_CLASSES,
+)
 
 _BY_METHOD: dict[str, VulnClass] = {
     vc.test_method: vc for vc in (*VULN_CLASSES, *DISCOVERY_CLASSES) if vc.test_method
@@ -685,6 +821,7 @@ def limited_classes() -> tuple[VulnClass, ...]:
 
 
 __all__ = [
+    "COMPOSITION_CLASSES",
     "DISCOVERY_CLASSES",
     "UNIMPLEMENTED_CLASSES",
     "VULN_CLASSES",
