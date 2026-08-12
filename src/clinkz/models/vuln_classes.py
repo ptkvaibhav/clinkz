@@ -416,6 +416,147 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
             "writes."
         ),
     ),
+    VulnClass(
+        key="csp_bypass",
+        test_method="_test_csp",
+        label="Content-Security-Policy Bypass",
+        capability=_C.CLIENT_SIDE_ORACLE_REQUIRED,
+        limitation=(
+            "Whether a policy is BYPASSABLE is a question about how a browser "
+            "resolves it, so it is answered only with the P7 client-side "
+            "execution oracle enabled — and then only for the bypass shapes "
+            "this engine can synthesize: a policy permitting inline script, a "
+            "reused or static nonce, and a same-origin endpoint that reflects a "
+            "parameter into its own JavaScript response. A policy for which no "
+            "shape applies is reported as NOT BYPASSED BY THOSE SHAPES, which is "
+            "a limit of this engine's coverage and never a statement that the "
+            "policy is sound. Where the oracle is unavailable the class reports "
+            "the served policy and makes no claim about it."
+        ),
+        title_tokens=(
+            "content-security-policy bypass",
+            "csp bypass",
+        ),
+        remediation=(
+            "Remove 'unsafe-inline' and 'unsafe-eval' from script-src. Use a per-response nonce "
+            "generated from a CSRF-safe random source — a nonce reused across responses is a "
+            "published constant, not a secret — and prefer 'strict-dynamic' with that nonce so "
+            "host allowlists cannot be turned into gadgets. Audit every same-origin endpoint that "
+            "reflects request data into a JavaScript response: under script-src 'self' such an "
+            "endpoint is a fully-permitted script the attacker writes."
+        ),
+    ),
+    VulnClass(
+        key="weak_cryptography",
+        test_method="_test_crypto",
+        label="Weak Cryptography / Forgeable Token",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "This class reports only what it DEMONSTRATED: plaintext recovered "
+            "from a token and anchored on a value the engagement holds, or a "
+            "token rebuilt under the application's own scheme and accepted while "
+            "a same-shaped random token was refused. It does not attempt "
+            "cryptanalysis, does not report an algorithm as weak on the strength "
+            "of its name or a token's length, and a token it could not recover "
+            "is reported as not recovered rather than as strong."
+        ),
+        title_tokens=(
+            "weak cryptography",
+            "forgeable token",
+            "recoverable plaintext",
+        ),
+        remediation=(
+            "Do not encode identity or authorisation into a token the client can decode or "
+            "rebuild. Use an opaque identifier bound server-side to session state, or a signed "
+            "token whose signature is verified before any claim is read. Where a value must be "
+            "carried to the client, authenticate it with a MAC over the whole payload and reject "
+            "any token whose MAC does not verify; encoding is not encryption and encryption "
+            "without authentication is not integrity."
+        ),
+    ),
+    VulnClass(
+        key="input_validation",
+        test_method="_test_input_validation",
+        label="Client-Only Input Validation",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "A finding here requires BOTH halves: the server accepted a value "
+            "the application itself declares invalid, AND a control proved the "
+            "same endpoint rejects a malformed request. Where the control is "
+            "also accepted the endpoint demonstrates no validation at all, so "
+            "its acceptance says nothing about the specific constraint, and the "
+            "result is reported as an unproven lead."
+        ),
+        title_tokens=(
+            "input validation",
+            "client-only validation",
+            "unenforced constraint",
+        ),
+        remediation=(
+            "Re-validate every declared constraint on the server, from the same schema the client "
+            "renders, so the two cannot drift. Treat the client's rules as user experience and the "
+            "server's as the boundary. Reject on the server with the same specificity the client "
+            "shows, and enforce the constraint at the persistence layer too, so a second entry "
+            "point cannot bypass the first."
+        ),
+    ),
+    VulnClass(
+        key="secrets_exposure",
+        test_method="_test_secrets_exposure",
+        label="Secret & Configuration Exposure",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "Confirmed only when the material was served to a request carrying "
+            "NO session at all. Credential shapes matching material this "
+            "engagement itself supplied are discarded as the target echoing us "
+            "back. Detection uses the definite credential-shape vocabulary (a "
+            "JWT gated on a decoding header, a PEM block, vendor-prefixed keys); "
+            "the entropy heuristic is deliberately not applied, so a "
+            "high-entropy secret in a shape this engine does not recognise is "
+            "not reported."
+        ),
+        title_tokens=(
+            "secret exposure",
+            "credential exposure",
+            "configuration exposure",
+            "unauthenticated operational endpoint",
+        ),
+        remediation=(
+            "Never ship credential material to the client: a secret in a bundle is public the "
+            "moment it is served, and rotating it is the only remediation once it has been. Move "
+            "the call that needs it behind a server-side endpoint. Put operational surfaces "
+            "(metrics, health with detail, actuator, debug, admin APIs) behind authentication and "
+            "network policy, and confirm the control by requesting them with no session at all."
+        ),
+    ),
+    VulnClass(
+        key="mass_assignment",
+        test_method="_test_mass_assignment",
+        label="Mass Assignment / Privilege Escalation on Create",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "Distinct from the access-control class, which tests whether an "
+            "object may be READ. Confirmation requires the created object to be "
+            "read back carrying the value we set, AND a control object created "
+            "by an otherwise identical request that omitted the field to come "
+            "back without it. A status code alone never confirms: most "
+            "frameworks return 201 and discard the extra field silently. Fields "
+            "are proposed only from the server's own representation of the "
+            "object, never guessed, so a write whose outcome could not be "
+            "observed is never sent."
+        ),
+        title_tokens=(
+            "mass assignment",
+            "privilege escalation on create",
+        ),
+        remediation=(
+            "Bind requests to an explicit allowlist of writable fields — a per-action DTO or "
+            "strong-parameters filter — rather than binding the request body onto the model. "
+            "Authorisation, ownership, pricing and workflow state must be set server-side from the "
+            "caller's identity and the application's own rules, never accepted from the request, "
+            "and the same filter must apply to update as to create."
+        ),
+    ),
 )
 
 #: Classes proven by the gray-box discovery engine rather than by a black-box

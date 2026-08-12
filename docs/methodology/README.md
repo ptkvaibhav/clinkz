@@ -8,7 +8,7 @@ summary + a pointer to each of these files. Nothing was dropped in the move.
 
 ## The shared adaptive patterns (W2.1)
 
-All 19 `_test_*` methods are adaptive multi-phase methodologies, not deterministic
+All 24 `_test_*` methods are adaptive multi-phase methodologies, not deterministic
 one-shot skills:
 
 - **Payload-injection family** — six-phase reflection / fingerprint / synthesize /
@@ -19,7 +19,8 @@ one-shot skills:
   `_test_javascript_attacks`.
 - **Behavioral family** — four-phase hypothesis / observe / analyze / emit
   pattern: `_test_csrf`, `_test_brute_force`, `_test_weak_session`,
-  `_test_security_headers`.
+  `_test_security_headers`, `_test_csp`, `_test_crypto`,
+  `_test_input_validation`, `_test_secrets_exposure`, `_test_mass_assignment`.
 
 The **deterministic check GATES the LLM**: the LLM reasons/ranks/synthesizes; a
 deterministic signal decides emission. When phase-2 has empirically confirmed the
@@ -47,6 +48,11 @@ oracle set.
 | Client-side security logic (WSTG-CLNT-11) | [client-side-logic.md](client-side-logic.md) |
 | JWT (Tier-2) | [jwt.md](jwt.md) |
 | SSRF (Tier-2) | [ssrf.md](ssrf.md) |
+| CSP bypass | [phase3-new-classes.md](phase3-new-classes.md) |
+| Cryptography (recovered / forged token) | [phase3-new-classes.md](phase3-new-classes.md) |
+| Input validation (client-only constraints) | [phase3-new-classes.md](phase3-new-classes.md) |
+| Secrets & configuration exposure | [phase3-new-classes.md](phase3-new-classes.md) |
+| Mass assignment / privesc on create | [phase3-new-classes.md](phase3-new-classes.md) |
 
 ## Cross-cutting
 
