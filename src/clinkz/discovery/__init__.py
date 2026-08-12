@@ -17,7 +17,12 @@ from clinkz.discovery.catalog import CATALOG, match_primitives, primitive_by_cla
 from clinkz.discovery.constants import CARRIER_ALIGN_HOST
 from clinkz.discovery.engine import DiscoveryEngine, DiscoveryResult
 from clinkz.discovery.hypothesis import generate_hypotheses
-from clinkz.discovery.ingestor import SourceIngestor, select_ingestor
+from clinkz.discovery.ingestor import (
+    IngestorSelection,
+    SourceIngestor,
+    detect_ingestor,
+    select_ingestor,
+)
 from clinkz.discovery.intent import compute_delta
 from clinkz.discovery.js_source_ingest import JsSourceIngestor
 from clinkz.discovery.models import (
@@ -87,6 +92,7 @@ __all__ = [
     "ReachabilityEdge",
     "RelationEdge",
     "SoundnessGrade",
+    "IngestorSelection",
     "SourceIngestor",
     "SourceModel",
     "TopologyContext",
@@ -104,6 +110,7 @@ __all__ = [
     "predicate_point_version",
     "primitive_by_class",
     "recall_cross_service_edges",
+    "detect_ingestor",
     "select_ingestor",
     "topology_reach_confidence",
     "version_satisfies",

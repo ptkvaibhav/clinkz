@@ -104,6 +104,10 @@ class NotTestedCategory(StrEnum):
         ENGAGEMENT_HALTED: The engagement stopped before coverage completed.
         UNAUTHENTICATED: The class needed a session (or a second role) that the
             engagement did not have.
+        SOURCE_NOT_INGESTED: A source tree was supplied for gray-box discovery
+            and could not be read, so the engagement ran black-box. Its own
+            category because the failure is invisible otherwise: a gray-box run
+            that fell back produces exactly the artifacts of a black-box run.
     """
 
     OUT_OF_SCOPE = "out_of_scope"
@@ -113,6 +117,7 @@ class NotTestedCategory(StrEnum):
     DESTRUCTIVE_REFUSED = "destructive_refused"
     ENGAGEMENT_HALTED = "engagement_halted"
     UNAUTHENTICATED = "unauthenticated"
+    SOURCE_NOT_INGESTED = "source_not_ingested"
 
 
 class NotTestedItem(BaseModel):
