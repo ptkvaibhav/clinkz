@@ -234,13 +234,27 @@ def main() -> int:
         print(f"{module:<16}" + "".join(cells) + f"   {verdict}")
 
     # --- the headline control ------------------------------------------------
+    #
+    # The control is about EXPLOITATION. An origin-level configuration
+    # observation ("this server sets no X-Frame-Options") is true at every
+    # security level, because the level grades the vulnerable modules and not
+    # the server's response headers — so counting one as a finding-at-impossible
+    # would raise a loophole alarm about a fact that is simply correct. The two
+    # are separated here and both are printed; only the module-scoped set can
+    # indict the oracle.
     print("\n" + "=" * 100)
     print("HONESTY CONTROL — findings at security level IMPOSSIBLE")
     print("=" * 100)
     impossible_runs = ladder.get("impossible") or []
     total_impossible = 0
+    origin_at_impossible = 0
     for index, run in enumerate(impossible_runs, 1):
         for module, findings in sorted(run.items()):
+            if module == "_origin":
+                origin_at_impossible += len(findings)
+                for finding in findings:
+                    print(f"  (origin, not exploitation) run {index}: {finding.get('title')}")
+                continue
             for finding in findings:
                 total_impossible += 1
                 print(f"  !! run {index} [{module}] {finding.get('title')}")
@@ -249,7 +263,16 @@ def main() -> int:
         print("  no impossible-level data yet")
     elif total_impossible == 0:
         print(
-            f"  0 findings at impossible across {len(impossible_runs)} run(s) — the control holds"
+            f"\n  0 EXPLOITATION findings at impossible across {len(impossible_runs)} run(s) "
+            f"— the control HOLDS.\n"
+            f"  ({origin_at_impossible} origin-level configuration observation(s) above: true at "
+            f"every level,\n   because the security level grades the modules and not the server's "
+            f"response headers.)"
+        )
+    else:
+        print(
+            f"\n  !! {total_impossible} EXPLOITATION finding(s) at impossible. Each is a "
+            f"methodology loophole\n     and OUTRANKS every other number in this run."
         )
 
     # --- evidence for each module that was found -----------------------------

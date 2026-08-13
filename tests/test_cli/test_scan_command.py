@@ -790,3 +790,38 @@ def test_resume_refuses_a_blank_or_path_shaped_id(bad_id: str, tmp_path: Path) -
     )
     assert result.exit_code == EXIT_BAD_INPUT, f"{bad_id!r} was accepted"
     assert "Invalid engagement id" in result.output
+
+
+def test_an_aborted_engagement_is_a_refusal_not_a_failure() -> None:
+    """The documented contract says exit 3 when the authenticated-state
+    assertion fails; the code returned 1.
+
+    `AuthStateError` was a plain `Exception`, so the orchestrator's phase-level
+    handler converted a deliberate, loud refusal into `status="failed"` and the
+    CLI reported "the engagement failed". A live Juice Shop run hit exactly this
+    and exited 1 while `--help` promised 3.
+    """
+    from clinkz.engagement.auth_state import AuthStateError
+    from clinkz.engagement.gate import EngagementAbortedError
+
+    assert issubclass(AuthStateError, EngagementAbortedError), (
+        "an abort must propagate as a refusal, or the CLI reports it as a crash"
+    )
+
+
+def test_every_refusal_the_contract_names_is_an_abort() -> None:
+    """Exit 3's documented meaning, checked against the exception hierarchy.
+
+    Each condition the contract lists must actually reach the CLI as an
+    `EngagementAbortedError`; anything that does not gets reported as a failure
+    instead, and the operator cannot tell "we refused" from "we broke".
+    """
+    from clinkz.engagement.auth_state import AuthStateError
+    from clinkz.engagement.gate import (
+        AuthorizationRequiredError,
+        EngagementAbortedError,
+        EngagementWindowClosedError,
+    )
+
+    for refusal in (AuthorizationRequiredError, EngagementWindowClosedError, AuthStateError):
+        assert issubclass(refusal, EngagementAbortedError), f"{refusal.__name__} is not an abort"
