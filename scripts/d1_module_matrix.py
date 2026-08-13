@@ -113,14 +113,28 @@ def module_of(text: str) -> str | None:
     return match.group(1).lower() if match else None
 
 
+#: Titles of classes that are properties of the ORIGIN, not of a module. The
+#: header methodology samples whatever URL it was pointed at, so a missing-header
+#: finding reported at ``/vulnerabilities/api/`` is a fact about the site, not a
+#: vulnerability in the api module. Counting it as module coverage would credit
+#: this engine with finding a module it never attacked.
+_ORIGIN_CLASS_TITLE = re.compile(r"^(Missing|Weak) Security Header\b", re.IGNORECASE)
+
+
 def finding_module(finding: dict[str, Any]) -> str | None:
-    """Which module a finding fired on, from its target then its title/description."""
-    for field in ("target", "affected_url", "title", "description"):
+    """Which DVWA module a finding fired on, or ``None`` for an origin finding.
+
+    Read ONLY from ``target`` / ``affected_url`` — fields the ENGINE sets. The
+    earlier version also searched the description and the evidence entries, and
+    evidence entries hold raw response bytes: a page that merely LINKS to
+    ``/vulnerabilities/api/`` would attribute an unrelated finding to the api
+    module. A coverage matrix assembled from strings the target controls is the
+    target grading itself.
+    """
+    if _ORIGIN_CLASS_TITLE.match(str(finding.get("title") or "")):
+        return None
+    for field in ("target", "affected_url"):
         found = module_of(str(finding.get(field) or ""))
-        if found:
-            return found
-    for entry in finding.get("evidence", []) or []:
-        found = module_of(str(entry))
         if found:
             return found
     return None

@@ -551,10 +551,17 @@ def read_artifact_scan(engagement: str) -> dict[str, Any]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"present": True, "clean": False, "error": str(exc)}
+    # ``clean`` is a computed PROPERTY on the report model, so it is absent from
+    # the serialised document; reading it with .get() returned None and reported
+    # every clean bundle as a failure. Re-derive it the way the model does —
+    # definite findings fail, and the entropy `suspicions` list is advisory only
+    # and deliberately does not.
+    findings = raw.get("findings") or []
     return {
         "present": True,
-        "clean": bool(raw.get("clean")),
-        "findings": len(raw.get("findings") or []),
+        "clean": not findings,
+        "findings": len(findings),
+        "suspicions": len(raw.get("suspicions") or []),
         "files_scanned": raw.get("files_scanned"),
     }
 
