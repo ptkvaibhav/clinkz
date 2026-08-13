@@ -37,6 +37,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
+from clinkz.engagement.gate import EngagementAbortedError
+
 logger = logging.getLogger(__name__)
 
 #: Location/body hints that a response is the login page rather than content.
@@ -106,8 +108,20 @@ PROTECTED_PATH_CANDIDATES: tuple[str, ...] = (
 )
 
 
-class AuthStateError(Exception):
-    """Raised when an authenticated session could not be established or proven."""
+class AuthStateError(EngagementAbortedError):
+    """Raised when an authenticated session could not be established or proven.
+
+    An :class:`~clinkz.engagement.gate.EngagementAbortedError`, because that is
+    exactly what this is: a condition under which the engagement is not
+    permitted to continue, propagated rather than retried. Scanning an
+    authenticated application anonymously produces an empty report that reads
+    like a clean bill of health, which is worse than no report.
+
+    It used to be a plain ``Exception``, so the orchestrator's phase-level
+    handler converted it to ``status="failed"`` and the CLI reported "the
+    engagement failed" (exit 1) for what is a deliberate, loud refusal. The
+    documented exit-code contract has always said this case exits 3.
+    """
 
 
 class AuthMechanism(StrEnum):

@@ -59,7 +59,7 @@ from clinkz.engagement.auth_state import (
     assert_authenticated,
     detect_auth_mechanism,
 )
-from clinkz.engagement.gate import open_engagement
+from clinkz.engagement.gate import EngagementAbortedError, open_engagement
 from clinkz.engagement.secrets import clear_secrets, register_secret
 from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
@@ -698,6 +698,22 @@ class OrchestratorAgent:
                 summary["phases"]["report"] = report_result
                 self._logger.info("PHASE 3 (REPORT) complete")
 
+            except EngagementAbortedError as exc:
+                # An abort is not a failure. It is the engagement declining to
+                # continue — the authenticated-state assertion could not be
+                # proven, or the window closed mid-run — and the caller must be
+                # able to tell the two apart, because "we refused" and "we
+                # crashed" call for different responses from an operator.
+                # Swallowing it into status="failed" made a deliberate, loud
+                # refusal exit 1 while the documented contract said 3.
+                #
+                # The ``finally`` below still runs: the rails come down, the
+                # ledger reports, the disclosure gate runs, the trace closes.
+                self._logger.error("Engagement ABORTED: %s", exc)
+                await state.update_engagement_status(engagement_id, "aborted")
+                summary["status"] = "aborted"
+                summary["error"] = str(exc)
+                raise
             except Exception as exc:
                 self._logger.error("Orchestrator failed: %s", exc, exc_info=True)
                 await state.update_engagement_status(engagement_id, "failed")
