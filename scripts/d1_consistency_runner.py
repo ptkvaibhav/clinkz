@@ -170,12 +170,28 @@ def newest_engagement_dirs() -> set[str]:
     }
 
 
-def run_pipeline(level: str, index: int) -> tuple[str | None, int, float]:
-    """Run the real end-to-end pipeline; return (engagement_id, rc, seconds)."""
+def run_pipeline(level: str, index: int, authorization: Path) -> tuple[str | None, int, float]:
+    """Run the real end-to-end pipeline; return (engagement_id, rc, seconds).
+
+    The authorization record is a REQUIRED operator input — ``clinkz scan``
+    refuses to start without one and there is no flag that skips it — so the
+    harness supplies a path rather than carrying a record of its own. No
+    benchmark profile: the client-safe destructive refusals stay in force, which
+    is what makes the admin-password-hash damage check below mean anything.
+    """
     before = newest_engagement_dirs()
     started = time.time()
     proc = subprocess.run(
-        [sys.executable, "-m", "clinkz", "scan", "--target", DVWA_BASE],
+        [
+            sys.executable,
+            "-m",
+            "clinkz",
+            "scan",
+            "--target",
+            DVWA_BASE,
+            "--authorization",
+            str(authorization),
+        ],
         capture_output=True,
         text=True,
         timeout=7200,
@@ -479,6 +495,23 @@ def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
         if not missing.strip():
             violations.append(f"demotion states no missing observation: {lead.get('claim')}")
 
+    # The disclosure gate's own verdict, re-read off disk rather than taken from
+    # the run's summary. A bundle that carries credential material is a failed
+    # run whatever it found.
+    disclosure = read_artifact_scan(engagement)
+    if disclosure.get("present") and not disclosure.get("clean"):
+        violations.append(
+            f"ARTIFACT SCAN FAILED: {disclosure.get('findings', '?')} credential shape(s) "
+            f"in the bundle"
+        )
+    elif not disclosure.get("present"):
+        violations.append("no artifact_scan.json in the bundle — the disclosure gate did not run")
+
+    # Every component invoked that contributed nothing. Not a violation: a
+    # degraded component is a coverage fact the operator must SEE, and the run
+    # is still honest about what it proved.
+    ledger = report.get("component_ledger") or {}
+
     return {
         # The diff key: MODULE + PATH, so a query-string difference in the URL
         # the crawl happened to surface is not counted as a different finding.
@@ -492,7 +525,37 @@ def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
         "research_leads": len(report.get("research_leads", [])),
         "classes_fired": sorted(fired),
         "dropped_primary_targets": dropped_primary,
+        "artifact_scan": disclosure,
+        "ledger_alarms": [
+            f"{a.get('component')} [{a.get('kind')}]: {','.join(a.get('alarms') or [])} "
+            f"(invocations={a.get('invocations')}, contributed={a.get('items_contributed')})"
+            for a in (ledger.get("alarms") or [])
+        ],
+        "ledger_never_invoked": list(ledger.get("never_invoked") or []),
         "violations": violations,
+    }
+
+
+def read_artifact_scan(engagement: str) -> dict[str, Any]:
+    """The disclosure gate's verdict for this bundle, read off disk.
+
+    Read from the artifact rather than the run summary on purpose: the gate
+    exists because a guarantee asserted by the logic that produced it is not
+    checked at all, and a harness that took the runner's word for it would
+    reintroduce exactly that.
+    """
+    path = OUTPUTS / engagement / "artifact_scan.json"
+    if not path.is_file():
+        return {"present": False}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"present": True, "clean": False, "error": str(exc)}
+    return {
+        "present": True,
+        "clean": bool(raw.get("clean")),
+        "findings": len(raw.get("findings") or []),
+        "files_scanned": raw.get("files_scanned"),
     }
 
 
@@ -505,7 +568,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--level", required=True, choices=["low", "medium", "high", "impossible"])
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument(
+        "--authorization",
+        required=True,
+        type=Path,
+        help="Path to the authorization record JSON. `clinkz scan` refuses without one.",
+    )
     args = parser.parse_args()
+
+    if not args.authorization.is_file():
+        raise SystemExit(f"FATAL: no authorization record at {args.authorization}")
 
     runs: list[dict[str, Any]] = []
     for index in range(1, args.runs + 1):
@@ -514,7 +586,7 @@ def main() -> int:
         hash_before = admin_password_hash()
         print(f"  reset done; admin hash baseline recorded ({hash_before[:8]}…)", flush=True)
 
-        engagement, rc, elapsed = run_pipeline(args.level, index)
+        engagement, rc, elapsed = run_pipeline(args.level, index, args.authorization)
         hash_after = admin_password_hash()
         damaged = hash_after != hash_before
 
@@ -535,11 +607,14 @@ def main() -> int:
                 "TARGET DAMAGED: admin password hash changed during the run"
             )
         runs.append(record)
+        scan = record.get("artifact_scan") or {}
         print(
             f"  engagement={engagement} rc={rc} {record['seconds']}s "
             f"confirmed={len(record.get('confirmed', []))} "
             f"leads={len(record.get('leads', []))} "
-            f"hash_unchanged={record['admin_hash_unchanged']}",
+            f"hash_unchanged={record['admin_hash_unchanged']} "
+            f"artifact_scan={'clean' if scan.get('clean') else scan.get('present', 'absent')} "
+            f"ledger_alarms={len(record.get('ledger_alarms', []))}",
             flush=True,
         )
 
@@ -574,6 +649,23 @@ def main() -> int:
     print(f"\n  VALIDATION violations across all runs: {len(violations)}")
     for violation in violations:
         print(f"    X {violation}")
+
+    # Degradation is reported loudly and separately. It is not a violation — a
+    # component that contributed nothing did not make the run dishonest — but it
+    # is the difference between "the target has no such surface" and "the thing
+    # that looks for it never ran", and only one of those is a result.
+    print("\n  COMPONENT DEGRADATION (invoked, contributed nothing)")
+    any_alarm = False
+    for record in runs:
+        alarms = record.get("ledger_alarms") or []
+        if alarms:
+            any_alarm = True
+            print(f"    run {record['run']} ({record.get('engagement')}):")
+            for alarm in alarms:
+                print(f"      ! {alarm}")
+    if not any_alarm:
+        print("    none — every invoked component contributed at least one item")
+
     print(f"\n  written: {out}")
     return 0 if not flaky and not violations else 1
 
