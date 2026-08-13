@@ -127,29 +127,49 @@ def reset_and_set_level(level: str) -> None:
         raise SystemExit(f"FATAL: a fresh session sees security={actual!r}, wanted {level!r}")
 
 
-def admin_password_hash() -> str:
-    """Read ``admin``'s stored hash straight from the DVWA database."""
-    proc = subprocess.run(
-        [
-            "docker",
-            "exec",
-            DVWA_DB_CONTAINER,
-            "mysql",
-            "-udvwa",
-            "-pp@ssw0rd",
-            "-N",
-            "-B",
-            "-e",
-            "SELECT password FROM dvwa.users WHERE user='admin';",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
+def admin_password_hash(attempts: int = 10, delay: float = 2.0) -> str:
+    """Read ``admin``'s stored hash straight from the DVWA database.
+
+    Retried, because the read races the reset that precedes it. ``setup.php``'s
+    create_db DROPS and repopulates ``users``, and the POST can return while PHP
+    is still rebuilding, so a single point-in-time SELECT can legitimately see
+    zero rows and kill a two-hour ladder before its first run. That is exactly
+    what happened to the first HIGH attempt: empty stdout, empty stderr, and the
+    same query returned the expected hash moments later.
+
+    The retry does not weaken the damage check — it still reads the real stored
+    hash, and a row that never appears is still FATAL.
+    """
+    last_error = ""
+    for attempt in range(attempts):
+        proc = subprocess.run(  # noqa: S603 — list-form, fixed argv
+            [
+                "docker",
+                "exec",
+                DVWA_DB_CONTAINER,
+                "mysql",
+                "-udvwa",
+                "-pp@ssw0rd",
+                "-N",
+                "-B",
+                "-e",
+                "SELECT password FROM dvwa.users WHERE user='admin';",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        value = [line for line in proc.stdout.strip().splitlines() if line.strip()]
+        if value:
+            return value[-1].strip()
+        last_error = proc.stderr.strip()[:200]
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    raise SystemExit(
+        f"FATAL: could not read admin hash after {attempts} attempts "
+        f"over {attempts * delay:.0f}s: {last_error!r}"
     )
-    value = [line for line in proc.stdout.strip().splitlines() if line.strip()]
-    if not value:
-        raise SystemExit(f"FATAL: could not read admin hash: {proc.stderr.strip()[:200]}")
-    return value[-1].strip()
 
 
 # ---------------------------------------------------------------------------
