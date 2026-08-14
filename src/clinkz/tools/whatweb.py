@@ -57,6 +57,79 @@ class WhatWebOutput(ToolOutput):
         return components
 
 
+#: Cap on JSON objects recovered from one interleaved blob. The plugin payloads
+#: are built from response headers the TARGET chose, so the scanner's input is
+#: attacker-influenced and gets a bound like every other parser here. Far above
+#: any real scan: whatweb emits one object per URL it visited.
+_MAX_SCAN_OBJECTS = 2000
+
+
+def _top_level_json_objects(text: str, limit: int = _MAX_SCAN_OBJECTS) -> list[str]:
+    """Extract balanced top-level ``{...}`` spans, ignoring everything between.
+
+    ``--log-json=-`` does not give stdout to the JSON log alone: whatweb keeps
+    writing its human-readable *brief* output to the same stream, and the two
+    interleave. The real shape is an array whose elements are separated by
+    ``,`` lines with the brief lines spliced in before the closing bracket::
+
+        [
+        {"target":"http://host/","http_status":302,...}
+        ,
+        {"target":"http://host/login.php","http_status":200,...}
+        http://host/ [302 Found] Apache[2.4.67], Cookies[...], ...
+        http://host/login.php [200 OK] Apache[2.4.67], DVWA, ...
+        ]
+
+    ``json.loads`` on that blob raises, so every DVWA run discarded 100% of a
+    successful fingerprint — Apache 2.4.67 and PHP 8.5.6 among it — and the
+    whole published-CVE path ran on an empty component inventory. The ledger
+    caught it (``whatweb`` invocations=1, contributed=0) exactly as designed.
+
+    Scanning for balanced objects rather than repairing the array handles the
+    interleaved form, a clean array, NDJSON and a bare object with one rule.
+    String state and backslash escapes are tracked so a brace inside a quoted
+    value (a ``Title`` plugin string, say) cannot end an object early.
+
+    Args:
+        text: Raw stdout, ANSI already stripped.
+        limit: Maximum objects to recover.
+
+    Returns:
+        The raw substrings, in order. Never raises — callers decide what an
+        empty list means.
+    """
+    spans: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}":
+            if depth == 0:
+                continue  # stray brace in the brief output — not ours
+            depth -= 1
+            if depth == 0 and start >= 0:
+                spans.append(text[start : index + 1])
+                start = -1
+                if len(spans) >= limit:
+                    break
+    return spans
+
+
 class WhatWebTool(ToolBase):
     """WhatWeb technology fingerprinter.
 
@@ -121,12 +194,17 @@ class WhatWebTool(ToolBase):
     def parse_output(self, raw_output: str) -> WhatWebOutput:
         """Parse WhatWeb JSON log output into WhatWebScanResult models.
 
-        WhatWeb outputs a JSON array via --log-json=-, where each element
+        WhatWeb outputs a JSON array via ``--log-json=-``, where each element
         represents one scanned URL and contains a ``plugins`` dict mapping
-        plugin name to detected strings/versions.
+        plugin name to detected strings/versions — but it writes its brief
+        human-readable log to the same stream, so the two INTERLEAVE and the
+        blob as a whole is not valid JSON. Whole-blob parsing is therefore only
+        the fast path; when it fails, the balanced-object scanner in
+        :func:`_top_level_json_objects` recovers each element on its own. See
+        that function for the shape and for what the assumption cost.
 
         Args:
-            raw_output: Raw JSON string from whatweb --log-json=-.
+            raw_output: Raw stdout from whatweb --log-json=-.
 
         Returns:
             WhatWebOutput with per-URL technology fingerprints.
@@ -137,15 +215,28 @@ class WhatWebTool(ToolBase):
         # Strip ANSI escape codes that WhatWeb emits when run inside Docker
         cleaned = re.sub(r"\x1b\[[0-9;]*m", "", raw_output)
 
+        data: Any
         try:
             data = json.loads(cleaned)
-        except json.JSONDecodeError as exc:
-            return WhatWebOutput(
-                tool_name=self.name,
-                success=False,
-                raw_output=raw_output,
-                error=f"JSON parse error: {exc}",
-            )
+        except json.JSONDecodeError as whole_blob_error:
+            data = []
+            for span in _top_level_json_objects(cleaned):
+                try:
+                    entry = json.loads(span)
+                except json.JSONDecodeError:
+                    continue
+                # A log element always carries ``plugins``, and that is the key
+                # this parser consumes. Requiring it discriminates a scan result
+                # from a brace-bearing brief line that happens to parse.
+                if isinstance(entry, dict) and isinstance(entry.get("plugins"), dict):
+                    data.append(entry)
+            if not data:
+                return WhatWebOutput(
+                    tool_name=self.name,
+                    success=False,
+                    raw_output=raw_output,
+                    error=f"JSON parse error: {whole_blob_error}",
+                )
 
         # Normalise: accept both a JSON array and a single object
         if isinstance(data, dict):
