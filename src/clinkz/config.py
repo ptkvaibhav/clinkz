@@ -90,15 +90,26 @@ class Settings(BaseModel):
         default=16000, description="max_tokens for a single LLM call (covers thinking + text)"
     )
 
-    # Prompt caching. Applies only where a caller supplied a stable prefix
+    # Prompt caching. Applies only where a caller supplied an INVARIANT prefix
     # (llm.base.PromptSegments); a plain-string prompt is unaffected either way.
+    # The breakpoint sits after the engine-invariant span only — see that class
+    # for why caching the engagement-scoped span cost 96,759 write tokens and
+    # returned zero reads across 154 recorded runs.
     llm_prompt_cache_enabled: bool = Field(
-        default=True, description="Attach a cache breakpoint to run-stable prompt prefixes"
+        default=True, description="Attach a cache breakpoint to the engine-invariant prefix"
     )
-    # "5m" (1.25x write premium) or "1h" (2.0x). Measured across the four P7
-    # engagements, the exploit agent's largest gap between consecutive Anthropic
-    # calls was 118s and NO gap exceeded 5 minutes, so the 5m entry never
-    # expires mid-run and 1h would double the write cost for nothing.
+    # "5m" (1.25x write premium) or "1h" (2.0x). Re-derived from every recorded
+    # trace rather than the four P7 engagements the previous note cited: across
+    # 148 runs and 9,419 consecutive exploit/anthropic call gaps the median is
+    # 10.1s, p90 is 28.3s, the maximum is 337.9s, exactly ONE gap exceeds 300s
+    # and NONE exceeds 3600s. So a 5m entry effectively never expires mid-run
+    # and 1h would double the write premium for nothing.
+    #
+    # Runs last 726-2847s, which looks like an argument for 1h until you ask
+    # which calls the long gaps sit between: the only two large Anthropic
+    # prompts in a run are the exploit plan and the false-positive cross-check,
+    # ~20 minutes apart and sharing no prefix at all. A longer TTL cannot help
+    # two calls that would never match each other.
     llm_prompt_cache_ttl: str = Field(
         default="5m", description="Cache breakpoint TTL: '5m' or '1h'"
     )

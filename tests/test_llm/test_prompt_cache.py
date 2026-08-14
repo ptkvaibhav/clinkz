@@ -6,6 +6,21 @@ assert on the *request the client builds*, not on a provider's reply — a hit
 rate can only be measured against a live API, but whether we ever had a chance
 at one is decidable offline, and that is the part that silently regresses.
 
+What this file used to miss, and what it cost. ``TestPrefixStability`` handed
+the client the SAME ``PromptSegments`` object twice and asserted the two
+requests carried the same prefix bytes. That is a true statement about the
+mechanism and says nothing about the deployment: the prefix in production was
+the engagement's observed endpoint inventory, presented on exactly ONE call per
+run, so it was never re-presented at all — stably or otherwise. Across 154
+recorded engagements that produced 96,759 cache-WRITE tokens and zero
+cache-read tokens, a 1.25x premium paid every run for an entry nothing read.
+
+A green test over an object reused in the test is not evidence about the object
+the caller builds. So the tests below now assert on WHICH SPAN takes the
+breakpoint, and the tests at the end assert the property that actually decides
+whether caching can ever pay: the same span coming back byte-identical from
+independently constructed prompts.
+
 No API key and no network: every test drives ``_call_with_backoff`` through a
 mock and inspects the kwargs the client passed it.
 """
@@ -98,6 +113,17 @@ class TestPromptSegments:
         assert PromptSegments(stable="", volatile="ASK").flatten() == "ASK"
         assert PromptSegments(stable="PRE", volatile="").flatten() == "PRE"
 
+    def test_all_three_scopes_render_widest_first(self) -> None:
+        seg = PromptSegments(invariant="ENGINE", stable="TARGET", volatile="ASK")
+        assert seg.flatten() == "ENGINE\n\nTARGET\n\nASK"
+        assert seg.context == "ENGINE\n\nTARGET"
+
+    def test_the_model_sees_the_same_bytes_however_they_are_split(self) -> None:
+        """The split is an accounting decision, never a content change."""
+        split = PromptSegments(invariant="ENGINE", stable="TARGET", volatile="ASK")
+        merged = PromptSegments(stable="ENGINE\n\nTARGET", volatile="ASK")
+        assert split.flatten() == merged.flatten()
+
 
 # ---------------------------------------------------------------------------
 # Breakpoint placement
@@ -115,12 +141,38 @@ class TestBreakpointPlacement:
     @pytest.mark.asyncio
     async def test_stable_prefix_over_the_floor_carries_a_cache_breakpoint(self) -> None:
         stable = "S" * 8000  # ~2000 tokens, over sonnet-5's 1024 floor
-        kwargs = await _call(_client(), PromptSegments(stable=stable, volatile="ASK"))
+        kwargs = await _call(_client(), PromptSegments(invariant=stable, volatile="ASK"))
         assert kwargs["system"] == [
             {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}}
         ]
         # The volatile half stays in the message, after the breakpoint.
         assert kwargs["messages"] == [{"role": "user", "content": "ASK"}]
+
+    @pytest.mark.asyncio
+    async def test_the_engagement_scoped_span_is_sent_outside_the_breakpoint(self) -> None:
+        """The regression, pinned.
+
+        The engagement-scoped span is the growing endpoint inventory: ~12,500
+        tokens, different in every run, presented once. Caching it bought a
+        1.25x premium on an entry nothing ever read. It must be sent — the
+        model needs it — and it must sit AFTER the marked block, so it is
+        outside the cached prefix.
+        """
+        invariant = "E" * 8000
+        scoped = "T" * 40000
+        kwargs = await _call(
+            _client(), PromptSegments(invariant=invariant, stable=scoped, volatile="ASK")
+        )
+        assert kwargs["system"] == [
+            {"type": "text", "text": invariant, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": scoped},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_engagement_scoped_span_alone_is_never_cached(self) -> None:
+        """No invariant span means no breakpoint — not a breakpoint on the target."""
+        kwargs = await _call(_client(), PromptSegments(stable="T" * 40000, volatile="ASK"))
+        assert kwargs["system"] == [{"type": "text", "text": "T" * 40000}]
 
     @pytest.mark.asyncio
     async def test_prefix_under_the_floor_is_sent_but_not_marked(self) -> None:
@@ -130,7 +182,7 @@ class TestBreakpointPlacement:
         created, and would report a hit rate that cannot arrive.
         """
         stable = "S" * 400  # ~100 tokens, under the 1024 floor
-        kwargs = await _call(_client(), PromptSegments(stable=stable, volatile="ASK"))
+        kwargs = await _call(_client(), PromptSegments(invariant=stable, volatile="ASK"))
         assert kwargs["system"] == [{"type": "text", "text": stable}]
 
     @pytest.mark.asyncio
@@ -138,7 +190,7 @@ class TestBreakpointPlacement:
         stable = "S" * 8000
         kwargs = await _call(
             _client(),
-            PromptSegments(stable=stable, volatile="ASK"),
+            PromptSegments(invariant=stable, volatile="ASK"),
             llm_prompt_cache_enabled=False,
         )
         assert kwargs["system"] == [{"type": "text", "text": stable}]
@@ -148,7 +200,7 @@ class TestBreakpointPlacement:
         stable = "S" * 8000
         kwargs = await _call(
             _client(),
-            PromptSegments(stable=stable, volatile="ASK"),
+            PromptSegments(invariant=stable, volatile="ASK"),
             llm_prompt_cache_ttl="1h",
         )
         assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
@@ -166,32 +218,115 @@ class TestBreakpointPlacement:
 
 class TestPrefixStability:
     @pytest.mark.asyncio
-    async def test_prefix_bytes_are_identical_across_calls_in_a_run(self) -> None:
-        client = _client()
-        stable = "S" * 8000
-        first = await _call(client, PromptSegments(stable=stable, volatile="ask one"))
-        second = await _call(client, PromptSegments(stable=stable, volatile="ask two"))
-        assert first["system"][0]["text"] == second["system"][0]["text"]
-
-    @pytest.mark.asyncio
     async def test_changing_the_volatile_half_does_not_disturb_the_prefix(self) -> None:
         """The whole point of the split: a new question is not a new prefix."""
         client = _client()
         stable = "S" * 8000
-        first = await _call(client, PromptSegments(stable=stable, volatile="ask one"))
+        first = await _call(client, PromptSegments(invariant=stable, volatile="ask one"))
         second = await _call(
-            client, PromptSegments(stable=stable, volatile="a rather different ask")
+            client, PromptSegments(invariant=stable, volatile="a rather different ask")
         )
         assert first["system"] == second["system"]
         assert first["messages"] != second["messages"]
 
     @pytest.mark.asyncio
-    async def test_a_changed_prefix_really_does_change_the_request(self) -> None:
-        """Control for the test above — it must be able to fail."""
+    async def test_changing_the_engagement_span_does_not_disturb_the_prefix(self) -> None:
+        """The endpoint inventory GROWS during a run. That must not cost the cache.
+
+        This is the property the old two-call test was reaching for and could
+        not reach: it reused one object, so nothing about it could ever change.
+        Here the engagement-scoped span really does differ between the calls —
+        which is what a live crawl does — and the cached block still matches.
+        """
         client = _client()
-        a = await _call(client, PromptSegments(stable="A" * 8000, volatile="ask"))
-        b = await _call(client, PromptSegments(stable="B" * 8000, volatile="ask"))
+        invariant = "E" * 8000
+        first = await _call(
+            client,
+            PromptSegments(invariant=invariant, stable='[{"url":"/a"}]', volatile="ask"),
+        )
+        second = await _call(
+            client,
+            PromptSegments(
+                invariant=invariant,
+                stable='[{"url":"/a"},{"url":"/b"},{"url":"/c"}]',
+                volatile="ask",
+            ),
+        )
+        assert first["system"][0] == second["system"][0]
+        assert first["system"][1] != second["system"][1]
+
+    @pytest.mark.asyncio
+    async def test_a_changed_prefix_really_does_change_the_request(self) -> None:
+        """Control for the tests above — they must be able to fail."""
+        client = _client()
+        a = await _call(client, PromptSegments(invariant="A" * 8000, volatile="ask"))
+        b = await _call(client, PromptSegments(invariant="B" * 8000, volatile="ask"))
         assert a["system"] != b["system"]
+
+
+class TestTheInvariantSpanIsActuallyInvariant:
+    """The property caching stands or falls on, measured on the REAL builder.
+
+    Not on a fixture and not on a reused object: the planner's own invariant
+    prefix, built twice from independently constructed inputs, must come back
+    byte-identical. If it does not, every write is a guaranteed miss and the
+    breakpoint is pure cost — which is precisely the failure this whole change
+    exists to make impossible to ship unnoticed.
+    """
+
+    def test_the_planning_invariant_prefix_is_byte_identical_across_engagements(self) -> None:
+        from clinkz.agents.exploit import ExploitAgent
+
+        first = ExploitAgent._planning_invariant_prefix()
+        second = ExploitAgent._planning_invariant_prefix()
+        assert first == second
+        assert first, "the invariant prefix is empty — nothing would ever be cached"
+
+    def test_the_invariant_prefix_does_not_move_when_the_target_does(self) -> None:
+        """The property that decides everything, tested against real inputs.
+
+        The prefix must not depend on what was observed. A hardcoded URL inside
+        a WORKED EXAMPLE is engine content and stays — what may not appear is
+        anything derived from this engagement, and the way to check that is to
+        vary the engagement and watch the span not move.
+        """
+        from clinkz.agents.exploit import ExploitAgent
+        from clinkz.models.scan import Endpoint
+
+        agent = object.__new__(ExploitAgent)
+        empty = ExploitAgent._build_planning_prefix(agent, [], [], [], [], 120)
+        busy = ExploitAgent._build_planning_prefix(
+            agent,
+            [Endpoint(url="http://victim/a", method="GET", params=["id"])],
+            ["php", "apache"],
+            [{"technique": "x"}],
+            [],
+            120,
+        )
+        assert empty != busy, "the engagement span must reflect the engagement"
+        # ...and the cached span is untouched by either.
+        invariant = ExploitAgent._planning_invariant_prefix()
+        assert invariant == ExploitAgent._planning_invariant_prefix()
+        assert "victim" not in invariant
+
+    def test_the_invariant_prefix_carries_the_per_class_preconditions(self) -> None:
+        """What was moved must actually be there — not silently dropped."""
+        from clinkz.agents.exploit import TIER1_TESTS, ExploitAgent
+
+        prefix = ExploitAgent._planning_invariant_prefix()
+        assert "Methodology catalogue" in prefix
+        assert "Worked examples" in prefix
+        for name in TIER1_TESTS:
+            assert name in prefix, f"{name} lost its precondition in the split"
+
+    def test_the_engagement_span_carries_the_observations(self) -> None:
+        """The negative control: the two halves must not have merged."""
+        from clinkz.agents.exploit import ExploitAgent
+
+        agent = object.__new__(ExploitAgent)
+        scoped = ExploitAgent._build_planning_prefix(agent, [], [], [], [], 120)
+        assert "Endpoint inventory" in scoped
+        assert "Methodology catalogue" not in scoped
 
 
 # ---------------------------------------------------------------------------
@@ -231,10 +366,10 @@ class TestCacheFloor:
         stable = "S" * 3000  # ~750 tokens: over 512, under 4096
 
         on_opus5 = await _call(
-            _client("claude-opus-5"), PromptSegments(stable=stable, volatile="ASK")
+            _client("claude-opus-5"), PromptSegments(invariant=stable, volatile="ASK")
         )
         on_opus46 = await _call(
-            _client("claude-opus-4-6"), PromptSegments(stable=stable, volatile="ASK")
+            _client("claude-opus-4-6"), PromptSegments(invariant=stable, volatile="ASK")
         )
 
         assert "cache_control" in on_opus5["system"][0]
