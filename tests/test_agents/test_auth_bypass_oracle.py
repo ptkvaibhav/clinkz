@@ -371,6 +371,109 @@ class TestApplicabilityGate:
 # ---------------------------------------------------------------------------
 
 
+class TestTheArmsAreSessionless:
+    """A class claiming "authenticated without a credential" must not start
+    the request already authenticated.
+
+    Found by the live run, not by a unit test. On DVWA the login form sits
+    inside an app the engagement is logged into and the server re-issues
+    PHPSESSID on every request, so all three arms came back carrying an auth
+    artifact and the differential was structurally unobservable: six refusals
+    with `shape_matched_control_also_authenticated`. The refusal was correct —
+    a control that also authenticates proves nothing — but the cause was our
+    own session rather than the target.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_anonymous_helper_declares_no_session(self) -> None:
+        """An empty cookies dict is NOT enough — the jar is ambient."""
+        from unittest.mock import AsyncMock, patch
+
+        agent = _agent()
+        with patch("clinkz.tools.http_client.HTTPClientTool") as tool_cls:
+            tool = tool_cls.return_value
+            tool.validate_input.side_effect = lambda a: a
+            tool.execute = AsyncMock(return_value="{}")
+            tool.parse_output.return_value = type(
+                "P", (), {"status_code": 200, "response_body": "", "response_headers": {}}
+            )()
+            await agent._http_send_anonymous("POST", "http://t/login", form_data={"u": "a"})
+
+        args = tool.validate_input.call_args.args[0]
+        assert args["no_session"] is True
+        assert args["cookies"] == {}
+
+    @pytest.mark.asyncio
+    async def test_form_data_is_encoded_into_the_body(self) -> None:
+        """The client takes a body STRING; a dict would be silently dropped."""
+        from unittest.mock import AsyncMock, patch
+
+        agent = _agent()
+        with patch("clinkz.tools.http_client.HTTPClientTool") as tool_cls:
+            tool = tool_cls.return_value
+            tool.validate_input.side_effect = lambda a: a
+            tool.execute = AsyncMock(return_value="{}")
+            tool.parse_output.return_value = type(
+                "P", (), {"status_code": 200, "response_body": "", "response_headers": {}}
+            )()
+            await agent._http_send_anonymous(
+                "POST", "http://t/login", form_data={"username": "a b", "password": "p"}
+            )
+
+        args = tool.validate_input.call_args.args[0]
+        assert args["body"] == "username=a+b&password=p"
+        assert args["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+
+    @pytest.mark.asyncio
+    async def test_a_target_authored_mutating_verb_is_clamped(self) -> None:
+        """The verb can come from a `<form method=...>` the TARGET wrote.
+
+        The session-carrying path clamps to POST/PUT/PATCH; a carrier that did
+        not would send an anonymous DELETE from a probe whose whole job is to
+        observe a login.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        agent = _agent()
+        with patch("clinkz.tools.http_client.HTTPClientTool") as tool_cls:
+            tool = tool_cls.return_value
+            tool.validate_input.side_effect = lambda a: a
+            tool.execute = AsyncMock(return_value="{}")
+            tool.parse_output.return_value = type(
+                "P", (), {"status_code": 200, "response_body": "", "response_headers": {}}
+            )()
+            await agent._http_send_anonymous("DELETE", "http://t/login", json_body={"a": 1})
+
+        assert tool.validate_input.call_args.args[0]["method"] == "POST"
+
+    @pytest.mark.asyncio
+    async def test_every_arm_goes_through_the_sessionless_carrier(self) -> None:
+        """All three arms, not just the probe — a session on any one of them
+        reintroduces the confound."""
+        from unittest.mock import AsyncMock
+
+        from clinkz.agents.exploit import PageAnalysis, _HTTPResponse
+
+        agent = _agent()
+        page = PageAnalysis(
+            url="http://t/login", body="", status=200, input_params=["email", "password"]
+        )
+        agent._auth_bypass_send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=401, body="{}", headers={})
+        )
+        agent._send_probe = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("an arm used the session-carrying probe")
+        )
+        agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
+        agent._authenticated_as = ""
+
+        ok, _ = await agent._sqli_verify_auth_bypass(
+            page, "email", "1' OR '1'='1'-- -", "1' OR '1'='2'-- -", {"value": "1"}
+        )
+        assert ok is False
+        assert agent._auth_bypass_send_probe.await_count == 3
+
+
 class TestSynthesis:
     def test_probe_and_control_differ_only_in_the_boolean(self) -> None:
         from clinkz.models.methodology import InjectionPrimitives, InjectionType, SQLDialect
