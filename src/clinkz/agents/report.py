@@ -684,44 +684,69 @@ class ReportAgent(BaseAgent):
             return
         alarms = ledger.get("alarms") or []
         summary = ledger.get("summary") or {}
+        correctly_empty = [c for c in (ledger.get("correctly_empty") or []) if isinstance(c, dict)]
         lines.extend(["## Component contribution", ""])
         if not alarms:
             lines.extend(
                 [
                     f"All {summary.get('components_tracked', 0)} tracked component(s) "
-                    "contributed at least one item. No fallback covered for a "
-                    "component that produced nothing.",
+                    "contributed at least one item, or found nothing correctly. No "
+                    "fallback covered for a component that produced nothing.",
                     "",
                 ]
             )
-            return
-        lines.extend(
-            [
-                "The components below ran and contributed nothing, or were covered "
-                "for by a fallback. A finding total says nothing about which "
-                "components produced it, so they are named here.",
-                "",
-                "| Component | Kind | Invoked | Succeeded | Items | Alarm |",
-                "| --- | --- | ---: | ---: | ---: | --- |",
-            ]
-        )
-        for rec in alarms:
-            if not isinstance(rec, dict):
-                continue
-            lines.append(
-                f"| {rec.get('component', '?')} | {rec.get('kind', '?')} | "
-                f"{rec.get('invocations', 0)} | {rec.get('successes', 0)} | "
-                f"{rec.get('items_contributed', 0)} | "
-                f"{', '.join(rec.get('alarms') or []) or '—'} |"
+        else:
+            lines.extend(
+                [
+                    "The components below ran and contributed nothing, or were covered "
+                    "for by a fallback. A finding total says nothing about which "
+                    "components produced it, so they are named here.",
+                    "",
+                    "| Component | Kind | Invoked | Succeeded | Items | Alarm |",
+                    "| --- | --- | ---: | ---: | ---: | --- |",
+                ]
             )
-        lines.append("")
-        for fb in ledger.get("fallbacks") or []:
-            if isinstance(fb, dict):
+            for rec in alarms:
+                if not isinstance(rec, dict):
+                    continue
                 lines.append(
-                    f"- Fallback: **{fb.get('covered_by', '?')}** covered for "
-                    f"**{fb.get('component', '?')}** ({fb.get('reason') or 'no reason recorded'})"
+                    f"| {rec.get('component', '?')} | {rec.get('kind', '?')} | "
+                    f"{rec.get('invocations', 0)} | {rec.get('successes', 0)} | "
+                    f"{rec.get('items_contributed', 0)} | "
+                    f"{', '.join(rec.get('alarms') or []) or '—'} |"
                 )
-        lines.append("")
+            lines.append("")
+            for fb in ledger.get("fallbacks") or []:
+                if isinstance(fb, dict):
+                    lines.append(
+                        f"- Fallback: **{fb.get('covered_by', '?')}** covered for "
+                        f"**{fb.get('component', '?')}** "
+                        f"({fb.get('reason') or 'no reason recorded'})"
+                    )
+            lines.append("")
+
+        if correctly_empty:
+            # Deliberately NOT in the table above. These ran, produced nothing,
+            # and were right to — a GraphQL reader on an application with no
+            # GraphQL. Listing them as alarms every run is how an alarm section
+            # stops being read.
+            lines.extend(
+                [
+                    "### Found nothing, correctly",
+                    "",
+                    "These components ran and produced nothing because the input "
+                    "they read was not present on this target — not because they "
+                    "failed. Each states what it examined, so the claim is "
+                    "checkable rather than self-assessed.",
+                    "",
+                ]
+            )
+            for rec in correctly_empty:
+                reasons = "; ".join(str(r) for r in (rec.get("reasons") or []))
+                lines.append(
+                    f"- **{rec.get('component', '?')}** — {reasons or 'precondition absent'}"
+                )
+            lines.append("")
 
     @staticmethod
     def _render_header(lines: list[str], report: PentestReport) -> None:
