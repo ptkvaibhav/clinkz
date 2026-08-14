@@ -37,6 +37,7 @@ from clinkz.llm.base import (
     LLMUnavailableError,
     LLMUsageTotals,
     PromptLike,
+    ProviderAccountError,
     RateLimitError,
     ServiceUnavailableError,
     flatten_prompt,
@@ -87,6 +88,25 @@ _API_KEY_ENV: dict[str, str | None] = {
     "openai": "OPENAI_API_KEY",
     "ollama": None,
 }
+
+#: Providers observed to be in a terminal ACCOUNT state during this process.
+#:
+#: Process-wide rather than per-client on purpose: a depleted credit balance is
+#: a property of the KEY, and every agent in the run shares it. Discovering it
+#: once per ``ResilientLLMClient`` would mean discovering it five times.
+#:
+#: Engagement ``f6a550a4`` is the case. 79 Anthropic attempts, 76 of them the
+#: same ``400 … credit balance is too low``, each one a full round-trip to
+#: re-learn a fact established by the first. The chain was working exactly as
+#: designed — an unexpected error is treated as retriable, because we would
+#: rather finish on a backup than halt on a transient quirk — and that is the
+#: right rule for a quirk and the wrong one for an account.
+_ACCOUNT_DISABLED_PROVIDERS: set[str] = set()
+
+
+def reset_account_disabled_providers() -> None:
+    """Clear the terminal-account set. For tests and for a fresh process."""
+    _ACCOUNT_DISABLED_PROVIDERS.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +272,40 @@ class ResilientLLMClient(LLMClient):
         if stats is None:
             return None
         self.run_totals.add(stats)
+        self._record_cache_economics(stats)
         return stats
+
+    @staticmethod
+    def _record_cache_economics(stats: CallStats) -> None:
+        """Report the prompt cache to the ledger as an ordinary component.
+
+        The cache regression is exactly the shape this ledger exists to catch,
+        and it went unseen for a week anyway because nothing was reporting it:
+        a component invoked on every planning call, succeeding every time,
+        contributing **zero**. 96,759 cache-write tokens and zero cache-read
+        tokens across 154 recorded engagements, while every run looked healthy.
+
+        So the cache is a ledger component now, and the item it contributes is
+        the only thing a cache is for: **tokens actually served from it**. A
+        write with no read trips ``SILENT`` in the run log and in
+        ``report.json``, next to every other component that produced nothing.
+
+        A call that never carried a breakpoint is not an invocation — the
+        capability was not reached for, so recording it would drown the signal
+        in every uncached call the run makes.
+        """
+        if not (stats.cache_creation_input_tokens or stats.cache_read_input_tokens):
+            return
+        record_contribution(
+            name=f"llm:{stats.provider or 'unknown'}:prompt_cache",
+            kind=ComponentKind.LLM,
+            items=stats.cache_read_input_tokens,
+            ok=True,
+            note=(
+                f"write={stats.cache_creation_input_tokens} "
+                f"read={stats.cache_read_input_tokens} uncached={stats.input_tokens}"
+            ),
+        )
 
     @staticmethod
     def _cache_trace_fields(stats: CallStats | None) -> dict[str, Any]:
@@ -296,6 +349,14 @@ class ResilientLLMClient(LLMClient):
 
         for provider in self.fallback_chain:
             declare_component(name=f"llm:{provider}", kind=ComponentKind.LLM_PROVIDER)
+            if provider in _ACCOUNT_DISABLED_PROVIDERS:
+                self._logger.debug(
+                    "LLM provider %s skipped for agent %s: terminal account condition "
+                    "already observed this run",
+                    provider,
+                    self.agent_role,
+                )
+                continue
             if not self._has_api_key(provider):
                 env_var = _API_KEY_ENV.get(provider) or "<no env var>"
                 self._logger.warning(
@@ -340,6 +401,26 @@ class ResilientLLMClient(LLMClient):
                         reason=type(last_error).__name__ if last_error else "chain rotation",
                     )
                 return result
+            except ProviderAccountError as exc:
+                # Terminal for the rest of the process, not for this call: the
+                # chain still falls through to the next provider so the
+                # engagement completes, but nobody asks this one again.
+                self._logger.error(
+                    "LLM provider %s is in a terminal account state — excluding it for the "
+                    "remainder of this run (every later call would repeat the same "
+                    "refusal): %s",
+                    provider,
+                    exc,
+                )
+                _ACCOUNT_DISABLED_PROVIDERS.add(provider)
+                last_error = exc
+                record_contribution(
+                    name=f"llm:{provider}",
+                    kind=ComponentKind.LLM_PROVIDER,
+                    ok=False,
+                    note=f"ProviderAccountError (provider disabled for this run): {exc}",
+                )
+                continue
             except (RateLimitError, ServiceUnavailableError, LLMTimeoutError) as exc:
                 self._logger.warning(
                     "LLM provider %s raised %s — trying next in chain",

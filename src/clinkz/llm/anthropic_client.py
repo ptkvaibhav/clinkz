@@ -26,6 +26,7 @@ from clinkz.llm.base import (
     LLMClient,
     LLMMessage,
     PromptLike,
+    ProviderAccountError,
     RateLimitError,
     ServiceUnavailableError,
     ToolCall,
@@ -165,6 +166,30 @@ def _is_service_unavailable_error(exc: Exception) -> bool:
     msg = str(exc).lower()
     code = getattr(exc, "status_code", None)
     return code in (503, 529) or "503" in msg or "529" in msg or "overloaded" in msg
+
+
+#: Substrings that identify an ACCOUNT condition rather than a transient fault.
+#: Matched against the provider's own error text, which is where the condition
+#: is actually stated — the status code is a plain 400 and says nothing.
+_ACCOUNT_ERROR_MARKERS: tuple[str, ...] = (
+    "credit balance is too low",
+    "billing",
+    "quota exceeded for your account",
+    "invalid x-api-key",
+    "authentication_error",
+    "permission_error",
+)
+
+
+def _is_account_error(exc: Exception) -> bool:
+    """Return True if the provider refused on a durable account condition.
+
+    Deliberately narrow. A false positive here costs the engagement its primary
+    provider for the whole run, so the match is on explicit account language and
+    never on the bare 400 — plenty of 400s are one malformed request.
+    """
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _ACCOUNT_ERROR_MARKERS)
 
 
 def _is_timeout_error(exc: Exception) -> bool:
@@ -329,6 +354,11 @@ class AnthropicClient(LLMClient):
                 )
             except Exception as exc:
                 last_exc = exc
+                # An account condition is never retried: retrying spends the
+                # backoff budget re-confirming a fact that will not change
+                # inside this run.
+                if _is_account_error(exc):
+                    raise ProviderAccountError(f"Anthropic account condition: {exc}") from exc
                 if _is_retriable_error(exc) and attempt < max_retries - 1:
                     wait = min(base_delay * (2**attempt), max_delay)
                     logger.warning(
@@ -389,12 +419,27 @@ class AnthropicClient(LLMClient):
     # Prompt assembly (incl. the cache breakpoint)
     # ------------------------------------------------------------------
 
-    def _system_blocks_for(self, stable: str) -> list[dict[str, Any]] | None:
-        """Render the run-stable prefix as a system block, cached when worthwhile.
+    def _system_blocks(
+        self,
+        invariant: str,
+        engagement_scoped: str = "",
+    ) -> list[dict[str, Any]] | None:
+        """Render the context as system blocks, with the breakpoint on the
+        **invariant** one only.
 
-        The breakpoint goes on the **last system block**, which is where the
-        rendered prompt order (``tools`` → ``system`` → ``messages``) puts the
-        boundary between what repeats and what does not.
+        The rendered prompt order is ``tools`` → ``system`` → ``messages``, and
+        a ``cache_control`` marker caches everything up to and including the
+        block that carries it. So block 0 holds the engine-invariant bytes and
+        takes the breakpoint; block 1 holds this engagement's observed context
+        and is deliberately outside the cached span.
+
+        That placement is the fix for a measured regression, not a preference.
+        With the breakpoint after the engagement-scoped block, the cached prefix
+        was ~12,500 tokens presented exactly once per run: 96,759 write tokens
+        and zero read tokens across 154 recorded engagements, a 1.25x premium
+        on an entry nothing ever read. Moving it cuts the exposure by an order
+        of magnitude AND puts it on the only span a second call can present
+        again byte-for-byte.
 
         A prefix under the model's minimum is still sent — it is real prompt
         content — but carries no ``cache_control``, and says so in the log. An
@@ -402,31 +447,37 @@ class AnthropicClient(LLMClient):
         cache the API will decline to create, and it invites a hit-rate number
         that was never going to arrive.
         """
-        if not stable:
-            return None
+        blocks: list[dict[str, Any]] = []
+        if invariant:
+            blocks.append(self._cacheable_block(invariant))
+        if engagement_scoped:
+            blocks.append({"type": "text", "text": engagement_scoped})
+        return blocks or None
 
-        block: dict[str, Any] = {"type": "text", "text": stable}
+    def _cacheable_block(self, text: str) -> dict[str, Any]:
+        """One system block, cache-marked when the model will honour it."""
+        block: dict[str, Any] = {"type": "text", "text": text}
         if not settings.llm_prompt_cache_enabled:
-            return [block]
+            return block
 
         floor = cache_min_prefix_tokens(self._model)
-        approx_tokens = len(stable) // _CHARS_PER_TOKEN
+        approx_tokens = len(text) // _CHARS_PER_TOKEN
         if approx_tokens < floor:
             logger.info(
-                "Prompt cache not attached — stable prefix ~%d tokens is under the "
+                "Prompt cache not attached — invariant prefix ~%d tokens is under the "
                 "%d-token minimum for %s; the request is unchanged and uncached",
                 approx_tokens,
                 floor,
                 self._model,
             )
-            return [block]
+            return block
 
         cache_control: dict[str, Any] = {"type": "ephemeral"}
         ttl = settings.llm_prompt_cache_ttl
         if ttl and ttl != "5m":
             cache_control["ttl"] = ttl
         block["cache_control"] = cache_control
-        return [block]
+        return block
 
     @staticmethod
     def _text_from(response: Any) -> str:
@@ -468,8 +519,9 @@ class AnthropicClient(LLMClient):
         }
         if system_prompt:
             # The system prompt is the one span every turn of a ReAct loop
-            # repeats verbatim, so it is exactly the prefix worth a breakpoint.
-            system_blocks = self._system_blocks_for(system_prompt)
+            # repeats verbatim, so it is exactly the prefix worth a breakpoint —
+            # invariant by construction here, with no engagement-scoped half.
+            system_blocks = self._system_blocks(system_prompt)
             kwargs["system"] = system_blocks if system_blocks is not None else system_prompt
         if tools:
             kwargs["tools"] = self._to_anthropic_tools(tools)
@@ -561,14 +613,18 @@ class AnthropicClient(LLMClient):
         """
         segments = as_prompt_segments(prompt)
 
+        # With no ask of its own there is nothing to split around: the whole
+        # prompt goes in the message, exactly as a bare string always did.
+        content = segments.volatile or segments.flatten()
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "messages": [{"role": "user", "content": segments.volatile or segments.stable}],
+            "messages": [{"role": "user", "content": content}],
             "max_tokens": settings.llm_max_output_tokens,
         }
-        system_blocks = self._system_blocks_for(segments.stable if segments.volatile else "")
-        if system_blocks is not None:
-            kwargs["system"] = system_blocks
+        if segments.volatile:
+            system_blocks = self._system_blocks(segments.invariant, segments.stable)
+            if system_blocks is not None:
+                kwargs["system"] = system_blocks
 
         response = await self._call_with_backoff(**kwargs)
         stats = self._track_usage(response)

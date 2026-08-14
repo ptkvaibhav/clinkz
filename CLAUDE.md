@@ -345,7 +345,9 @@ src/clinkz/
 │                     #   _secret_exposure / _input_validation / _mass_assignment /
 │                     #   _crypto_tokens (the four new classes' pure logic, offline-testable)
 │                     #   _business_logic (intent inferred from the app's OWN surface,
-│                     #   with the evidence — offline-testable)
+│                     #   with the evidence — offline-testable),
+│                     #   _auth_bypass (THE one vocabulary for "did this response log us
+│                     #   in?" — artifact reader + the three-arm differential)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
 │                     #   planner, composition (THE ORACLE — the decoy control), impact
@@ -734,6 +736,33 @@ LESSONS #17).
   *declared but never invoked* is tracked separately, since a capability the run
   never reached for did not degrade. **Absent by default** like the governor,
   and it never raises from the data path.
+- **"Correctly found nothing" is a fifth fact, and it is NOT an alarm.** A
+  GraphQL discoverer on an app with no GraphQL contributes zero forever and is
+  working perfectly; reported as a defect it becomes a permanent false alarm,
+  and a permanent false alarm trains an operator to skim the section where a
+  real one will appear. So a component may declare its **precondition absent**
+  and the zero is recorded NOT APPLICABLE with the reason, held apart from the
+  alarm list like *never invoked*. The claim must be **falsifiable, never a
+  self-assessment** — "there was nothing to find" is what a broken reader says
+  too — so the discriminator is how far the component's own pipeline got
+  (`_route_discovery.DiscoveryReport`): no input of its kind, or input read
+  containing nothing of its shape, is correct; **candidates found and none
+  emitted is the ffuf shape and stays SILENT**, and no reason string may talk
+  it away. A discoverer that does not declare `contribution_report()` is a
+  loud `DEAD_SEAM`, never an assumed zero.
+- **The prompt cache is a ledger component like any other, because it degraded
+  exactly like one.** It was invoked every run, succeeded every time, and
+  contributed **zero**: the breakpoint sat after the engagement-scoped span —
+  ~12,500 tokens of observed inventory presented ONCE per run — so 154 recorded
+  engagements paid 96,759 cache-WRITE tokens and read back 0. Caching pays from
+  the second presentation (`1.25 + 0.10(N-1) < N` ⟺ `N > 1.28`); the deployment
+  had `N = 1`, making it ~25% *more* expensive than no caching on that span.
+  `PromptSegments` now splits by **how often bytes repeat** — `invariant`
+  (engine: role, catalogue, preconditions, worked examples) / `stable`
+  (this engagement's observations) / `volatile` (the ask) — and the breakpoint
+  goes after `invariant` only. The item the cache contributes is
+  `cache_read_input_tokens`, so a write nobody reads trips SILENT in the run
+  log and `report.json`.
 - **A consumer never guesses a producer's field names.** The PRODUCER declares
   what it contributes (`ToolOutput.discovered_urls` / `declares_discovery`); a
   wrapper that declares nothing is a loud dead seam, not an empty list. Never
@@ -743,6 +772,31 @@ LESSONS #17).
   model's contract**, never the consumer's assumption about it: `_MockFuzzOutput`
   declared `paths`/`directories`, names no real tool has ever carried, so the
   suite asserted a contract only the mock honoured.
+- **A parser never assumes it owns the process's stdout, and the fixture must be
+  the bytes the tool WRITES.** `whatweb --log-json=-` keeps writing its brief
+  human-readable log to the same stream, so the JSON array and plain-text lines
+  interleave, `json.loads` on the blob raised, and 100% of a successful
+  fingerprint — Apache 2.4.67, PHP 8.5.6 — was discarded on **every run**,
+  starving the whole published-CVE path. The committed fixture was a
+  hand-authored clean array, so the unit suite passed throughout, and the
+  corpus baseline faithfully locked in `success: false` for 114 of 115 recorded
+  invocations. Whole-blob `json.loads` is correct ONLY for JSON the wrapper
+  itself serialised; every parser now declares which case it is
+  (`tests/test_tools/test_parser_input_assumptions.py`, verified against the
+  source so a `self_produced` claim cannot be a wish).
+- **An auth bypass is a defining effect no injection oracle can see, so it gets
+  its own indicator** (`agents/_auth_bypass.py`, `InjectionType.AUTH_BYPASS`).
+  A DB error, a boolean row-set delta and a UNION row are the SQLi oracles; a
+  bypass returns 200 and a JWT, so 40 payloads reached a login field, the target
+  graded it solved, and the class correctly emitted nothing. The effect is
+  **authenticated as a principal whose credential we never supplied**, proven on
+  three arms: the tautology returns an auth artifact, the *shape-matched
+  contradiction* (one character apart) does NOT, and an ordinary credential
+  attempt does not either — and where the artifact names a principal it must
+  differ from every identity we supplied. **Never 200-plus-a-cookie.**
+  Applicability is a deterministic protocol signal (an identity field beside a
+  password-shaped one), gated in BOTH directions so the LLM can neither invent
+  the class on a search box nor omit it on a login.
 - **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl` (tool
   calls, LLM calls, agent steps, handoffs, methodology-phase events). `outputs/`
   is local-only by policy — never committed.
