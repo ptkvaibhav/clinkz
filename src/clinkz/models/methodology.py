@@ -247,6 +247,14 @@ class InjectionType(StrEnum):
     - ``TIME_BLIND``: measure response time delta vs baseline.
     - ``STACKED``: only meaningful on dialects that allow multi-statement
       execution (MSSQL, PostgreSQL with semicolon separator, etc.).
+    - ``AUTH_BYPASS``: the injected boolean short-circuits an authentication
+      query. The effect is not a row-set, an error, or a delay — it is being
+      *logged in*, so none of the four oracles above can see it. Forty payloads
+      reached a login form's email field, the target graded the challenge
+      solved, and the methodology emitted nothing because it had no indicator
+      for this effect. Confirmed against a shape-matched non-injecting control
+      (see :mod:`clinkz.agents._auth_bypass`); applicable ONLY where a
+      credential field was deterministically observed.
     """
 
     ERROR_BASED = "error_based"
@@ -254,6 +262,7 @@ class InjectionType(StrEnum):
     BOOLEAN_BLIND = "boolean_blind"
     TIME_BLIND = "time_blind"
     STACKED = "stacked"
+    AUTH_BYPASS = "auth_bypass"
 
 
 class InjectionPrimitives(BaseModel):
