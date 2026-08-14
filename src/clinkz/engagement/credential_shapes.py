@@ -57,6 +57,7 @@ import hashlib
 import json
 import re
 import secrets as _stdlib_secrets
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -616,6 +617,44 @@ def find_shapes(text: str) -> list[ShapeHit]:
     return hits
 
 
+def jwt_identity_claim(token: str, names: Sequence[str]) -> str:
+    """The first identity claim in *token* matching *names*, or ``""``.
+
+    JWT decoding lives here, in the one module that owns what a credential
+    looks like, so a caller that needs the principal a token asserts does not
+    grow a second decoder — or reach into a private one.
+
+    Only the named claims are returned, and one nested container level is
+    searched because application payloads put the account under ``data`` or
+    ``user``. Deliberately never returns the payload itself: Juice Shop's
+    carries the account's password hash, and a caller handed the whole claim
+    set will eventually put it somewhere.
+
+    Args:
+        token: The raw token.
+        names: Claim names to look for, in priority order.
+
+    Returns:
+        The claim value as a short string, or ``""`` when the token does not
+        decode or names none of them.
+    """
+    payload = _decode_jwt_payload(token)
+    if not isinstance(payload, dict):
+        return ""
+    for name in names:
+        value = _claim(payload, name)
+        if value:
+            return value
+    for nested in payload.values():
+        if not isinstance(nested, dict):
+            continue
+        for name in names:
+            value = _claim(nested, name)
+            if value:
+                return value
+    return ""
+
+
 def jwt_payload_claim_names(token: str) -> list[str]:
     """Claim NAMES in *token*'s payload — used by tests and the scanner report.
 
@@ -645,6 +684,7 @@ __all__ = [
     "find_shapes",
     "fingerprint",
     "fingerprint_jwt",
+    "jwt_identity_claim",
     "jwt_payload_claim_names",
     "redact_header_value",
     "redact_shapes",
