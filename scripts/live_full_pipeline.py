@@ -53,6 +53,8 @@ import clinkz.agents.base  # noqa: E402
 
 clinkz.agents.base.MAX_ITERATIONS = 5  # conserve tokens: 5 iterations per agent
 
+from _artifact_io import write_redacted_json  # noqa: E402
+
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall  # noqa: E402
 from clinkz.llm.gemini_client import GeminiClient  # noqa: E402
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType  # noqa: E402
@@ -158,7 +160,7 @@ class InstrumentedGeminiClient(LLMClient):
 
         if action.thought:
             lines = action.thought.strip()[:400]
-            print(f"\n  THOUGHT:")
+            print("\n  THOUGHT:")
             for line in lines.split("\n"):
                 print(f"    {line}")
 
@@ -268,7 +270,7 @@ class VerboseOrchestratorAgent(OrchestratorAgent):
         print(f"  RESULT: {result_text[:250]}")
         if is_complete:
             print(f"\n  {'*'*50}")
-            print(f"  *** ENGAGEMENT COMPLETE ***")
+            print("  *** ENGAGEMENT COMPLETE ***")
             print(f"  {'*'*50}")
 
         return result_text, is_complete
@@ -435,10 +437,9 @@ async def print_engagement_summary(
             },
         }
 
-        REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        REPORT_PATH.write_text(
-            json.dumps(report_data, indent=2, default=str), encoding="utf-8"
-        )
+        # Through the engine's redaction chokepoint. This is a full engagement
+        # report re-serialised by hand, so it carries everything the run saw.
+        write_redacted_json(REPORT_PATH, report_data)
         print(f"\nReport saved to: {REPORT_PATH}")
 
     # --- Token usage ---
@@ -462,7 +463,7 @@ async def main() -> None:
     print("=" * 70)
     print(f"  Target:          {TARGET}")
     print(f"  LLM delay:       {LLM_DELAY}s between calls")
-    print(f"  Max iterations:  5 per phase agent")
+    print("  Max iterations:  5 per phase agent")
     print(f"  Total timeout:   {TOTAL_TIMEOUT}s ({TOTAL_TIMEOUT // 60} min)")
     print(f"  DB path:         {DB_PATH}")
     print(f"  Report path:     {REPORT_PATH}")
@@ -494,7 +495,7 @@ async def main() -> None:
             orchestrator.run(SCOPE),
             timeout=TOTAL_TIMEOUT,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         elapsed = time.monotonic() - start_time
         print(f"\n{'!'*70}")
         print(f"  ENGAGEMENT TIMED OUT after {elapsed:.0f}s ({elapsed / 60:.1f} min)")

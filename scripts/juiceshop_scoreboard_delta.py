@@ -34,6 +34,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _artifact_io import write_redacted_json  # noqa: E402
+
 DEFAULT_BASE = "http://localhost:3000"
 _TIMEOUT = 30
 
@@ -72,8 +76,7 @@ def snapshot(base: str, out_path: Path) -> dict[str, Any]:
         "solved_count": len(solved),
         "solved": solved,
     }
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    write_redacted_json(out_path, document)
     return document
 
 

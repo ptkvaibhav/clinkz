@@ -936,6 +936,13 @@ def artifact_scan(
         Path | None,
         typer.Option("--outputs-root", help="Root dir containing engagement subdirs."),
     ] = None,
+    bundle_only: Annotated[
+        bool,
+        typer.Option(
+            "--bundle-only",
+            help="Scan outputs/<id>/ alone, skipping companion artifacts beside it.",
+        ),
+    ] = False,
     raw: Annotated[
         bool,
         typer.Option("--raw", help="Emit the scan report as JSON."),
@@ -948,11 +955,21 @@ def artifact_scan(
     an operator is about to send. Exits non-zero when credential material is
     found, so it can be used as a release check.
 
+    Covers two regions: the engagement's own directory, and the companion
+    artifacts beside it - loose files and result directories under the outputs
+    root that belong to no engagement. The bundle alone once reported CLEAN over
+    3,123 files while a live session token sat one directory up, written there
+    by a validation driver. --bundle-only restores the narrower question.
+
     A finding names the file, line and column, the kind of credential, and a
     salted fingerprint. It never reproduces the value: a leak report that
     contains the leak is a new artifact with the same defect.
     """
-    from clinkz.engagement.artifact_scan import scan_artifact_tree
+    from clinkz.engagement.artifact_scan import (
+        REGION_COMPANION,
+        scan_artifact_tree,
+        scan_companion_artifacts,
+    )
 
     outputs_root = outputs_root or _default_outputs_root()
 
@@ -967,10 +984,26 @@ def artifact_scan(
         raise typer.Exit(code=2)
 
     report = scan_artifact_tree(root, engagement_id=engagement_id)
+    if not bundle_only:
+        companions = scan_companion_artifacts(outputs_root, bundle_root=root)
+        report.companion_root = companions.root
+        report.companion_files_scanned = companions.files_scanned
+        report.bytes_scanned += companions.bytes_scanned
+        report.files_truncated.extend(companions.files_truncated)
+        report.findings.extend(companions.findings)
+        report.suspicions.extend(companions.suspicions)
+        report.errors.extend(companions.errors)
+
     if raw:
         typer.echo(report.model_dump_json(indent=2))
     else:
         typer.echo(report.render())
+        beside = len(report.region_findings(REGION_COMPANION))
+        if beside:
+            typer.echo(
+                f"\n{beside} of these are companion artifacts, not written by "
+                f"{cleaned}. They are still in the directory an operator would share."
+            )
     if not report.clean:
         raise typer.Exit(code=1)
 

@@ -50,7 +50,11 @@ from clinkz.discovery import (
     detect_ingestor,
     predicate_point_version,
 )
-from clinkz.engagement.artifact_scan import SCAN_REPORT_FILENAME, run_disclosure_gate
+from clinkz.engagement.artifact_scan import (
+    REGION_COMPANION,
+    SCAN_REPORT_FILENAME,
+    run_disclosure_gate,
+)
 from clinkz.engagement.auth_state import (
     PROTECTED_PATH_CANDIDATES,
     AuthAssertion,
@@ -2725,22 +2729,36 @@ class OrchestratorAgent:
         run summary, because "this bundle must not leave the building" is
         information the operator needs before they attach it to an email.
 
+        Scans the companion region too — everything under the outputs root that
+        belongs to no engagement. The bundle root alone once reported CLEAN over
+        3,123 files while a live JWT sat in the directory above it, so a verdict
+        confined to ``outputs/<id>/`` answers a narrower question than the one
+        an operator is asking. Companion hits are counted separately, because
+        "the directory around your bundle is not shareable" is a different
+        instruction from "your bundle leaked".
+
         Never raises: a scan that crashed must not be the reason a completed
         engagement reports failure, so the error is recorded instead.
         """
-        root = configured_outputs_root() / engagement_id
+        outputs_root = configured_outputs_root()
+        root = outputs_root / engagement_id
         try:
-            report = run_disclosure_gate(root, engagement_id=engagement_id)
+            report = run_disclosure_gate(
+                root, engagement_id=engagement_id, companion_root=outputs_root
+            )
         except Exception as exc:  # noqa: BLE001 — a gate must not sink the run
             self._logger.error("Artifact disclosure gate could not run: %s", exc, exc_info=True)
             return {"status": "error", "error": str(exc), "root": str(root)}
 
+        companion_findings = report.region_findings(REGION_COMPANION)
         if not report.clean:
             self._logger.error(
                 "DO NOT SHARE %s — the artifact disclosure gate found "
-                "%d credential shape(s). See %s.",
+                "%d credential shape(s), %d of them beside the bundle under %s. See %s.",
                 root,
                 len(report.findings),
+                len(companion_findings),
+                outputs_root,
                 root / SCAN_REPORT_FILENAME,
             )
         return {
@@ -2748,8 +2766,11 @@ class OrchestratorAgent:
             "root": str(root),
             "report_file": str(root / SCAN_REPORT_FILENAME),
             "files_scanned": report.files_scanned,
+            "companion_root": report.companion_root,
+            "companion_files_scanned": report.companion_files_scanned,
             "bytes_scanned": report.bytes_scanned,
             "credential_findings": len(report.findings),
+            "companion_credential_findings": len(companion_findings),
             "advisory_suspicions": len(report.suspicions),
             "summary": report.summary_line(),
         }

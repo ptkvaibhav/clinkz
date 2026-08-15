@@ -48,6 +48,8 @@ from pathlib import Path
 # Must be set BEFORE importing clinkz so the HTTP client uses host aiohttp (lesson #22).
 os.environ.setdefault("TOOL_EXEC_MODE", "local")
 
+from _artifact_io import write_redacted_json  # noqa: E402
+
 try:
     from dotenv import load_dotenv
 
@@ -329,15 +331,10 @@ async def main() -> int:  # noqa: C901 - a linear validation script, read top to
             f"P={o['confirmation_primitive']!r} grade={o['reachability_grade']!r} "
             f"evidence_ref={o['evidence_ref']!r}"
         )
-    (OUT_DIR / "capability_facts_before.json").write_text(
-        json.dumps(facts_before, indent=2), encoding="utf-8"
-    )
-    (OUT_DIR / "capability_facts_after.json").write_text(
-        json.dumps(facts_after, indent=2), encoding="utf-8"
-    )
-    (OUT_DIR / "capability_observations_after.json").write_text(
-        json.dumps(obs_after, indent=2), encoding="utf-8"
-    )
+    # Through the engine's redaction chokepoint, like every writer inside it.
+    write_redacted_json(OUT_DIR / "capability_facts_before.json", facts_before)
+    write_redacted_json(OUT_DIR / "capability_facts_after.json", facts_after)
+    write_redacted_json(OUT_DIR / "capability_observations_after.json", obs_after)
 
     target_fact = next(
         (

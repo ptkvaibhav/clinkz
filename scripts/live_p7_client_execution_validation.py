@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import http.cookiejar
-import json
 import logging
 import os
 import re
@@ -45,6 +44,8 @@ from typing import Any
 os.environ.setdefault("TOOL_EXEC_MODE", "local")
 # P7 is opt-in; this driver is one of the callers that opts in.
 os.environ.setdefault("CLIENT_ORACLE_MODE", "playwright")
+
+from _artifact_io import write_redacted_json  # noqa: E402
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -384,9 +385,8 @@ async def run(base: str) -> int:
     else:
         print("  No confirmation at 'impossible' in either module.")
 
-    out = REPO_ROOT / "outputs" / "p7_live_validation.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    # Through the engine's redaction chokepoint, like every writer inside it.
+    out = write_redacted_json(REPO_ROOT / "outputs" / "p7_live_validation.json", results)
     print(f"\n  raw results: {out}")
 
     engagement = await _emit_engagement(base, dvwa, scope, oracle, results)

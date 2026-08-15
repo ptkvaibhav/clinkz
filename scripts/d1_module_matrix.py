@@ -37,6 +37,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from _artifact_io import write_redacted_json  # noqa: E402
 from d1_consistency_runner import RESULTS_DIR, read_report  # noqa: E402
 
 #: The vulnerability modules ghcr.io/digininja/dvwa ships, enumerated from the
@@ -306,21 +307,17 @@ def main() -> int:
             print(f"    - {finding.get('title')} [{finding.get('severity')}]")
 
     out = RESULTS_DIR / "module_matrix.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(
-            {
-                "module_list_source": source,
-                "modules": modules,
-                "levels": levels,
-                "engagements": engagements,
-                "permanent_non_findings": PERMANENT_NON_FINDINGS,
-                "summary": summary,
-                "impossible_findings": total_impossible,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_redacted_json(
+        out,
+        {
+            "module_list_source": source,
+            "modules": modules,
+            "levels": levels,
+            "engagements": engagements,
+            "permanent_non_findings": PERMANENT_NON_FINDINGS,
+            "summary": summary,
+            "impossible_findings": total_impossible,
+        },
     )
     print(f"\nwritten: {out.resolve()}")
     return 0
