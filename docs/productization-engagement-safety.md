@@ -178,6 +178,65 @@ python -m clinkz artifact-scan <engagement_id>
 which exits non-zero when credential material is present, so it can be used as a
 release check before anything is sent.
 
+#### Two regions — a guard's root is part of its verdict
+
+The gate once reported `ARTIFACT SCAN CLEAN — 3,123 files` while a complete RS256
+session JWT sat one directory up, in
+`outputs/d8_auth_bypass_live_validation.json`. Nothing about that verdict was
+false. It answered a question about a region that had been chosen so as to
+exclude where the leak landed — structurally the same defect as a leak guard that
+inspects the git tree and therefore cannot see a pull request's own title and
+body.
+
+So the gate covers two regions and returns **one** verdict:
+
+| Region | What it is |
+|---|---|
+| `REGION_BUNDLE` | `outputs/<id>/` — this engagement's deliverable |
+| `REGION_COMPANION` | everything else under the outputs root that no engagement's gate covers: loose files a driver wrote, named result directories (`outputs/_juiceshop_benchmark/`, `outputs/cross-service-b1/`) |
+
+One verdict, because the operator's question is *may I share what is in this
+directory*. Two regions, because "the directory around your bundle is not
+shareable" is a different instruction from "your bundle leaked" — so every
+finding carries its region and the rendering keeps them apart.
+
+A directory whose name is an engagement id is some **other** engagement's bundle,
+covered by its own gate, and is never swept in: a run must not be made to answer
+for a leak it did not write, and folding neighbours in would re-scan thousands of
+files for a verdict that is not about this engagement.
+
+Every `summary_line()` now names its coverage — `3,123 bundle file(s) + 346
+companion file(s)` — clean or not. A CLEAN that does not say what it looked at is
+precisely how this survived. `--bundle-only` asks the older, narrower question
+when that is genuinely what you want.
+
+#### Drivers write through the chokepoint too
+
+The redaction guarantee holds where the *engine* writes. A validation driver in
+`scripts/` is a hand-written harness that reaches around the writers — it tees
+`HTTPClientTool.execute` to capture raw exchanges and serialises them itself — so
+the guarantee never applied to it. That is what put the JWT above on disk,
+together with the lab password in plaintext in three request bodies, while
+`report.json` from the same run was clean and the auth-bypass oracle's own
+`observed` field carried a fingerprint and claim names only.
+
+Driver artifacts now go through `scripts/_artifact_io.py`, which is a **call
+site** of `redact_structure` and not a second redactor. A driver that hardcodes
+`ADMIN_PASSWORD = "admin123"` is a third intake route beside the credential file
+and the interactive prompt, so it registers the value on the way in — shape
+redaction cannot help there, because a plaintext password has no shape.
+
+Redaction costs a driver nothing it needs: a control arm asserts *which* token
+came back where another did not, and a fingerprint answers that and replays
+nowhere; `[REDACTED]` in a request body still shows the field was populated.
+
+`tests/test_engagement/test_driver_artifact_writes.py` enforces it structurally —
+it parses every `scripts/*.py` and refuses a raw `write_text`/`write_bytes`
+unless the file is allow-listed with a reason. The per-driver assertions protect
+the drivers that exist; only the source-level one protects the driver somebody
+writes next month, and a driver is exactly the kind of file a `src/`-and-`tests/`
+grep misses.
+
 ### `--dry-run`
 
 Enumerates what the engagement *would* do — scope in and out, roles, rails,
@@ -463,7 +522,8 @@ and it is sound" or "we could not look".
 | `engagement/gate.py` | the refusals (dependency-free, so the governor can import it) |
 | `engagement/secrets.py` | credential intake + the redaction chokepoint (values AND shapes) |
 | `engagement/credential_shapes.py` | the one credential-shape vocabulary; redactor + gate share it |
-| `engagement/artifact_scan.py` | the disclosure gate over `outputs/<id>/` |
+| `engagement/artifact_scan.py` | the disclosure gate over `outputs/<id>/` **and the companion region beside it** |
+| `scripts/_artifact_io.py` | validation drivers' write path — a call site of `redact_structure`, not a second redactor |
 | `engagement/auth_state.py` | mechanism detection, the assertion, `SessionSentinel` |
 | `engagement/dryrun.py` | `--dry-run` |
 | `safety/destructive.py` | the default-deny classifier |

@@ -107,7 +107,14 @@ ruff format src/    # Format
   evidence, and a gate that cries wolf gets ignored
 - Never write a raw session token, `Authorization` value, or cookie value into an
   artifact. Record a fingerprint instead. `clinkz artifact-scan <id>` is the
-  check, and it must pass before a bundle is shared
+  check, and it must pass before a bundle is shared. It covers the companion
+  artifacts beside the bundle too — a guard's root is part of its verdict
+- A `scripts/` driver writes through `scripts/_artifact_io.py`, never
+  `path.write_text` directly: a driver tees the HTTP chokepoint and serialises
+  raw exchanges itself, so the engine's writers never see them. A driver that
+  hardcodes a lab password registers it, like every other intake route.
+  `tests/test_engagement/test_driver_artifact_writes.py` enforces this from the
+  source, so a new driver is covered without touching the test
 - Never add a switch that disables the destructive-action refusal. It is the
   contract with the client, not a tunable
 - A new destructive token goes in `clinkz.safety.destructive`, never in a second

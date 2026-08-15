@@ -47,6 +47,8 @@ from typing import Any
 # Must be set BEFORE importing clinkz so the HTTP client uses host aiohttp (lesson #22).
 os.environ.setdefault("TOOL_EXEC_MODE", "local")
 
+from _artifact_io import write_redacted_json  # noqa: E402
+
 try:
     from dotenv import load_dotenv
 
@@ -281,18 +283,11 @@ async def main() -> int:  # noqa: C901 - a linear validation script, read top to
 
         facts_after = await kb.get_capability_facts()
         relations_after = await kb.get_technology_relations()
-        (OUT_DIR / "capability_facts_before.json").write_text(
-            json.dumps(facts_before, indent=2), "utf-8"
-        )
-        (OUT_DIR / "capability_facts_after.json").write_text(
-            json.dumps(facts_after, indent=2), "utf-8"
-        )
-        (OUT_DIR / "technology_relations_before.json").write_text(
-            json.dumps(relations_before, indent=2), "utf-8"
-        )
-        (OUT_DIR / "technology_relations_after.json").write_text(
-            json.dumps(relations_after, indent=2), "utf-8"
-        )
+        # Through the engine's redaction chokepoint, like every writer inside it.
+        write_redacted_json(OUT_DIR / "capability_facts_before.json", facts_before)
+        write_redacted_json(OUT_DIR / "capability_facts_after.json", facts_after)
+        write_redacted_json(OUT_DIR / "technology_relations_before.json", relations_before)
+        write_redacted_json(OUT_DIR / "technology_relations_after.json", relations_after)
         target_fact = next(
             (
                 f

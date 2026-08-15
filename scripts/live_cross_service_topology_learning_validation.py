@@ -61,6 +61,8 @@ from pathlib import Path
 # Must be set BEFORE importing clinkz so the HTTP client uses host aiohttp (lesson #22).
 os.environ.setdefault("TOOL_EXEC_MODE", "local")
 
+from _artifact_io import write_redacted_json  # noqa: E402
+
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -172,8 +174,8 @@ async def _live_ping_anthropic() -> bool:
 
 
 def _dump(path: Path, obj: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, indent=2, default=str), encoding="utf-8")
+    """Write a driver artifact through the engine's redaction chokepoint."""
+    write_redacted_json(path, obj)
 
 
 def _discover_xsvc(source_dir: str, base_url: str, topo, relations):

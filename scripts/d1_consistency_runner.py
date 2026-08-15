@@ -38,6 +38,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import requests
+from _artifact_io import write_redacted_json, write_redacted_text
 
 from clinkz.agents import exploit
 from clinkz.agents.exploit import (
@@ -217,9 +218,11 @@ def run_pipeline(level: str, index: int, authorization: Path) -> tuple[str | Non
         timeout=7200,
     )
     elapsed = time.time() - started
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    (RESULTS_DIR / f"{level}_run{index}_stdout.txt").write_text(
-        proc.stdout + "\n=== STDERR ===\n" + proc.stderr, encoding="utf-8", errors="replace"
+    # Captured stdout of a whole engagement, through the engine's redaction
+    # chokepoint: whatever the run printed, this file keeps.
+    write_redacted_text(
+        RESULTS_DIR / f"{level}_run{index}_stdout.txt",
+        proc.stdout + "\n=== STDERR ===\n" + proc.stderr,
     )
     new = newest_engagement_dirs() - before
     engagement = None
@@ -645,9 +648,8 @@ def main() -> int:
             flush=True,
         )
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out = RESULTS_DIR / f"{args.level}_consistency.json"
-    out.write_text(json.dumps(runs, indent=2), encoding="utf-8")
+    write_redacted_json(out, runs)
 
     # --- the cross-run diff ------------------------------------------------
     print(f"\n{'=' * 78}\nCONSISTENCY — level={args.level}, N={len(runs)}\n{'=' * 78}")

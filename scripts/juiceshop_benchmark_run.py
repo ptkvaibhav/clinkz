@@ -47,6 +47,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from _artifact_io import write_redacted_json, write_redacted_text  # noqa: E402
 from d1_consistency_runner import (  # noqa: E402
     OUTPUTS,
     newest_engagement_dirs,
@@ -189,8 +190,11 @@ def run_engagement(
         timeout=10800,
     )
     elapsed = time.time() - started
-    (RESULTS_DIR / "engagement_stdout.txt").write_text(
-        proc.stdout + "\n=== STDERR ===\n" + proc.stderr, encoding="utf-8", errors="replace"
+    # Captured stdout of a whole engagement, through the engine's redaction
+    # chokepoint: whatever the run printed, this file keeps.
+    write_redacted_text(
+        RESULTS_DIR / "engagement_stdout.txt",
+        proc.stdout + "\n=== STDERR ===\n" + proc.stderr,
     )
     new = newest_engagement_dirs() - before
     engagement = max(new, key=lambda n: (OUTPUTS / n).stat().st_mtime) if new else None
@@ -256,27 +260,24 @@ def main() -> int:
     )
 
     before_snapshot = {c.get("key") for c in challenges if c.get("solved")}
-    (RESULTS_DIR / "scoreboard_before.json").write_text(
-        json.dumps(
-            {
-                "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "total_challenges": len(challenges),
-                "solved_count": len(before_snapshot),
-                "solved": sorted(before_snapshot),
-                "addressable_count": len(target_set),
-                "addressable": [
-                    {
-                        "key": c.get("key"),
-                        "name": c.get("name"),
-                        "category": c.get("category"),
-                        "difficulty": c.get("difficulty"),
-                    }
-                    for c in target_set
-                ],
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_redacted_json(
+        RESULTS_DIR / "scoreboard_before.json",
+        {
+            "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "total_challenges": len(challenges),
+            "solved_count": len(before_snapshot),
+            "solved": sorted(before_snapshot),
+            "addressable_count": len(target_set),
+            "addressable": [
+                {
+                    "key": c.get("key"),
+                    "name": c.get("name"),
+                    "category": c.get("category"),
+                    "difficulty": c.get("difficulty"),
+                }
+                for c in target_set
+            ],
+        },
     )
 
     # --- 2. the engagement --------------------------------------------------
@@ -290,27 +291,24 @@ def main() -> int:
     after_challenges = fetch_challenges()
     after_by_key = {c.get("key"): c for c in after_challenges if c.get("solved")}
     newly = sorted(set(after_by_key) - before_snapshot)
-    (RESULTS_DIR / "scoreboard_after.json").write_text(
-        json.dumps(
-            {
-                "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "engagement": engagement,
-                "total_challenges": len(after_challenges),
-                "solved_count": len(after_by_key),
-                "solved": sorted(after_by_key),
-                "newly_solved": [
-                    {
-                        "key": k,
-                        "name": after_by_key[k].get("name"),
-                        "category": after_by_key[k].get("category"),
-                        "difficulty": after_by_key[k].get("difficulty"),
-                    }
-                    for k in newly
-                ],
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_redacted_json(
+        RESULTS_DIR / "scoreboard_after.json",
+        {
+            "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "engagement": engagement,
+            "total_challenges": len(after_challenges),
+            "solved_count": len(after_by_key),
+            "solved": sorted(after_by_key),
+            "newly_solved": [
+                {
+                    "key": k,
+                    "name": after_by_key[k].get("name"),
+                    "category": after_by_key[k].get("category"),
+                    "difficulty": after_by_key[k].get("difficulty"),
+                }
+                for k in newly
+            ],
+        },
     )
 
     report = read_report(engagement)
@@ -372,44 +370,40 @@ def main() -> int:
         )
 
     out = RESULTS_DIR / "reconciliation.json"
-    out.write_text(
-        json.dumps(
-            {
-                "engagement": engagement,
-                "returncode": rc,
-                "seconds": round(elapsed, 1),
-                "total_challenges": len(after_challenges),
-                "addressable_count": len(target_set),
-                "addressable_rule": (
-                    "category maps to a dispatched vulnerability class AND difficulty <= "
-                    f"{MAX_ADDRESSABLE_DIFFICULTY}"
-                ),
-                "solved_total": len(newly),
-                "solved_keys": newly,
-                "solved_in_addressable": solved_addressable,
-                "solved_outside_addressable": solved_outside,
-                "missed_addressable": [
-                    {
-                        "key": c.get("key"),
-                        "name": c.get("name"),
-                        "category": c.get("category"),
-                        "difficulty": c.get("difficulty"),
-                    }
-                    for c in missed_addressable
-                ],
-                "findings_emitted": findings,
-                "unproven_leads": report.get("unproven_leads") or [],
-                "artifact_scan": disclosure,
-                "ledger_alarms": alarms,
-                "ledger_never_invoked": ledger.get("never_invoked") or [],
-                "category_addressable": CATEGORY_ADDRESSABLE,
-                "category_not_addressable": CATEGORY_NOT_ADDRESSABLE,
-                "unknown_categories": unknown_categories,
-            },
-            indent=2,
-            default=str,
-        ),
-        encoding="utf-8",
+    write_redacted_json(
+        out,
+        {
+            "engagement": engagement,
+            "returncode": rc,
+            "seconds": round(elapsed, 1),
+            "total_challenges": len(after_challenges),
+            "addressable_count": len(target_set),
+            "addressable_rule": (
+                "category maps to a dispatched vulnerability class AND difficulty <= "
+                f"{MAX_ADDRESSABLE_DIFFICULTY}"
+            ),
+            "solved_total": len(newly),
+            "solved_keys": newly,
+            "solved_in_addressable": solved_addressable,
+            "solved_outside_addressable": solved_outside,
+            "missed_addressable": [
+                {
+                    "key": c.get("key"),
+                    "name": c.get("name"),
+                    "category": c.get("category"),
+                    "difficulty": c.get("difficulty"),
+                }
+                for c in missed_addressable
+            ],
+            "findings_emitted": findings,
+            "unproven_leads": report.get("unproven_leads") or [],
+            "artifact_scan": disclosure,
+            "ledger_alarms": alarms,
+            "ledger_never_invoked": ledger.get("never_invoked") or [],
+            "category_addressable": CATEGORY_ADDRESSABLE,
+            "category_not_addressable": CATEGORY_NOT_ADDRESSABLE,
+            "unknown_categories": unknown_categories,
+        },
     )
     print(f"\nwritten: {out.resolve()}")
     return 0

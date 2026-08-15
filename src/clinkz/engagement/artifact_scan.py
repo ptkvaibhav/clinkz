@@ -37,6 +37,32 @@ eyes, after everything has been written.
 the line and column, the length and a salted fingerprint — never the value, not
 even a prefix. A leak report that reproduces the leak is a new artifact with the
 same defect.
+
+**Two regions, because the first one was too small.** The gate reported CLEAN
+over 3,123 files while a live JWT sat one directory up, in
+``outputs/d8_auth_bypass_live_validation.json`` — a companion artifact written
+by a validation driver, outside every engagement's root and therefore outside
+every scan. The verdict was true and useless: it answered a question about a
+region chosen so as to exclude where the leak landed, which is the same defect
+shape as a tree-scanning leak guard that cannot see a pull request's own text.
+
+So a run scans two regions and returns ONE verdict:
+
+  * :data:`REGION_BUNDLE` — ``outputs/<engagement_id>/``, this engagement's
+    deliverable.
+  * :data:`REGION_COMPANION` — everything else under the outputs root that no
+    engagement's gate will ever cover: loose files, driver output directories,
+    anything a hand-written script dropped beside the bundles.
+
+They are one verdict because the operator's question is "may I share what is in
+this directory", and two regions because "your bundle is clean, the directory
+around it is not" is a different instruction from "your bundle leaked". Every
+finding carries its :attr:`~ArtifactFinding.region` and the rendering keeps them
+apart.
+
+A directory whose name is an engagement id belongs to some other engagement's
+bundle, so it is not swept into this one's verdict — a run must not be told to
+answer for a leak it did not write.
 """
 
 from __future__ import annotations
@@ -64,6 +90,18 @@ SEVERITY_CREDENTIAL: Final = "credential"
 
 #: Severity meaning "this looks like a secret but matched no shape" — advisory.
 SEVERITY_SUSPICIOUS: Final = "suspicious"
+
+#: Region: inside the engagement's own artifact directory.
+REGION_BUNDLE: Final = "bundle"
+
+#: Region: elsewhere under the outputs root — a companion artifact no
+#: engagement's gate covers. See the module docstring.
+REGION_COMPANION: Final = "companion"
+
+#: A directory under the outputs root whose name is an engagement id. Ids are
+#: minted with :func:`uuid.uuid4`, so the shape identifies them, and a directory
+#: matching it is some engagement's bundle rather than a companion artifact.
+_ENGAGEMENT_DIR_RE: Final = re.compile(r"\A[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\Z")
 
 #: Files never worth scanning as text.
 _BINARY_SUFFIXES: Final = frozenset(
@@ -105,6 +143,8 @@ class ArtifactFinding(BaseModel):
         fingerprint: Salted hash prefix; correlates occurrences, reveals nothing.
         length: Length of the matched value.
         severity: :data:`SEVERITY_CREDENTIAL` or :data:`SEVERITY_SUSPICIOUS`.
+        region: :data:`REGION_BUNDLE` or :data:`REGION_COMPANION` — whether this
+            landed inside the engagement's own directory or beside it.
     """
 
     path: str
@@ -115,6 +155,7 @@ class ArtifactFinding(BaseModel):
     fingerprint: str = ""
     length: int = 0
     severity: str = SEVERITY_CREDENTIAL
+    region: str = REGION_BUNDLE
 
 
 class ArtifactScanReport(BaseModel):
@@ -129,6 +170,11 @@ class ArtifactScanReport(BaseModel):
         findings: Credential-severity hits. Non-empty means the gate FAILED.
         suspicions: Entropy-severity hits. Advisory; never fails the gate.
         errors: Files that could not be read, with the reason.
+        companion_root: Outputs root whose companion artifacts were also
+            scanned, or ``""`` when the verdict covers the bundle alone.
+        companion_files_scanned: Files read in the companion region. Counted
+            separately so "3,123 files, clean" can never again be a statement
+            about a region that excluded the leak.
     """
 
     engagement_id: str = ""
@@ -139,14 +185,34 @@ class ArtifactScanReport(BaseModel):
     findings: list[ArtifactFinding] = Field(default_factory=list)
     suspicions: list[ArtifactFinding] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    companion_root: str = ""
+    companion_files_scanned: int = 0
 
     @property
     def clean(self) -> bool:
         """Whether the bundle may be handed over."""
         return not self.findings
 
+    def region_findings(self, region: str) -> list[ArtifactFinding]:
+        """Credential-severity findings from one region."""
+        return [f for f in self.findings if f.region == region]
+
+    def _coverage(self) -> str:
+        """What the verdict actually covered, in one clause."""
+        if not self.companion_root:
+            return f"{self.files_scanned} file(s), {self.bytes_scanned} bytes"
+        return (
+            f"{self.files_scanned} bundle file(s) + "
+            f"{self.companion_files_scanned} companion file(s), "
+            f"{self.bytes_scanned} bytes"
+        )
+
     def summary_line(self) -> str:
         """One line for a log, the run summary, or a CLI.
+
+        Always names the coverage, clean or not. A gate that says CLEAN without
+        saying what it looked at is how a true statement about 3,123 files got
+        read as a guarantee about a directory that held a live token.
 
         ASCII only, like every other operator-facing string in the CLI: a
         Windows console on the default code page raised on a U+2192 once and
@@ -154,37 +220,61 @@ class ArtifactScanReport(BaseModel):
         thing that crashes.
         """
         if self.clean:
-            return (
-                f"ARTIFACT SCAN CLEAN - {self.files_scanned} file(s), "
-                f"{self.bytes_scanned} bytes, 0 credential shapes"
-                + (f", {len(self.suspicions)} advisory" if self.suspicions else "")
+            return f"ARTIFACT SCAN CLEAN - {self._coverage()}, 0 credential shapes" + (
+                f", {len(self.suspicions)} advisory" if self.suspicions else ""
             )
         kinds = Counter(f.kind for f in self.findings)
         breakdown = ", ".join(f"{n}x {kind}" for kind, n in sorted(kinds.items()))
+        companion = len(self.region_findings(REGION_COMPANION))
+        where = f" ({companion} beside the bundle)" if companion else ""
         return (
-            f"ARTIFACT SCAN FAILED - {len(self.findings)} credential shape(s) "
-            f"in {len({f.path for f in self.findings})} file(s): {breakdown}"
+            f"ARTIFACT SCAN FAILED - {len(self.findings)} credential shape(s){where} "
+            f"in {len({f.path for f in self.findings})} file(s) "
+            f"of {self._coverage()}: {breakdown}"
         )
 
+    def _render_findings(self, findings: list[ArtifactFinding], heading: str) -> list[str]:
+        """One heading and its located findings, capped for readability."""
+        if not findings:
+            return []
+        lines = ["", heading]
+        for finding in findings[:_RENDER_LIMIT]:
+            lines.append(
+                f"  {finding.path}:{finding.line}:{finding.column}  "
+                f"{finding.kind}  {finding.detail}  "
+                f"(len={finding.length} sha256={finding.fingerprint})"
+            )
+        if len(findings) > _RENDER_LIMIT:
+            # Truncating the RENDERING is fine; truncating the report is
+            # not. The full list is in artifact_scan.json either way.
+            lines.append(
+                f"  ... and {len(findings) - _RENDER_LIMIT} more "
+                f"(full list in {SCAN_REPORT_FILENAME})"
+            )
+        return lines
+
     def render(self) -> str:
-        """Full human-readable rendering, safe to print anywhere. ASCII only."""
+        """Full human-readable rendering, safe to print anywhere. ASCII only.
+
+        The two regions are rendered apart because they call for different
+        actions: a hit in the bundle means this engagement's deliverable leaked,
+        a hit beside it means the outputs directory holds credential material
+        somebody else's run left there.
+        """
         lines = [self.summary_line()]
-        if self.findings:
-            lines.append("")
-            lines.append("CREDENTIAL MATERIAL (this bundle must not be handed over):")
-            for finding in self.findings[:_RENDER_LIMIT]:
-                lines.append(
-                    f"  {finding.path}:{finding.line}:{finding.column}  "
-                    f"{finding.kind}  {finding.detail}  "
-                    f"(len={finding.length} sha256={finding.fingerprint})"
-                )
-            if len(self.findings) > _RENDER_LIMIT:
-                # Truncating the RENDERING is fine; truncating the report is
-                # not. The full list is in artifact_scan.json either way.
-                lines.append(
-                    f"  ... and {len(self.findings) - _RENDER_LIMIT} more "
-                    f"(full list in {SCAN_REPORT_FILENAME})"
-                )
+        lines.extend(
+            self._render_findings(
+                self.region_findings(REGION_BUNDLE),
+                "CREDENTIAL MATERIAL (this bundle must not be handed over):",
+            )
+        )
+        lines.extend(
+            self._render_findings(
+                self.region_findings(REGION_COMPANION),
+                f"CREDENTIAL MATERIAL BESIDE THE BUNDLE, under {self.companion_root} "
+                "(not written by this engagement, and not shareable either):",
+            )
+        )
         if self.suspicions:
             lines.append("")
             lines.append("ADVISORY - high-entropy strings matching no known shape:")
@@ -277,7 +367,7 @@ def _line_and_column(text: str, offset: int) -> tuple[int, int]:
 
 
 def scan_text(
-    text: str, *, path: str = "<text>"
+    text: str, *, path: str = "<text>", region: str = REGION_BUNDLE
 ) -> tuple[list[ArtifactFinding], list[ArtifactFinding]]:
     """Scan one blob. Returns ``(credential findings, entropy suspicions)``."""
     shape_hits = find_shapes(text)
@@ -294,6 +384,7 @@ def scan_text(
                 fingerprint=hit.fingerprint,
                 length=hit.length,
                 severity=SEVERITY_CREDENTIAL,
+                region=region,
             )
         )
     suspicions: list[ArtifactFinding] = []
@@ -314,6 +405,50 @@ def scan_text(
     return findings, suspicions
 
 
+def is_engagement_dir(path: Path) -> bool:
+    """Whether *path* is some engagement's artifact directory.
+
+    Used to hold other engagements' bundles out of the companion region: each
+    is covered by its own gate, and a run must not be made to answer for a leak
+    it did not write.
+    """
+    return path.is_dir() and bool(_ENGAGEMENT_DIR_RE.match(path.name))
+
+
+def _scan_one_file(path: Path, relative: str, report: ArtifactScanReport, *, region: str) -> None:
+    """Read one file into *report*, honouring the size cap.
+
+    Reads unbounded when the file fits under the cap, and only asks for a bounded
+    read when it does not. ``TextIOWrapper.read(n)`` allocates in proportion to
+    *n*, so passing the 64 MB cap unconditionally cost ~24 ms per file whatever
+    its size — about 75 seconds of pure allocation on a 3,000-file bundle, paid
+    at the end of every engagement. The cap still applies; it is just no longer
+    charged to the files that do not need it.
+    """
+    try:
+        size = path.stat().st_size
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read() if size <= _MAX_FILE_BYTES else handle.read(_MAX_FILE_BYTES)
+    except OSError as exc:
+        report.errors.append(f"{relative}: {exc}")
+        return
+    if size > _MAX_FILE_BYTES:
+        report.files_truncated.append(relative)
+    report.bytes_scanned += len(text)
+    findings, suspicions = scan_text(text, path=relative, region=region)
+    report.findings.extend(findings)
+    report.suspicions.extend(suspicions)
+
+
+def _scannable(path: Path) -> bool:
+    """Whether *path* is a file this gate reads as text."""
+    return (
+        path.is_file()
+        and path.name != SCAN_REPORT_FILENAME
+        and path.suffix.lower() not in _BINARY_SUFFIXES
+    )
+
+
 def scan_artifact_tree(root: Path | str, *, engagement_id: str = "") -> ArtifactScanReport:
     """Scan every file under *root* for credential material.
 
@@ -332,27 +467,58 @@ def scan_artifact_tree(root: Path | str, *, engagement_id: str = "") -> Artifact
         return report
 
     for path in sorted(root_path.rglob("*")):
-        if not path.is_file():
+        if not _scannable(path):
             continue
-        if path.name == SCAN_REPORT_FILENAME:
-            continue
-        if path.suffix.lower() in _BINARY_SUFFIXES:
-            continue
-        relative = path.relative_to(root_path).as_posix()
-        try:
-            size = path.stat().st_size
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
-                text = handle.read(_MAX_FILE_BYTES)
-        except OSError as exc:
-            report.errors.append(f"{relative}: {exc}")
-            continue
-        if size > _MAX_FILE_BYTES:
-            report.files_truncated.append(relative)
         report.files_scanned += 1
-        report.bytes_scanned += len(text)
-        findings, suspicions = scan_text(text, path=relative)
-        report.findings.extend(findings)
-        report.suspicions.extend(suspicions)
+        _scan_one_file(path, path.relative_to(root_path).as_posix(), report, region=REGION_BUNDLE)
+
+    return report
+
+
+def scan_companion_artifacts(
+    outputs_root: Path | str, *, bundle_root: Path | str | None = None
+) -> ArtifactScanReport:
+    """Scan everything under *outputs_root* that no engagement's gate covers.
+
+    The companion region is the outputs root minus every engagement directory:
+    loose files a driver wrote, named result directories
+    (``outputs/_juiceshop_benchmark/``, ``outputs/cross-service-b1/``), anything
+    a hand-written script dropped beside the bundles. It exists because a
+    validation driver wrote a live session JWT to
+    ``outputs/d8_auth_bypass_live_validation.json`` and no scan was ever pointed
+    at it — the file sat one directory above the only root anyone looked in.
+
+    Args:
+        outputs_root: The directory holding the engagement bundles.
+        bundle_root: An engagement directory to exclude explicitly, for the
+            caller whose own id is not UUID-shaped. Ids are uuid4 in production,
+            so :func:`is_engagement_dir` covers the real case; this covers the
+            test and the hand-made id.
+
+    Returns:
+        An :class:`ArtifactScanReport` whose findings all carry
+        :data:`REGION_COMPANION`.
+    """
+    root_path = Path(outputs_root)
+    report = ArtifactScanReport(root=str(root_path.resolve()))
+    if not root_path.is_dir():
+        report.errors.append(f"{root_path}: not a directory")
+        return report
+
+    excluded = Path(bundle_root).resolve() if bundle_root is not None else None
+    for entry in sorted(root_path.iterdir()):
+        if is_engagement_dir(entry):
+            continue
+        if excluded is not None and entry.resolve() == excluded:
+            continue
+        candidates = sorted(entry.rglob("*")) if entry.is_dir() else [entry]
+        for path in candidates:
+            if not _scannable(path):
+                continue
+            report.files_scanned += 1
+            _scan_one_file(
+                path, path.relative_to(root_path).as_posix(), report, region=REGION_COMPANION
+            )
 
     return report
 
@@ -368,8 +534,13 @@ def write_scan_report(report: ArtifactScanReport, root: Path | str) -> Path:
     return path
 
 
-def run_disclosure_gate(root: Path | str, *, engagement_id: str = "") -> ArtifactScanReport:
-    """Scan the bundle, persist the result, and say so at the right volume.
+def run_disclosure_gate(
+    root: Path | str,
+    *,
+    engagement_id: str = "",
+    companion_root: Path | str | None = None,
+) -> ArtifactScanReport:
+    """Scan the bundle and its companions, persist the result, and say so.
 
     A clean result is logged at INFO — an operator should be able to see that
     the check ran, because a gate nobody notices is a gate nobody trusts. A
@@ -379,18 +550,33 @@ def run_disclosure_gate(root: Path | str, *, engagement_id: str = "") -> Artifac
     Args:
         root: The engagement's artifact directory.
         engagement_id: Recorded on the report.
+        companion_root: The outputs root. When given, everything under it that
+            no engagement's gate covers is scanned too and folded into the same
+            verdict, tagged :data:`REGION_COMPANION`. Omitted, the verdict
+            covers the bundle alone and :meth:`ArtifactScanReport.summary_line`
+            says so — the point of the coverage clause is that a CLEAN can never
+            again be read as a claim about a region it did not look at.
 
     Returns:
-        The :class:`ArtifactScanReport`.
+        The :class:`ArtifactScanReport`. One verdict over both regions.
     """
     report = scan_artifact_tree(root, engagement_id=engagement_id)
+    if companion_root is not None:
+        companions = scan_companion_artifacts(companion_root, bundle_root=root)
+        report.companion_root = companions.root
+        report.companion_files_scanned = companions.files_scanned
+        report.bytes_scanned += companions.bytes_scanned
+        report.files_truncated.extend(companions.files_truncated)
+        report.findings.extend(companions.findings)
+        report.suspicions.extend(companions.suspicions)
+        report.errors.extend(companions.errors)
     write_scan_report(report, root)
     if report.clean:
         logger.info("%s", report.summary_line())
     else:
         logger.error(
-            "ARTIFACT DISCLOSURE GATE FAILED — this bundle carries credential "
-            "material and must NOT be handed to a client:\n%s",
+            "ARTIFACT DISCLOSURE GATE FAILED — credential material is present "
+            "and this must NOT be handed to a client:\n%s",
             report.render(),
         )
     return report
@@ -408,14 +594,18 @@ def load_scan_report(root: Path | str) -> ArtifactScanReport | None:
 
 
 __all__ = [
+    "REGION_BUNDLE",
+    "REGION_COMPANION",
     "SCAN_REPORT_FILENAME",
     "SEVERITY_CREDENTIAL",
     "SEVERITY_SUSPICIOUS",
     "ArtifactFinding",
     "ArtifactScanReport",
+    "is_engagement_dir",
     "load_scan_report",
     "run_disclosure_gate",
     "scan_artifact_tree",
+    "scan_companion_artifacts",
     "scan_text",
     "shannon_entropy",
     "write_scan_report",

@@ -52,6 +52,12 @@ from typing import Any
 # target is not rewritten to a docker-network alias this process cannot reach.
 os.environ.setdefault("TOOL_EXEC_MODE", "local")
 
+from _artifact_io import (  # noqa: E402 — after TOOL_EXEC_MODE, which it imports clinkz behind
+    redacted,
+    register_lab_credential,
+    write_redacted_json,
+)
+
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -73,6 +79,12 @@ ADMIN_EMAIL = "admin@juice-sh.op"
 ADMIN_PASSWORD = "admin123"
 LOGIN_PATH = "/rest/user/login"
 SEARCH_PATH = "/rest/products/search"
+
+# A driver that hardcodes a password is a third intake route, so it registers on
+# the way in like the other two. Shape redaction is always on and would remove
+# the session token regardless; a plaintext password has no shape and is removed
+# only because it is registered here.
+register_lab_credential(ADMIN_PASSWORD)
 
 
 def _rule(title: str) -> None:
@@ -136,9 +148,17 @@ class RequestTee:
 
 
 def _render_exchange(entry: dict[str, Any], *, body_limit: int = 700) -> str:
-    req = entry["request"]
+    """One exchange, verbatim except for credential material.
+
+    Redacted like the file this driver writes: a run piped through ``tee``
+    produces a durable artifact too, and ``outputs/`` already holds three such
+    logs. What the arms are asserting survives it — a fingerprint still shows
+    that THIS token came back where THAT one did not, and ``[REDACTED]`` in a
+    body still shows the field was populated.
+    """
+    req = redacted(entry["request"])
     try:
-        parsed = json.loads(entry["raw_response"])
+        parsed = redacted(json.loads(entry["raw_response"]))
     except (ValueError, TypeError):
         parsed = {}
     lines = [
@@ -547,7 +567,8 @@ async def run(base: str) -> int:  # noqa: PLR0915 — a control harness is a scr
     _rule("SUMMARY")
     for name, block in results["controls"].items():
         print(
-            f"  {name:34s} {json.dumps({k: v for k, v in block.items() if k != 'exchanges'})[:120]}"
+            f"  {name:34s} "
+            f"{json.dumps(redacted({k: v for k, v in block.items() if k != 'exchanges'}))[:120]}"
         )
     print(f"\n  main run confirmed    : {results['main']['confirmed']}")
     print(f"  B actually exercised  : {results['main']['b_exercised']}")
@@ -558,9 +579,13 @@ async def run(base: str) -> int:  # noqa: PLR0915 — a control harness is a scr
     else:
         print("\n  ALL CONTROLS PASSED")
 
-    out = REPO_ROOT / "outputs" / "d8_auth_bypass_live_validation.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+    # Through the engine's redaction chokepoint. `results` carries every teed
+    # exchange, so a raw dump writes the target's session JWT and the lab
+    # password to disk — which is exactly what the previous version of this
+    # line did.
+    out = write_redacted_json(
+        REPO_ROOT / "outputs" / "d8_auth_bypass_live_validation.json", results
+    )
     print(f"\n  written: {out}")
     return 1 if failures else 0
 
