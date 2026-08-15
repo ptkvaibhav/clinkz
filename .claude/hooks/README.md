@@ -52,6 +52,24 @@ in depth: the first two were each defeated from a fresh clone (LESSONS #34).
    no setup with `lint-and-test` (no package install, no system deps), so it stays
    fast and reports independently.
 
+4. **CI `metadata-leak-guard` job** — `.github/workflows/metadata-leak-guard.yml`,
+   running [`.github/scripts/metadata_leak_guard.py`](../../.github/scripts/metadata_leak_guard.py).
+   The other three layers all inspect the **tree**; a PR title, a PR body and a
+   commit message are not files, so none of them was ever *capable* of catching a
+   `Claude-Session:` trailer or a `claude.ai/code/session` link. That gap class is
+   the finding, not any one URL. Fires on `opened, edited, reopened, synchronize`
+   — `edited` included deliberately, since a body that opens clean can be edited
+   dirty afterwards.
+
+   The job **watches itself fail** before it is trusted: a self-test step feeds the
+   detector seeded leaks (and clean text, so a match-everything regex cannot pass
+   by being useless), and a second step runs the real entry point against a seeded
+   body and requires exit 1. Exit codes are `0` clean · `1` leak · `2` the guard
+   could not run — never 1 for a crash, or breakage would read as an alarm.
+   Findings name `<source>:<line>` and redact the identifier: a session URL echoed
+   into a public Actions log is the same disclosure the guard exists to prevent.
+
 Never bypass a layer with `--no-verify` (forbidden by CLAUDE.md's pre-push gates).
-Fix the root cause instead. Regression coverage for all three lives in
-[`tests/test_hooks/test_commit_guards.py`](../../tests/test_hooks/test_commit_guards.py).
+Fix the root cause instead. Regression coverage for the first three lives in
+[`tests/test_hooks/test_commit_guards.py`](../../tests/test_hooks/test_commit_guards.py);
+the fourth carries its own self-test, run as a step of the job it guards.
