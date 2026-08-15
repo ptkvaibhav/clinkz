@@ -1,0 +1,93 @@
+name: Metadata leak guard
+
+# The tree guard in ci.yml cannot see any of this. A PR title, a PR body and a
+# commit message are GitHub-side metadata and git object headers, not files, so
+# `outputs_guard.py --tree HEAD` was never capable of catching a session link
+# even in principle. That gap class is the finding; this workflow closes it.
+#
+# `edited` is in the trigger list on purpose: a body is editable after the PR
+# opens, so a guard that only fires on `opened` can be walked straight past by
+# opening clean and editing the link back in.
+#
+# Server-side, like `leak-guard`: no local git config, no `--no-verify`, and no
+# un-bootstrapped clone can skip it.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  metadata-leak-guard:
+    name: Metadata leak guard (session links in PR text · commit trailers)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the guard diffs base..head, and a shallow clone cannot
+          # resolve the base SHA, which would fail the job closed on every PR.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # A guard nobody has watched fail is an assumption, not a control. This
+      # step feeds the detector known-bad strings and fails the job if any of
+      # them slips through — and known-good strings, so a match-everything
+      # regex cannot pass by being useless. It also asserts the guard does not
+      # reproduce the identifier in its own output.
+      - name: Self-test the detector (must catch seeded leaks)
+        run: python3 .github/scripts/metadata_leak_guard.py --self-test
+
+      # Second, blunter proof, at the real entry point rather than the unit
+      # path: run the guard against a seeded body and require exit 1. If this
+      # step ever exits 0, the guard is not guarding.
+      - name: Prove the real entry point refuses a seeded body
+        env:
+          SEEDED_BODY: |
+            A perfectly ordinary pull request body.
+
+            https://claude.ai/code/session_018eSEEDEDSEEDEDSEEDED
+        run: |
+          set +e
+          python3 .github/scripts/metadata_leak_guard.py --body-env SEEDED_BODY
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then
+            echo "SELF-TEST FAILED: seeded body returned exit $code, expected 1."
+            exit 1
+          fi
+          echo "Observed the guard refuse a seeded body (exit 1) — the control is live."
+
+      # The real check. Title and body are contributor-controlled text and go
+      # through `env:`, never interpolated into the shell with `${{ }}` — a PR
+      # title containing shell metacharacters would otherwise execute inside
+      # this job. The two SHAs are GitHub-computed hex and cannot carry
+      # metacharacters, but they travel the same way so the workflow has no
+      # inline-expression sink at all and no future edit can reintroduce one.
+      - name: Refuse session links in PR title, body, and commit messages
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python3 .github/scripts/metadata_leak_guard.py
+          --title-env PR_TITLE
+          --body-env PR_BODY
+          --base-sha "$BASE_SHA"
+          --head-sha "$HEAD_SHA"
+
+# KNOWN LIMITATION, stated rather than implied: this job runs the guard script
+# as it exists in the PR's own checkout, so a pull request may weaken the guard
+# that judges it. It is a hygiene control for this repo's own commits, not a
+# boundary against a hostile contributor. It is deliberately NOT hardened by
+# running the base branch's copy instead, because the base has no copy at all
+# until this lands, and a guard that fails closed on its own introducing PR is a
+# guard nobody merges. Revisit if the repo starts taking outside PRs: check out
+# the base ref's script into a separate path and execute that.
+#
+# `pull_request` (not `pull_request_target`) is deliberate: the job gets a
+# read-only token and no secrets, so a fork PR cannot exfiltrate anything even
+# though it controls the checked-out tree.
