@@ -172,3 +172,30 @@ The evidence names `AuthArtifact.principal`; the raw response's own
 `"umail":"admin@juice-sh.op"` corroborates it independently of the JWT decode,
 and the 717-character token value reaches no writer — the bundle contains no
 JWT-shaped string at all.
+
+### The DVWA ladder — the control group, and why its zero is evidence
+
+| level | engagement | confirmed | exploitation | posture | auth-bypass | admin hash |
+|---|---|---|---|---|---|---|
+| low | `197f9797` | 20 | 15 | 5 | **0** | unchanged |
+| medium | `b42537ca` | 17 | 12 | 5 | **0** | unchanged |
+| high | `0ed4bdea` | 14 | 9 | 5 | **0** | unchanged |
+| impossible | `c5cb44c0` | 7 | **0** | 7 | **0** | unchanged |
+
+A zero from a class that was never dispatched is indistinguishable, in the
+finding count, from a class that ran and refused. So the trace is the evidence:
+**five `auth_bypass_differential` events** across the ladder (one at low on
+`username`, four at impossible on `username`/`password`/`Login`/`user_token`),
+every one refusing with `shape_matched_control_also_authenticated`, and
+`carrier_session_free=True` on all five.
+
+That last column is the point. FIX B's drop *did* happen on DVWA —
+`_authenticated_as` (`admin`) was in the pre-drop set and was removed — and it
+changed nothing, because DVWA re-issues `PHPSESSID` on every response, the
+control arm therefore authenticates too, and the verdict short-circuits at
+requirement 2, several steps before the identity suppression is consulted. The
+relaxation is **structurally unreachable** on this target, which is exactly what
+makes it a control group for it.
+
+Impossible holds at **0 exploitation findings**; its seven confirmations are all
+posture headers.
