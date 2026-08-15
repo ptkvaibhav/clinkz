@@ -156,6 +156,9 @@ class TraceWriter:
         # invocations record their owning agent/step automatically.
         self._current_step: StepContext | None = None
         self._current_step_lock = threading.Lock()
+        #: ``(stage, provider, model) -> call count`` for every LLM round-trip
+        #: this engagement actually made. See :meth:`model_stamp`.
+        self._model_stamp: dict[tuple[str, str, str], int] = {}
 
     # ------------------------------------------------------------------
     # Current step context (used by ToolBase to attribute invocations)
@@ -408,6 +411,9 @@ class TraceWriter:
         extra: dict[str, Any] | None = None,
     ) -> None:
         """Record an LLM round-trip."""
+        with self._lock:
+            key = (stage, provider, model)
+            self._model_stamp[key] = self._model_stamp.get(key, 0) + 1
         payload: dict[str, Any] = {
             "provider": provider,
             "model": model,
@@ -419,6 +425,37 @@ class TraceWriter:
         if extra:
             payload.update(extra)
         self.write(stage=stage, category=TraceCategory.LLM_CALL, payload=payload)
+
+    def model_stamp(self) -> list[dict[str, str | int]]:
+        """Which model actually served each stage of this run, and how often.
+
+        **A recorded baseline without this is not a baseline.** Measured over
+        1,028 security-header analyses across 126 engagements, the same prompt on
+        a byte-identical observation produced the version-disclosure entries in
+        27% of calls under ``claude-sonnet-5`` and 80% under
+        ``claude-sonnet-4-6``. Any number graded against a previous run — the
+        DVWA ladder's finding counts, a benchmark coverage figure — therefore
+        moves when the model moves, with nothing in the artifact saying so.
+
+        Read from the calls that were actually MADE, never from configuration.
+        Configuration records what was requested; a rate-limit fallback means the
+        provider that answered is not the provider that was asked, and it is the
+        one that answered which shaped the output. A stage appears once per
+        distinct ``(provider, model)`` that served it, so a run where fallback
+        activated shows both — that is a fact about the run, not a defect.
+
+        Returns:
+            ``[{"stage", "provider", "model", "calls"}]``, ordered by stage then
+            by descending call count.
+        """
+        with self._lock:
+            items = list(self._model_stamp.items())
+        return [
+            {"stage": stage, "provider": provider, "model": model, "calls": calls}
+            for (stage, provider, model), calls in sorted(
+                items, key=lambda kv: (kv[0][0], -kv[1], kv[0][1], kv[0][2])
+            )
+        ]
 
     def agent_step(
         self,

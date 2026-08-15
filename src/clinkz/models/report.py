@@ -211,6 +211,16 @@ class PentestReport(BaseModel):
     #: components and fallback activations, so a deliverable can never again
     #: report a healthy total over a component that produced nothing.
     component_ledger: dict[str, object] = Field(default_factory=dict)
+    #: Which model actually served each LLM stage of this run, and how many calls
+    #: it took. Sourced from the run's own ``llm_call`` trace events, so it
+    #: reflects what ANSWERED rather than what was configured — a rate-limit
+    #: fallback makes those two different, and it is the one that answered which
+    #: shaped the output. Present so that any number this run contributes to a
+    #: benchmark baseline carries the model that produced it: the same prompt on
+    #: a byte-identical header observation yielded its findings 27% of the time
+    #: under one model and 80% under its predecessor, so a model bump silently
+    #: re-baselines every comparison drawn against an earlier run.
+    model_stamp: list[dict[str, str | int]] = Field(default_factory=list)
 
     @property
     def finding_counts(self) -> dict[str, int]:

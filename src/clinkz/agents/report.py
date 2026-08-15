@@ -62,6 +62,7 @@ from clinkz.models.vuln_classes import (
     for_finding,
 )
 from clinkz.observability.ledger import get_active_ledger
+from clinkz.observability.trace import get_active_trace_writer
 from clinkz.safety.action_log import ActionLog, RefusalTally
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
@@ -86,6 +87,24 @@ def _active_ledger_snapshot() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — a report must never fail on its metadata
         logger.warning("Component ledger snapshot failed: %s", exc)
         return {}
+
+
+def _active_model_stamp() -> list[dict[str, str | int]]:
+    """Which model served each LLM stage of this run, or ``[]`` when untraced.
+
+    Read from the active trace writer for the same reason as the ledger above: a
+    directly invoked ReportAgent has no engagement, and an empty stamp is the
+    honest rendering of "this run made no traced LLM calls". Never reconstructed
+    from configuration — see :meth:`TraceWriter.model_stamp`.
+    """
+    writer = get_active_trace_writer()
+    if writer is None:
+        return []
+    try:
+        return writer.model_stamp()
+    except Exception as exc:  # noqa: BLE001 — a report must never fail on its metadata
+        logger.warning("Model stamp snapshot failed: %s", exc)
+        return []
 
 
 def _parse_authorization(raw: Any) -> AuthorizationRecord | None:
@@ -348,6 +367,7 @@ class ReportAgent(BaseAgent):
             safety_summary=safety,
             authentication=authentication,
             component_ledger=_active_ledger_snapshot(),
+            model_stamp=_active_model_stamp(),
         )
 
         # The report is the artifact that actually reaches the client, so it
