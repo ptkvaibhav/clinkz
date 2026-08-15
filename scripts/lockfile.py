@@ -22,9 +22,20 @@ Platform
 The lock targets the environment CI installs into (Linux, CPython 3.12), because
 that is the environment the assertion runs in. ``--generate`` resolves for that
 target explicitly rather than freezing whatever is installed here, so it can be
-regenerated from any developer machine and produce the same file. Packages whose
-presence is a function of the platform (``colorama`` on Windows, ``pywin32``)
-therefore do not enter the lock at all.
+regenerated from any developer machine and produce the same file.
+
+**``--platform`` is not as strong as it looks.** It constrains which wheel TAGS
+are acceptable; it does not set ``sys_platform`` for environment-marker
+evaluation. So a dependency declared ``colorama; sys_platform == "win32"`` still
+enters a Linux-targeted resolve, because its wheel is ``py3-none-any`` and the
+marker was never consulted. The first CI run of this check caught exactly that,
+as a one-line ``MISSING colorama==0.4.6 is locked but not installed``.
+
+:data:`MARKER_EXCLUDED` carries those packages. It is a short list rather than a
+marker evaluator on purpose: **the CI ``--check`` is the authority**, and a
+package that belongs on this list announces itself there as a single, named,
+self-explaining line. A marker evaluator would be more code with the same safety
+net behind it.
 
 Usage
 -----
@@ -54,6 +65,20 @@ PLATFORMS = ("manylinux2014_x86_64", "any")
 #: property of the runner and locking them would make the check fail on every
 #: GitHub image bump for no benefit.
 ENVIRONMENT_PACKAGES = frozenset({"pip", "setuptools", "wheel", "pkg-resources"})
+
+#: Pulled in under an environment marker that is FALSE on the CI target, but
+#: which a ``--platform``-targeted resolve still selects because the marker is
+#: never evaluated (see the module docstring). Excluded from the lock so it
+#: describes what CI actually installs.
+MARKER_EXCLUDED = frozenset(
+    {
+        "colorama",  # click/pytest: sys_platform == "win32"
+        "pywin32",  # sys_platform == "win32"
+        "pywin32-ctypes",  # sys_platform == "win32"
+        "exceptiongroup",  # python_version < "3.11"; CI is 3.12
+        "tomli",  # python_version < "3.11"; CI is 3.12
+    }
+)
 
 HEADER = """\
 # GENERATED — do not edit by hand. Regenerate with:
@@ -107,8 +132,12 @@ def resolve() -> dict[str, str]:
     for item in data.get("install", []):
         meta = item.get("metadata", {})
         name, version = meta.get("name"), meta.get("version")
-        if name and version and normalise(name) not in ENVIRONMENT_PACKAGES:
-            resolved[normalise(name)] = version
+        if not name or not version:
+            continue
+        key = normalise(name)
+        if key in ENVIRONMENT_PACKAGES or key in MARKER_EXCLUDED:
+            continue
+        resolved[key] = version
     return resolved
 
 
@@ -136,7 +165,10 @@ def installed() -> dict[str, str]:
         if not name:
             continue
         key = normalise(name)
-        if key in ENVIRONMENT_PACKAGES or key == "clinkz":
+        # MARKER_EXCLUDED is skipped on BOTH sides: on a Windows developer
+        # machine colorama genuinely IS installed, and reporting it as an EXTRA
+        # would be the check complaining about a correct environment.
+        if key in ENVIRONMENT_PACKAGES or key in MARKER_EXCLUDED or key == "clinkz":
             continue
         out[key] = dist.version
     return out
