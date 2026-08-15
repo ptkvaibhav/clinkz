@@ -98,6 +98,9 @@ Repository ships with:
   commit; activated per clone by `python scripts/bootstrap.py`
 - `.github/workflows/ci.yml` — matching CI gates, plus the `leak-guard` job (the
   fail-closed `outputs/` + credential layer that no local flag can skip)
+- `.github/workflows/metadata-leak-guard.yml` + `.github/scripts/metadata_leak_guard.py`
+  — the same posture for the surface a tree scan cannot reach: session links in a
+  PR title/body or a `Claude-Session:` commit trailer. Self-tests on every run.
 
 ### 5. Agent flow — **DONE (with adaptive layer partially in)**
 
