@@ -452,14 +452,19 @@ class TestTheArmsAreSessionless:
         reintroduces the confound."""
         from unittest.mock import AsyncMock
 
-        from clinkz.agents.exploit import PageAnalysis, _HTTPResponse
+        from clinkz.agents.exploit import PageAnalysis, _AuthBypassCarrier, _HTTPResponse
 
         agent = _agent()
         page = PageAnalysis(
             url="http://t/login", body="", status=200, input_params=["email", "password"]
         )
         agent._auth_bypass_send_probe = AsyncMock(  # type: ignore[method-assign]
-            return_value=_HTTPResponse(status=401, body="{}", headers={})
+            return_value=(
+                _HTTPResponse(status=401, body="{}", headers={}),
+                _AuthBypassCarrier(
+                    label="arm", sent=True, submitted={}, session_free=True, note=""
+                ),
+            )
         )
         agent._send_probe = AsyncMock(  # type: ignore[method-assign]
             side_effect=AssertionError("an arm used the session-carrying probe")
@@ -505,3 +510,378 @@ class TestSynthesis:
         assert synth is not None
         assert synth["payload"].startswith("1')")
         assert synth["payload"].endswith("#")
+
+
+# ---------------------------------------------------------------------------
+# FIX A — the LLM synthesizer is structurally unreachable for AUTH_BYPASS
+# ---------------------------------------------------------------------------
+
+
+class TestTheLLMNeverSynthesizesAnAuthBypassPair:
+    """Not a preference for the deterministic build — an exclusion.
+
+    The phase-4 prompt has no auth_bypass vocabulary and the ``indicator_type``
+    enum it asks for excludes the value, so every pair a model could return here
+    is either rejected at phase 5 as an unknown indicator or routed to a
+    row-set/error/timing oracle that cannot see the effect — the wrong oracle,
+    running against a live login handler. There is no state in which that path
+    helps, so the assertion below is about the CALL, not about the result: a
+    behavioural test that only checks the returned pair passes just as happily
+    against a version that consults the model first and discards its answer.
+    """
+
+    @staticmethod
+    def _spy(agent) -> object:
+        from unittest.mock import AsyncMock
+
+        spy = AsyncMock(side_effect=AssertionError("the LLM synthesizer was called"))
+        agent._llm_analyze = spy  # type: ignore[method-assign]
+        return spy
+
+    @pytest.mark.asyncio
+    async def test_it_is_not_called_even_without_a_confirmed_breakout(self) -> None:
+        """``break_prefix is None`` is the state that used to fall through."""
+        from clinkz.models.methodology import InjectionPrimitives, InjectionType, SQLDialect
+
+        agent = _agent()
+        spy = self._spy(agent)
+        synth = await agent._sqli_phase4_synthesize_payload(
+            InjectionType.AUTH_BYPASS,
+            SQLDialect.MYSQL,
+            InjectionPrimitives(quote_chars=["'"], comment_syntax=["--"], break_prefix=None),
+            {"value": "1"},
+        )
+        assert spy.await_count == 0
+        assert synth is not None
+        assert synth["indicator_type"] == "auth_bypass"
+
+    @pytest.mark.asyncio
+    async def test_it_is_not_called_when_the_deterministic_table_declines(self) -> None:
+        """Declining ABSTAINS. The refactor-proof half of the same rule: one
+        `return None` away from the old behaviour, the class would resume asking
+        a model that cannot answer."""
+        from clinkz.models.methodology import InjectionPrimitives, InjectionType, SQLDialect
+
+        agent = _agent()
+        spy = self._spy(agent)
+        agent._fallback_synthesis_sqli = lambda *a, **kw: None  # type: ignore[method-assign]
+        traced: list[dict] = []
+        agent._trace_methodology_phase = lambda **kw: traced.append(kw)  # type: ignore[method-assign]
+
+        synth = await agent._sqli_phase4_synthesize_payload(
+            InjectionType.AUTH_BYPASS,
+            SQLDialect.MYSQL,
+            InjectionPrimitives(quote_chars=[], comment_syntax=[], break_prefix=None),
+            {"value": "1"},
+        )
+        assert synth is None
+        assert spy.await_count == 0
+        assert [t for t in traced if t.get("phase_name") == "auth_bypass_abstained"], (
+            "an abstention that leaves no trace reads exactly like a class that was never ranked"
+        )
+
+    @pytest.mark.asyncio
+    async def test_other_types_still_reach_the_llm_checkpoint(self) -> None:
+        """The exclusion is scoped to the one type whose oracle the model cannot
+        address — it is not a general retreat from the phase-4 checkpoint."""
+        from unittest.mock import AsyncMock
+
+        from clinkz.models.methodology import InjectionPrimitives, InjectionType, SQLDialect
+
+        agent = _agent()
+        called = AsyncMock(return_value='{"payload": "x", "indicator_type": "error_string"}')
+        agent._llm_analyze = called  # type: ignore[method-assign]
+        await agent._sqli_phase4_synthesize_payload(
+            InjectionType.ERROR_BASED,
+            SQLDialect.MYSQL,
+            InjectionPrimitives(quote_chars=["'"], comment_syntax=["--"], break_prefix=None),
+            {"value": "1"},
+        )
+        assert called.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# FIX B — the suppression is keyed on credential possession, not on identity
+# ---------------------------------------------------------------------------
+
+#: A token naming the account a `' OR 1=1 --` returns on an application whose
+#: first row is the administrator. This is the shape that made the old key
+#: wrong: the name is real, the request carried no password for it.
+ADMIN = "admin@juice-sh.op"
+
+
+def _login_page():
+    from clinkz.agents.exploit import PageAnalysis
+
+    return PageAnalysis(
+        url="http://t/rest/user/login", body="", status=200, input_params=["email", "password"]
+    )
+
+
+def _drive(
+    agent,
+    *,
+    probe_body: str,
+    session_free: bool = True,
+    submitted: dict[str, str] | None = None,
+) -> None:
+    """Wire the three arms: probe authenticates, control and benign refuse."""
+    from clinkz.agents.exploit import _AuthBypassCarrier, _HTTPResponse
+
+    async def _send(page, param, value, *, label="arm"):
+        authenticating = label.startswith("probe")
+        return (
+            _HTTPResponse(
+                status=200 if authenticating else 401, body=probe_body if authenticating else "{}"
+            ),
+            _AuthBypassCarrier(
+                label=label,
+                sent=True,
+                submitted=dict(submitted or {}),
+                session_free=session_free,
+                note="" if session_free else "auth-carrying headers ['Cookie']",
+            ),
+        )
+
+    agent._auth_bypass_send_probe = _send  # type: ignore[method-assign]
+    agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
+
+
+class TestTheSuppressionKeyIsCredentialPossession:
+    """What the suppression must catch is "we authenticated legitimately and the
+    endpoint told us who we are" — which has two routes, a session for the
+    principal or a valid credential for it. Identity coincidence proxies that
+    badly in both directions, and the expensive direction is the strict one: it
+    refuses ``admin@juice-sh.op'--``, a real bypass carrying no password.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_real_bypass_naming_the_engagement_identity_confirms(self) -> None:
+        agent = _agent()
+        agent._authenticated_as = ADMIN
+        _drive(
+            agent,
+            probe_body=json.dumps({"authentication": {"token": _jwt({"email": ADMIN})}}),
+            submitted={"email": f"{ADMIN}'-- ", "password": "Clinkz-Probe-1!"},
+        )
+        ok, observed = await agent._sqli_verify_auth_bypass(
+            _login_page(), "email", f"{ADMIN}'-- ", f"{ADMIN}'and'1'='2'-- ", {"value": "1"}
+        )
+        assert ok is True, observed
+        assert "carrier assertion PASSED" in observed
+
+    @pytest.mark.asyncio
+    async def test_a_failed_carrier_assertion_keeps_the_engagement_identity(self) -> None:
+        """Fail SAFE. The guard may only relax on an arm it checked, so a carrier
+        that cannot state it was sessionless returns the class to its stricter
+        behaviour rather than inheriting the looser one."""
+        agent = _agent()
+        agent._authenticated_as = ADMIN
+        _drive(
+            agent,
+            probe_body=json.dumps({"authentication": {"token": _jwt({"email": ADMIN})}}),
+            session_free=False,
+        )
+        ok, observed = await agent._sqli_verify_auth_bypass(
+            _login_page(), "email", f"{ADMIN}'-- ", f"{ADMIN}'and'1'='2'-- ", {"value": "1"}
+        )
+        assert ok is False
+        assert "principal_is_an_identity_we_supplied" in observed
+        assert "carrier assertion FAILED" in observed
+
+    @pytest.mark.asyncio
+    async def test_an_arm_that_submitted_a_valid_credential_is_suppressed(self) -> None:
+        """The B-control, as a unit: a sessionless arm that hands over a password
+        we hold and know works has LOGGED IN, and a token naming that account
+        afterwards demonstrates nothing. Note ``_authenticated_as`` is empty —
+        this must be caught by possession alone."""
+        from clinkz.engagement.credential_shapes import fingerprint
+
+        agent = _agent()
+        agent._authenticated_as = ""
+        agent._known_valid_credentials = {ADMIN: fingerprint("admin123")}
+        _drive(
+            agent,
+            probe_body=json.dumps({"authentication": {"token": _jwt({"email": ADMIN})}}),
+            submitted={"email": ADMIN, "password": "admin123"},
+        )
+        ok, observed = await agent._sqli_verify_auth_bypass(
+            _login_page(), "email", ADMIN, f"{ADMIN}x", {"value": "1"}
+        )
+        assert ok is False
+        assert "principal_is_an_identity_we_supplied" in observed
+
+    @pytest.mark.asyncio
+    async def test_the_same_identity_beside_a_probe_password_is_not_possession(self) -> None:
+        """The other direction of the same key: holding a credential for an
+        account is not submitting it."""
+        from clinkz.engagement.credential_shapes import fingerprint
+
+        agent = _agent()
+        agent._authenticated_as = ADMIN
+        agent._known_valid_credentials = {ADMIN: fingerprint("admin123")}
+        _drive(
+            agent,
+            probe_body=json.dumps({"authentication": {"token": _jwt({"email": ADMIN})}}),
+            submitted={"email": ADMIN, "password": "Clinkz-Probe-1!"},
+        )
+        ok, observed = await agent._sqli_verify_auth_bypass(
+            _login_page(), "email", f"{ADMIN}'-- ", f"{ADMIN}'and'1'='2'-- ", {"value": "1"}
+        )
+        assert ok is True, observed
+
+    def test_both_halves_must_ride_the_same_request(self) -> None:
+        from clinkz.engagement.credential_shapes import fingerprint
+
+        agent = _agent()
+        agent._known_valid_credentials = {
+            ADMIN: fingerprint("admin123"),
+            "user@t": fingerprint("p"),
+        }
+        # Identity of one entry, password of another.
+        assert agent._identities_authenticated_by({"email": ADMIN, "password": "p"}) == []
+        assert agent._identities_authenticated_by({"email": ADMIN, "password": "admin123"}) == [
+            ADMIN
+        ]
+
+    def test_a_password_shaped_field_is_what_carries_a_credential(self) -> None:
+        """The value has to arrive in a password field. An application echoing a
+        known password into a display field is not a login attempt."""
+        from clinkz.engagement.credential_shapes import fingerprint
+
+        agent = _agent()
+        agent._known_valid_credentials = {ADMIN: fingerprint("admin123")}
+        assert agent._identities_authenticated_by({"email": ADMIN, "note": "admin123"}) == []
+
+    def test_the_handoff_is_reduced_to_fingerprints_on_the_way_in(self) -> None:
+        """The CredentialSet is structurally off this agent and this must not be
+        the exception that puts it back."""
+        agent = _agent()
+        harvested = agent._harvest_known_valid_credentials(
+            [
+                {"username": ADMIN, "password": "admin123"},
+                {"username": "", "password": "x"},
+                {"username": "u", "password": ""},
+                "not a dict",
+            ]
+        )
+        assert set(harvested) == {ADMIN}
+        assert "admin123" not in harvested.values()
+        assert agent._harvest_known_valid_credentials(None) == {}
+
+
+class TestTheCarrierAssertionReadsTheDispatchedRequest:
+    """ "Sessionless" is a property of the request that went out. Asserting it
+    from the branch that built the request is the assumption this guard exists
+    to stop making."""
+
+    def test_an_unrecorded_request_is_not_session_free(self) -> None:
+        agent = _agent()
+        ok, note = agent._auth_bypass_assert_session_free({})
+        assert ok is False
+        assert "no dispatched request" in note
+
+    def test_the_ambient_jar_counts(self) -> None:
+        agent = _agent()
+        ok, note = agent._auth_bypass_assert_session_free(
+            {"no_session": False, "cookies": {}, "headers": {}}
+        )
+        assert ok is False
+        assert "no_session" in note
+
+    @pytest.mark.parametrize("header", ["Cookie", "authorization", "X-Auth-Token"])
+    def test_an_auth_carrying_header_counts(self, header: str) -> None:
+        agent = _agent()
+        ok, note = agent._auth_bypass_assert_session_free(
+            {"no_session": True, "cookies": {}, "headers": {header: "v"}}
+        )
+        assert ok is False
+        assert header in note
+        assert "v" not in note.replace(header, "")
+
+    def test_this_engagements_own_session_header_counts(self) -> None:
+        """A target-specific auth header the static vocabulary has never seen is
+        still this engagement's session."""
+        agent = _agent()
+        agent._session_headers = {"X-Juice-Token": "..."}
+        ok, _ = agent._auth_bypass_assert_session_free(
+            {"no_session": True, "cookies": {}, "headers": {"x-juice-token": "v"}}
+        )
+        assert ok is False
+
+    def test_an_explicit_cookie_dict_counts(self) -> None:
+        agent = _agent()
+        ok, note = agent._auth_bypass_assert_session_free(
+            {"no_session": True, "cookies": {"PHPSESSID": "x"}, "headers": {}}
+        )
+        assert ok is False
+        assert "PHPSESSID" in note
+
+    def test_a_clean_request_passes(self) -> None:
+        agent = _agent()
+        ok, note = agent._auth_bypass_assert_session_free(
+            {
+                "no_session": True,
+                "cookies": {},
+                "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+            }
+        )
+        assert (ok, note) == (True, "")
+
+    @pytest.mark.asyncio
+    async def test_the_live_carrier_records_what_it_sent_and_passes(self) -> None:
+        """End to end through the real builder + the real chokepoint arguments."""
+        from unittest.mock import AsyncMock, patch
+
+        from clinkz.agents.exploit import PageAnalysis
+        from clinkz.models.scan import ParamLocation
+
+        agent = _agent()
+        page = PageAnalysis(
+            url="http://t/login",
+            body="",
+            status=200,
+            input_params=["email", "password"],
+            param_locations={
+                "email": ParamLocation.FORM_BODY,
+                "password": ParamLocation.FORM_BODY,
+            },
+        )
+        with patch("clinkz.tools.http_client.HTTPClientTool") as tool_cls:
+            tool = tool_cls.return_value
+            tool.validate_input.side_effect = lambda a: a
+            tool.execute = AsyncMock(return_value="{}")
+            tool.parse_output.return_value = type(
+                "P", (), {"status_code": 401, "response_body": "{}", "response_headers": {}}
+            )()
+            _resp, carrier = await agent._auth_bypass_send_probe(
+                page, "email", "x' OR '1'='1'-- ", label="probe(tautology)"
+            )
+
+        assert carrier.sent is True
+        assert carrier.session_free is True, carrier.note
+        assert carrier.submitted["email"] == "x' OR '1'='1'-- "
+        assert carrier.submitted["password"] == agent._benign_param_value("password")
+
+    @pytest.mark.asyncio
+    async def test_a_refused_arm_sends_nothing_and_is_not_session_free(self) -> None:
+        """Nothing sent is not a sessionless observation — it is no observation,
+        and it must not be read as licence to relax the suppression."""
+        from clinkz.agents.exploit import PageAnalysis
+        from clinkz.models.scan import ParamLocation
+
+        agent = _agent()
+        page = PageAnalysis(
+            url="http://t/register",
+            body="",
+            status=200,
+            input_params=["email", "password"],
+            param_locations={
+                "email": ParamLocation.FORM_BODY,
+                "password": ParamLocation.FORM_BODY,
+            },
+        )
+        agent._body_submission_is_destructive = lambda p: True  # type: ignore[method-assign]
+        _resp, carrier = await agent._auth_bypass_send_probe(page, "email", "x", label="benign")
+        assert carrier.sent is False
+        assert carrier.session_free is False

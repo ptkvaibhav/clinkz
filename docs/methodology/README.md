@@ -33,6 +33,7 @@ oracle set.
 | Class | Doc |
 |---|---|
 | SQLi (+ cookie/session vectors) | [sqli.md](sqli.md) |
+| Authentication bypass (D8, `InjectionType.AUTH_BYPASS`) | [auth-bypass.md](auth-bypass.md) |
 | NoSQL injection | [nosqli.md](nosqli.md) |
 | SSTI | [ssti.md](ssti.md) |
 | XXE | [xxe.md](xxe.md) |
