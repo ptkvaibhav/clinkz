@@ -15,7 +15,18 @@ dependencies = [
     "anthropic>=0.34.0",
     "google-genai>=0.5.0",
     "pydantic>=2.7.0",
-    "typer>=0.12.0",
+    # Pinned exactly, and click/rich with it. `typer>=0.12.0` let CI resolve a
+    # different CLI stack from every developer machine, in a repo whose premise
+    # is reproducible verification — the same shape as the `mcp` bound below.
+    # These three are not incidental: the exit-code contract and the documented
+    # flag list are asserted against what they RENDER, so a minor bump in any of
+    # them can turn an interface test red without a line of clinkz changing.
+    # click and rich arrive transitively via typer, but a test that reads their
+    # output is a direct dependency on them, so they are declared as one.
+    # These are the versions the last green CI run resolved; bump deliberately.
+    "typer==0.27.1",
+    "click==8.4.2",
+    "rich==15.0.0",
     "aiohttp>=3.13.4",
     "aiosqlite>=0.20.0",
     "weasyprint>=62.0",
