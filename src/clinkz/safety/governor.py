@@ -44,6 +44,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from clinkz.config import outputs_root as configured_outputs_root
 from clinkz.engagement.gate import EngagementAbortedError
 from clinkz.models.engagement import EngagementWindow, SafetyPolicy
 from clinkz.safety.action_log import CATEGORY_BROWSER_NAVIGATION, ActionLog
@@ -201,12 +202,12 @@ class EngagementGovernor:
         policy: SafetyPolicy | None = None,
         *,
         window: EngagementWindow | None = None,
-        outputs_root: Path | str = Path("outputs"),
+        outputs_root: Path | str | None = None,
     ) -> None:
         self.engagement_id = engagement_id
         self.policy = policy or SafetyPolicy()
         self.window = window
-        self.outputs_root = Path(outputs_root)
+        self.outputs_root = Path(outputs_root or configured_outputs_root())
         self.action_log = ActionLog(engagement_id, outputs_root=self.outputs_root)
 
         self._bucket = _TokenBucket(self.policy.max_requests_per_second)

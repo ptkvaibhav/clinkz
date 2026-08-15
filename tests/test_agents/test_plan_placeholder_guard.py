@@ -188,14 +188,33 @@ class TestPlanningPrefixIsByteStable:
         assert a == b
 
     def test_the_prefix_carries_what_the_planner_was_missing(self) -> None:
-        prefix = self._prefix(_agent())
+        """Asserted on the WHOLE prompt, because that is what the model reads.
+
+        The context is split across two spans now — engine-invariant and
+        engagement-scoped — so the cache breakpoint can sit between them. That
+        is an accounting boundary and must not be a content one: everything the
+        planner needs still has to arrive, and asserting it per span would let
+        a section go missing from the prompt while both halves still passed.
+        """
+        agent = _agent()
+        whole = f"{ExploitAgent._planning_invariant_prefix()}\n\n{self._prefix(agent)}"
         # Every method name, each with its precondition — not a bare name list.
-        assert "`_test_sqli` — applies when endpoint has params" in prefix
-        assert "## Methodology catalogue" in prefix
-        assert "## Planning guidance" in prefix
-        assert "## Worked examples" in prefix
-        assert "## Endpoint inventory" in prefix
-        assert "## Prior-engagement capability priors" in prefix
+        assert "`_test_sqli` — applies when endpoint has params" in whole
+        assert "## Methodology catalogue" in whole
+        assert "## Planning guidance" in whole
+        assert "## Worked examples" in whole
+        assert "## Endpoint inventory" in whole
+        assert "## Prior-engagement capability priors" in whole
+
+    def test_the_two_spans_do_not_overlap(self) -> None:
+        """The engine half must not carry an observation, or it is not invariant."""
+        agent = _agent()
+        invariant = ExploitAgent._planning_invariant_prefix()
+        scoped = self._prefix(agent)
+        assert "## Methodology catalogue" in invariant
+        assert "## Methodology catalogue" not in scoped
+        assert "## Endpoint inventory" in scoped
+        assert "## Endpoint inventory" not in invariant
 
     def test_worked_examples_use_endpoints_that_are_not_in_the_inventory(self) -> None:
         """An example drawn from the real inventory would be an answer, not a shape."""
@@ -204,15 +223,41 @@ class TestPlanningPrefixIsByteStable:
         for endpoint in _endpoints():
             assert endpoint.url not in _PLANNING_EXAMPLES
 
-    def test_the_prefix_clears_the_cache_floor_for_the_configured_model(self) -> None:
-        """A prefix under the floor caches nothing — measure, do not assume."""
+    def test_the_cached_span_clears_the_cache_floor_for_the_configured_model(self) -> None:
+        """Measured on the span that takes the breakpoint, not on the big one.
+
+        This used to measure the engagement-scoped prefix — ~12,500 tokens,
+        comfortably over any floor, and utterly beside the point, because that
+        span is presented once per run and was never read back. The span that
+        now carries the breakpoint is an order of magnitude smaller, which puts
+        it near sonnet-5's 1,024-token floor, so whether a breakpoint attaches
+        at all is a real question with a measurable answer. If it stops
+        clearing the floor, caching silently becomes a no-op and this is the
+        only thing that would say so.
+        """
         from clinkz.config import settings
         from clinkz.llm.anthropic_client import cache_min_prefix_tokens
 
-        prefix = self._prefix(_agent())
-        approx_tokens = len(prefix) // 4
+        prefix = ExploitAgent._planning_invariant_prefix()
+        approx_tokens = len(prefix) // 4  # the client's own conservative estimator
         floor = cache_min_prefix_tokens(settings.anthropic_model)
         assert approx_tokens >= floor, (
-            f"planning prefix is ~{approx_tokens} tokens, under the {floor}-token "
-            f"floor for {settings.anthropic_model}; no breakpoint would attach"
+            f"the invariant prefix is ~{approx_tokens} tokens, under the {floor}-token "
+            f"floor for {settings.anthropic_model}; no breakpoint would attach and "
+            f"caching would be a silent no-op"
+        )
+
+    def test_a_wasted_write_on_the_cached_span_is_bounded_noise(self) -> None:
+        """The worst case has to be affordable, because it will happen.
+
+        A write nothing reads costs the 0.25x premium on the cached span. On
+        the old ~12,500-token span that was ~3,100 wasted tokens every run,
+        which is what the 154 recorded engagements actually paid. Keep the
+        cached span small enough that being wrong is cheap.
+        """
+        prefix = ExploitAgent._planning_invariant_prefix()
+        wasted_tokens = (len(prefix) // 4) * 0.25
+        assert wasted_tokens < 500, (
+            f"a wasted write would cost ~{wasted_tokens:.0f} tokens; the cached span "
+            f"has grown to the point where a miss is no longer noise"
         )

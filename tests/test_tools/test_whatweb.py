@@ -1,8 +1,17 @@
 """Unit tests for the WhatWeb tool wrapper.
 
-Tests parse_output() against a realistic JSON fixture — no real WhatWeb required.
+Two fixtures, and the difference between them is the whole point:
 
-Fixture: tests/fixtures/whatweb_output.json
+* ``whatweb_output.json`` — a hand-authored clean JSON array. Every test here
+  passed against it for the life of this wrapper.
+* ``whatweb_output_interleaved.txt`` — the bytes whatweb ACTUALLY writes,
+  lifted from a recorded ``tool_invocations/`` record of a real DVWA run (the
+  engagement's live ``PHPSESSID`` scrubbed before it was committed). The brief
+  human-readable log shares stdout with the JSON log, so the blob is not valid
+  JSON, ``json.loads`` raised, and 100% of a successful fingerprint —
+  Apache 2.4.67, PHP 8.5.6 — was discarded on every run. The clean fixture
+  could not have caught it: it tested the shape we assumed, not the shape the
+  tool emits.
 """
 
 from __future__ import annotations
@@ -15,6 +24,7 @@ from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.tools.whatweb import WhatWebTool
 
 FIXTURE_PATH = Path(__file__).parent.parent / "fixtures" / "whatweb_output.json"
+INTERLEAVED_PATH = Path(__file__).parent.parent / "fixtures" / "whatweb_output_interleaved.txt"
 
 SCOPE = EngagementScope(
     name="test",
@@ -177,3 +187,93 @@ def test_fixture_technologies_map(parsed) -> None:
     """The flat technologies dict (url -> list) is also populated."""
     assert "http://192.168.1.100/" in parsed.technologies
     assert "nginx" in parsed.technologies["http://192.168.1.100/"]
+
+
+# ---------------------------------------------------------------------------
+# parse_output — the bytes whatweb really writes (D1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def real_output() -> str:
+    return INTERLEAVED_PATH.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def interleaved(real_output: str):
+    return make_tool().parse_output(real_output)
+
+
+def test_the_real_output_is_not_valid_json_as_a_whole(real_output: str) -> None:
+    """The negative control: without this, the test below proves nothing.
+
+    If whatweb ever stops interleaving, this fails and the fallback path
+    becomes dead code that nobody noticed had stopped being exercised.
+    """
+    import json
+
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(real_output)
+
+
+def test_interleaved_output_parses(interleaved) -> None:
+    assert interleaved.success is True
+    assert len(interleaved.results) == 2
+
+
+def test_interleaved_output_recovers_the_versioned_components(interleaved) -> None:
+    """The half that matters: a version is what the CVE path matches against."""
+    components = {(c.name, c.version) for c in interleaved.detected_components()}
+    assert ("Apache", "2.4.67") in components
+    assert ("PHP", "8.5.6") in components
+
+
+def test_interleaved_output_keeps_per_url_attribution(interleaved) -> None:
+    by_target = {r.target: r for r in interleaved.results}
+    assert set(by_target) == {"http://clinkz-dvwa/", "http://clinkz-dvwa/login.php"}
+    assert by_target["http://clinkz-dvwa/"].http_status == 302
+    assert by_target["http://clinkz-dvwa/login.php"].http_status == 200
+    assert by_target["http://clinkz-dvwa/"].server == "Apache/2.4.67 (Debian)"
+
+
+def test_brief_lines_do_not_become_scan_results(interleaved) -> None:
+    """A brief line is prose, not a result — it must not enter the inventory."""
+    assert all(r.target.startswith("http") for r in interleaved.results)
+    assert all(r.technologies for r in interleaved.results)
+
+
+def test_clean_array_still_takes_the_whole_blob_path(parsed) -> None:
+    """The fast path is unchanged for output that is valid JSON."""
+    assert parsed.success is True
+    assert len(parsed.results) == 3
+
+
+def test_ndjson_shape_is_recovered_too() -> None:
+    """One object per line, no array — the other way tools emit JSON logs."""
+    raw = (
+        '{"target":"http://a/","http_status":200,"plugins":{"nginx":{"version":["1.24"]}}}\n'
+        '{"target":"http://b/","http_status":404,"plugins":{"Apache":{"version":["2.4"]}}}\n'
+    )
+    out = make_tool().parse_output(raw)
+    assert out.success is True
+    assert [r.target for r in out.results] == ["http://a/", "http://b/"]
+
+
+def test_a_brace_inside_a_quoted_value_does_not_split_an_object() -> None:
+    """String state is tracked, so a plugin string carrying braces is safe."""
+    raw = (
+        "noise before\n"
+        '{"target":"http://a/","http_status":200,'
+        '"plugins":{"Title":{"string":["a } brace \\" and a quote"]}}}\n'
+        "noise after\n"
+    )
+    out = make_tool().parse_output(raw)
+    assert out.success is True
+    assert len(out.results) == 1
+    assert out.results[0].technologies == ["Title"]
+
+
+def test_output_with_no_recoverable_object_still_reports_the_parse_error() -> None:
+    out = make_tool().parse_output("http://x/ [200 OK] Apache[2.4.67], PHP[8.5.6]\n")
+    assert out.success is False
+    assert "JSON parse error" in out.error

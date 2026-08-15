@@ -53,6 +53,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, TextIO
 
+from clinkz.config import outputs_root as configured_outputs_root
 from clinkz.engagement.secrets import redact_structure
 from clinkz.observability.invocations import (
     InvocationRecord,
@@ -76,9 +77,6 @@ class TraceCategory(StrEnum):
     AGENT_STEP = "agent_step"
     DATA_HANDOFF = "data_handoff"
     METHODOLOGY_PHASE = "methodology_phase"
-
-
-_DEFAULT_OUTPUTS_ROOT = Path("outputs")
 
 
 def _summarise(value: Any, max_chars: int = 500) -> str:
@@ -116,7 +114,8 @@ class TraceWriter:
 
     Args:
         engagement_id: Engagement UUID — used to name the output directory.
-        outputs_root: Root directory for trace files. Defaults to ``outputs``.
+        outputs_root: Root directory for trace files. ``None`` reads the
+            configured root (``outputs`` unless ``--out`` redirected it).
         path_override: Explicit trace file path (overrides the directory layout).
             Mainly used by tests.
     """
@@ -124,7 +123,7 @@ class TraceWriter:
     def __init__(
         self,
         engagement_id: str,
-        outputs_root: Path | str = _DEFAULT_OUTPUTS_ROOT,
+        outputs_root: Path | str | None = None,
         *,
         path_override: Path | str | None = None,
     ) -> None:
@@ -133,7 +132,7 @@ class TraceWriter:
         # a bundle must not be able to split across two directories because
         # something changed the process CWD mid-engagement — the trace would go
         # to one tree and the report to another, and each would look complete.
-        self.outputs_root = Path(outputs_root).resolve()
+        self.outputs_root = Path(outputs_root or configured_outputs_root()).resolve()
         if path_override is not None:
             self.path = Path(path_override)
         else:
@@ -546,7 +545,7 @@ class TraceWriter:
     def activate(
         cls,
         engagement_id: str,
-        outputs_root: Path | str = _DEFAULT_OUTPUTS_ROOT,
+        outputs_root: Path | str | None = None,
         *,
         path_override: Path | str | None = None,
     ) -> Iterator[TraceWriter]:
@@ -566,7 +565,7 @@ class TraceWriter:
 
         Args:
             engagement_id: Engagement UUID — names the output directory.
-            outputs_root: Root directory for trace files.
+            outputs_root: Root directory for trace files (``None`` = configured).
             path_override: Explicit trace file path (mainly for tests).
 
         Yields:

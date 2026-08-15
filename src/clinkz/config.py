@@ -90,15 +90,26 @@ class Settings(BaseModel):
         default=16000, description="max_tokens for a single LLM call (covers thinking + text)"
     )
 
-    # Prompt caching. Applies only where a caller supplied a stable prefix
+    # Prompt caching. Applies only where a caller supplied an INVARIANT prefix
     # (llm.base.PromptSegments); a plain-string prompt is unaffected either way.
+    # The breakpoint sits after the engine-invariant span only — see that class
+    # for why caching the engagement-scoped span cost 96,759 write tokens and
+    # returned zero reads across 154 recorded runs.
     llm_prompt_cache_enabled: bool = Field(
-        default=True, description="Attach a cache breakpoint to run-stable prompt prefixes"
+        default=True, description="Attach a cache breakpoint to the engine-invariant prefix"
     )
-    # "5m" (1.25x write premium) or "1h" (2.0x). Measured across the four P7
-    # engagements, the exploit agent's largest gap between consecutive Anthropic
-    # calls was 118s and NO gap exceeded 5 minutes, so the 5m entry never
-    # expires mid-run and 1h would double the write cost for nothing.
+    # "5m" (1.25x write premium) or "1h" (2.0x). Re-derived from every recorded
+    # trace rather than the four P7 engagements the previous note cited: across
+    # 148 runs and 9,419 consecutive exploit/anthropic call gaps the median is
+    # 10.1s, p90 is 28.3s, the maximum is 337.9s, exactly ONE gap exceeds 300s
+    # and NONE exceeds 3600s. So a 5m entry effectively never expires mid-run
+    # and 1h would double the write premium for nothing.
+    #
+    # Runs last 726-2847s, which looks like an argument for 1h until you ask
+    # which calls the long gaps sit between: the only two large Anthropic
+    # prompts in a run are the exploit plan and the false-positive cross-check,
+    # ~20 minutes apart and sharing no prefix at all. A longer TTL cannot help
+    # two calls that would never match each other.
     llm_prompt_cache_ttl: str = Field(
         default="5m", description="Cache breakpoint TTL: '5m' or '1h'"
     )
@@ -124,6 +135,15 @@ class Settings(BaseModel):
 
     # State store
     db_path: Path = Field(default=Path("clinkz.db"))
+
+    # Where every per-engagement artifact bundle is written: the trace, the
+    # action log, the tool-invocation records, the halt sentinel and the report
+    # all land under ``<outputs_root>/<engagement_id>/``. Read through
+    # :func:`outputs_root` at CALL time, never captured as a default argument —
+    # ``clinkz scan --out`` sets this after import, and a default evaluated at
+    # import would freeze the old path while the operator believed they had
+    # redirected the bundle.
+    outputs_root: Path = Field(default=Path("outputs"))
 
     # Tool execution
     tool_timeout: int = Field(default=300, description="Max seconds per tool invocation")
@@ -334,6 +354,7 @@ class Settings(BaseModel):
             llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),
             gemini_max_rpm=int(os.getenv("GEMINI_MAX_RPM", "30")),
             db_path=Path(os.getenv("DB_PATH", "clinkz.db")),
+            outputs_root=Path(os.getenv("CLINKZ_OUTPUTS_ROOT", "outputs")),
             tool_timeout=int(os.getenv("TOOL_TIMEOUT", "300")),
             exploit_max_plan_tasks=int(os.getenv("EXPLOIT_MAX_PLAN_TASKS", "150")),
             exploit_phase_budget=float(os.getenv("EXPLOIT_PHASE_BUDGET", "0.0")),
@@ -358,3 +379,19 @@ class Settings(BaseModel):
 
 # Module-level singleton — imported everywhere as `from clinkz.config import settings`
 settings = Settings.from_env()
+
+
+def outputs_root() -> Path:
+    """The root directory every engagement artifact bundle is written under.
+
+    A function rather than a constant because ``clinkz scan --out`` assigns
+    ``settings.outputs_root`` after this module is imported. Every writer that
+    used to carry ``outputs_root: Path = Path("outputs")`` as a default argument
+    now resolves through here at call time instead: a default argument is bound
+    once at import, so the operator's ``--out`` would have been accepted, logged,
+    and then ignored by the writers it was supposed to redirect.
+
+    Returns:
+        The configured outputs root (``outputs`` unless overridden).
+    """
+    return settings.outputs_root

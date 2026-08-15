@@ -53,6 +53,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from clinkz.config import outputs_root as configured_outputs_root
+
 logger = logging.getLogger(__name__)
 
 #: Baseline digest committed alongside the harness. The corpus itself lives
@@ -95,7 +97,7 @@ class InvocationRecord:
 
 
 def load_corpus(
-    outputs_root: Path = Path("outputs"),
+    outputs_root: Path | None = None,
     *,
     engagements: list[str] | None = None,
 ) -> Iterator[InvocationRecord]:
@@ -104,6 +106,7 @@ def load_corpus(
     Malformed records are skipped with a warning rather than aborting the walk —
     a half-written file from an interrupted run should not take the gate down.
     """
+    outputs_root = Path(outputs_root or configured_outputs_root())
     if not outputs_root.exists():
         return
     for engagement_dir in sorted(outputs_root.iterdir()):
@@ -379,7 +382,7 @@ def parse_record(record: InvocationRecord) -> dict[str, Any] | None:
 
 
 def build_baseline(
-    outputs_root: Path = Path("outputs"),
+    outputs_root: Path | None = None,
     *,
     engagements: list[str] | None = None,
     per_tool_cap: int = 400,
@@ -433,7 +436,7 @@ def build_baseline(
 
 def replay_corpus(
     baseline: dict[str, Any],
-    outputs_root: Path = Path("outputs"),
+    outputs_root: Path | None = None,
     *,
     engagements: list[str] | None = None,
 ) -> ReplayReport:

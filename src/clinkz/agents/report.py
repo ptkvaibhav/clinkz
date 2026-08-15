@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clinkz.agents.base import BaseAgent
+from clinkz.config import outputs_root as configured_outputs_root
 
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
@@ -341,6 +342,8 @@ class ReportAgent(BaseAgent):
                 scope_out=scope_out,
                 safety=safety,
                 authentication=authentication,
+                graybox_source=dict(input_data.get("graybox_source") or {}),
+                resumed_from=str(input_data.get("resumed_from") or ""),
             ),
             safety_summary=safety,
             authentication=authentication,
@@ -358,7 +361,7 @@ class ReportAgent(BaseAgent):
         # ``outputs/<engagement_id>/`` (same convention as trace.jsonl and the
         # tool-invocation records). Writing to the cwd would litter the repo
         # root with per-engagement dumps.
-        output_dir = Path("outputs") / engagement_id
+        output_dir = configured_outputs_root() / engagement_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Write JSON output
@@ -399,6 +402,8 @@ class ReportAgent(BaseAgent):
         scope_out: list[str],
         safety: dict[str, Any],
         authentication: dict[str, Any],
+        graybox_source: dict[str, Any] | None = None,
+        resumed_from: str = "",
     ) -> list[NotTestedItem]:
         """Assemble the honest-limits section from the run's own artifacts.
 
@@ -414,11 +419,53 @@ class ReportAgent(BaseAgent):
             scope_out: Explicitly excluded scope entries.
             safety: The governor's stats dict.
             authentication: The authentication summary dict.
+            graybox_source: What happened to the ``--source`` tree, when one was
+                supplied. Empty on a black-box engagement.
+            resumed_from: The engagement this deliverable was regenerated from,
+                when ``clinkz scan --resume`` produced it.
 
         Returns:
             One :class:`NotTestedItem` per limitation, most client-relevant first.
         """
         items: list[NotTestedItem] = []
+
+        # A supplied source tree that was NOT ingested. Stated first: it changes
+        # how every other section should be read, because a gray-box engagement
+        # that fell back to black-box produces artifacts identical to a run that
+        # was never given source at all.
+        graybox = graybox_source or {}
+        if graybox and not graybox.get("ingested"):
+            items.append(
+                NotTestedItem(
+                    item=(
+                        "Gray-box source analysis of "
+                        f"{graybox.get('source_dir', 'the source tree')}"
+                    ),
+                    category=NotTestedCategory.SOURCE_NOT_INGESTED,
+                    reason=(
+                        f"A source tree was supplied but was not ingested — "
+                        f"{graybox.get('reason') or 'no reason recorded'}. The engagement "
+                        "ran fully black-box: no source-derived hypothesis was tested, so "
+                        "any vulnerability only reachable via a code path this engine "
+                        "would have found in the source was not examined."
+                    ),
+                )
+            )
+
+        if resumed_from:
+            items.append(
+                NotTestedItem(
+                    item="Everything not already proven when the original run stopped",
+                    category=NotTestedCategory.ENGAGEMENT_HALTED,
+                    reason=(
+                        f"This deliverable was regenerated from the persisted state of "
+                        f"engagement {resumed_from} rather than produced by a fresh test. "
+                        "No request was sent to the target. It reports exactly what that "
+                        "engagement had already proven and persisted before it stopped; "
+                        "coverage it had not reached is absent here and was not retried."
+                    ),
+                )
+            )
 
         for entry in scope_out:
             items.append(
@@ -637,44 +684,69 @@ class ReportAgent(BaseAgent):
             return
         alarms = ledger.get("alarms") or []
         summary = ledger.get("summary") or {}
+        correctly_empty = [c for c in (ledger.get("correctly_empty") or []) if isinstance(c, dict)]
         lines.extend(["## Component contribution", ""])
         if not alarms:
             lines.extend(
                 [
                     f"All {summary.get('components_tracked', 0)} tracked component(s) "
-                    "contributed at least one item. No fallback covered for a "
-                    "component that produced nothing.",
+                    "contributed at least one item, or found nothing correctly. No "
+                    "fallback covered for a component that produced nothing.",
                     "",
                 ]
             )
-            return
-        lines.extend(
-            [
-                "The components below ran and contributed nothing, or were covered "
-                "for by a fallback. A finding total says nothing about which "
-                "components produced it, so they are named here.",
-                "",
-                "| Component | Kind | Invoked | Succeeded | Items | Alarm |",
-                "| --- | --- | ---: | ---: | ---: | --- |",
-            ]
-        )
-        for rec in alarms:
-            if not isinstance(rec, dict):
-                continue
-            lines.append(
-                f"| {rec.get('component', '?')} | {rec.get('kind', '?')} | "
-                f"{rec.get('invocations', 0)} | {rec.get('successes', 0)} | "
-                f"{rec.get('items_contributed', 0)} | "
-                f"{', '.join(rec.get('alarms') or []) or '—'} |"
+        else:
+            lines.extend(
+                [
+                    "The components below ran and contributed nothing, or were covered "
+                    "for by a fallback. A finding total says nothing about which "
+                    "components produced it, so they are named here.",
+                    "",
+                    "| Component | Kind | Invoked | Succeeded | Items | Alarm |",
+                    "| --- | --- | ---: | ---: | ---: | --- |",
+                ]
             )
-        lines.append("")
-        for fb in ledger.get("fallbacks") or []:
-            if isinstance(fb, dict):
+            for rec in alarms:
+                if not isinstance(rec, dict):
+                    continue
                 lines.append(
-                    f"- Fallback: **{fb.get('covered_by', '?')}** covered for "
-                    f"**{fb.get('component', '?')}** ({fb.get('reason') or 'no reason recorded'})"
+                    f"| {rec.get('component', '?')} | {rec.get('kind', '?')} | "
+                    f"{rec.get('invocations', 0)} | {rec.get('successes', 0)} | "
+                    f"{rec.get('items_contributed', 0)} | "
+                    f"{', '.join(rec.get('alarms') or []) or '—'} |"
                 )
-        lines.append("")
+            lines.append("")
+            for fb in ledger.get("fallbacks") or []:
+                if isinstance(fb, dict):
+                    lines.append(
+                        f"- Fallback: **{fb.get('covered_by', '?')}** covered for "
+                        f"**{fb.get('component', '?')}** "
+                        f"({fb.get('reason') or 'no reason recorded'})"
+                    )
+            lines.append("")
+
+        if correctly_empty:
+            # Deliberately NOT in the table above. These ran, produced nothing,
+            # and were right to — a GraphQL reader on an application with no
+            # GraphQL. Listing them as alarms every run is how an alarm section
+            # stops being read.
+            lines.extend(
+                [
+                    "### Found nothing, correctly",
+                    "",
+                    "These components ran and produced nothing because the input "
+                    "they read was not present on this target — not because they "
+                    "failed. Each states what it examined, so the claim is "
+                    "checkable rather than self-assessed.",
+                    "",
+                ]
+            )
+            for rec in correctly_empty:
+                reasons = "; ".join(str(r) for r in (rec.get("reasons") or []))
+                lines.append(
+                    f"- **{rec.get('component', '?')}** — {reasons or 'precondition absent'}"
+                )
+            lines.append("")
 
     @staticmethod
     def _render_header(lines: list[str], report: PentestReport) -> None:
@@ -884,6 +956,7 @@ class ReportAgent(BaseAgent):
             return
 
         headings = {
+            NotTestedCategory.SOURCE_NOT_INGESTED: ("Gray-box source supplied but not analysed"),
             NotTestedCategory.OUT_OF_SCOPE: "Excluded by the client",
             NotTestedCategory.NOT_PERMITTED: "Techniques not authorized",
             NotTestedCategory.NO_CLIENT_SIDE_ORACLE: ("Not confirmable — no client-side oracle"),
@@ -892,13 +965,26 @@ class ReportAgent(BaseAgent):
             NotTestedCategory.ENGAGEMENT_HALTED: "Cut short when the engagement halted",
             NotTestedCategory.UNAUTHENTICATED: "Limited by the sessions available",
         }
+        rendered: set[str] = set()
         for category, heading in headings.items():
             group = [item for item in report.not_tested if item.category == category]
             if not group:
                 continue
+            rendered.add(str(category))
             lines.extend([f"### {heading}", ""])
             for item in group:
                 lines.append(f"- **{item.item}** — {item.reason}")
+            lines.append("")
+
+        # A category with no heading is rendered anyway, under its raw name. The
+        # section exists to say what was NOT tested; dropping an entry because a
+        # renderer was not updated alongside the enum would delete a limitation
+        # from a client deliverable — the one failure this section cannot have.
+        orphans = [item for item in report.not_tested if str(item.category) not in rendered]
+        if orphans:
+            lines.extend(["### Other limitations", ""])
+            for item in orphans:
+                lines.append(f"- **{item.item}** [{item.category}] — {item.reason}")
             lines.append("")
         lines.extend(["---", ""])
 
