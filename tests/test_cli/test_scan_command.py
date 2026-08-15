@@ -29,6 +29,7 @@ from clinkz.cli import (
 )
 from clinkz.models.engagement import BENCHMARK_ACKNOWLEDGEMENT
 from tests.authorization_fixtures import TEST_AUTHORIZATION
+from tests.cli_output import flowed, plain
 
 runner = CliRunner()
 
@@ -90,6 +91,7 @@ AUTH_FLAGS = [
 def test_top_level_help_lists_every_real_subcommand() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
+    rendered = plain(result)
     for command in (
         "scan",
         "abort",
@@ -100,13 +102,13 @@ def test_top_level_help_lists_every_real_subcommand() -> None:
         "corpus-replay",
         "trace",
     ):
-        assert command in result.output, f"{command} is missing from the top-level help"
+        assert command in rendered, f"{command} is missing from the top-level help"
 
 
 def test_scan_help_states_what_it_proves_and_what_it_refuses() -> None:
     result = runner.invoke(app, ["scan", "--help"])
     assert result.exit_code == 0
-    out = " ".join(result.output.split())
+    out = flowed(result)
     assert "WHAT IT PROVES" in out
     assert "WHAT IT WILL NOT DO" in out
     assert "unforgeable nonce" in out, "the P6 oracle is not described"
@@ -118,13 +120,30 @@ def test_scan_help_states_what_it_proves_and_what_it_refuses() -> None:
 def test_scan_help_documents_every_exit_code_the_code_can_return() -> None:
     """The contract is an interface. A wrapper reads these, so they cannot drift."""
     result = runner.invoke(app, ["scan", "--help"])
-    rendered = " ".join(result.output.split())
+    rendered = flowed(result)
     for code, _meaning in EXIT_CODES:
         assert f" {code} " in rendered, f"exit code {code} is not documented"
 
 
 def test_every_documented_flag_is_actually_accepted() -> None:
+    """Asserted against ANSI-stripped output, because the bytes are not the point.
+
+    Rich colours ``--help`` whenever it thinks the environment can show colour,
+    and GitHub Actions is one of those environments. It styles a flag as two
+    runs, so ``--target`` reaches this assertion as
+    ``ESC[1;36m-ESC[0mESC[1;36m-targetESC[0m`` and no documented flag is a
+    substring of the output. Every run of this job since the test was added has
+    been red for that reason, and the message read "--target is not on the scan
+    command" about a flag that was present.
+
+    Disabling colour (``NO_COLOR``, ``TERM=dumb``, ``color=False``) would also
+    turn this green — by deleting the condition that breaks it. The coloured
+    render is the one CI actually produces, so suppressing it would leave that
+    path untested and a real flag-mangling regression permanently green.
+    Stripping normalises the render and keeps the assertion about what it says.
+    """
     result = runner.invoke(app, ["scan", "--help"])
+    rendered = plain(result)
     for flag in (
         "--target",
         "--scope",
@@ -144,7 +163,43 @@ def test_every_documented_flag_is_actually_accepted() -> None:
         "--resume",
         "--provider",
     ):
-        assert flag in result.output, f"{flag} is not on the scan command"
+        assert flag in rendered, f"{flag} is not on the scan command"
+
+
+def test_the_coloured_help_render_is_the_one_ci_asserts_against(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Make the CI-only condition reproducible locally, and observe it biting.
+
+    Every ``--help`` test above already runs against the coloured render on CI,
+    because the runner sets ``GITHUB_ACTIONS`` itself — that is why they were
+    red there. Locally they run against the uncoloured one and pass whether or
+    not the stripping works, which is exactly how "green locally, red on CI"
+    survived for months. This test forces the render CI produces so a developer
+    sees the breakage before pushing, and asserts both halves: that escapes are
+    really present, and that a flag is recoverable once they are removed.
+
+    ``monkeypatch.setenv("GITHUB_ACTIONS", ...)`` does NOT work here — typer
+    reads the variable once, at import, into ``rich_utils.FORCE_TERMINAL``, so
+    by the time a test runs the decision is long made. Patching the constant is
+    a deliberate coupling to a pinned dependency; if typer ever renames it,
+    ``monkeypatch.setattr`` raises rather than quietly testing nothing.
+
+    Nor can this be a subprocess with the variable set: on Windows, Rich detects
+    a real piped stdout as a legacy console and emits colour through Win32 calls
+    instead of ANSI, so the bytes arrive uncoloured and the test would pass for
+    the wrong reason on the one machine it was written on. The ``CliRunner``
+    stream is never a std handle, so it renders ANSI on every platform — the
+    same bytes CI sees.
+    """
+    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", True)
+    result = runner.invoke(app, ["scan", "--help"])
+
+    assert "\x1b" in result.output, (
+        "the coloured path was not exercised — this test no longer proves anything"
+    )
+    assert "--target" not in result.output, "the raw render stopped being the hard case"
+    assert "--target" in plain(result)
 
 
 # ---------------------------------------------------------------------------

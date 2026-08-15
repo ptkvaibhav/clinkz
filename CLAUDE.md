@@ -223,6 +223,30 @@ detail → `docs/productization-engagement-safety.md`.**
   alarming-looking strings, and a gate that cried wolf would be ignored. The scan
   report never reproduces what it found. `clinkz artifact-scan <id>` re-runs it
   over any bundle and exits non-zero.
+- **A guard's ROOT is part of its verdict, so the gate covers two regions.** It
+  reported CLEAN over 3,123 files while a live JWT sat one directory up, in
+  `outputs/d8_auth_bypass_live_validation.json` — true, and about a region chosen
+  so as to exclude where the leak landed (the same shape as a tree-scanning leak
+  guard that cannot see a PR's own text). `REGION_BUNDLE` is `outputs/<id>/`;
+  `REGION_COMPANION` is everything else under the outputs root that no
+  engagement's gate covers — loose driver files, `outputs/_juiceshop_benchmark/`
+  and friends. **One verdict, two regions**, because the operator's question is
+  "may I share this directory"; findings carry their region and render apart,
+  because "the directory around your bundle is not shareable" is a different
+  instruction from "your bundle leaked". A directory named like an engagement id
+  is somebody else's bundle and is never swept in. Every `summary_line` states
+  its coverage — a CLEAN that does not say what it looked at is how this
+  survived.
+- **The engine's redaction reaches only where the engine writes.** A `scripts/`
+  driver tees the HTTP chokepoint and serialises the exchanges itself, so it
+  wrote past every writer: a complete RS256 session JWT plus the lab password in
+  plaintext, while `report.json` from the same run was clean. Driver artifacts go
+  through `scripts/_artifact_io.py` — a CALL SITE of `redact_structure`, never a
+  second redactor — and a hardcoded lab password is a **third intake route** that
+  registers on the way in like the other two. Enforced structurally by
+  `tests/test_engagement/test_driver_artifact_writes.py`, which reads every
+  `scripts/*.py` and refuses a raw `write_text`/`write_bytes` unless allow-listed
+  with a reason: drivers are exactly what a `src/`-and-`tests/` grep misses.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`).
   The same URL is fetched with the session and deliberately without it
   (`HTTPClientTool`'s `no_session` — the shared cookie jar would otherwise make
@@ -362,7 +386,8 @@ src/clinkz/
 │                     #   secrets (credentials + redaction chokepoint),
 │                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
 │                     #   shared by the redactor and the gate), artifact_scan (the
-│                     #   disclosure gate over outputs/<id>/),
+│                     #   disclosure gate: outputs/<id>/ AND the companion region
+│                     #   beside it — a guard's ROOT is part of its verdict),
 │                     #   auth_state (detect / PROVE / maintain), dryrun
 ├── safety/           # destructive (default-deny classifier + subresource_guard_spec, the
 │                     #   vocabulary shipped INTO the browser), governor (rate, concurrency,
@@ -419,9 +444,11 @@ docker/  scripts/  tests/  docs/
   cleanly (the report is still produced).
 - `python -m clinkz actions <engagement_id> [--outcome sent|refused] [--raw]` —
   every state-changing request the run produced: "what did it do to my app?".
-- `python -m clinkz artifact-scan <engagement_id> [--raw]` — the disclosure gate,
-  re-run by hand: does this bundle still carry credential material? Exits
-  non-zero if so. Runs automatically at the end of every engagement.
+- `python -m clinkz artifact-scan <engagement_id> [--bundle-only] [--raw]` — the
+  disclosure gate, re-run by hand: does this bundle still carry credential
+  material? Covers the engagement directory AND the companion artifacts beside
+  it; `--bundle-only` asks the narrower question. Exits non-zero if so. Runs
+  automatically at the end of every engagement.
 - `python -m clinkz trace inspect <engagement_id>` — render an execution trace.
 - `python -m clinkz tool-invoke <engagement_id> <seq> [--replay]` — inspect/replay
   one tool invocation.
@@ -797,11 +824,26 @@ LESSONS #17).
   **authenticated as a principal whose credential we never supplied**, proven on
   three arms: the tautology returns an auth artifact, the *shape-matched
   contradiction* (one character apart) does NOT, and an ordinary credential
-  attempt does not either — and where the artifact names a principal it must
-  differ from every identity we supplied. **Never 200-plus-a-cookie.**
+  attempt does not either. **Never 200-plus-a-cookie.**
   Applicability is a deterministic protocol signal (an identity field beside a
   password-shaped one), gated in BOTH directions so the LLM can neither invent
-  the class on a search box nor omit it on a login.
+  the class on a search box nor omit it on a login. **The LLM synthesizer is
+  structurally unreachable for this type** — its prompt has no `auth_bypass`
+  vocabulary, so an LLM-built pair either fails phase 5 as an unknown indicator
+  or runs a row-set oracle against a login handler; the deterministic table
+  declining ⇒ the class ABSTAINS, recorded. **The identity suppression keys on
+  credential POSSESSION, not identity coincidence**: "we logged in legitimately
+  and it told us who we are" has two routes — a session for the principal, or a
+  valid credential for it — and equality with `_authenticated_as` proxies both
+  badly. It suppresses `admin@juice-sh.op'--`, a bypass carrying no password, on
+  every app whose first row is the admin. So the session route is closed by a
+  **runtime carrier assertion** (all three arms' dispatched args carried no
+  cookie jar, cookie dict or auth header — else the identity is KEPT, failing
+  safe, with the reason on the verdict) and the credential route by requiring
+  BOTH halves in the same request (identity + a password-shaped field whose
+  fingerprint matches one we hold). The payload is never a supplied identity.
+  **Detail →
+  [`docs/methodology/auth-bypass.md`](docs/methodology/auth-bypass.md).**
 - **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl` (tool
   calls, LLM calls, agent steps, handoffs, methodology-phase events). `outputs/`
   is local-only by policy — never committed.

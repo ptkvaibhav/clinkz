@@ -22,9 +22,10 @@ Run: ``python scripts/live_js_transfer_a2a_validation.py``
 from __future__ import annotations
 
 import asyncio
-import json
 import tempfile
 from pathlib import Path
+
+from _artifact_io import write_redacted_json
 
 from clinkz.discovery.engine import DiscoveryEngine
 from clinkz.discovery.models import DiscoveryHypothesis, PrimitiveClass
@@ -97,13 +98,14 @@ async def main() -> None:
         finally:
             await kb.close()
 
-    (_OUT / "capability_facts_after_A.json").write_text(json.dumps(facts, indent=2, default=str))
+    # Through the engine's redaction chokepoint, like every writer inside it.
+    write_redacted_json(_OUT / "capability_facts_after_A.json", facts)
 
     # --- Cold-control B: partial source, EMPTY KB -> zero egress hypotheses ---
     cold = engine.discover(str(_FIXTURES / "js_transfer_app_b"), _FINGERPRINT, _BASE_URL)
     cold_egress = _egress(cold.hypotheses)
-    (_OUT / "hypotheses_cold_control_B.json").write_text(
-        json.dumps([_hyp_row(h) for h in cold_egress], indent=2)
+    write_redacted_json(
+        _OUT / "hypotheses_cold_control_B.json", [_hyp_row(h) for h in cold_egress]
     )
 
     # --- Warm B: same partial source, WITH the package fact recalled ---
@@ -115,16 +117,14 @@ async def main() -> None:
         technology_relations=relations,
     )
     warm_egress = _egress(warm.hypotheses)
-    (_OUT / "hypotheses_warm_B.json").write_text(
-        json.dumps([_hyp_row(h) for h in warm_egress], indent=2)
-    )
+    write_redacted_json(_OUT / "hypotheses_warm_B.json", [_hyp_row(h) for h in warm_egress])
 
     # --- No-over-transfer: app-code sinks STAY fingerprint-keyed (node-js) ---
     over = {}
     for name in ("js_express_ssrf", "js_express_esm_factory"):
         result = engine.discover(str(_FIXTURES / name), _FINGERPRINT, _BASE_URL)
         over[name] = [_hyp_row(h) for h in _egress(result.hypotheses)]
-    (_OUT / "no_over_transfer.json").write_text(json.dumps(over, indent=2))
+    write_redacted_json(_OUT / "no_over_transfer.json", over)
 
     # --- Console summary (raw, no self-grading) ---
     fact_keys = [(f["technology_key"], f["version_predicate"]) for f in facts]

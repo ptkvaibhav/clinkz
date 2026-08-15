@@ -25,10 +25,13 @@ from pathlib import Path
 import pytest
 
 from clinkz.engagement.artifact_scan import (
+    REGION_BUNDLE,
+    REGION_COMPANION,
     SCAN_REPORT_FILENAME,
     SEVERITY_CREDENTIAL,
     run_disclosure_gate,
     scan_artifact_tree,
+    scan_companion_artifacts,
     scan_text,
 )
 from clinkz.engagement.credential_shapes import (
@@ -370,6 +373,113 @@ def test_uuids_and_digests_are_not_reported_as_suspicious() -> None:
         "digest=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
     )
     assert suspicions == []
+
+
+# ---------------------------------------------------------------------------
+# The companion region — where the leak actually landed
+# ---------------------------------------------------------------------------
+
+#: An engagement id shaped the way the orchestrator mints them.
+_ENGAGEMENT_ID = "8bc05d0e-4c6d-4f4e-b344-820634e31908"
+
+
+def _outputs_with_bundle(tmp_path: Path) -> tuple[Path, Path]:
+    """An outputs root holding one clean engagement bundle."""
+    outputs = tmp_path / "outputs"
+    bundle = outputs / _ENGAGEMENT_ID
+    bundle.mkdir(parents=True)
+    (bundle / "report.json").write_text('{"findings": []}', encoding="utf-8")
+    return outputs, bundle
+
+
+def test_the_gate_refuses_a_token_that_landed_beside_the_bundle(tmp_path: Path) -> None:
+    """The defect, reproduced: a guard reporting CLEAN over the wrong region.
+
+    ``outputs/d8_auth_bypass_live_validation.json`` carried a live session JWT
+    while the gate reported CLEAN over 3,123 files — truthfully, about a root
+    chosen so as to exclude where the leak was. A guard not observed failing is
+    not a guard, so this seeds a token OUTSIDE the run directory and requires
+    the refusal. The bundle-only scan is the negative control: it must still say
+    clean, or this test would pass for a reason that has nothing to do with the
+    gap it exists to close.
+    """
+    outputs, bundle = _outputs_with_bundle(tmp_path)
+    token = _jwt()
+    (outputs / "d8_auth_bypass_live_validation.json").write_text(
+        json.dumps({"exchanges": [{"raw_response": f'{{"token":"{token}"}}'}]}),
+        encoding="utf-8",
+    )
+
+    narrow = scan_artifact_tree(bundle, engagement_id=_ENGAGEMENT_ID)
+    assert narrow.clean, "the old root must still be clean — otherwise this proves nothing"
+
+    report = run_disclosure_gate(bundle, engagement_id=_ENGAGEMENT_ID, companion_root=outputs)
+
+    assert not report.clean, "a token one directory up did not fail the gate"
+    companion = report.region_findings(REGION_COMPANION)
+    assert [f.kind for f in companion] == ["jwt"]
+    assert companion[0].path == "d8_auth_bypass_live_validation.json"
+    assert report.region_findings(REGION_BUNDLE) == []
+
+
+def test_the_verdict_names_both_regions_so_clean_cannot_be_misread(tmp_path: Path) -> None:
+    """A CLEAN that does not say what it covered is how this defect survived."""
+    outputs, bundle = _outputs_with_bundle(tmp_path)
+    (outputs / "driver_notes.txt").write_text("nothing secret here\n", encoding="utf-8")
+
+    report = run_disclosure_gate(bundle, engagement_id=_ENGAGEMENT_ID, companion_root=outputs)
+
+    assert report.clean
+    assert report.companion_files_scanned == 1
+    assert "companion file(s)" in report.summary_line()
+
+
+def test_another_engagements_bundle_is_not_swept_into_this_verdict(tmp_path: Path) -> None:
+    """Attribution: every engagement directory is covered by its own gate.
+
+    Folding a neighbour's bundle in would make one run answer for a leak it did
+    not write, and would re-scan thousands of files on every run for a verdict
+    that is not about this engagement.
+    """
+    outputs, bundle = _outputs_with_bundle(tmp_path)
+    neighbour = outputs / "11111111-2222-3333-4444-555555555555"
+    neighbour.mkdir()
+    (neighbour / "trace.jsonl").write_text(f"token={_jwt()}\n", encoding="utf-8")
+
+    report = run_disclosure_gate(bundle, engagement_id=_ENGAGEMENT_ID, companion_root=outputs)
+
+    assert report.clean, "a neighbouring engagement's bundle was swept in"
+    assert report.companion_files_scanned == 0
+
+
+def test_the_bundle_is_not_scanned_twice_when_its_id_is_not_uuid_shaped(tmp_path: Path) -> None:
+    """Hand-made ids exist (tests, `--resume`), and double-counting a finding
+    would report two leaks where there is one."""
+    outputs = tmp_path / "outputs"
+    bundle = outputs / "eng-1"
+    bundle.mkdir(parents=True)
+    (bundle / "trace.jsonl").write_text(f"token={_jwt()}\n", encoding="utf-8")
+
+    report = run_disclosure_gate(bundle, engagement_id="eng-1", companion_root=outputs)
+
+    assert not report.clean
+    assert len(report.findings) == 1
+    assert report.findings[0].region == REGION_BUNDLE
+    assert report.companion_files_scanned == 0
+
+
+def test_a_companion_scan_reads_nested_driver_directories(tmp_path: Path) -> None:
+    """Drivers write into named subdirectories, not only loose files."""
+    outputs, bundle = _outputs_with_bundle(tmp_path)
+    nested = outputs / "_juiceshop_benchmark" / "run-1"
+    nested.mkdir(parents=True)
+    (nested / "engagement_stdout.txt").write_text(f"Bearer {_jwt()}\n", encoding="utf-8")
+
+    companions = scan_companion_artifacts(outputs, bundle_root=bundle)
+
+    assert not companions.clean
+    assert companions.findings[0].path == "_juiceshop_benchmark/run-1/engagement_stdout.txt"
+    assert all(f.region == REGION_COMPANION for f in companions.findings)
 
 
 # ---------------------------------------------------------------------------

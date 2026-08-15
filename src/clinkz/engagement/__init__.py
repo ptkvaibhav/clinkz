@@ -20,10 +20,13 @@ into :mod:`clinkz.safety`, which imports ``gate`` back.
 """
 
 from clinkz.engagement.artifact_scan import (
+    REGION_BUNDLE,
+    REGION_COMPANION,
     ArtifactFinding,
     ArtifactScanReport,
     run_disclosure_gate,
     scan_artifact_tree,
+    scan_companion_artifacts,
 )
 from clinkz.engagement.credential_shapes import (
     find_shapes,
@@ -60,6 +63,8 @@ from clinkz.engagement.dryrun import DryRunPlan, build_dry_run_plan, render_dry_
 
 __all__ = [
     "PROTECTED_PATH_CANDIDATES",
+    "REGION_BUNDLE",
+    "REGION_COMPANION",
     "ArtifactFinding",
     "ArtifactScanReport",
     "AuthAssertion",
@@ -88,4 +93,5 @@ __all__ = [
     "require_window_open",
     "run_disclosure_gate",
     "scan_artifact_tree",
+    "scan_companion_artifacts",
 ]

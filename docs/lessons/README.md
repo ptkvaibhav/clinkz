@@ -258,3 +258,53 @@ Full narrative, including the complete tool-wrapper audit, the four recorded
 DVWA runs' planner outage, and the three defects found in the corpus gate by
 actually running it:
 [`silent-degradation-and-the-dead-seam.md`](silent-degradation-and-the-dead-seam.md).
+
+<a id="lesson-52"></a>
+
+## #52
+
+**A control that cannot reach the code path it targets reports a clean result — and "not confirmed" is the shape a passing control has.**
+
+The D8 fix relaxed an identity suppression, so it needed a control proving the
+relaxation had not gone too far: a sessionless arm submitting a **valid**
+credential through the identical three-arm structure, which must still be
+refused with `principal_is_an_identity_we_supplied`. The first version of that
+control declared the login page with `param_locations={"email": JSON_BODY}` and
+put the real password on a form field, relying on `_build_form_data` preserving
+a declared sibling value. But `_auth_bypass_send_probe` dispatches on the
+param's `ParamLocation` **first**, so the JSON-body branch returned before the
+form was ever consulted, every sibling was filled by `_benign_param_value`, and
+the "valid credential" arm actually submitted the engine's own probe password.
+
+The arm came back `confirmed=False`, reason `no_auth_artifact_returned`. A
+harness matching on `confirmed is False` — the obvious assertion — would have
+recorded PASS. The control had tested nothing: it never reached the suppression
+it existed to grade, because the probe never authenticated in the first place.
+Only printing the request body verbatim showed `"password": "Clinkz-Probe-1!"`
+where `"admin123"` was supposed to be.
+
+Three rules out of it:
+
+* **Assert the control reached its subject, not just that its verdict was the
+  expected one.** A control has a *reason*, not only a boolean; pin the reason.
+  Here the two outcomes are `no_auth_artifact_returned` (the probe never logged
+  in — vacuous) and `principal_is_an_identity_we_supplied` (the probe logged in
+  and the suppression caught it — the actual claim), and only the second grades
+  anything. Print the wire bytes: a control whose evidence you cannot read is a
+  control you are trusting rather than running.
+* **A suppression change needs its own control.** The payload control (an
+  inverted tautology) refuses for reasons unrelated to whether the
+  supplied-identity set is sound, so it cannot grade a suppression however many
+  times it passes.
+* **When the property is "this path is never taken", assert on the CALL.** FIX A
+  excludes `AUTH_BYPASS` from an LLM checkpoint; a behavioural test on the
+  returned payload passes just as happily against a version that consults the
+  model and discards its answer. `spy.await_count == 0` does not.
+
+The same shape decides whether a **control group** means anything. DVWA was the
+control group for the relaxation, and "zero auth-bypass findings at all four
+levels" is only evidence if the class actually ran — the trace shows five
+`auth_bypass_differential` events, every one refusing with
+`shape_matched_control_also_authenticated` because DVWA re-issues `PHPSESSID` on
+every response. A zero from a class that was never dispatched would have looked
+identical in the finding count and proved nothing.
