@@ -2,6 +2,11 @@
   "enabledPlugins": {
     "claude-security@claude-plugins-official": true
   },
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
   "hooks": {
     "PreToolUse": [
       {
