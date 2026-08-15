@@ -792,11 +792,26 @@ LESSONS #17).
   **authenticated as a principal whose credential we never supplied**, proven on
   three arms: the tautology returns an auth artifact, the *shape-matched
   contradiction* (one character apart) does NOT, and an ordinary credential
-  attempt does not either — and where the artifact names a principal it must
-  differ from every identity we supplied. **Never 200-plus-a-cookie.**
+  attempt does not either. **Never 200-plus-a-cookie.**
   Applicability is a deterministic protocol signal (an identity field beside a
   password-shaped one), gated in BOTH directions so the LLM can neither invent
-  the class on a search box nor omit it on a login.
+  the class on a search box nor omit it on a login. **The LLM synthesizer is
+  structurally unreachable for this type** — its prompt has no `auth_bypass`
+  vocabulary, so an LLM-built pair either fails phase 5 as an unknown indicator
+  or runs a row-set oracle against a login handler; the deterministic table
+  declining ⇒ the class ABSTAINS, recorded. **The identity suppression keys on
+  credential POSSESSION, not identity coincidence**: "we logged in legitimately
+  and it told us who we are" has two routes — a session for the principal, or a
+  valid credential for it — and equality with `_authenticated_as` proxies both
+  badly. It suppresses `admin@juice-sh.op'--`, a bypass carrying no password, on
+  every app whose first row is the admin. So the session route is closed by a
+  **runtime carrier assertion** (all three arms' dispatched args carried no
+  cookie jar, cookie dict or auth header — else the identity is KEPT, failing
+  safe, with the reason on the verdict) and the credential route by requiring
+  BOTH halves in the same request (identity + a password-shaped field whose
+  fingerprint matches one we hold). The payload is never a supplied identity.
+  **Detail →
+  [`docs/methodology/auth-bypass.md`](docs/methodology/auth-bypass.md).**
 - **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl` (tool
   calls, LLM calls, agent steps, handoffs, methodology-phase events). `outputs/`
   is local-only by policy — never committed.
