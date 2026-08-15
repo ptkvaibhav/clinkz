@@ -52,6 +52,12 @@ _REDACTING_WRITERS = frozenset({"write_redacted_json", "write_redacted_text"})
 #: empty allow-list is the goal, not a requirement.
 _ALLOWED_RAW_WRITES: dict[str, str] = {
     "_artifact_io.py": "the chokepoint itself — it is what every other driver routes through",
+    "lockfile.py": (
+        "not a driver and touches no engagement: it writes requirements-ci.lock at the "
+        "repo root from pip's own resolver report — package names and version strings, "
+        "no target, no session, no response body. Routing it through the redactor would "
+        "claim it handles engagement data, which is the opposite of true."
+    ),
 }
 
 
