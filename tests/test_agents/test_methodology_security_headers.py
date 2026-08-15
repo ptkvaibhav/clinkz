@@ -111,7 +111,15 @@ class TestPhase2Observation:
 
 class TestPhase3Analysis:
     @pytest.mark.asyncio
-    async def test_llm_analysis_parsed(self) -> None:
+    async def test_the_llm_is_never_consulted(self) -> None:
+        """The model is not asked — asserted on the CALL, not on the answer.
+
+        A behavioural test ("the verdict matches the deterministic one") passes
+        just as happily against a version that consults the model and discards
+        its reply, which is not the property being claimed. The claim is that
+        this class cannot vary with the model that served it, and only the
+        absence of the call establishes that.
+        """
         llm = _ScriptedLLM(
             answers=[
                 '{"missing": ["X-Content-Type-Options"], '
@@ -121,14 +129,19 @@ class TestPhase3Analysis:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
+
         missing, weak, sev, rationale = await agent._security_headers_phase3_analyze(
             "https://example.com/",
             {"content-security-policy": "default-src 'self' 'unsafe-inline'"},
         )
-        assert missing == ["X-Content-Type-Options"]
-        assert weak == [("Content-Security-Policy", "unsafe-inline")]
+
+        assert llm.prompts == []
+        assert llm.answers, "the scripted answer must still be unconsumed"
+        # And the verdict is the deterministic one, not the model's.
+        assert weak == [("Content-Security-Policy", "permissive: unsafe-inline")]
+        assert "Strict-Transport-Security" in missing
         assert sev == HeaderWeaknessSeverity.MEDIUM
-        assert "permissive" in rationale
+        assert "Deterministic analysis" in rationale
 
     @pytest.mark.asyncio
     async def test_fallback_missing_csp_marks_medium(self) -> None:
@@ -179,6 +192,107 @@ class TestPhase3Analysis:
         )
         assert any("Content-Security-Policy" == w[0] for w in weak)
         assert sev == HeaderWeaknessSeverity.HIGH
+
+
+# ===========================================================================
+# Phase 3 — version-disclosing banners (ported out of the LLM path)
+# ===========================================================================
+
+#: The header set DVWA serves, byte-identical at every security level. Taken
+#: from the recorded phase-2 observation, not invented: this exact pair is what
+#: the LLM path reported at `impossible` and omitted at the other three levels.
+_DVWA_OBSERVED: dict[str, str] = {
+    "server": "Apache/2.4.67 (Debian)",
+    "x-powered-by": "PHP/8.5.6",
+}
+
+_DVWA_LEVELS = ("low", "medium", "high", "impossible")
+
+
+class TestVersionDisclosingBanners:
+    @pytest.mark.asyncio
+    async def test_server_and_x_powered_by_are_flagged_weak(self) -> None:
+        agent = _make_agent()
+        _m, weak, _s, _r = await agent._security_headers_phase3_analyze(
+            "http://localhost:8080/", dict(_DVWA_OBSERVED)
+        )
+        assert ("Server", "discloses server software and version") in weak
+        assert ("X-Powered-By", "discloses application technology") in weak
+
+    @pytest.mark.asyncio
+    async def test_a_versionless_server_banner_is_not_a_finding(self) -> None:
+        """`Server: cloudflare` names software, not a build to look a CVE up in."""
+        agent = _make_agent()
+        _m, weak, _s, _r = await agent._security_headers_phase3_analyze(
+            "http://localhost:8080/", {"server": "cloudflare"}
+        )
+        assert not any(w[0] == "Server" for w in weak)
+
+    @pytest.mark.asyncio
+    async def test_x_powered_by_needs_no_version(self) -> None:
+        """The header's only function is to name the stack, so presence is it."""
+        agent = _make_agent()
+        _m, weak, _s, _r = await agent._security_headers_phase3_analyze(
+            "http://localhost:8080/", {"x-powered-by": "Express"}
+        )
+        assert ("X-Powered-By", "discloses application technology") in weak
+
+    @pytest.mark.asyncio
+    async def test_banners_do_not_move_the_severity_rollup(self) -> None:
+        agent = _make_agent()
+        _m, _w, with_banners, _r = await agent._security_headers_phase3_analyze(
+            "http://localhost:8080/", dict(_DVWA_OBSERVED)
+        )
+        _m2, _w2, without, _r2 = await agent._security_headers_phase3_analyze(
+            "http://localhost:8080/", {}
+        )
+        assert with_banners == without
+
+
+class TestLadderInvariance:
+    """A byte-identical observation must produce a byte-identical verdict.
+
+    This is strictly stronger than the finding-count comparison the DVWA ladder
+    used to be graded on. A count can match while the *contents* differ, and the
+    defect this replaces did exactly that: on the same observation the class
+    reported `weak=[]` at low/medium/high and `weak=['Server','X-Powered-By']`
+    at impossible, so the ladder read as a two-finding posture regression that
+    was really the model varying.
+    """
+
+    @pytest.mark.asyncio
+    async def test_all_four_levels_produce_identical_header_findings(self) -> None:
+        verdicts = []
+        for _level in _DVWA_LEVELS:
+            # A fresh agent per level: the real ladder is four engagements, and
+            # sharing one agent would let per-instance dedup state mask drift.
+            agent = _make_agent()
+            missing, weak, severity, _rationale = await agent._security_headers_phase3_analyze(
+                "http://localhost:8080/", dict(_DVWA_OBSERVED)
+            )
+            verdicts.append((tuple(missing), tuple(weak), severity))
+
+        assert len(set(verdicts)) == 1, dict(zip(_DVWA_LEVELS, verdicts, strict=True))
+
+    @pytest.mark.asyncio
+    async def test_the_shared_verdict_is_pinned(self) -> None:
+        """Identical-to-each-other is not enough — four identical wrongs pass it."""
+        agent = _make_agent()
+        missing, weak, severity, _r = await agent._security_headers_phase3_analyze(
+            "http://localhost:8080/", dict(_DVWA_OBSERVED)
+        )
+        assert missing == [
+            "Content-Security-Policy",
+            "X-Frame-Options",
+            "X-Content-Type-Options",
+            "Referrer-Policy",
+            "Permissions-Policy",
+        ]
+        assert weak == [
+            ("Server", "discloses server software and version"),
+            ("X-Powered-By", "discloses application technology"),
+        ]
+        assert severity == HeaderWeaknessSeverity.MEDIUM
 
 
 # ===========================================================================
