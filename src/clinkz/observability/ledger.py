@@ -39,6 +39,23 @@ Design constraints, each earned:
   producer that *cannot* answer it (the ffuf shape) is not a component having a
   slow day — it is a capability that has never worked. It gets its own alarm
   class and its own wording.
+* **"Correctly found nothing" is a third fact again, and it is not an alarm.**
+  A GraphQL discoverer on an application that serves no GraphQL contributes
+  zero on every run, forever, and is working perfectly. Reported as a defect it
+  becomes a permanent false alarm — and a permanent false alarm trains an
+  operator to skim past the line where a real one will eventually appear. So a
+  component may report that its *precondition was absent*, and the zero is then
+  recorded as NOT APPLICABLE with the reason, held apart from the alarm list
+  exactly like "declared but never invoked".
+
+  The distinction has to be **falsifiable**, not a self-assessment: a component
+  claiming "nothing to find" is making the same noise as one that is broken.
+  What separates them is how far its own pipeline got. A discoverer that read
+  no input of its kind, or read input containing nothing of the shape it looks
+  for, found nothing correctly. One that found candidates and emitted none
+  converted 100% of real input into nothing — the ffuf shape — and stays a
+  SILENT alarm. The caller decides which of those happened, because only the
+  caller knows the component's stages; the ledger only refuses to conflate them.
 """
 
 from __future__ import annotations
@@ -112,6 +129,14 @@ class ComponentRecord:
     items_contributed: int = 0
     fallback_activations: int = 0
     dead_seam: bool = False
+    #: Successful invocations that reported their own precondition absent —
+    #: nothing of the kind this component reads was present on the target. Kept
+    #: apart from ``successes`` rather than deducted from it, because the
+    #: invocation really did happen and really did succeed.
+    not_applicable: int = 0
+    #: Why the precondition was absent, in the component's own words. One per
+    #: distinct reason, bounded like ``notes``.
+    not_applicable_reasons: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     def add_note(self, note: str) -> None:
@@ -143,6 +168,47 @@ class ComponentRecord:
         if note not in self.notes:
             self.notes.append(note)
 
+    def add_not_applicable_reason(self, reason: str) -> None:
+        """Record why the precondition was absent — bounded, deduped, REDACTED.
+
+        Redacted at the property for exactly the reason :meth:`add_note` is, and
+        the reason goes to the same two places: ``report.json``, which its
+        writer redacts, and :meth:`ContributionLedger.log_summary`, which writes
+        to the run log and does not. Today every caller passes engine-authored
+        text, so there is nothing to catch. That is the argument for applying it
+        here rather than against — LESSONS #47 is a credential that reached an
+        artifact because redaction was applied at the writer someone remembered
+        instead of at the property. A field this one is a sibling of already
+        learned that.
+        """
+        if not reason or len(self.not_applicable_reasons) >= _MAX_NOTES:
+            return
+        try:
+            from clinkz.engagement.secrets import redact
+
+            reason = redact(reason)
+        except Exception as exc:  # noqa: BLE001 — never raise from the data path
+            logger.debug("Ledger not-applicable reason redaction failed: %s", exc)
+            return
+        if reason not in self.not_applicable_reasons:
+            self.not_applicable_reasons.append(reason)
+
+    @property
+    def correctly_empty(self) -> bool:
+        """Whether every successful invocation found nothing *correctly*.
+
+        True only when the component contributed nothing AND each success
+        reported its own precondition absent. One success that examined real
+        input and produced nothing anyway is enough to make this False — that
+        one is the defect shape, and it must not be absorbed by the others.
+        """
+        return (
+            self.invocations > 0
+            and self.successes > 0
+            and self.items_contributed == 0
+            and self.not_applicable >= self.successes
+        )
+
     @property
     def alarms(self) -> list[LedgerAlarm]:
         """Every alarm class this record currently trips.
@@ -156,8 +222,10 @@ class ComponentRecord:
             out.append(LedgerAlarm.DEAD_SEAM)
         if self.invocations > 0 and self.successes == 0:
             out.append(LedgerAlarm.ALL_FAILED)
-        elif self.invocations > 0 and self.items_contributed == 0:
-            # Succeeded at least once and produced nothing. The defect shape.
+        elif self.invocations > 0 and self.items_contributed == 0 and not self.correctly_empty:
+            # Succeeded at least once, examined real input, produced nothing.
+            # The defect shape — and NOT the "this target has no GraphQL" shape,
+            # which reports its own absent precondition and is listed separately.
             out.append(LedgerAlarm.SILENT)
         if self.fallback_activations > 0:
             out.append(LedgerAlarm.FALLBACK_ACTIVATED)
@@ -173,6 +241,9 @@ class ComponentRecord:
             "failures": self.failures,
             "items_contributed": self.items_contributed,
             "fallback_activations": self.fallback_activations,
+            "not_applicable": self.not_applicable,
+            "not_applicable_reasons": list(self.not_applicable_reasons),
+            "correctly_empty": self.correctly_empty,
             "alarms": [a.value for a in self.alarms],
             "notes": list(self.notes),
         }
@@ -235,6 +306,7 @@ class ContributionLedger:
         items: int = 0,
         ok: bool = True,
         note: str = "",
+        not_applicable: str = "",
     ) -> None:
         """Record one invocation and what it contributed.
 
@@ -247,13 +319,23 @@ class ContributionLedger:
                 by definition, but is counted separately so an all-failed
                 component is not reported as a silent one.
             note: Optional short context, deduplicated and capped.
+            not_applicable: When non-empty, the caller is stating that this
+                successful invocation contributed nothing because the
+                precondition for contributing was ABSENT — no input of the kind
+                this component reads — and the string is the reason. Ignored on
+                a failure or when items were contributed, so the flag can never
+                be used to talk a real contribution or a real failure away.
         """
         with self._lock:
             rec = self._get(name, kind)
             rec.invocations += 1
             if ok:
                 rec.successes += 1
-                rec.items_contributed += max(0, int(items))
+                contributed = max(0, int(items))
+                rec.items_contributed += contributed
+                if not_applicable and contributed == 0:
+                    rec.not_applicable += 1
+                    rec.add_not_applicable_reason(not_applicable)
             else:
                 rec.failures += 1
             rec.add_note(note)
@@ -326,14 +408,28 @@ class ContributionLedger:
         """
         return [r for r in self.records() if r.invocations == 0 and not r.dead_seam]
 
+    def correctly_empty(self) -> list[ComponentRecord]:
+        """Components that ran, found nothing, and were right to.
+
+        Reported, never alarmed. The whole point is that these lines can be read
+        and dismissed at a glance — with the reason attached — instead of
+        occupying the alarm list on every run until nobody reads it.
+        """
+        return [r for r in self.records() if r.correctly_empty and not r.dead_seam]
+
     def to_dict(self) -> dict[str, Any]:
         """The ledger as it appears in ``report.json``."""
         alarming = self.alarming()
+        inapplicable = self.correctly_empty()
         return {
             "components": [r.to_dict() for r in self.records()],
             "alarms": [r.to_dict() for r in alarming],
             "fallbacks": [f.to_dict() for f in self._fallbacks],
             "never_invoked": [r.name for r in self.never_invoked()],
+            "correctly_empty": [
+                {"component": r.name, "reasons": list(r.not_applicable_reasons)}
+                for r in inapplicable
+            ],
             "summary": {
                 "components_tracked": len(self._records),
                 "components_alarming": len(alarming),
@@ -342,6 +438,7 @@ class ContributionLedger:
                 "all_failed_components": sum(
                     1 for r in alarming if LedgerAlarm.ALL_FAILED in r.alarms
                 ),
+                "correctly_empty_components": len(inapplicable),
                 "fallback_activations": len(self._fallbacks),
             },
         }
@@ -377,6 +474,14 @@ class ContributionLedger:
             for rec in alarming:
                 for alarm in rec.alarms:
                     out.warning("  %s", _alarm_line(rec, alarm))
+            for rec in self.correctly_empty():
+                out.info(
+                    "  NOT APPLICABLE %s (%s) — %d invocation(s) found nothing, correctly: %s",
+                    rec.name,
+                    rec.kind.value,
+                    rec.invocations,
+                    "; ".join(rec.not_applicable_reasons) or "precondition absent",
+                )
             for rec in self.never_invoked():
                 out.info(
                     "  NEVER INVOKED  %s (%s) — declared but the run never asked for it",
@@ -448,13 +553,26 @@ def record_contribution(
     items: int = 0,
     ok: bool = True,
     note: str = "",
+    not_applicable: str = "",
 ) -> None:
-    """Record one invocation on the active ledger, if there is one."""
+    """Record one invocation on the active ledger, if there is one.
+
+    ``not_applicable`` states that this successful invocation contributed
+    nothing because its precondition was absent, and carries the reason. See
+    :meth:`ContributionLedger.record`.
+    """
     ledger = get_active_ledger()
     if ledger is None:
         return
     try:
-        ledger.record(name=name, kind=kind, items=items, ok=ok, note=note)
+        ledger.record(
+            name=name,
+            kind=kind,
+            items=items,
+            ok=ok,
+            note=note,
+            not_applicable=not_applicable,
+        )
     except Exception as exc:  # noqa: BLE001 — never raise from the data path
         logger.debug("Ledger record failed for %s: %s", name, exc)
 

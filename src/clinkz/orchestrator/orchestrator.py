@@ -37,6 +37,7 @@ from typing import Any
 from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
+from clinkz.config import outputs_root as configured_outputs_root
 from clinkz.config import settings
 from clinkz.credentials.store import CredentialStore
 from clinkz.discovery import (
@@ -46,6 +47,7 @@ from clinkz.discovery import (
     abstract_reaches_identity,
     derive_bundles_edges,
     derive_successor_edges,
+    detect_ingestor,
     predicate_point_version,
 )
 from clinkz.engagement.artifact_scan import SCAN_REPORT_FILENAME, run_disclosure_gate
@@ -57,7 +59,7 @@ from clinkz.engagement.auth_state import (
     assert_authenticated,
     detect_auth_mechanism,
 )
-from clinkz.engagement.gate import open_engagement
+from clinkz.engagement.gate import EngagementAbortedError, open_engagement
 from clinkz.engagement.secrets import clear_secrets, register_secret
 from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
@@ -298,6 +300,13 @@ class OrchestratorAgent:
         # Carried to the report so it can render the links; the chains themselves
         # are ordinary findings and are counted there, never here.
         self._confirmed_chains: list[dict[str, Any]] = []
+        # What happened to the gray-box source tree, when one was supplied.
+        # Empty for a black-box engagement (nothing was asked for, so there is
+        # nothing to report). Populated the moment ``--source`` is present, on
+        # both outcomes: a run that fell back to black-box because no ingestor
+        # matched looks exactly like a run that never had a source tree, and the
+        # operator is the one person who cannot tell those apart.
+        self._graybox_source: dict[str, Any] = {}
         # Watches every response for signs the session has been lost, so half an
         # engagement cannot run silently unauthenticated.
         self._session_sentinel = SessionSentinel()
@@ -660,7 +669,10 @@ class OrchestratorAgent:
                         "authorization": self._authorization.model_dump(mode="json")
                         if self._authorization
                         else None,
-                        "scope_in": [f"{t.value} ({t.type.value})" for t in scope.targets],
+                        "scope_in": [
+                            f"{t.value} ({t.type.value})" + (f" — {t.notes}" if t.notes else "")
+                            for t in scope.targets
+                        ],
                         "scope_out": [
                             f"{e.value} ({e.type.value})" + (f" — {e.notes}" if e.notes else "")
                             for e in scope.excluded
@@ -671,6 +683,10 @@ class OrchestratorAgent:
                         else None,
                         "safety": governor.stats(),
                         "authentication": self._authentication_summary(),
+                        # Empty on a black-box engagement. Present whenever
+                        # ``--source`` was supplied, so a tree that could not be
+                        # ingested is stated rather than silently absent.
+                        "graybox_source": self._graybox_source,
                         # The link-by-link view of every CONFIRMED chain. The
                         # chains themselves are already in ``findings`` — emitted
                         # through the same chokepoint — so this renders the
@@ -682,6 +698,22 @@ class OrchestratorAgent:
                 summary["phases"]["report"] = report_result
                 self._logger.info("PHASE 3 (REPORT) complete")
 
+            except EngagementAbortedError as exc:
+                # An abort is not a failure. It is the engagement declining to
+                # continue — the authenticated-state assertion could not be
+                # proven, or the window closed mid-run — and the caller must be
+                # able to tell the two apart, because "we refused" and "we
+                # crashed" call for different responses from an operator.
+                # Swallowing it into status="failed" made a deliberate, loud
+                # refusal exit 1 while the documented contract said 3.
+                #
+                # The ``finally`` below still runs: the rails come down, the
+                # ledger reports, the disclosure gate runs, the trace closes.
+                self._logger.error("Engagement ABORTED: %s", exc)
+                await state.update_engagement_status(engagement_id, "aborted")
+                summary["status"] = "aborted"
+                summary["error"] = str(exc)
+                raise
             except Exception as exc:
                 self._logger.error("Orchestrator failed: %s", exc, exc_info=True)
                 await state.update_engagement_status(engagement_id, "failed")
@@ -1055,13 +1087,46 @@ class OrchestratorAgent:
         scope = self._scope
         if scope is None or not scope.source_dir:
             return []
-        if not Path(scope.source_dir).exists():
-            self._logger.warning("Discovery: source_dir does not exist: %s", scope.source_dir)
+
+        # Whether the tree was ingestable is reported, not logged and forgotten.
+        # ``select_ingestor`` answers Java both for a Java tree and for a tree in
+        # a language this engine has no ingestor for, so a gray-box run over a
+        # Python checkout used to produce black-box results while the operator
+        # believed their ``--source`` had been read.
+        selection = detect_ingestor(scope.source_dir)
+        if not selection.matched:
+            self._graybox_source = {
+                "source_dir": scope.source_dir,
+                "ingested": False,
+                "language": "",
+                "reason": selection.reason,
+            }
+            self._logger.warning(
+                "Discovery: no source ingestor matched %s (%s) — continuing black-box",
+                scope.source_dir,
+                selection.reason,
+            )
             return []
+
         base_url = scope.discovery_base_url or self._primary_target_url()
         if not base_url:
+            self._graybox_source = {
+                "source_dir": scope.source_dir,
+                "ingested": False,
+                "language": selection.language,
+                "reason": (
+                    "no base URL was available for the discovered routes to join onto. "
+                    "Supply --source-base-url, or name a URL target."
+                ),
+            }
             self._logger.warning("Discovery: no base URL for %s — skipping", targets_str)
             return []
+        self._graybox_source = {
+            "source_dir": scope.source_dir,
+            "ingested": True,
+            "language": selection.language,
+            "reason": "",
+        }
         capability_facts, technology_relations = await self._load_capability_store()
         topology_context = self._build_topology_context(base_url, technologies)
         try:
@@ -1074,10 +1139,18 @@ class OrchestratorAgent:
                 topology_context=topology_context,
             )
         except Exception as exc:  # noqa: BLE001 — discovery must never break the run
+            self._graybox_source = {
+                "source_dir": scope.source_dir,
+                "ingested": False,
+                "language": selection.language,
+                "reason": f"the discovery engine failed while reading it: {exc}",
+            }
             self._logger.error("Discovery engine failed (proceeding black-box): %s", exc)
             return []
         await self._write_transfer_edges(result.source_model, technologies)
         tasks = result.exploit_tasks()
+        self._graybox_source["entrypoints"] = len(result.source_model.entrypoints)
+        self._graybox_source["hypotheses"] = len(tasks)
         recall_seeded = sum(1 for h in result.hypotheses if h.prior_source == "capability_recall")
         self._logger.info(
             "Discovery: %d hypothesis task(s) from source "
@@ -2655,7 +2728,7 @@ class OrchestratorAgent:
         Never raises: a scan that crashed must not be the reason a completed
         engagement reports failure, so the error is recorded instead.
         """
-        root = Path("outputs") / engagement_id
+        root = configured_outputs_root() / engagement_id
         try:
             report = run_disclosure_gate(root, engagement_id=engagement_id)
         except Exception as exc:  # noqa: BLE001 — a gate must not sink the run
@@ -2664,9 +2737,9 @@ class OrchestratorAgent:
 
         if not report.clean:
             self._logger.error(
-                "DO NOT SHARE outputs/%s — the artifact disclosure gate found "
+                "DO NOT SHARE %s — the artifact disclosure gate found "
                 "%d credential shape(s). See %s.",
-                engagement_id,
+                root,
                 len(report.findings),
                 root / SCAN_REPORT_FILENAME,
             )

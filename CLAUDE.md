@@ -332,7 +332,8 @@ reports the missing capability to the Orchestrator.
 src/clinkz/
 ├── cli.py            # Typer CLI: scan / abort / actions / artifact-scan / trace inspect /
 │                     #   tool-invoke / step-replay / corpus-replay
-├── config.py         # Settings (env vars, per-agent LLM overrides)
+├── config.py         # Settings (env vars, per-agent LLM overrides, outputs_root —
+│                     #   read via outputs_root() at CALL time, never as a default arg)
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
 ├── agents/           # recon, scan, exploit, research, critic, report, _route_discovery,
@@ -344,11 +345,16 @@ src/clinkz/
 │                     #   _secret_exposure / _input_validation / _mass_assignment /
 │                     #   _crypto_tokens (the four new classes' pure logic, offline-testable)
 │                     #   _business_logic (intent inferred from the app's OWN surface,
-│                     #   with the evidence — offline-testable)
+│                     #   with the evidence — offline-testable),
+│                     #   _auth_bypass (THE one vocabulary for "did this response log us
+│                     #   in?" — artifact reader + the three-arm differential)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
 │                     #   planner, composition (THE ORACLE — the decoy control), impact
-├── engagement/       # gate (the refusals), secrets (credentials + redaction chokepoint),
+├── engagement/       # gate (the refusals), cli_inputs (operator flags -> validated models:
+│                     #   target/scope classification, authorization assembly),
+│                     #   resume (rebuild a stopped run's REPORT, never its testing),
+│                     #   secrets (credentials + redaction chokepoint),
 │                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
 │                     #   shared by the redactor and the gate), artifact_scan (the
 │                     #   disclosure gate over outputs/<id>/),
@@ -358,7 +364,9 @@ src/clinkz/
 │                     #   kill switch, blocking, window), action_log (+ browser navigations),
 │                     #   benchmark (the explicit throwaway-target opt-in — absent by default)
 ├── comms/            # AgentMessage, async bus, protocol
-├── discovery/        # Δ-model: ingestor(s), catalog, intent, reachability, hypothesis, engine,
+├── discovery/        # Δ-model: ingestor(s) (detect_ingestor reports a MISS; a tree in an
+│                     #   uningestable language is stated in the report, not silently
+│                     #   black-box), catalog, intent, reachability, hypothesis, engine,
 │                     #   topology(+recall), recall, relations, versions
 ├── knowledge/        # KnowledgeBase, persistent_kb, seeders, MITRE/OWASP datasets, payloads,
 │                     #   component_cves (published CVE ↔ observed version — a LEAD, never
@@ -384,12 +392,24 @@ docker/  scripts/  tests/  docs/
 
 ## Commands
 
-- `python -m clinkz scan --target <domain> --scope <scope.json>
-  --authorization <auth.json> [--credentials <creds.json>] [--dry-run]
-  [--rate N] [--max-concurrency N]` — full pentest (recon → scan/research/
-  exploit → report). The only end-to-end command. **Refuses to start without an
-  authorization record**; `--dry-run` enumerates what it WOULD do and sends
-  nothing.
+- `python -m clinkz scan --target <url|host|ip|cidr> [--scope <entry|scope.json>]
+  [--exclude <entry>] [--authorization <auth.json> | --auth-* flags |
+  --auth-prompt] [--creds <creds.json>] [--source <tree>] [--benchmark-profile
+  <bp.json>] [--dry-run] [--rate-limit N] [--max-concurrency N] [--out <dir>]
+  [--resume <id>]` — full pentest (recon → scan/research/exploit → report). The
+  only end-to-end command. **Refuses to start without an authorization record**
+  (`--auth-*` flags refuse with EVERY missing field named — the record has no
+  partial shape); `--dry-run` enumerates what it WOULD do, including whether the
+  `--source` tree is ingestable, and sends nothing. `--out` redirects the whole
+  bundle by setting `settings.outputs_root`, which every writer resolves at CALL
+  time — a default argument would be bound at import and silently ignore it.
+  `--resume` rebuilds an interrupted engagement's report from its persisted
+  findings and sends nothing; it does not resume TESTING (phase coverage is not
+  persisted, findings are), and the regenerated report says so in its own
+  *What was NOT tested* section. **The exit-code contract is the interface**
+  (`cli.py::EXIT_CODES`, rendered into `--help`, asserted by the test suite):
+  0 completed · 1 failed · 2 bad input · 3 refused before testing · 4 halted ·
+  5 completed but the bundle FAILED the disclosure gate.
 - `python -m clinkz abort <engagement_id>` — kill switch: halt immediately and
   cleanly (the report is still produced).
 - `python -m clinkz actions <engagement_id> [--outcome sent|refused] [--raw]` —
@@ -716,6 +736,33 @@ LESSONS #17).
   *declared but never invoked* is tracked separately, since a capability the run
   never reached for did not degrade. **Absent by default** like the governor,
   and it never raises from the data path.
+- **"Correctly found nothing" is a fifth fact, and it is NOT an alarm.** A
+  GraphQL discoverer on an app with no GraphQL contributes zero forever and is
+  working perfectly; reported as a defect it becomes a permanent false alarm,
+  and a permanent false alarm trains an operator to skim the section where a
+  real one will appear. So a component may declare its **precondition absent**
+  and the zero is recorded NOT APPLICABLE with the reason, held apart from the
+  alarm list like *never invoked*. The claim must be **falsifiable, never a
+  self-assessment** — "there was nothing to find" is what a broken reader says
+  too — so the discriminator is how far the component's own pipeline got
+  (`_route_discovery.DiscoveryReport`): no input of its kind, or input read
+  containing nothing of its shape, is correct; **candidates found and none
+  emitted is the ffuf shape and stays SILENT**, and no reason string may talk
+  it away. A discoverer that does not declare `contribution_report()` is a
+  loud `DEAD_SEAM`, never an assumed zero.
+- **The prompt cache is a ledger component like any other, because it degraded
+  exactly like one.** It was invoked every run, succeeded every time, and
+  contributed **zero**: the breakpoint sat after the engagement-scoped span —
+  ~12,500 tokens of observed inventory presented ONCE per run — so 154 recorded
+  engagements paid 96,759 cache-WRITE tokens and read back 0. Caching pays from
+  the second presentation (`1.25 + 0.10(N-1) < N` ⟺ `N > 1.28`); the deployment
+  had `N = 1`, making it ~25% *more* expensive than no caching on that span.
+  `PromptSegments` now splits by **how often bytes repeat** — `invariant`
+  (engine: role, catalogue, preconditions, worked examples) / `stable`
+  (this engagement's observations) / `volatile` (the ask) — and the breakpoint
+  goes after `invariant` only. The item the cache contributes is
+  `cache_read_input_tokens`, so a write nobody reads trips SILENT in the run
+  log and `report.json`.
 - **A consumer never guesses a producer's field names.** The PRODUCER declares
   what it contributes (`ToolOutput.discovered_urls` / `declares_discovery`); a
   wrapper that declares nothing is a loud dead seam, not an empty list. Never
@@ -725,6 +772,31 @@ LESSONS #17).
   model's contract**, never the consumer's assumption about it: `_MockFuzzOutput`
   declared `paths`/`directories`, names no real tool has ever carried, so the
   suite asserted a contract only the mock honoured.
+- **A parser never assumes it owns the process's stdout, and the fixture must be
+  the bytes the tool WRITES.** `whatweb --log-json=-` keeps writing its brief
+  human-readable log to the same stream, so the JSON array and plain-text lines
+  interleave, `json.loads` on the blob raised, and 100% of a successful
+  fingerprint — Apache 2.4.67, PHP 8.5.6 — was discarded on **every run**,
+  starving the whole published-CVE path. The committed fixture was a
+  hand-authored clean array, so the unit suite passed throughout, and the
+  corpus baseline faithfully locked in `success: false` for 114 of 115 recorded
+  invocations. Whole-blob `json.loads` is correct ONLY for JSON the wrapper
+  itself serialised; every parser now declares which case it is
+  (`tests/test_tools/test_parser_input_assumptions.py`, verified against the
+  source so a `self_produced` claim cannot be a wish).
+- **An auth bypass is a defining effect no injection oracle can see, so it gets
+  its own indicator** (`agents/_auth_bypass.py`, `InjectionType.AUTH_BYPASS`).
+  A DB error, a boolean row-set delta and a UNION row are the SQLi oracles; a
+  bypass returns 200 and a JWT, so 40 payloads reached a login field, the target
+  graded it solved, and the class correctly emitted nothing. The effect is
+  **authenticated as a principal whose credential we never supplied**, proven on
+  three arms: the tautology returns an auth artifact, the *shape-matched
+  contradiction* (one character apart) does NOT, and an ordinary credential
+  attempt does not either — and where the artifact names a principal it must
+  differ from every identity we supplied. **Never 200-plus-a-cookie.**
+  Applicability is a deterministic protocol signal (an identity field beside a
+  password-shaped one), gated in BOTH directions so the LLM can neither invent
+  the class on a search box nor omit it on a login.
 - **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl` (tool
   calls, LLM calls, agent steps, handoffs, methodology-phase events). `outputs/`
   is local-only by policy — never committed.

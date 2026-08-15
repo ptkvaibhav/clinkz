@@ -67,7 +67,7 @@ from clinkz.agents._js_api_mining import ApiCallSite, mine_api_call_sites
 from clinkz.agents._origin import resolve_same_origin, same_origin
 from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.models.scan import Endpoint, ParamLocation
-from clinkz.observability.ledger import ComponentKind, record_contribution
+from clinkz.observability.ledger import ComponentKind, record_contribution, record_dead_seam
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +173,69 @@ class FetchResult:
 FetchFn = Callable[[str], Awaitable["FetchResult | None"]]
 
 
+@dataclass
+class DiscoveryReport:
+    """How far a discoverer's own pipeline got, so a zero can be READ.
+
+    Four discoverers reported ``invocations=2, contributed=0`` on every DVWA
+    run, and the ledger reported all four as SILENT — the alarm class meaning
+    "ran and produced nothing", which is the shape of a real defect. On DVWA it
+    was the shape of a PHP application with no ``/api`` surface, no served
+    spec, and no GraphQL. A permanent alarm that is permanently wrong is worse
+    than no alarm: it teaches the operator to skim the section where a genuine
+    one will eventually appear.
+
+    A component cannot be trusted to grade itself — "there was nothing to find"
+    is what a broken reader says too. What separates the two is **how far its
+    own pipeline got**, which is a measurement:
+
+    * ``inputs_examined == 0`` — nothing of the kind this discoverer reads was
+      served at all (no script bundles, no parseable spec, no GraphQL
+      envelope). Correct-for-target.
+    * ``candidates_seen == 0`` with inputs examined — real input was read and
+      contains nothing of this shape. Also correct-for-target, and this is the
+      DVWA case: 92 JavaScript files fetched and read, zero ``/api|/rest``
+      route tokens in any of them, because there are none.
+    * ``candidates_seen > 0`` and ``endpoints_emitted == 0`` — input was found
+      and 100% of it was discarded on the way out. That is the ffuf shape, it
+      stays a SILENT alarm, and no reason string may talk it away.
+
+    Attributes:
+        inputs_examined: Sources of this discoverer's own kind that were
+            actually READ — a fetched non-empty bundle, a parsed spec, an
+            endpoint that answered as GraphQL. Not requests attempted.
+        candidates_seen: Raw matches found inside those inputs, BEFORE
+            conversion to :class:`Endpoint` (route tokens, mined call sites,
+            spec operations, schema fields).
+        endpoints_emitted: What the discoverer returned.
+        detail: Short human-readable context, rendered into the ledger entry.
+    """
+
+    inputs_examined: int = 0
+    candidates_seen: int = 0
+    endpoints_emitted: int = 0
+    detail: str = ""
+
+    @property
+    def correctly_empty_reason(self) -> str:
+        """Why emitting nothing was CORRECT, or ``""`` when it was not.
+
+        Empty string is the load-bearing answer: it means either the discoverer
+        contributed, or it found candidates and dropped every one — and the
+        second must reach the operator as an alarm.
+        """
+        if self.endpoints_emitted > 0:
+            return ""
+        if self.inputs_examined == 0:
+            return f"no input of this kind was served by the target ({self.detail or 'none read'})"
+        if self.candidates_seen == 0:
+            return (
+                f"read {self.inputs_examined} input(s) containing nothing of this "
+                f"shape ({self.detail or 'no candidates'})"
+            )
+        return ""
+
+
 @runtime_checkable
 class RouteDiscoverer(Protocol):
     """A source of routes for a web target.
@@ -181,12 +244,22 @@ class RouteDiscoverer(Protocol):
     through the injected :data:`FetchFn`, which carries the engagement session.
     This keeps discoverers trivially unit-testable with a fake fetch and lets a
     future headless discoverer slot in without touching the rest of the system.
+
+    The PRODUCER declares what it examined (:meth:`contribution_report`), the
+    same contract ``ToolOutput.declares_discovery`` establishes for tools. A
+    discoverer that does not declare is a loud dead seam, never an assumed
+    zero: guessing on its behalf is how a consumer ends up describing a
+    producer it cannot actually read.
     """
 
     name: str
 
     async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
         """Return discovered endpoints for *base_url* using *fetch*."""
+        ...
+
+    def contribution_report(self) -> DiscoveryReport:
+        """Describe the LAST :meth:`discover` call's own pipeline."""
         ...
 
 
@@ -446,18 +519,27 @@ class StaticBundleDiscoverer:
 
     def __init__(self, pages: Sequence[str] = ()) -> None:
         self.pages = tuple(pages)
+        self._report = DiscoveryReport()
+
+    def contribution_report(self) -> DiscoveryReport:
+        return self._report
 
     async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
         # Breadth-first over bundles: start from the <script src> bundles of the
         # root AND of every crawl-discovered page, then follow same-origin .js
         # chunk references found inside them (webpack/vite split chunks hold
         # lazy-route service calls). The walk is bounded by _MAX_BUNDLES.
+        self._report = DiscoveryReport()
         queue: list[str] = await _collect_script_seeds(base_url, fetch, self.pages)
         if not queue:
+            self._report.detail = "target references no same-origin <script src> bundles"
             return []
         visited: set[str] = set()
         endpoints: list[Endpoint] = []
         seen: set[str] = set()
+        bundles_read = 0
+        bytes_read = 0
+        candidates = 0
         while queue and len(visited) < _MAX_BUNDLES:
             bundle_url = queue.pop(0)
             if bundle_url in visited:
@@ -467,7 +549,10 @@ class StaticBundleDiscoverer:
             if res is None or not res.body:
                 continue
             body = res.body[:_MAX_BUNDLE_BYTES]
+            bundles_read += 1
+            bytes_read += len(body)
             for raw in self._extract_routes(body):
+                candidates += 1
                 ep = _route_to_endpoint(raw, base_url)
                 if ep is None:
                     continue
@@ -477,11 +562,24 @@ class StaticBundleDiscoverer:
                 seen.add(key)
                 endpoints.append(ep)
                 if len(endpoints) >= _MAX_ROUTES:
+                    self._finish(bundles_read, bytes_read, candidates, len(endpoints))
                     return endpoints
             for chunk in self._chunk_urls(body, base_url):
                 if chunk not in visited:
                     queue.append(chunk)
+        self._finish(bundles_read, bytes_read, candidates, len(endpoints))
         return endpoints
+
+    def _finish(self, bundles: int, byte_count: int, candidates: int, emitted: int) -> None:
+        """Publish what this run of the walk actually examined."""
+        self._report = DiscoveryReport(
+            inputs_examined=bundles,
+            candidates_seen=candidates,
+            endpoints_emitted=emitted,
+            detail=(
+                f"{bundles} bundle(s), {byte_count} bytes scanned for /api|/rest route literals"
+            ),
+        )
 
     @staticmethod
     def _bundle_urls(html: str, base_url: str) -> list[str]:
@@ -541,7 +639,16 @@ class OpenAPIDiscoverer:
 
     name = "openapi"
 
+    def __init__(self) -> None:
+        self._report = DiscoveryReport()
+
+    def contribution_report(self) -> DiscoveryReport:
+        return self._report
+
     async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
+        self._report = DiscoveryReport()
+        specs_parsed = 0
+        paths_seen = 0
         for spec_path in _SPEC_PATHS:
             res = await fetch(urljoin(base_url, spec_path.lstrip("/")))
             if res is None or res.status != 200:
@@ -549,8 +656,16 @@ class OpenAPIDiscoverer:
             spec = self._parse_spec(res)
             if spec is None:
                 continue
+            specs_parsed += 1
+            paths_seen += len(spec.get("paths") or {})
             endpoints = self._endpoints_from_spec(spec, base_url)
             if endpoints:
+                self._report = DiscoveryReport(
+                    inputs_examined=specs_parsed,
+                    candidates_seen=paths_seen,
+                    endpoints_emitted=len(endpoints),
+                    detail=f"parsed a spec at {spec_path}",
+                )
                 return endpoints
         # No parseable spec. There is nothing honest to substitute: a list of
         # endpoint names and body fields for one benchmark application is not
@@ -561,6 +676,16 @@ class OpenAPIDiscoverer:
             "OpenAPI: no parseable spec at %d conventional location(s) — "
             "the API surface for this target comes from its own JavaScript",
             len(_SPEC_PATHS),
+        )
+        self._report = DiscoveryReport(
+            inputs_examined=specs_parsed,
+            candidates_seen=paths_seen,
+            endpoints_emitted=0,
+            detail=(
+                f"no parseable spec at {len(_SPEC_PATHS)} conventional location(s); "
+                f"a SPA answering 200 + index.html for every path is rejected on "
+                f"content-type, not trusted on status"
+            ),
         )
         return []
 
@@ -809,15 +934,22 @@ class JSCallSiteDiscoverer:
 
     def __init__(self, pages: Sequence[str] = ()) -> None:
         self.pages = tuple(pages)
+        self._report = DiscoveryReport()
+
+    def contribution_report(self) -> DiscoveryReport:
+        return self._report
 
     async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
+        self._report = DiscoveryReport()
         queue: list[str] = await _collect_script_seeds(base_url, fetch, self.pages)
         if not queue:
+            self._report.detail = "target references no same-origin <script src> bundles"
             return []
         visited: set[str] = set()
         endpoints: list[Endpoint] = []
         seen: set[str] = set()
         sites_total = 0
+        bundles_read = 0
         while queue and len(visited) < _MAX_BUNDLES:
             bundle_url = queue.pop(0)
             if bundle_url in visited:
@@ -827,6 +959,7 @@ class JSCallSiteDiscoverer:
             if res is None or not res.body:
                 continue
             body = res.body[:_MAX_BUNDLE_BYTES]
+            bundles_read += 1
             for site in mine_api_call_sites(body):
                 sites_total += 1
                 ep = self._site_to_endpoint(site, base_url)
@@ -838,6 +971,7 @@ class JSCallSiteDiscoverer:
                 seen.add(key)
                 endpoints.append(ep)
                 if len(endpoints) >= _MAX_ROUTES:
+                    self._finish(bundles_read, sites_total, len(endpoints))
                     return endpoints
             for chunk in StaticBundleDiscoverer._chunk_urls(body, base_url):
                 if chunk not in visited:
@@ -849,7 +983,17 @@ class JSCallSiteDiscoverer:
             sites_total,
             len(visited),
         )
+        self._finish(bundles_read, sites_total, len(endpoints))
         return endpoints
+
+    def _finish(self, bundles: int, sites: int, emitted: int) -> None:
+        """Publish what this run of the walk actually examined."""
+        self._report = DiscoveryReport(
+            inputs_examined=bundles,
+            candidates_seen=sites,
+            endpoints_emitted=emitted,
+            detail=f"{bundles} bundle(s) mined, {sites} HTTP call site(s) found",
+        )
 
     @staticmethod
     def _site_to_endpoint(site: ApiCallSite, base_url: str) -> Endpoint | None:
@@ -928,10 +1072,17 @@ class GraphQLDiscoverer:
     def __init__(self) -> None:
         self.endpoints_seen: list[str] = []
         self.introspection_disabled: list[str] = []
+        self._report = DiscoveryReport()
+        self._fields_seen = 0
+
+    def contribution_report(self) -> DiscoveryReport:
+        return self._report
 
     async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
         self.endpoints_seen = []
         self.introspection_disabled = []
+        self._fields_seen = 0
+        self._report = DiscoveryReport()
         endpoints: list[Endpoint] = []
         for path in _GRAPHQL_PATHS:
             url = urljoin(base_url, path.lstrip("/"))
@@ -955,8 +1106,36 @@ class GraphQLDiscoverer:
                     url,
                 )
                 continue
-            endpoints.extend(self._operations(schema, url))
-        return endpoints[:_MAX_ROUTES]
+            operations = self._operations(schema, url)
+            self._fields_seen += len(operations)
+            endpoints.extend(operations)
+        emitted = endpoints[:_MAX_ROUTES]
+        if self.introspection_disabled and not emitted:
+            # A live GraphQL endpoint whose schema we are not permitted to read.
+            # Contributing nothing here is the honest outcome — guessing the
+            # operations would be inventing surface — so it is stated as its own
+            # reason rather than folded into "nothing was served".
+            detail = (
+                f"{len(self.introspection_disabled)} GraphQL endpoint(s) answered but "
+                f"introspection is DISABLED; operations are unknown and none are guessed"
+            )
+            self._report = DiscoveryReport(
+                inputs_examined=0,
+                candidates_seen=0,
+                endpoints_emitted=0,
+                detail=detail,
+            )
+            return emitted
+        self._report = DiscoveryReport(
+            inputs_examined=len(self.endpoints_seen),
+            candidates_seen=self._fields_seen,
+            endpoints_emitted=len(emitted),
+            detail=(
+                f"{len(self.endpoints_seen)} of {len(_GRAPHQL_PATHS)} conventional path(s) "
+                f"answered as GraphQL"
+            ),
+        )
+        return emitted
 
     @staticmethod
     def _operations(schema: dict, url: str) -> list[Endpoint]:
@@ -1015,6 +1194,54 @@ def default_discoverers(pages: Sequence[str] = ()) -> list[RouteDiscoverer]:
     ]
 
 
+def _correctly_empty_reason(
+    discoverer: object,
+    name: str,
+    emitted: int,
+    log: logging.Logger,
+) -> str:
+    """Read a discoverer's own account of why it emitted nothing.
+
+    Returns the reason when the zero was correct, and ``""`` when it was not —
+    which includes the case where the discoverer declines to say. A producer
+    that does not declare is a DEAD SEAM, recorded as one, never an assumed
+    zero: the ffuf seam spent its whole existence being read through a
+    ``getattr`` default, and the default is what turned a broken contract into
+    a permanently quiet one.
+    """
+    if emitted > 0:
+        return ""
+    report_fn = getattr(discoverer, "contribution_report", None)
+    if not callable(report_fn):
+        record_dead_seam(
+            name=f"discoverer:{name}",
+            kind=ComponentKind.DISCOVERER,
+            note=(
+                "declares no contribution_report(); its zero cannot be read as "
+                "correct-for-target or as a defect"
+            ),
+        )
+        log.warning(
+            "Route discoverer %s emitted nothing and declares no contribution_report() — "
+            "recorded as a DEAD SEAM rather than assumed correct",
+            name,
+        )
+        return ""
+    try:
+        report = report_fn()
+    except Exception as exc:  # noqa: BLE001 — observability must not abort discovery
+        log.warning("Route discoverer %s contribution_report() raised: %s", name, exc)
+        return ""
+    if not isinstance(report, DiscoveryReport):
+        log.warning(
+            "Route discoverer %s contribution_report() returned %s, not a DiscoveryReport",
+            name,
+            type(report).__name__,
+        )
+        return ""
+    return report.correctly_empty_reason
+
+
 async def run_route_discovery(
     base_url: str,
     fetch: FetchFn,
@@ -1057,12 +1284,18 @@ async def run_route_discovery(
         # feeding one list means three of them can return nothing while the
         # union still looks healthy — which is how a fetched OpenAPI spec can be
         # discarded without the endpoint count ever looking wrong.
+        #
+        # A zero is recorded WITH the reason it is a zero, read off the
+        # discoverer's own declaration. Without that, all four read as SILENT on
+        # every DVWA run — the alarm class that means "a real defect" — for a
+        # target that simply has no API surface, no spec and no GraphQL.
         record_contribution(
             name=f"discoverer:{name}",
             kind=ComponentKind.DISCOVERER,
             items=len(found or []),
             ok=True,
             note=f"base={base_url}",
+            not_applicable=_correctly_empty_reason(discoverer, name, len(found or []), log),
         )
         if found:
             collected.extend(found)

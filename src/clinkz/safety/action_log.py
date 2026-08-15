@@ -34,6 +34,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from clinkz.config import outputs_root as configured_outputs_root
 from clinkz.engagement.secrets import redact, redact_structure
 
 logger = logging.getLogger(__name__)
@@ -104,9 +105,10 @@ class ActionLog:
         outputs_root: Root directory holding per-engagement subdirectories.
     """
 
-    def __init__(self, engagement_id: str, outputs_root: Path | str = Path("outputs")) -> None:
+    def __init__(self, engagement_id: str, outputs_root: Path | str | None = None) -> None:
         self.engagement_id = engagement_id
-        self.path = Path(outputs_root) / engagement_id / "actions.jsonl"
+        root = Path(outputs_root or configured_outputs_root())
+        self.path = root / engagement_id / "actions.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._seq = 0
@@ -239,7 +241,7 @@ class ActionLog:
     @staticmethod
     def read(
         engagement_id: str,
-        outputs_root: Path | str = Path("outputs"),
+        outputs_root: Path | str | None = None,
     ) -> list[ActionRecord]:
         """Read a previously written action log back into records.
 
@@ -250,7 +252,8 @@ class ActionLog:
         Returns:
             Every parseable record, in file order. Missing file ⇒ ``[]``.
         """
-        path = Path(outputs_root) / engagement_id / "actions.jsonl"
+        root = Path(outputs_root or configured_outputs_root())
+        path = root / engagement_id / "actions.jsonl"
         if not path.is_file():
             return []
         records: list[ActionRecord] = []

@@ -36,6 +36,26 @@ class LLMTimeoutError(LLMError):
     """Request to the provider timed out."""
 
 
+class ProviderAccountError(LLMError):
+    """The provider refused on an ACCOUNT condition, not a transient one.
+
+    A depleted credit balance or a revoked key comes back as an HTTP 400 with
+    ``invalid_request_error`` — not a 429, not a 503, not a timeout — so none of
+    the retry predicates recognise it and it falls through to the generic
+    "unexpected error, try the next provider" path. That is nearly right, and
+    wrong in one expensive way: the condition is a property of the ACCOUNT and
+    will hold for every subsequent call, but the chain re-attempts the same
+    provider on the next one. Engagement ``f6a550a4`` made 79 Anthropic
+    attempts and 76 of them were the same "credit balance is too low" 400,
+    re-discovered from scratch each time.
+
+    Raised as its own type so :class:`~clinkz.llm.fallback.ResilientLLMClient`
+    can stop asking — the same thing the Gemini credit pre-flight does at
+    engagement start, applied to the condition a pre-flight cannot predict
+    because it develops mid-run.
+    """
+
+
 class LLMUnavailableError(LLMError):
     """Every provider in the fallback chain failed."""
 
@@ -151,31 +171,58 @@ class LLMUsageTotals(BaseModel):
 
 
 class PromptSegments(BaseModel):
-    """A prompt split into a run-stable prefix and a per-call remainder.
+    """A prompt split by **how often the bytes repeat**, widest scope first.
 
-    The split is provider-agnostic on purpose. Callers say *which bytes repeat
-    across the calls of one engagement*; the client layer alone decides what to
-    do with that — an Anthropic cache breakpoint, or nothing at all. No agent
-    imports a provider SDK or spells ``cache_control``.
+    The split is provider-agnostic on purpose. Callers say which bytes repeat
+    and over what scope; the client layer alone decides what to do with that —
+    an Anthropic cache breakpoint, or nothing at all. No agent imports a
+    provider SDK or spells ``cache_control``.
 
-    ``stable`` must be byte-identical across every call that shares it within a
-    run: caching is a prefix match, so one interpolated timestamp or one
-    unsorted ``json.dumps`` invalidates every call after it.
+    Three scopes, because two were not enough and the difference cost money:
+
+    * ``invariant`` — bytes that are a property of the ENGINE, identical on
+      every call of every engagement forever: the role statement, the
+      methodology catalogue, the per-class preconditions, the worked examples.
+    * ``stable`` — bytes that are a property of THIS engagement: the observed
+      endpoint inventory, the detected technologies, the research runbook.
+      Byte-identical across the calls of one run, and different in every run.
+    * ``volatile`` — the individual ask.
+
+    Why the middle scope is not the cached one. The breakpoint used to sit
+    after ``stable``, which meant the cached prefix was ~12,500 tokens of
+    engagement-specific inventory presented **exactly once** — the planning
+    call — with the only would-be reader (the plan-repair call) firing solely
+    on a parse failure. Across 154 recorded engagements that produced 96,759
+    cache-WRITE tokens and **zero** cache-read tokens: a 1.25x premium paid in
+    full, every run, for an entry nothing ever read. Caching pays from the
+    second presentation onward (``1.25 + 0.10(N-1) < N`` for ``N > 1.28``), and
+    the deployment had ``N = 1``.
+
+    So the breakpoint goes at the end of ``invariant``: an order of magnitude
+    smaller, which caps the downside of a miss at noise, and the only span in
+    the prompt that a second call — a repair, or the next engagement inside the
+    TTL — can actually present again byte-for-byte.
+
+    Each segment must be byte-identical across the calls that share it; caching
+    is a prefix match, so one interpolated timestamp or one unsorted
+    ``json.dumps`` invalidates everything after it.
 
     Flattening to ``str`` yields exactly what a caller would have passed before
     this type existed, which is what providers without a cache breakpoint send.
     """
 
-    stable: str
-    volatile: str
+    stable: str = ""
+    volatile: str = ""
+    invariant: str = ""
+
+    @property
+    def context(self) -> str:
+        """Everything that is not the ask, in rendered order."""
+        return "\n\n".join(part for part in (self.invariant, self.stable) if part)
 
     def flatten(self) -> str:
-        """Render the two segments as the single prompt string providers see."""
-        if not self.stable:
-            return self.volatile
-        if not self.volatile:
-            return self.stable
-        return f"{self.stable}\n\n{self.volatile}"
+        """Render every segment as the single prompt string providers see."""
+        return "\n\n".join(part for part in (self.invariant, self.stable, self.volatile) if part)
 
 
 #: What ``generate_text`` accepts. A bare ``str`` is the unchanged path: no
