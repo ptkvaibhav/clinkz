@@ -95,7 +95,9 @@ pip install -e ".[dev]"
 `scripts/bootstrap.py` sets `core.hooksPath` so `.githooks/pre-commit` runs the
 leak guards. It is **per clone**: that config is never committed, so until you run
 it a `git add -f outputs/… && git commit` succeeds locally. CI's `leak-guard` job
-is the fail-closed backstop — see [`.claude/hooks/README.md`](.claude/hooks/README.md).
+is the fail-closed backstop, and its sibling `metadata-leak-guard` covers the
+surface a tree scan cannot see (session links in PR text and commit trailers) —
+see [`.claude/hooks/README.md`](.claude/hooks/README.md).
 
 ### Configuration
 

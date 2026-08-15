@@ -22,7 +22,12 @@ LLM-mediated Orchestrator, discovering and running tools dynamically.
   `.githooks/pre-commit` runs the outputs/secret/gates guards. That config is
   per-clone and never committed, so a fresh clone is unprotected until it runs
   (`/gates` reports `GATE0_hooksPath`). CI's `leak-guard` job is the only
-  fail-closed layer: no local config or `--no-verify` skips it.
+  fail-closed layer: no local config or `--no-verify` skips it. It inspects the
+  **tree**, so a sibling job `metadata-leak-guard` covers what a tree scan
+  structurally cannot see — session links in a PR title/body or a
+  `Claude-Session:` commit trailer. Commit attribution is suppressed at source by
+  `attribution: {commit: "", pr: "", sessionUrl: false}` in `.claude/settings.json`;
+  `sessionUrl` is a separate boolean and the two strings do NOT imply it.
   Use foreground commands only — no background scripts/polling.
 
 **PLAN-FIRST WORKFLOW**
