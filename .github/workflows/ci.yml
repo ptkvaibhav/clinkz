@@ -46,8 +46,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libffi-dev libgdk-pixbuf-2.0-0
 
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      # `-c` constrains every package — direct and transitive — to the locked
+      # version. Pinning typer/click/rich in pyproject.toml closed one instance
+      # of a class: the resolver was still free to pick a different build of the
+      # other ~80 packages here than on a developer machine. The lock makes the
+      # install reproducible; the step below asserts it actually was.
+      - name: Install dependencies (constrained by the lockfile)
+        run: pip install -c requirements-ci.lock -e ".[dev]"
+
+      - name: Assert the resolved dependency set matches the lockfile
+        run: python scripts/lockfile.py --check
 
       - name: Lint
         run: ruff check src/ tests/

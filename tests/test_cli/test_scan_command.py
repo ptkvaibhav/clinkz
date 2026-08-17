@@ -192,6 +192,14 @@ def test_the_coloured_help_render_is_the_one_ci_asserts_against(
     stream is never a std handle, so it renders ANSI on every platform — the
     same bytes CI sees.
     """
+    # BOTH renders are forced explicitly. Taking the uncoloured one from the
+    # ambient default passes locally and fails on CI, where `GITHUB_ACTIONS` has
+    # already put `FORCE_TERMINAL` at True before this module imported — the same
+    # import-time trap described above, arriving from the other direction.
+    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", False)
+    uncoloured = runner.invoke(app, ["scan", "--help"]).output
+    assert "\x1b" not in uncoloured, "the baseline render was already coloured"
+
     monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", True)
     result = runner.invoke(app, ["scan", "--help"])
 
@@ -200,6 +208,14 @@ def test_the_coloured_help_render_is_the_one_ci_asserts_against(
     )
     assert "--target" not in result.output, "the raw render stopped being the hard case"
     assert "--target" in plain(result)
+
+    # The whole property, not a proxy for it. Equal LENGTH is necessary and not
+    # sufficient: a stripper that deleted four characters of help text and left
+    # four bytes of an escape sequence behind would satisfy a length check and
+    # have corrupted the output it was normalising. Equality is the claim —
+    # stripping recovers the uncoloured render exactly, so every other `--help`
+    # assertion in this suite sees the same string on CI as it does locally.
+    assert plain(result) == uncoloured
 
 
 # ---------------------------------------------------------------------------
