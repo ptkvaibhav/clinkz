@@ -308,3 +308,54 @@ levels" is only evidence if the class actually ran — the trace shows five
 `shape_matched_control_also_authenticated` because DVWA re-issues `PHPSESSID` on
 every response. A zero from a class that was never dispatched would have looked
 identical in the finding count and proved nothing.
+
+---
+
+<a id="lesson-53"></a>
+
+## #53 — An equality gate is satisfied by two zeros, and "the observation" is rarely one observation
+
+The DVWA ladder's new primary gate asserts that all four security levels emit
+**byte-identical** security-header findings, because the levels vary the module
+code and not Apache's response headers, and WSTG-CONF-07 is a pure function of
+the observed header set. The gate is sound. Both of its first two
+implementations produced a **confident wrong number** rather than an error.
+
+* **Filtering on a field the artifact does not carry.** The extractor selected
+  header findings by `technique == "WSTG-CONF-07"`. The emitter does stamp that
+  id — and `report_<id>.json` does not carry the field at all, so `technique` is
+  `None` on every finding. The filter matched nothing, every level scored **0
+  header findings**, and the gate reported `IDENTICAL` across four levels. Seven
+  findings sat in each report the whole time.
+
+  Equality gates have this failure mode structurally: `[] == []` is the most
+  passable comparison there is. A gate whose subject can silently become empty
+  needs a **non-emptiness** assertion beside its equality assertion, and should
+  key on something the artifact demonstrably carries — here the emitter's own
+  title prefixes, with an unrecognised shape surfaced loudly rather than skipped.
+
+* **Taking "the last one" as "the observation".** The premise the gate rests on
+  — all four levels observed the same headers — was read back from each run's
+  trace rather than assumed, which was right. But phase 2 runs **per page** (1–24
+  times per run here), and the reader kept the last event. The last page differs
+  by level: `low` ended on `/setup.php` (9 headers), `high` on `/phpinfo.php`
+  (10 — phpinfo is chunked, so Apache adds `Transfer-Encoding`). The premise
+  read as BROKEN against a target that was perfectly consistent.
+
+  When a finding is scoped to a container, the observation it is a function of
+  is a fixed member of that container — the same rule as
+  [#45](#lesson-45). A header finding is addressed to the ORIGIN, so the origin
+  ROOT is the observation; the per-page sets genuinely do vary
+  (`x-xss-protection` on `xss_r`, a CSP on `csp/`, CORS headers on
+  `api/v1/user/`) and that variation is what the origin-scope rule exists to
+  resolve, not something to average away.
+
+Both were caught only because the numbers were read against an expectation
+someone had written down (seven findings; nine headers). Neither would have
+failed a test.
+
+**Corollary — build the re-grade path before you need it.** The reports are the
+primary artifact and they already held every number; the defect was in the
+extraction. A `--regrade` mode that re-scores finished bundles from disk turned a
+three-hour re-run into a second of work, and there is no reason a harness that
+spends hours against a live target should be able to lose its own analysis.
