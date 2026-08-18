@@ -80,6 +80,7 @@ from clinkz.llm.fallback import (
     validate_agent_chains,
 )
 from clinkz.llm.providers import ProviderPreflight, preflight_providers
+from clinkz.llm.spend import SpendLedger, set_active_spend_ledger, spend_summary
 from clinkz.models.engagement import AuthorizationRecord, CredentialSet, RoleCredential
 from clinkz.models.finding import ExploitTask
 from clinkz.models.recon import (
@@ -104,6 +105,11 @@ from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.orchestrator.target_resolver import resolve_target_for_docker_mode
 from clinkz.safety.benchmark import set_active_benchmark_profile
 from clinkz.safety.governor import EngagementGovernor, set_active_governor
+from clinkz.safety.scope_refusals import (
+    ScopeRefusalLog,
+    scope_refusal_summary,
+    set_active_scope_refusal_log,
+)
 from clinkz.state import StateStore
 from clinkz.tools.docker_preflight import ensure_container_ready
 from clinkz.tools.resolver import ToolResolver
@@ -307,6 +313,9 @@ class OrchestratorAgent:
         self._ledger: ContributionLedger | None = None
         self._degradation: DegradationRegister | None = None
         self._provider_preflight: ProviderPreflight | None = None
+        #: Set by the CLI before ``run()`` when the operator declared caps.
+        self._spend_ledger: SpendLedger | None = None
+        self._scope_refusals: ScopeRefusalLog | None = None
         # The composition view of every CONFIRMED chain the exploit phase proved.
         # Carried to the report so it can render the links; the chains themselves
         # are ordinary findings and are counted there, never here.
@@ -442,6 +451,25 @@ class OrchestratorAgent:
             degradation = DegradationRegister()
             set_active_degradation_register(degradation)
             self._degradation = degradation
+
+            # The engagement's third bound, beside the governor's request rate
+            # and the window's hard stop. Installed even when no cap is set:
+            # the accounting is what makes "actual API spend" a measurement
+            # rather than an estimate, and a run that reports its consumption
+            # is the only one that can justify the next run's cap.
+            spend_ledger = self._spend_ledger or SpendLedger()
+            set_active_spend_ledger(spend_ledger)
+            self._spend_ledger = spend_ledger
+
+            # The scope-refusal log. THE control on an external engagement:
+            # a real application links out, the crawler follows links, and the
+            # scope check refuses the ones that leave the authorised host.
+            # Until this existed the refusal left no evidence, so a run that
+            # enforced it perfectly and one that never had a link to follow
+            # produced identical artifacts.
+            scope_refusals = ScopeRefusalLog()
+            set_active_scope_refusal_log(scope_refusals)
+            self._scope_refusals = scope_refusals
 
             # Install the production safety rails for this engagement. Every
             # outbound request now passes through the governor: paced, capped,
@@ -822,6 +850,19 @@ class OrchestratorAgent:
                     )
                 set_active_degradation_register(None)
                 self._degradation = None
+
+                # The bounds report themselves, whatever the run did. Both are
+                # rendered even when empty: "nothing out of scope was reached
+                # for" and "this is what the run cost" are claims a deliverable
+                # should make, and a section that appears only on an incident
+                # cannot be told apart from one nobody wrote.
+                scope_refusals.log_summary(self._logger)
+                summary["scope_refusals"] = scope_refusal_summary()
+                self._logger.info("LLM budget — %s", spend_ledger.describe())
+                summary["llm_spend"] = spend_summary()
+                set_active_scope_refusal_log(None)
+                set_active_spend_ledger(None)
+                self._scope_refusals = None
 
                 # Always close + unset the trace writer so module-level state
                 # cannot leak between back-to-back engagements (relevant in

@@ -61,6 +61,7 @@ from clinkz.observability.ledger import (
     record_contribution,
     record_dead_seam,
 )
+from clinkz.safety.scope_refusals import record_scope_refusal
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 from clinkz.tools.resolver import ToolResolver
@@ -893,11 +894,18 @@ class ScanAgent(BaseAgent):
         refs = getattr(self, "_session_setter_refs", None)
         if refs is None or not body:
             return
-        resolved = [
-            u
-            for u in find_session_setter_urls(page_url, body)
-            if self.scope.contains(u) and not is_state_changing_url(u)
-        ]
+        resolved = []
+        for u in find_session_setter_urls(page_url, body):
+            if not self.scope.contains(u):
+                # This filter drops the URL without ever constructing a tool,
+                # so ToolBase._check_scope never sees it. Recorded here for the
+                # same reason it is recorded there: an out-of-scope link the
+                # crawler found and did not follow is the evidence that the
+                # control ran.
+                record_scope_refusal(u, stage="scan", tool="session_setter_link_filter")
+                continue
+            if not is_state_changing_url(u):
+                resolved.append(u)
         if not resolved:
             return
         existing = refs.setdefault(page_url, [])

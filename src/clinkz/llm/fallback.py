@@ -46,6 +46,7 @@ from clinkz.llm.base import (
 )
 from clinkz.llm.degradation import ProviderFallback, record_provider_fallback
 from clinkz.llm.factory import AGENT_PROVIDER_SETTINGS, get_llm_client
+from clinkz.llm.spend import HALT_SPEND_CAP, record_spend, spend_cap_exceeded
 from clinkz.observability.ledger import (
     ComponentKind,
     declare_component,
@@ -325,6 +326,15 @@ class ResilientLLMClient(LLMClient):
             return None
         self.run_totals.add(stats)
         self._record_cache_economics(stats)
+        # Fold into the engagement's spend ledger here, for the same reason the
+        # run totals are folded in here: this is the one place that knows WHICH
+        # provider actually served the call after the chain resolved, and the
+        # cap is meaningless if it is attributed to the model that was asked.
+        record_spend(
+            model=self._resolve_model(provider),
+            input_tokens=stats.billed_prompt_tokens,
+            output_tokens=stats.output_tokens,
+        )
         return stats
 
     @staticmethod
@@ -404,6 +414,21 @@ class ResilientLLMClient(LLMClient):
         finish the engagement on a backup than halt on a transient provider
         quirk.
         """
+        # The spend cap, checked BEFORE the call so the run stops AT the cap
+        # rather than one unbounded call past it. A halt rather than an
+        # exception: raising here would land in one of the methodology layers'
+        # broad handlers and be reported as "that probe failed", while the
+        # governor's halt winds the phases down cooperatively and still
+        # produces the report — which matters most exactly when the cap fires.
+        exceeded = spend_cap_exceeded()
+        if exceeded:
+            from clinkz.safety.governor import get_active_governor
+
+            governor = get_active_governor()
+            if governor is not None and not governor.halted:
+                governor.halt(HALT_SPEND_CAP, exceeded)
+            raise LLMUnavailableError(f"LLM budget exhausted — {exceeded}")
+
         last_error: Exception | None = None
         # The provider we actually reached for first. A later provider serving
         # the call is a fallback ACTIVATION, and it is recorded — this is the

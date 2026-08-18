@@ -234,6 +234,18 @@ class PentestReport(BaseModel):
     #: one-way — a degraded answer is already inside the findings, so no later
     #: clean call un-shapes it.
     provider_degradation: dict[str, object] = Field(default_factory=dict)
+    #: Every out-of-scope target the engagement reached for and refused. THE
+    #: control on an external engagement: a real application links out, the
+    #: crawler follows links, and this is the evidence that the ones leaving
+    #: the authorised host were stopped. Rendered even when empty, because
+    #: otherwise a run that enforced scope perfectly and one that never had a
+    #: link to follow produce identical artifacts.
+    scope_refusals: dict[str, object] = Field(default_factory=dict)
+    #: What the run consumed from the LLM providers, and the caps it ran under.
+    #: ``usd_spent`` is a LOWER BOUND whenever ``usd_is_complete`` is false —
+    #: clinkz ships no default rate card, so a model with no declared price
+    #: contributes tokens and no dollars rather than a guess.
+    llm_spend: dict[str, object] = Field(default_factory=dict)
 
     @property
     def finding_counts(self) -> dict[str, int]:
