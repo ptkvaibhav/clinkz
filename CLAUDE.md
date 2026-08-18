@@ -824,7 +824,17 @@ LESSONS #17).
   (this engagement's observations) / `volatile` (the ask) — and the breakpoint
   goes after `invariant` only. The item the cache contributes is
   `cache_read_input_tokens`, so a write nobody reads trips SILENT in the run
-  log and `report.json`.
+  log and `report.json`. **And it kept tripping, so the cache is now OFF by
+  default** (`llm_prompt_cache_enabled`): the smaller span was the right span
+  and `N` was still 1. Every trace on disk — 13 breakpoint calls across 13
+  engagements, **zero** ever making a second one, 104,589 write tokens against
+  0 reads, and no two breakpoint calls closer than 1,692s against a 300s TTL —
+  says the second presentation does not exist by either route, in-run or
+  cross-run. A permanent SILENT alarm is worse than the cost it names: **a
+  ledger where an alarm always fires teaches the operator to stop reading it.**
+  The flag and the split stay, because the machinery is correct and only the
+  arithmetic failed; a deployment that really re-presents a prefix inside the
+  TTL turns it on and re-derives its own hit rate from its own traces.
 - **A consumer never guesses a producer's field names.** The PRODUCER declares
   what it contributes (`ToolOutput.discovered_urls` / `declares_discovery`); a
   wrapper that declares nothing is a loud dead seam, not an empty list. Never

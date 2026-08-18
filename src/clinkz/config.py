@@ -90,13 +90,38 @@ class Settings(BaseModel):
         default=16000, description="max_tokens for a single LLM call (covers thinking + text)"
     )
 
-    # Prompt caching. Applies only where a caller supplied an INVARIANT prefix
-    # (llm.base.PromptSegments); a plain-string prompt is unaffected either way.
-    # The breakpoint sits after the engine-invariant span only — see that class
-    # for why caching the engagement-scoped span cost 96,759 write tokens and
-    # returned zero reads across 154 recorded runs.
+    # Prompt caching. OFF by default, because the measurement says so.
+    #
+    # Applies only where a caller supplied an INVARIANT prefix
+    # (llm.base.PromptSegments), which is one call site: the exploit planner.
+    # Moving the breakpoint off the engagement-scoped span cut the exposure by
+    # an order of magnitude (~12,500 write tokens per run down to ~1,566) and
+    # did NOT change the hit rate, because it was never the span that was wrong
+    # — it was the arithmetic. Caching pays from the second presentation
+    # (1.25 + 0.10(N-1) < N ⟺ N > 1.28), and every recorded trace says N = 1:
+    #
+    #   * 13 breakpoint-carrying calls across 13 engagements. ZERO engagements
+    #     ever made a second one — the only other presenter is the plan-repair
+    #     call, which fires solely on a parse failure and never has.
+    #   * 104,589 cache-WRITE tokens, 0 cache-READ tokens. A 0.00% hit rate
+    #     measured over every trace on disk, not a sample.
+    #   * The cross-run route is closed too: of 12 consecutive gaps between
+    #     breakpoint calls, NONE is under the 300s TTL. The closest pair in the
+    #     entire recorded history is 1,692s apart — 5.6x the window — because a
+    #     run's planning call sits a whole engagement away from the next run's.
+    #
+    # So the write premium is a pure loss (+26,147 base-rate input-token
+    # equivalents to date) and no TTL reaches the second presentation. "One
+    # writer, no reader" is not a tuning problem, and leaving it on also left a
+    # permanent SILENT alarm in the contribution ledger — a false alarm that
+    # fires every run is how a real one gets skimmed past.
+    #
+    # Kept as a flag rather than deleted: the machinery is correct and the
+    # decision is arithmetic, so a deployment that ever presents an invariant
+    # prefix TWICE inside the TTL should flip LLM_PROMPT_CACHE_ENABLED=true and
+    # re-derive the hit rate from its own traces.
     llm_prompt_cache_enabled: bool = Field(
-        default=True, description="Attach a cache breakpoint to the engine-invariant prefix"
+        default=False, description="Attach a cache breakpoint to the engine-invariant prefix"
     )
     # "5m" (1.25x write premium) or "1h" (2.0x). Re-derived from every recorded
     # trace rather than the four P7 engagements the previous note cited: across
@@ -346,8 +371,8 @@ class Settings(BaseModel):
             llm_provider_default=global_default,  # type: ignore[arg-type]
             llm_request_timeout=float(os.getenv("LLM_REQUEST_TIMEOUT", "120.0")),
             llm_max_output_tokens=int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "16000")),
-            llm_prompt_cache_enabled=os.getenv("LLM_PROMPT_CACHE_ENABLED", "true").lower()
-            not in ("0", "false", "no"),
+            llm_prompt_cache_enabled=os.getenv("LLM_PROMPT_CACHE_ENABLED", "false").lower()
+            in ("1", "true", "yes"),
             llm_prompt_cache_ttl=os.getenv("LLM_PROMPT_CACHE_TTL", "5m"),
             llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
             llm_retry_base_delay=float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0")),

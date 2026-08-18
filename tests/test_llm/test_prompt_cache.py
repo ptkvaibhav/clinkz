@@ -440,3 +440,69 @@ class TestUsageAccounting:
         totals = LLMUsageTotals()
         assert totals.cache_hit_rate == 0.0
         assert totals.realised_savings("5m") == 0.0
+
+
+class TestTheDefaultIsOff:
+    """The deployment decision, pinned so it cannot be flipped back silently.
+
+    Caching pays from the second presentation (``1.25 + 0.10(N-1) < N`` for
+    ``N > 1.28``). Every trace on disk says ``N = 1``: 13 breakpoint-carrying
+    calls across 13 engagements, **zero** of which ever made a second one, and
+    104,589 cache-write tokens against 0 cache-read tokens. The cross-run route
+    is closed too — no two breakpoint calls on record are closer than 1,692s
+    against a 300s TTL, because one run's planning call sits a whole engagement
+    away from the next.
+
+    Moving the breakpoint off the engagement-scoped span was necessary and not
+    sufficient: it cut the write from ~12,500 tokens to ~1,566 and left the hit
+    rate at 0.00%. So the arithmetic, not the machinery, is what failed — the
+    flag and the span split stay for a deployment that really re-presents a
+    prefix, and the default is off.
+    """
+
+    def test_prompt_caching_is_disabled_by_default(self) -> None:
+        from clinkz.config import Settings
+
+        assert Settings().llm_prompt_cache_enabled is False
+
+    def test_the_env_var_is_the_opt_in_and_defaults_off(self, monkeypatch) -> None:
+        from clinkz.config import Settings
+
+        monkeypatch.delenv("LLM_PROMPT_CACHE_ENABLED", raising=False)
+        assert Settings.from_env().llm_prompt_cache_enabled is False
+        monkeypatch.setenv("LLM_PROMPT_CACHE_ENABLED", "true")
+        assert Settings.from_env().llm_prompt_cache_enabled is True
+
+    def test_a_disabled_cache_reports_no_ledger_component_at_all(self) -> None:
+        """Off means the capability is never reached for, not a silent zero.
+
+        A component that is invoked and contributes nothing is a degradation the
+        ledger must shout about; a component nobody invoked is not. With caching
+        off there is no write and no read, so ``_record_cache_economics``
+        returns before recording and the component is absent — which is why
+        turning it off CLEARS the alarm rather than pinning it at zero.
+        """
+        from clinkz.llm.base import CallStats
+        from clinkz.llm.fallback import ResilientLLMClient
+        from clinkz.observability import ledger as ledger_mod
+        from clinkz.observability.ledger import ContributionLedger
+
+        ledger = ContributionLedger("cache-off")
+        ledger_mod.set_active_ledger(ledger)
+        try:
+            # What an uncached call reports: real prompt tokens, no cache activity.
+            ResilientLLMClient._record_cache_economics(
+                CallStats(provider="anthropic", input_tokens=900)
+            )
+            # And the control: a call that DID carry a breakpoint is still recorded,
+            # so the assertion above is about cache activity and not about a
+            # recorder that stopped working.
+            ResilientLLMClient._record_cache_economics(
+                CallStats(provider="anthropic", cache_creation_input_tokens=1566)
+            )
+        finally:
+            ledger_mod.set_active_ledger(None)
+
+        cache_records = [r for r in ledger.records() if "prompt_cache" in r.name]
+        assert len(cache_records) == 1
+        assert cache_records[0].invocations == 1

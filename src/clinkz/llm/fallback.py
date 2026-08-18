@@ -292,7 +292,12 @@ class ResilientLLMClient(LLMClient):
 
         A call that never carried a breakpoint is not an invocation — the
         capability was not reached for, so recording it would drown the signal
-        in every uncached call the run makes.
+        in every uncached call the run makes. That is also why this component
+        vanishes from the ledger entirely once caching is switched off
+        (``settings.llm_prompt_cache_enabled``, now the default): nothing is
+        written, nothing is read, and a capability the run never reached for is
+        not a degradation. It reported SILENT truthfully for as long as it was
+        on, which is what got it switched off.
         """
         if not (stats.cache_creation_input_tokens or stats.cache_read_input_tokens):
             return

@@ -203,6 +203,17 @@ class PromptSegments(BaseModel):
     the prompt that a second call — a repair, or the next engagement inside the
     TTL — can actually present again byte-for-byte.
 
+    That move was necessary and not sufficient, and the follow-up measurement
+    said so: the smaller span still wrote ~1,566 tokens per run and still read
+    back **zero**, because neither would-be second presenter ever arrives. The
+    repair call fires only on a parse failure (0 of 13 recorded engagements),
+    and the next engagement's planning call lands a whole run later — the
+    closest two breakpoint calls on record are 1,692s apart against a 300s TTL.
+    ``N`` was 1 before the move and 1 after it. So prompt caching is **off by
+    default** (``settings.llm_prompt_cache_enabled``); this split is what a
+    deployment that genuinely re-presents a prefix would switch back on, and it
+    stays here because the arithmetic — not the machinery — is what failed.
+
     Each segment must be byte-identical across the calls that share it; caching
     is a prefix match, so one interpolated timestamp or one unsorted
     ``json.dumps`` invalidates everything after it.
