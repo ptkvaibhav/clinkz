@@ -55,23 +55,33 @@ from clinkz.observability.ledger import (
 logger = logging.getLogger(__name__)
 
 
-#: Fallback chain per profile. ``reasoning`` prioritises Claude (best for
-#: multi-step planning); ``fast`` prioritises Gemini Flash (cheap + high
-#: volume). ``reasoning_pinned`` is a single-provider chain — Claude only,
-#: no fallback — used by Exploit-Agent methodology checkpoints (character
-#: probing, payload synthesis, encoding selection) where switching mid-test
-#: from Claude to Gemini changes the deterministic path the test depends on.
-#: Ollama is intentionally omitted from the fallback chains: the client is
-#: still a stub, so putting it in a production chain guarantees terminal
-#: failure. Add it back once the Ollama client is fully implemented.
+#: Profiles, retained as trace/telemetry labels rather than as different
+#: routings. Under routing v2 they no longer disagree about who goes first:
+#: ``reasoning`` and ``fast`` both resolve to
+#: ``settings.llm_provider_priority``, which is validated to lead with
+#: Anthropic, and ``reasoning_pinned`` is Anthropic with no tail at all.
+#:
+#: ``fast`` used to lead with Gemini Flash, and that was the hole. It was not a
+#: rule anybody would defend once stated — "the cheap tier answers first on
+#: recon, scan and report" — it was a cost decision that quietly became a
+#: routing decision, and the run's own traces are the evidence: Gemini served
+#: the exploit stage 12 times across 9 engagements, 6 of them exploit PLANS and
+#: 6 of them false-positive cross-checks, i.e. the suppression path.
+#:
+#: Ollama stays out: the client is a stub, so putting it in a production chain
+#: guarantees terminal failure. Add it back once it is implemented.
+LLM_PROFILES: frozenset[str] = frozenset({"reasoning", "reasoning_pinned", "fast"})
+
+#: Kept as a module-level name because callers and tests read it. Derived from
+#: the DEFAULT priority; :meth:`ResilientLLMClient._build_chain` reads the
+#: priority off its own ``config`` so a Settings override is honoured.
 LLM_FALLBACK_CHAINS: dict[str, list[str]] = {
-    "reasoning": ["anthropic", "openai"],
+    "reasoning": list(global_settings.llm_provider_priority),
     "reasoning_pinned": ["anthropic"],
-    "fast": ["gemini", "anthropic", "openai"],
+    "fast": list(global_settings.llm_provider_priority),
 }
 
-#: Roles whose output DECIDES something, and which therefore may not be served
-#: by the cheap tier — not as a primary, and not as a fallback either.
+#: Roles whose output DECIDES something.
 #:
 #: The distinction is not "important agent" but *what the answer becomes*:
 #:
@@ -83,31 +93,33 @@ LLM_FALLBACK_CHAINS: dict[str, list[str]] = {
 #:
 #: Recon and scan are deliberately NOT here. They produce observations that a
 #: later oracle re-derives from the live target, so a weaker model there costs
-#: recall and cannot manufacture a conclusion.
-#:
-#: The chain was already ``["anthropic", "gemini", "openai"]`` for exploit and
-#: Gemini-led for research, and both fired: across 164 recorded traces Gemini
-#: served the exploit stage 12 times in 9 engagements — 6 exploit PLANS and 6
-#: FP cross-checks. The cross-check is the suppression path, so the cheap tier
-#: has already been the thing deciding which confirmed findings were demoted.
+#: recall and cannot manufacture a conclusion. That distinction survives
+#: routing v2 even though the ROUTING no longer varies by role: v2 made
+#: Anthropic priority 1 everywhere, so the question this set answers is no
+#: longer "who may serve it" but "how bad is it that something else did".
 CLAUDE_ONLY_ROLES: frozenset[str] = frozenset({"exploit", "research"})
 
 #: Providers that may serve a :data:`CLAUDE_ONLY_ROLES` call.
 CLAUDE_PROVIDERS: frozenset[str] = frozenset({"anthropic"})
 
-#: Maps an agent role to the profile whose fallback chain it should use.
+#: Maps an agent role to its profile. Every role is ``reasoning`` now, which is
+#: to say every role leads with Anthropic. The mapping is kept rather than
+#: deleted because it is where a future per-role divergence would be written,
+#: and because the trace records the profile a call ran under.
+#:
+#: Research is the one that cost something real. It led with Gemini Flash-Lite
+#: for native Search Grounding, and that capability does not exist on the
+#: Anthropic path — the runbook is now assembled without live grounded search.
+#: Stated rather than absorbed: the runbook is folded into the exploit plan and
+#: persisted to the cross-engagement KB, so a cheap model's answer there
+#: outlives the run that produced it, and "cheap model with live search" is not
+#: a trade this role is allowed to make on its own.
 AGENT_LLM_PROFILE: dict[str, str] = {
-    "recon": "fast",
-    "scan": "fast",
-    "crawl": "fast",
-    "report": "fast",
+    "recon": "reasoning",
+    "scan": "reasoning",
+    "crawl": "reasoning",
+    "report": "reasoning",
     "exploit": "reasoning",
-    # Research LED with Gemini Flash-Lite for its native Search Grounding, and
-    # that is exactly what this now forbids: the runbook decides what the
-    # exploit phase reaches for and is written into the persistent KB. The
-    # capability cost is real and is stated rather than absorbed — see
-    # ``_build_chain`` — but "cheap model with live search" is not a trade this
-    # role is allowed to make.
     "research": "reasoning",
 }
 
@@ -553,56 +565,39 @@ class ResilientLLMClient(LLMClient):
     def _build_chain(self, agent_role: str, profile: str) -> list[str]:
         """Compute the effective fallback chain for an agent role.
 
-        The profile chain is the baseline. If ``LLM_PROVIDER_<ROLE>`` (or the
-        legacy ``<ROLE>_LLM_PROVIDER``) pins a provider, move it to the
-        front; the remaining providers keep their relative order.
+        ``settings.llm_provider_priority`` is the baseline, and it is validated
+        to lead with Anthropic. ``LLM_PROVIDER_<ROLE>`` (or the legacy
+        ``<ROLE>_LLM_PROVIDER``) still has an effect, but a **narrowed** one: it
+        promotes its provider to the head of the FALLBACK TAIL — position 2 —
+        and can no longer displace position 1.
+
+        That narrowing is the point of routing v2 and it is a real behaviour
+        change, so it is worth being explicit about what it forbids. Before
+        this, ``LLM_PROVIDER_RECON=gemini`` meant "Gemini answers recon", and
+        the setting reads exactly like it still should. It now means "if
+        Anthropic cannot answer recon, try Gemini before OpenAI". An operator
+        who genuinely wants a non-Anthropic provider serving a phase has to
+        change the declared priority in config, where the change is one line,
+        visible, and validated — rather than reaching it sideways through a
+        per-role env var that looks like a preference.
         """
-        base = list(LLM_FALLBACK_CHAINS.get(profile, LLM_FALLBACK_CHAINS["fast"]))
+        if profile == "reasoning_pinned":
+            return ["anthropic"]
+
+        base = list(self.config.llm_provider_priority)
 
         setting_name = AGENT_PROVIDER_SETTINGS.get(agent_role)
         configured: str | None = None
         if setting_name is not None:
             configured = getattr(self.config, setting_name, None)
 
-        if configured and configured in base:
-            base.remove(configured)
-            base.insert(0, configured)
-        elif configured and configured not in base:
-            base.insert(0, configured)
+        if configured and configured != base[0]:
+            if configured in base:
+                base.remove(configured)
+            # Position 1, never 0: the head is Anthropic and stays Anthropic.
+            base.insert(1, configured)
 
-        return self._enforce_claude_only(agent_role, base)
-
-    def _enforce_claude_only(self, agent_role: str, chain: list[str]) -> list[str]:
-        """Drop every non-Claude provider from a role whose answer decides something.
-
-        Applied AFTER the ``LLM_PROVIDER_<ROLE>`` override, which is the only
-        placement that works: the override inserts its provider at the FRONT of
-        the chain, so filtering the profile first would leave
-        ``LLM_PROVIDER_EXPLOIT=gemini`` free to put the cheap tier ahead of
-        Claude. A configuration switch must not be able to reach a decision this
-        rule exists to keep away from it.
-
-        The chain is allowed to become empty and is NOT back-filled. An empty
-        chain raises :class:`LLMUnavailableError` on the first call, which is
-        the intended outcome: an engagement whose plan or runbook cannot be
-        served by Claude has no honest way to continue, and quietly substituting
-        a weaker model is precisely the failure this replaces.
-        """
-        if agent_role not in CLAUDE_ONLY_ROLES:
-            return chain
-        allowed = [p for p in chain if p in CLAUDE_PROVIDERS]
-        dropped = [p for p in chain if p not in CLAUDE_PROVIDERS]
-        if dropped:
-            # Module logger, not ``self._logger``: this runs from __init__
-            # before the per-instance logger exists.
-            logger.info(
-                "Role %s is decision-bearing: dropped %s from its chain, leaving %s. "
-                "A cheaper provider may not plan, judge, or research for this engagement.",
-                agent_role,
-                dropped,
-                allowed,
-            )
-        return allowed
+        return base
 
     def has_usable_provider(self) -> bool:
         """Return True if at least one provider in the chain has a configured API key.

@@ -432,19 +432,12 @@ def test_build_agent_llms() -> None:
         assert isinstance(agent_llms[role], ResilientLLMClient)
         assert agent_llms[role].agent_role == role
 
-    # The decision-bearing roles are Claude-only — not merely Claude-led. What
-    # they emit becomes the engagement's conclusions (which classes get tested,
-    # which findings survive the cross-check), so Gemini is absent from the
-    # chain rather than sitting behind Claude where a 429 would reach it.
-    for role in ("exploit", "research"):
-        assert agent_llms[role].fallback_chain[0] == "anthropic"
-        assert "gemini" not in agent_llms[role].fallback_chain
-
-    # The observation-producing roles still lead with Gemini: what they produce
-    # is re-derived from the live target by an oracle downstream.
-    assert agent_llms["recon"].fallback_chain[0] == "gemini"
-    assert agent_llms["scan"].fallback_chain[0] == "gemini"
-    assert agent_llms["report"].fallback_chain[0] == "gemini"
+    # Routing v2: Anthropic is priority 1 for every one of them, decision-
+    # bearing or not. Gemini is still in the tail — v2 replaced "the cheap tier
+    # may not serve this role" with "if it does, the run declares it and is
+    # disqualified as a baseline".
+    for role in ("recon", "scan", "exploit", "research", "report"):
+        assert agent_llms[role].fallback_chain[0] == "anthropic", role
 
 
 # ---------------------------------------------------------------------------

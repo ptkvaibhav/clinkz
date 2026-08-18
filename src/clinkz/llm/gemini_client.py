@@ -1,13 +1,49 @@
-"""Google Gemini LLM client.
+"""Google Gemini LLM client — Gemini 3.x.
 
-Uses google-genai SDK with:
-- Configurable model (defaults to ``settings.gemini_model``); per-role pins
-  are passed in via the ``model`` argument (e.g. Research → Flash-Lite)
-- Native Google Search grounding for research() (live CVE/exploit data)
-- Function calling for reason()
-- Sliding-window rate limiting (``settings.gemini_max_rpm``, sized for Tier 1)
+Under routing v2 this is a FALLBACK-ONLY provider: Anthropic is priority 1 for
+every call on every phase, and reaching this client at all is a disqualifying
+event the run has to declare (:mod:`clinkz.llm.fallback`). That fact drives two
+decisions recorded below.
+
+Uses the google-genai SDK with:
+
+- The pinned model :data:`clinkz.config.GEMINI_PINNED_MODEL`; per-role pins are
+  passed in via the ``model`` argument
+- Native Google Search grounding for :meth:`GeminiClient.research`
+- Function calling for :meth:`GeminiClient.reason`
+- Sliding-window rate limiting (``settings.gemini_max_rpm``)
 - Exponential backoff on 429 / 503 / quota errors
 - Per-request token usage tracking
+
+Gemini 3.x migration
+--------------------
+
+Four generation-config parameters were **removed** in 3.x and are refused here
+rather than being passed through to be rejected by the API mid-engagement:
+``temperature``, ``top_p``, ``top_k`` and ``candidate_count``
+(:data:`_REMOVED_IN_GEMINI_3X`). None of them was in use when this client was
+migrated — the guard exists so that re-adding one is a loud test failure rather
+than a 400 discovered on the one call path that only runs when the primary
+provider is already down.
+
+``thinking_budget`` (an integer) was replaced by ``thinking_level`` (a string
+enum). The SDK's ``types.ThinkingLevel`` still offers ``MINIMAL`` and 3.7 Flash
+**rejects it** with an API validation error, so the SDK enum is not the
+contract: :data:`clinkz.config.GEMINI_THINKING_LEVELS` is, and the value is
+validated at config load.
+
+**generateContent (Legacy) is used deliberately, not by inertia.** The
+Interactions API is GA and is what Google now recommends, and this client stays
+on ``models.generate_content`` anyway for one reason: routing v2 turned this
+whole module into a degradation path. Every response reader downstream — the
+``candidates[0].content.parts`` walk in :meth:`reason`, ``response.text``,
+``usage_metadata`` — is shaped around the generateContent response, and porting
+them to a different response shape would put freshly-rewritten, rarely-executed
+code on the exact path that only runs when Anthropic is already failing. That is
+the worst place in the system to take on untested surface: the first real
+exercise would be a live engagement mid-incident. Revisit when either premise
+changes — generateContent gets a deprecation date, or Gemini returns to a
+primary role and the path is exercised every run. Recorded 2026-08-18.
 """
 
 from __future__ import annotations
@@ -21,7 +57,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from clinkz.config import settings
+from clinkz.config import GEMINI_THINKING_LEVELS, settings
 from clinkz.llm.base import (
     AgentAction,
     LLMClient,
@@ -39,6 +75,73 @@ logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_PERIOD: float = 60.0
 _REQUEST_TIMEOUT: float = 120.0  # Hard timeout for every Gemini API call
+
+#: Generation-config parameters Gemini 3.x removed. Passing any of them earns
+#: an API validation error, so they are refused where the config is BUILT — one
+#: place, rather than at each of the three call sites that construct one.
+#:
+#: This is a guard against a future edit, not a fix for a present bug: none of
+#: these was set when the client was migrated. It is worth having precisely
+#: because of that. Re-adding ``temperature`` is the natural thing to reach for
+#: when tuning determinism, it looks harmless, and under routing v2 the code
+#: path that would reject it runs only when Anthropic is already down — so the
+#: bug would be introduced during a calm afternoon and discovered during an
+#: incident.
+_REMOVED_IN_GEMINI_3X: frozenset[str] = frozenset(
+    {"temperature", "top_p", "top_k", "candidate_count"}
+)
+
+
+class GeminiConfigError(ValueError):
+    """A generation config was built with a parameter Gemini 3.x removed."""
+
+
+def _thinking_config() -> types.ThinkingConfig:
+    """Build the 3.x thinking config from the validated configured level.
+
+    ``thinking_level`` replaced the integer ``thinking_budget`` in 3.x. The
+    level itself is validated at config load
+    (:class:`clinkz.config.Settings`), because ``MINIMAL`` is offered by the
+    SDK enum and rejected by the API on 3.7 Flash — a value that type-checks,
+    imports cleanly, and fails on the wire.
+    """
+    level = str(settings.gemini_thinking_level).strip().upper()
+    if level not in GEMINI_THINKING_LEVELS:
+        raise GeminiConfigError(
+            f"gemini_thinking_level={level!r} is not valid on Gemini 3.x "
+            f"(valid: {', '.join(sorted(GEMINI_THINKING_LEVELS))})."
+        )
+    return types.ThinkingConfig(thinking_level=level)
+
+
+def build_generation_config(**kwargs: Any) -> types.GenerateContentConfig:
+    """Build a 3.x-legal ``GenerateContentConfig``.
+
+    THE one place a generation config is constructed, so the 3.x parameter
+    removals are enforced once instead of at each call site.
+
+    Args:
+        **kwargs: Config fields. ``thinking_config`` is supplied automatically
+            unless the caller passes its own.
+
+    Returns:
+        A config carrying the validated thinking level.
+
+    Raises:
+        GeminiConfigError: A parameter in :data:`_REMOVED_IN_GEMINI_3X` was
+            passed. Refused rather than dropped: silently discarding a
+            ``temperature`` the caller believed was applied would make the
+            request non-reproducible in a way nothing in the artifact records.
+    """
+    removed = sorted(set(kwargs) & _REMOVED_IN_GEMINI_3X)
+    if removed:
+        raise GeminiConfigError(
+            f"{', '.join(removed)} {'was' if len(removed) == 1 else 'were'} removed in "
+            f"Gemini 3.x and cannot be sent to {settings.gemini_model}. Drop the "
+            f"parameter; there is no 3.x equivalent to translate it into."
+        )
+    kwargs.setdefault("thinking_config", _thinking_config())
+    return types.GenerateContentConfig(**kwargs)
 
 
 class _RateLimiter:
@@ -376,16 +479,17 @@ class GeminiClient(LLMClient):
         if tools:
             config_kwargs["tools"] = self._to_gemini_tools(tools)
 
-        config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+        # Always built, even with no caller kwargs: 3.x needs the thinking
+        # level attached, and the previous ``if config_kwargs else None`` sent
+        # a bare request whenever there was no system prompt and no tools.
+        config = build_generation_config(**config_kwargs)
 
         def _make_coro() -> Coroutine[Any, Any, Any]:
-            kwargs: dict[str, Any] = {
-                "model": self._model_name,
-                "contents": contents,
-            }
-            if config is not None:
-                kwargs["config"] = config
-            return self._client.aio.models.generate_content(**kwargs)
+            return self._client.aio.models.generate_content(
+                model=self._model_name,
+                contents=contents,
+                config=config,
+            )
 
         response = await self._call_with_backoff(_make_coro)
         self._track_usage(response)
@@ -430,7 +534,7 @@ class GeminiClient(LLMClient):
             "affected versions, exploit techniques, PoC availability, mitigations, "
             "and any known bug bounty writeups."
         )
-        config = types.GenerateContentConfig(
+        config = build_generation_config(
             tools=[types.Tool(google_search=types.GoogleSearch())],
             system_instruction=system,
         )
@@ -455,16 +559,30 @@ class GeminiClient(LLMClient):
             prompt: A plain string, or segments. Gemini has no explicit
                 cache breakpoint here, so segments are flattened and the
                 request is byte-identical to the string form.
+            budget: Output-ceiling policy. ``DEFAULT`` applies the flat
+                ``settings.llm_max_output_tokens``. ``MAX`` sends **no**
+                ``max_output_tokens`` at all, so the model applies its own
+                maximum — deliberately not the Anthropic client's computed
+                ``min(model ceiling, context - input - margin)``, because that
+                arithmetic needs a per-model limits table and inventing numbers
+                for a provider we do not measure would produce a ceiling that
+                looks derived and is guessed. The provider knows its own limit;
+                asking it is the honest form of "as much as you can".
 
         Returns:
             Generated text content.
         """
         contents = flatten_prompt(prompt)
+        config_kwargs: dict[str, Any] = {}
+        if budget is OutputBudget.DEFAULT:
+            config_kwargs["max_output_tokens"] = int(settings.llm_max_output_tokens)
+        config = build_generation_config(**config_kwargs)
 
         def _make_coro() -> Coroutine[Any, Any, Any]:
             return self._client.aio.models.generate_content(
                 model=self._model_name,
                 contents=contents,
+                config=config,
             )
 
         response = await self._call_with_backoff(_make_coro)

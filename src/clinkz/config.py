@@ -12,23 +12,33 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 load_dotenv()
 
 LLMProvider = Literal["openai", "anthropic", "gemini", "ollama"]
 
+#: The exact Gemini model every Gemini-backed call runs on. A pinned string,
+#: never a floating alias: the alias moves under a fixed configuration and
+#: silently re-baselines every number a run contributes.
+GEMINI_PINNED_MODEL = "gemini-3.7-flash"
+
+#: Thinking levels Gemini 3.x actually accepts. ``MINIMAL`` exists in the SDK's
+#: ``types.ThinkingLevel`` and is rejected by the API on 3.7 Flash, so the SDK
+#: enum cannot be the source of truth here.
+GEMINI_THINKING_LEVELS: frozenset[str] = frozenset({"LOW", "MEDIUM", "HIGH"})
+
 
 class Settings(BaseModel):
     """Validated settings loaded from environment variables."""
 
-    # Top-level LLM provider. Defaults to gemini to reflect the actual runtime:
-    # every per-agent default below is gemini/anthropic and no agent defaults to
-    # openai — openai is retained only as the terminal fallback in the resilient
-    # chains (llm/fallback.py). This is the last-resort provider the Orchestrator's
-    # own reasoning LLM resolves to when neither ORCHESTRATOR_LLM_PROVIDER nor an
+    # Top-level LLM provider. Anthropic, like every other provider default in
+    # this file: routing v2 makes Anthropic priority 1 for EVERY call on EVERY
+    # phase, and a per-agent default pointing anywhere else is how that gets
+    # quietly reversed one field at a time. This is what the Orchestrator's own
+    # reasoning LLM resolves to when neither ORCHESTRATOR_LLM_PROVIDER nor an
     # explicit --provider is set.
-    llm_provider: LLMProvider = Field(default="gemini")
+    llm_provider: LLMProvider = Field(default="anthropic")
 
     # API keys
     openai_api_key: str | None = Field(default=None)
@@ -43,31 +53,88 @@ class Settings(BaseModel):
     orchestrator_model: str = Field(default="gpt-4o")
     agent_model: str = Field(default="gpt-4o-mini")
     anthropic_model: str = Field(default="claude-sonnet-5")
-    # All Gemini-backed agents (Recon / Scan / Report, and Exploit's Gemini
-    # fallback) run on Gemini 3.1 Flash-Lite (GA). Never set this to the
-    # deprecated gemini-3.1-flash-lite-preview (shut down 2026-05-25).
-    gemini_model: str = Field(default="gemini-3.1-flash-lite")
-    gemini_exploit_model: str = Field(default="gemini-3.1-flash-lite")
-    # Research runs on Gemini 3.1 Flash-Lite (GA). Pinned separately from the
-    # shared gemini_model so Recon/Scan/Report are unaffected. Never set this to
-    # the deprecated gemini-3.1-flash-lite-preview (shut down 2026-05-25).
-    gemini_research_model: str = Field(default="gemini-3.1-flash-lite")
+    # Every Gemini-backed call — which, under routing v2, means every call that
+    # fell back — runs on Gemini 3.7 Flash. Pinned to the exact string on
+    # purpose: a floating alias re-baselines every comparison drawn against an
+    # earlier run without anything in the artifact saying so, which is the same
+    # failure the report's model_stamp exists to catch after the fact. Three
+    # fields rather than one because the per-role pins are the seam a deployment
+    # uses to move one role at a time; they simply agree today.
+    gemini_model: str = Field(default=GEMINI_PINNED_MODEL)
+    gemini_exploit_model: str = Field(default=GEMINI_PINNED_MODEL)
+    gemini_research_model: str = Field(default=GEMINI_PINNED_MODEL)
 
-    # Per-agent LLM provider overrides
-    # - Fast, cheap, high-volume calls → gemini (Flash)
-    # - Complex reasoning, fewer calls  → anthropic (Claude)
-    recon_llm_provider: LLMProvider = Field(default="gemini")
-    scan_llm_provider: LLMProvider = Field(default="gemini")
-    report_llm_provider: LLMProvider = Field(default="gemini")
+    # Gemini 3.x replaced the integer thinking_budget with a string enum. The
+    # SDK's ThinkingLevel still OFFERS "MINIMAL" and 3.7 Flash rejects it with
+    # an API validation error, so the SDK enum is not the contract — this is,
+    # and clinkz.llm.gemini_client refuses MINIMAL rather than discovering it
+    # on the first fallback of a live engagement. MEDIUM is the API default.
+    gemini_thinking_level: str = Field(
+        default="MEDIUM", description="Gemini 3.x thinking level: LOW | MEDIUM | HIGH"
+    )
+
+    # Per-agent LLM provider overrides. All Anthropic — see PROVIDER PRIORITY
+    # below. They stay as separate fields because they are the documented seam
+    # for moving ONE role to another provider deliberately; what changed in v2
+    # is that none of them starts anywhere but Anthropic.
+    recon_llm_provider: LLMProvider = Field(default="anthropic")
+    scan_llm_provider: LLMProvider = Field(default="anthropic")
+    report_llm_provider: LLMProvider = Field(default="anthropic")
     exploit_llm_provider: LLMProvider = Field(default="anthropic")
-    # Research moved from anthropic → gemini (Flash-Lite) for live Search
-    # Grounding and to avoid the slow retry-storm it previously hit on the
-    # heavier Gemini Pro model via the AnthropicClient.research() fallback hop.
-    research_llm_provider: LLMProvider = Field(default="gemini")
+    research_llm_provider: LLMProvider = Field(default="anthropic")
 
     # Global default used by the resilient client when no per-agent override
     # matches and the profile chain is exhausted.
-    llm_provider_default: LLMProvider = Field(default="gemini")
+    llm_provider_default: LLMProvider = Field(default="anthropic")
+
+    # ---- PROVIDER PRIORITY (routing v2) ----
+    #
+    # THE declared order every fallback chain is built from, Anthropic first.
+    # Priority is declared HERE and nowhere else; in particular a provider key
+    # discovered in the environment makes that provider *available* and does
+    # NOT give it a position (see clinkz.llm.providers). Auto-enrolling a
+    # discovered key into the chain is how a run gets a surprise model swap:
+    # the operator adds a key for one experiment, and the next engagement's
+    # exploit plan is written by whatever it belonged to.
+    #
+    # Anthropic-first is validated rather than merely written down, because it
+    # is a one-line edit away from being reversed and the reversal is invisible
+    # in every artifact a run produces except the model stamp.
+    llm_provider_priority: tuple[LLMProvider, ...] = Field(
+        default=("anthropic", "gemini", "openai"),
+        description="Provider order every fallback chain is built from; Anthropic pinned first.",
+    )
+
+    @field_validator("llm_provider_priority")
+    @classmethod
+    def _anthropic_is_priority_one(cls, value: tuple[LLMProvider, ...]) -> tuple[LLMProvider, ...]:
+        """Refuse a priority order that does not lead with Anthropic."""
+        if not value:
+            raise ValueError("llm_provider_priority must name at least one provider")
+        if value[0] != "anthropic":
+            raise ValueError(
+                f"llm_provider_priority must lead with 'anthropic' (got {value[0]!r}). "
+                "Routing v2 makes Anthropic priority 1 for every call on every phase; "
+                "every other provider is fallback only, and a fallback is a "
+                "disqualifying event (llm/fallback.py), not a preference."
+            )
+        if len(set(value)) != len(value):
+            raise ValueError(f"llm_provider_priority has a repeated provider: {value}")
+        return value
+
+    @field_validator("gemini_thinking_level")
+    @classmethod
+    def _thinking_level_is_valid_on_3x(cls, value: str) -> str:
+        """Refuse a thinking level Gemini 3.7 Flash rejects at call time."""
+        level = value.strip().upper()
+        if level not in GEMINI_THINKING_LEVELS:
+            raise ValueError(
+                f"gemini_thinking_level={value!r} is not valid on Gemini 3.x. "
+                f"Valid: {', '.join(sorted(GEMINI_THINKING_LEVELS))}. "
+                "MINIMAL is offered by the SDK enum and rejected by the API on "
+                "3.7 Flash, so it is refused here rather than mid-engagement."
+            )
+        return level
 
     # Hard per-call timeout (seconds) for a single LLM request. This is an
     # operation-level safety valve: a single hung generate/messages.create call
@@ -377,10 +444,10 @@ class Settings(BaseModel):
                 or fallback
             )
 
-        global_default = os.getenv("LLM_PROVIDER_DEFAULT") or os.getenv("LLM_PROVIDER", "gemini")
+        global_default = os.getenv("LLM_PROVIDER_DEFAULT") or os.getenv("LLM_PROVIDER", "anthropic")
 
         return cls(
-            llm_provider=os.getenv("LLM_PROVIDER", "gemini"),  # type: ignore[arg-type]
+            llm_provider=os.getenv("LLM_PROVIDER", "anthropic"),  # type: ignore[arg-type]
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
             gemini_api_key=os.getenv("GEMINI_API_KEY"),
@@ -389,14 +456,15 @@ class Settings(BaseModel):
             orchestrator_model=os.getenv("ORCHESTRATOR_MODEL", "gpt-4o"),
             agent_model=os.getenv("AGENT_MODEL", "gpt-4o-mini"),
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
-            gemini_exploit_model=os.getenv("GEMINI_EXPLOIT_MODEL", "gemini-3.1-flash-lite"),
-            gemini_research_model=os.getenv("GEMINI_RESEARCH_MODEL", "gemini-3.1-flash-lite"),
-            recon_llm_provider=_agent_provider("recon", "gemini"),  # type: ignore[arg-type]
-            scan_llm_provider=_agent_provider("scan", "gemini"),  # type: ignore[arg-type]
+            gemini_model=os.getenv("GEMINI_MODEL", GEMINI_PINNED_MODEL),
+            gemini_exploit_model=os.getenv("GEMINI_EXPLOIT_MODEL", GEMINI_PINNED_MODEL),
+            gemini_research_model=os.getenv("GEMINI_RESEARCH_MODEL", GEMINI_PINNED_MODEL),
+            gemini_thinking_level=os.getenv("GEMINI_THINKING_LEVEL", "MEDIUM"),
+            recon_llm_provider=_agent_provider("recon", "anthropic"),  # type: ignore[arg-type]
+            scan_llm_provider=_agent_provider("scan", "anthropic"),  # type: ignore[arg-type]
             exploit_llm_provider=_agent_provider("exploit", "anthropic"),  # type: ignore[arg-type]
-            research_llm_provider=_agent_provider("research", "gemini"),  # type: ignore[arg-type]
-            report_llm_provider=_agent_provider("report", "gemini"),  # type: ignore[arg-type]
+            research_llm_provider=_agent_provider("research", "anthropic"),  # type: ignore[arg-type]
+            report_llm_provider=_agent_provider("report", "anthropic"),  # type: ignore[arg-type]
             llm_provider_default=global_default,  # type: ignore[arg-type]
             llm_request_timeout=float(os.getenv("LLM_REQUEST_TIMEOUT", "120.0")),
             llm_max_output_tokens=int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "16000")),

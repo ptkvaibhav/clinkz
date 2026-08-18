@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from clinkz.config import GEMINI_PINNED_MODEL
 from clinkz.llm import fallback as fallback_mod
 from clinkz.llm.base import (
     AgentAction,
@@ -154,15 +155,16 @@ async def test_fallback_on_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 async def test_fallback_on_503(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_all_keys(monkeypatch)
-    primary = _FakeLLM("gemini", [ServiceUnavailableError("503 Service Unavailable")])
-    secondary = _FakeLLM("anthropic", ["ok-from-anthropic"])
-    _register(monkeypatch, {"gemini": primary, "anthropic": secondary, "openai": secondary})
+    primary = _FakeLLM("anthropic", [ServiceUnavailableError("503 Service Unavailable")])
+    secondary = _FakeLLM("gemini", ["ok-from-gemini"])
+    _register(monkeypatch, {"anthropic": primary, "gemini": secondary, "openai": secondary})
 
-    # 'recon' → fast profile → gemini first, anthropic second
+    # Routing v2: every role leads with Anthropic, so the 503 is Anthropic's
+    # and Gemini is the fallback — the reverse of the pre-v2 arrangement.
     client = ResilientLLMClient(agent_role="recon")
     result = await client.generate_text("hi")
 
-    assert result == "ok-from-anthropic"
+    assert result == "ok-from-gemini"
     assert primary.calls == 1
     assert secondary.calls == 1
 
@@ -241,20 +243,19 @@ async def test_skips_unconfigured_providers(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_agent_role_selects_correct_profile() -> None:
-    # Exploit and research are the decision-bearing roles: reasoning profile,
-    # Anthropic-led, and Gemini removed from the chain outright rather than
-    # merely demoted behind Claude.
-    for role in ("exploit", "research"):
+    """Routing v2: the profile no longer varies who answers first.
+
+    Every role is ``reasoning`` and every chain leads with Anthropic. The
+    profile survives as a trace label and as the seam a future per-role
+    divergence would be written into. Gemini is still IN the chain — v2
+    replaced "the cheap tier may not serve this role" with "if it does, the
+    run says so and is disqualified as a baseline" (see
+    ``tests/test_llm/test_fallback_disqualification.py``).
+    """
+    for role in ("exploit", "research", "recon", "scan", "report"):
         client = ResilientLLMClient(agent_role=role)
         assert client.profile == "reasoning"
         assert client.fallback_chain[0] == "anthropic"
-        assert "gemini" not in client.fallback_chain
-
-    # The observation-producing roles keep the fast (Gemini-led) profile.
-    for role in ("recon", "scan", "report"):
-        client = ResilientLLMClient(agent_role=role)
-        assert client.profile == "fast"
-        assert client.fallback_chain[0] == "gemini"
 
 
 def test_profile_tables_match_chains() -> None:
@@ -318,7 +319,8 @@ def test_research_builds_gemini_client_with_flash_lite_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Research constructs its Gemini client with gemini_research_model
-    (Flash-Lite, GA — never the preview); other roles keep the client default."""
+    (the exact pin, never a preview or a floating alias); other roles keep the
+    client default."""
     _set_all_keys(monkeypatch)
     captured: list[tuple[str | None, str | None]] = []
 
@@ -336,8 +338,9 @@ def test_research_builds_gemini_client_with_flash_lite_model(
     research = ResilientLLMClient(agent_role="research")
     research._get_or_create_client("gemini")
     assert captured[-1][0] == "gemini"
-    assert captured[-1][1] == "gemini-3.1-flash-lite"
+    assert captured[-1][1] == GEMINI_PINNED_MODEL
     assert "preview" not in (captured[-1][1] or "")
+    assert not (captured[-1][1] or "").endswith("-latest"), "pin the exact string"
 
     # Scan (also Gemini-led) must NOT get a model override — keeps gemini_model.
     scan = ResilientLLMClient(agent_role="scan")
