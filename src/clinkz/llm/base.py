@@ -7,6 +7,7 @@ only ever interacts with LLMClient — never with provider SDKs directly.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
@@ -60,6 +61,38 @@ class LLMUnavailableError(LLMError):
     """Every provider in the fallback chain failed."""
 
 
+class ProviderPolicyError(BaseException):
+    """A decision-bearing role was about to be served by a forbidden provider.
+
+    **Inherits BaseException, not Exception, and that is the whole mechanism.**
+
+    Every LLM call site in the agents is already wrapped in a broad
+    ``except Exception`` that degrades gracefully — the exploit planner falls
+    back to its deterministic plan, the research agent skips a technique, the
+    methodology checkpoint returns ``""``. Those handlers are correct for what
+    they were written for: a provider quirk should not end an engagement. They
+    are exactly wrong for this, because "degrade gracefully" is how the run
+    continues with the wrong model's answer in it — which is the outcome this
+    class exists to prevent.
+
+    Fixing that by re-raising at each of the eight current call sites would
+    work today and rot immediately: the ninth call site would re-derive only
+    the obvious half. So the refusal is made structurally uncatchable instead,
+    the way ``KeyboardInterrupt`` is — a stop, not an error to handle. There is
+    no next provider to try and no partial result worth keeping: a plan or a
+    suppression verdict written by the wrong model invalidates the run it
+    appears in.
+
+    The last instance was found by reading traces after the fact — Gemini had
+    served 6 exploit plans and 6 false-positive cross-checks across 9
+    engagements, and every one of those reports looked exactly like a report
+    that had not happened to it. This raises instead.
+
+    It is deliberately NOT an :class:`LLMError`: the fallback chain rotates on
+    those, and rotating is the behaviour being refused.
+    """
+
+
 class EmptyResponseError(LLMError):
     """The provider answered, but the answer carried no usable text.
 
@@ -100,6 +133,29 @@ class CallStats(BaseModel):
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
     stop_reason: str | None = None
+    #: The ``max_tokens`` this request actually carried. Recorded because
+    #: ``output_tokens`` alone cannot say whether a call finished or was cut
+    #: off: 16000 is a complete answer under a 64000 ceiling and a truncation
+    #: under a 16000 one. The last cliff was found by reading a traceback,
+    #: which is one engagement too late.
+    max_output_tokens: int = 0
+
+    @property
+    def output_headroom(self) -> int:
+        """Tokens left unspent under the ceiling this call carried.
+
+        Negative is impossible; zero means the ceiling bound the answer.
+        """
+        if self.max_output_tokens <= 0:
+            return 0
+        return max(0, self.max_output_tokens - self.output_tokens)
+
+    @property
+    def output_utilisation(self) -> float:
+        """Fraction of the requested ceiling the answer actually consumed."""
+        if self.max_output_tokens <= 0:
+            return 0.0
+        return self.output_tokens / self.max_output_tokens
 
     @property
     def billed_prompt_tokens(self) -> int:
@@ -236,6 +292,30 @@ class PromptSegments(BaseModel):
         return "\n\n".join(part for part in (self.invariant, self.stable, self.volatile) if part)
 
 
+class OutputBudget(StrEnum):
+    """How a call wants its ``max_tokens`` ceiling chosen.
+
+    A *policy*, never a number: only the client that is about to serve the call
+    knows which model will run it, and the ceiling is a function of that model's
+    output cap and context window. An agent naming a token count would be
+    guessing on behalf of a provider it is not allowed to import.
+
+    * ``DEFAULT`` — ``settings.llm_max_output_tokens``, the flat ceiling every
+      call has always carried. Non-streaming-safe by construction.
+    * ``MAX`` — computed per call as
+      ``min(model output ceiling, context limit - measured input - margin)``.
+      For the one call whose answer scales with the discovered attack surface.
+
+    Why ``MAX`` is not simply the default. It costs a ``count_tokens``
+    round-trip to measure the input, and it produces a ceiling large enough to
+    require streaming. Both are right for a once-per-engagement planning call
+    and wrong for the ~5,000 short checkpoint calls a run also makes.
+    """
+
+    DEFAULT = "default"
+    MAX = "max"
+
+
 #: What ``generate_text`` accepts. A bare ``str`` is the unchanged path: no
 #: breakpoint, no system block, byte-identical request to what shipped before.
 PromptLike = str | PromptSegments
@@ -329,7 +409,9 @@ class LLMClient(ABC):
         ...
 
     @abstractmethod
-    async def generate_text(self, prompt: PromptLike) -> str:
+    async def generate_text(
+        self, prompt: PromptLike, *, budget: OutputBudget = OutputBudget.DEFAULT
+    ) -> str:
         """Generate free-form text from a prompt without tool calling.
 
         Args:
@@ -337,6 +419,9 @@ class LLMClient(ABC):
                 which leading bytes repeat across the calls of one engagement.
                 A client that cannot exploit the split flattens it and behaves
                 exactly as it did for the string form.
+            budget: Which ceiling policy to apply (:class:`OutputBudget`). A
+                client with a single fixed ceiling may ignore it; the default
+                is the behaviour every call had before the policy existed.
 
         Returns:
             Generated text. Never the empty string — a response carrying no

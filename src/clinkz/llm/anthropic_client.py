@@ -25,6 +25,7 @@ from clinkz.llm.base import (
     EmptyResponseError,
     LLMClient,
     LLMMessage,
+    OutputBudget,
     PromptLike,
     ProviderAccountError,
     RateLimitError,
@@ -80,6 +81,73 @@ def cache_min_prefix_tokens(model: str) -> int:
     return _CACHE_MIN_PREFIX_TOKENS_DEFAULT
 
 
+# ---------------------------------------------------------------------------
+# Output ceiling — computed per call, never a constant
+# ---------------------------------------------------------------------------
+
+#: ``(context window, max output tokens)`` per model family, longest prefix
+#: first. Both halves are needed because the ceiling is the *smaller* of what
+#: the model can emit and what is left of the window after the prompt.
+#:
+#: A constant ceiling is the defect this table exists to remove. 16000 was
+#: chosen when the planning prompt was small; the prompt now scales with the
+#: discovered attack surface, and a number that clears DVWA says nothing about
+#: a target with ten times the endpoints.
+_MODEL_LIMITS: tuple[tuple[str, int, int], ...] = (
+    ("claude-haiku-4-5", 200_000, 64_000),
+    ("claude-sonnet-4-6", 1_000_000, 128_000),
+    ("claude-sonnet-5", 1_000_000, 128_000),
+    ("claude-opus-4-6", 1_000_000, 128_000),
+    ("claude-opus-4-7", 1_000_000, 128_000),
+    ("claude-opus-4-8", 1_000_000, 128_000),
+    ("claude-opus-5", 1_000_000, 128_000),
+    ("claude-fable-5", 1_000_000, 128_000),
+    ("claude-mythos-5", 1_000_000, 128_000),
+)
+
+#: Limits for a model this table has never heard of. Deliberately the smallest
+#: generation still in service: under-reading a window costs a few thousand
+#: tokens of headroom, over-reading one costs the call.
+_MODEL_LIMITS_DEFAULT: tuple[int, int] = (200_000, 16_000)
+
+
+def model_limits(model: str) -> tuple[int, int]:
+    """Return ``(context_limit, output_ceiling)`` for *model*."""
+    for prefix, context, output in _MODEL_LIMITS:
+        if model.startswith(prefix):
+            return context, output
+    return _MODEL_LIMITS_DEFAULT
+
+
+def resolve_max_output_tokens(model: str, measured_input_tokens: int) -> int:
+    """Compute this call's ``max_tokens`` from the model and the actual prompt.
+
+    ``min(model output ceiling, context limit - measured input - margin)``.
+
+    The second term is the one that makes this a computation rather than a
+    lookup: a prompt is charged against the same window the answer is written
+    into, so a ceiling that ignores the prompt is a ceiling that works until the
+    prompt grows. On every model currently in service the first term binds —
+    the input would have to reach ~9x the largest planning prompt on record
+    before the window did — which is the answer we want and not one to hardcode,
+    because it stops being true the moment a bigger target or a smaller model
+    turns up.
+
+    Args:
+        model: The model that will serve the call.
+        measured_input_tokens: Prompt size, measured (``count_tokens``) rather
+            than assumed. A conservative over-estimate is safe; an
+            under-estimate eats the margin.
+
+    Returns:
+        The ``max_tokens`` to send, never below 1.
+    """
+    context_limit, output_ceiling = model_limits(model)
+    margin = max(0, int(settings.llm_context_margin_tokens))
+    room_in_window = context_limit - max(0, measured_input_tokens) - margin
+    return max(1, min(output_ceiling, room_in_window))
+
+
 #: Conservative output rate, in tokens/second, used ONLY to derive a timeout
 #: floor. Deliberately pessimistic: a thinking-capable model spends part of the
 #: allowance reasoning, and the cost of guessing low is a timeout on a request
@@ -91,8 +159,15 @@ _MIN_OUTPUT_TOKENS_PER_SECOND: float = 30.0
 #: anyway — deriving something longer would be a number no request can reach.
 _MAX_DERIVED_TIMEOUT_SECONDS: float = 600.0
 
+#: Ceiling on the derived floor for a STREAMED request. The ten-minute bound
+#: above is the SDK's non-streaming default and does not apply once the response
+#: arrives incrementally; a 128000-token ceiling at the pessimistic 30 tok/s
+#: floor needs more than ten minutes, and capping it there would hand back the
+#: headroom streaming was enabled to obtain.
+_MAX_STREAMING_TIMEOUT_SECONDS: float = 3600.0
 
-def request_timeout_for(max_output_tokens: int) -> float:
+
+def request_timeout_for(max_output_tokens: int, *, streaming: bool = False) -> float:
     """Per-call timeout, never shorter than the configured output ceiling needs.
 
     ``llm_request_timeout`` and ``llm_max_output_tokens`` are separate settings
@@ -109,6 +184,10 @@ def request_timeout_for(max_output_tokens: int) -> float:
 
     Args:
         max_output_tokens: The ``max_tokens`` this request actually carries.
+        streaming: Whether the request is streamed. A streamed response is not
+            bound by the SDK's ten-minute non-streaming ceiling, so the derived
+            floor is allowed past it — otherwise raising the cap would buy room
+            the timeout immediately takes back.
 
     Returns:
         The timeout, in seconds, to bound this call with.
@@ -116,15 +195,17 @@ def request_timeout_for(max_output_tokens: int) -> float:
     configured = float(settings.llm_request_timeout)
     if max_output_tokens <= 0:
         return configured
-    needed = min(max_output_tokens / _MIN_OUTPUT_TOKENS_PER_SECOND, _MAX_DERIVED_TIMEOUT_SECONDS)
+    cap = _MAX_STREAMING_TIMEOUT_SECONDS if streaming else _MAX_DERIVED_TIMEOUT_SECONDS
+    needed = min(max_output_tokens / _MIN_OUTPUT_TOKENS_PER_SECOND, cap)
     if needed <= configured:
         return configured
     logger.info(
         "Raising per-call timeout %.0fs -> %.0fs: max_tokens=%d cannot complete in the "
-        "configured window (non-streaming, ~%.0f tok/s floor)",
+        "configured window (%s, ~%.0f tok/s floor)",
         configured,
         needed,
         max_output_tokens,
+        "streaming" if streaming else "non-streaming",
         _MIN_OUTPUT_TOKENS_PER_SECOND,
     )
     return needed
@@ -348,9 +429,13 @@ class AnthropicClient(LLMClient):
                 # Hard per-call ceiling so a single hung request cannot stall the
                 # engagement (the exploit phase no longer has a wall-clock
                 # deadline; op-level timeouts are the safety valve).
+                requested = int(kwargs.get("max_tokens") or 0)
+                streaming = requested > int(settings.llm_stream_above_output_tokens)
                 return await asyncio.wait_for(
-                    self._client.messages.create(**kwargs),
-                    timeout=request_timeout_for(int(kwargs.get("max_tokens") or 0)),
+                    self._stream_message(**kwargs)
+                    if streaming
+                    else self._client.messages.create(**kwargs),
+                    timeout=request_timeout_for(requested, streaming=streaming),
                 )
             except Exception as exc:
                 last_exc = exc
@@ -378,7 +463,107 @@ class AnthropicClient(LLMClient):
 
         raise RateLimitError(f"Anthropic exhausted retries: {last_exc}")  # pragma: no cover
 
-    def _track_usage(self, response: Any) -> CallStats:
+    async def _stream_message(self, **kwargs: Any) -> Any:
+        """Serve one request over the streaming API, returning the final Message.
+
+        Streaming is not a latency preference here — it is what makes a large
+        ``max_tokens`` legal at all. The SDK refuses a non-streaming request it
+        estimates will exceed ten minutes, and the estimate scales with
+        ``max_tokens``, so raising the cap on the non-streaming path converts
+        requests that were working into requests that are refused. The final
+        message carries the same ``content``/``usage``/``stop_reason`` shape as
+        ``messages.create``, so every reader downstream is unchanged.
+        """
+        async with self._client.messages.stream(**kwargs) as stream:
+            return await stream.get_final_message()
+
+    async def _measure_input_tokens(self, **kwargs: Any) -> tuple[int, str]:
+        """Measure the prompt this request will send, before sending it.
+
+        Returns ``(tokens, source)`` — ``source`` is ``"count_tokens"`` for the
+        API's own count and ``"estimate"`` when that call could not be made.
+        The source rides along because the two are not interchangeable: an
+        estimate is what the margin exists to cover, and a run that silently
+        fell back to one should be able to say so.
+        """
+        payload = {k: v for k, v in kwargs.items() if k in ("model", "messages", "system")}
+        try:
+            counted = await self._client.messages.count_tokens(**payload)
+            return int(getattr(counted, "input_tokens", 0) or 0), "count_tokens"
+        except Exception as exc:
+            chars = sum(len(str(part)) for part in payload.values())
+            estimate = chars // _CHARS_PER_TOKEN
+            logger.warning(
+                "count_tokens unavailable (%s) — sizing the ceiling from a %d-char "
+                "estimate (~%d tokens); the context margin covers the difference",
+                type(exc).__name__,
+                chars,
+                estimate,
+            )
+            return estimate, "estimate"
+
+    def _apply_output_budget(self, kwargs: dict[str, Any], measured_input: int, source: str) -> int:
+        """Set this request's ``max_tokens`` from the model and the real prompt."""
+        ceiling = resolve_max_output_tokens(self._model, measured_input)
+        kwargs["max_tokens"] = ceiling
+        context_limit, output_ceiling = model_limits(self._model)
+        logger.info(
+            "Output budget for %s: max_tokens=%d = min(model %d, context %d - input %d "
+            "(%s) - margin %d); streamed=%s",
+            self._model,
+            ceiling,
+            output_ceiling,
+            context_limit,
+            measured_input,
+            source,
+            settings.llm_context_margin_tokens,
+            ceiling > int(settings.llm_stream_above_output_tokens),
+        )
+        return ceiling
+
+    @staticmethod
+    def _report_output_headroom(stats: CallStats) -> None:
+        """Say how close the answer came to its ceiling, while there is still room.
+
+        The previous cliff was discovered by reading a traceback from a run that
+        had already finished. Headroom is a number the run can watch: at or
+        above the alarm ratio it is a near miss and says so, and exhaustion is
+        reported as the truncation it is rather than as a completed answer.
+        """
+        if stats.max_output_tokens <= 0:
+            return
+        if stats.stop_reason == "max_tokens":
+            logger.error(
+                "OUTPUT BUDGET EXHAUSTED: %s produced %d tokens against a ceiling of %d and "
+                "was CUT OFF (stop_reason=max_tokens). The answer is truncated, not complete.",
+                stats.model,
+                stats.output_tokens,
+                stats.max_output_tokens,
+            )
+            return
+        ratio = float(settings.llm_output_headroom_alarm_ratio)
+        if stats.output_utilisation >= ratio:
+            logger.warning(
+                "OUTPUT BUDGET NEAR MISS: %s produced %d tokens against a ceiling of %d "
+                "(%.0f%% of budget, %d left). Raise the ceiling or shrink the ask before "
+                "this becomes a truncation.",
+                stats.model,
+                stats.output_tokens,
+                stats.max_output_tokens,
+                100 * stats.output_utilisation,
+                stats.output_headroom,
+            )
+        else:
+            logger.info(
+                "Output headroom: %s used %d/%d tokens (%.0f%%), %d left",
+                stats.model,
+                stats.output_tokens,
+                stats.max_output_tokens,
+                100 * stats.output_utilisation,
+                stats.output_headroom,
+            )
+
+    def _track_usage(self, response: Any, *, requested_max_tokens: int = 0) -> CallStats:
         """Accumulate token counts and publish stats for the call just served.
 
         ``input_tokens`` from the API is the **uncached remainder only**, so it
@@ -386,7 +571,9 @@ class AnthropicClient(LLMClient):
         folded in — the sum is the real prompt size, and conflating them would
         make a working cache look like a shrinking prompt.
         """
-        stats = CallStats(provider="anthropic", model=self._model)
+        stats = CallStats(
+            provider="anthropic", model=self._model, max_output_tokens=requested_max_tokens
+        )
         usage = getattr(response, "usage", None)
         if usage is not None:
             stats.input_tokens = getattr(usage, "input_tokens", 0) or 0
@@ -527,7 +714,8 @@ class AnthropicClient(LLMClient):
             kwargs["tools"] = self._to_anthropic_tools(tools)
 
         response = await self._call_with_backoff(**kwargs)
-        stats = self._track_usage(response)
+        stats = self._track_usage(response, requested_max_tokens=int(kwargs["max_tokens"]))
+        self._report_output_headroom(stats)
 
         # Extract thought text and tool_use from content blocks
         thought = ""
@@ -560,10 +748,27 @@ class AnthropicClient(LLMClient):
     async def research(self, query: str) -> str:
         """Research a security topic using Claude's knowledge.
 
-        Since Anthropic's API doesn't have built-in web search grounding,
-        this uses Claude's training knowledge for research. For live web
-        search data, attempts to fall back to Gemini's search grounding
-        when a Gemini API key is available.
+        Anthropic's API has no built-in search grounding on this path, so the
+        answer comes from Claude's training knowledge. The live-data half of a
+        research step is the NVD lookup in
+        :mod:`clinkz.research.runtime_research`, which is a structured feed and
+        not an LLM call at all — it is unaffected by which model answers here.
+
+        **This method used to hop to Gemini** when a Gemini key was present:
+        it imported ``GeminiClient`` directly and returned its answer. That
+        routed around the fallback chain completely — a research call the
+        resilient client had resolved to Anthropic was served by Gemini anyway,
+        and no chain restriction could have seen it, because the substitution
+        happened one layer below the layer that picks providers. A provider
+        client reaching for another provider is not a fallback; it is a hole in
+        the abstraction that made "research runs on Claude" unverifiable from
+        the routing layer.
+
+        The capability that went with it is real and is stated rather than
+        absorbed: research answers here are no longer grounded in live web
+        results. The replacement, if the grounding is wanted back, is Claude's
+        own ``web_search`` server tool on this client — grounding without a
+        second provider — not the reinstatement of a cross-provider call.
 
         Args:
             query: Security-focused research question.
@@ -571,18 +776,6 @@ class AnthropicClient(LLMClient):
         Returns:
             Research findings as a plain string.
         """
-        # Try Gemini search grounding first for live data
-        gemini_key = settings.gemini_api_key or settings.google_api_key
-        if gemini_key:
-            try:
-                from clinkz.llm.gemini_client import GeminiClient
-
-                gemini = GeminiClient()
-                return await gemini.research(query)
-            except Exception as exc:
-                logger.debug("Gemini search fallback failed, using Claude: %s", exc)
-
-        # Fall back to Claude's training knowledge
         prompt = (
             "You are an expert penetration tester and vulnerability researcher. "
             "Provide detailed, actionable information on the following topic. "
@@ -593,12 +786,18 @@ class AnthropicClient(LLMClient):
         )
         return await self.generate_text(prompt)
 
-    async def generate_text(self, prompt: PromptLike) -> str:
+    async def generate_text(
+        self, prompt: PromptLike, *, budget: OutputBudget = OutputBudget.DEFAULT
+    ) -> str:
         """Generate free-form text from a prompt without tool calling.
 
         Args:
             prompt: A plain string, or :class:`PromptSegments` whose ``stable``
                 half is sent as a cache-marked system block.
+            budget: ``DEFAULT`` keeps the flat configured ceiling — the path
+                every call has always taken. ``MAX`` measures the prompt and
+                computes the ceiling from it, and is for the calls whose answer
+                scales with the target rather than with the question.
 
         Returns:
             Generated text content, never empty.
@@ -626,8 +825,13 @@ class AnthropicClient(LLMClient):
             if system_blocks is not None:
                 kwargs["system"] = system_blocks
 
+        if budget is OutputBudget.MAX:
+            measured, source = await self._measure_input_tokens(**kwargs)
+            self._apply_output_budget(kwargs, measured, source)
+
         response = await self._call_with_backoff(**kwargs)
-        stats = self._track_usage(response)
+        stats = self._track_usage(response, requested_max_tokens=int(kwargs["max_tokens"]))
+        self._report_output_headroom(stats)
 
         text = self._text_from(response)
         if not text.strip():

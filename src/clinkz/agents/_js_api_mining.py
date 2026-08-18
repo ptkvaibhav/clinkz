@@ -99,11 +99,6 @@ _TEMPLATE_RE = re.compile(r"`((?:\\.|[^\\`])*)`")
 _IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*")
 _TEMPLATE_HOLE_RE = re.compile(r"\$\{([^{}]{0,120})\}")
 
-# Object-literal key: ``key:`` / ``"key":`` / ``'key':``.
-_OBJECT_KEY_RE = re.compile(
-    r"""(?:^|[,{])\s*(?:["']([^"']{1,64})["']|([A-Za-z_$][\w$]{0,63}))\s*:"""
-)
-
 # ``ident.prop`` member access, used to recover a body shape from a parameter.
 _MEMBER_ACCESS_TEMPLATE = r"(?<![\w$.]){ident}\s*\.\s*([A-Za-z_$][\w$]{{0,63}})"
 

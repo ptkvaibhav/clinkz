@@ -19,6 +19,7 @@ from clinkz.llm.base import (
     AgentAction,
     LLMClient,
     LLMMessage,
+    OutputBudget,
     PromptLike,
     RateLimitError,
     ServiceUnavailableError,
@@ -191,7 +192,9 @@ class OpenAIClient(LLMClient):
         )
         return await self.generate_text(prompt)
 
-    async def generate_text(self, prompt: PromptLike) -> str:
+    async def generate_text(
+        self, prompt: PromptLike, *, budget: OutputBudget = OutputBudget.DEFAULT
+    ) -> str:
         """Generate text from a plain prompt without tool calling.
 
         Args:

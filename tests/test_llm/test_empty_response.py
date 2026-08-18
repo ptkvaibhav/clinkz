@@ -31,6 +31,9 @@ _SETTINGS = SimpleNamespace(
     llm_max_output_tokens=16000,
     llm_prompt_cache_enabled=True,
     llm_prompt_cache_ttl="5m",
+    llm_context_margin_tokens=8000,
+    llm_stream_above_output_tokens=16000,
+    llm_output_headroom_alarm_ratio=0.8,
 )
 
 
@@ -188,7 +191,7 @@ class TestFallbackChainTreatsEmptyAsRetriable:
             async def research(self, query: str) -> str:
                 raise AssertionError("not used")
 
-            async def generate_text(self, prompt: Any) -> str:
+            async def generate_text(self, prompt: Any, **_kw: object) -> str:
                 raise EmptyResponseError("no text block", stop_reason="max_tokens")
 
         class _Works(LLMClient):
@@ -198,7 +201,7 @@ class TestFallbackChainTreatsEmptyAsRetriable:
             async def research(self, query: str) -> str:
                 raise AssertionError("not used")
 
-            async def generate_text(self, prompt: Any) -> str:
+            async def generate_text(self, prompt: Any, **_kw: object) -> str:
                 return '{"tasks": [{"test_method": "_test_sqli"}]}'
 
         built = {"anthropic": _Truncated(), "gemini": _Works()}
@@ -208,8 +211,13 @@ class TestFallbackChainTreatsEmptyAsRetriable:
         for var in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"):
             monkeypatch.setenv(var, "k")
 
-        client = fallback_mod.ResilientLLMClient("exploit", override_chain=["anthropic", "gemini"])
-        result = await client.generate_text("plan the exploit phase")
+        # Demonstrated on RECON. The rotation semantics under test are
+        # role-independent, but the role is not: "exploit" may no longer reach
+        # Gemini by any route (see TestDecisionBearingRolesNeverRotateToGemini
+        # below), so asserting the rotation there would be asserting a path the
+        # engine now refuses.
+        client = fallback_mod.ResilientLLMClient("recon", override_chain=["anthropic", "gemini"])
+        result = await client.generate_text("analyse these ports")
 
         assert result == '{"tasks": [{"test_method": "_test_sqli"}]}'
         assert client._last_used_provider == "gemini"

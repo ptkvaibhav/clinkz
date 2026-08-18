@@ -17,9 +17,8 @@ from clinkz.llm.base import LLMClient
 
 logger = logging.getLogger(__name__)
 
-# Public APIs used for CVE lookups (no auth required)
+# Public API used for CVE lookups (no auth required)
 NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-CIRCL_API_URL = "https://cve.circl.lu/api/search"
 
 
 class RuntimeResearcher:
@@ -65,21 +64,6 @@ class RuntimeResearcher:
         summary = await self.llm.research(prompt)
         return summary
 
-    async def research_cve(self, cve_id: str) -> str:
-        """Fetch details for a specific CVE.
-
-        Args:
-            cve_id: CVE identifier (e.g., "CVE-2024-12345").
-
-        Returns:
-            CVE details including description, CVSS score, and exploit info.
-        """
-        logger.info("Looking up CVE: %s", cve_id)
-        cve_data = await self._fetch_nvd_cve_by_id(cve_id)
-        return await self.llm.research(
-            f"Provide a detailed exploit guide for {cve_id}.\n\nCVE data: {cve_data}"
-        )
-
     # ------------------------------------------------------------------
     # NVD API helpers
     # ------------------------------------------------------------------
@@ -109,28 +93,4 @@ class RuntimeResearcher:
                     logger.warning("NVD API returned %d", resp.status)
         except Exception as exc:
             logger.warning("NVD API request failed: %s", exc)
-        return ""
-
-    async def _fetch_nvd_cve_by_id(self, cve_id: str) -> str:
-        """Fetch a single CVE by ID from NVD.
-
-        Args:
-            cve_id: Full CVE identifier.
-
-        Returns:
-            CVE JSON string, or empty string on error.
-        """
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    NVD_API_URL,
-                    params={"cveId": cve_id},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        vulns = data.get("vulnerabilities", [])
-                        return str(vulns[0]) if vulns else ""
-        except Exception as exc:
-            logger.warning("NVD CVE lookup failed for %s: %s", cve_id, exc)
         return ""

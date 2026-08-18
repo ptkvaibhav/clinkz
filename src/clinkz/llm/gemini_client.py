@@ -27,6 +27,7 @@ from clinkz.llm.base import (
     LLMClient,
     LLMMessage,
     LLMTimeoutError,
+    OutputBudget,
     PromptLike,
     RateLimitError,
     ServiceUnavailableError,
@@ -36,7 +37,6 @@ from clinkz.llm.base import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_CALLS_PER_MINUTE: int = 30
 _RATE_LIMIT_PERIOD: float = 60.0
 _REQUEST_TIMEOUT: float = 120.0  # Hard timeout for every Gemini API call
 
@@ -446,7 +446,9 @@ class GeminiClient(LLMClient):
         self._track_usage(response)
         return response.text
 
-    async def generate_text(self, prompt: PromptLike) -> str:
+    async def generate_text(
+        self, prompt: PromptLike, *, budget: OutputBudget = OutputBudget.DEFAULT
+    ) -> str:
         """Generate free-form text from a prompt without tool calling.
 
         Args:

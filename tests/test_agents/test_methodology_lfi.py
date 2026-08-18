@@ -59,7 +59,7 @@ class _ScriptedLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         self.prompts.append(prompt)
         if not self.answers:
             return ""
@@ -947,7 +947,7 @@ class _LFILiveLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         self.prompts.append(prompt)
         if "Synthesize a local-file-inclusion payload" in prompt:
             return self._synth

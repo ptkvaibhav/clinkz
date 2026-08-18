@@ -70,7 +70,7 @@ class _MockLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return "Mock LLM response based on available data."
 
 
@@ -432,10 +432,16 @@ def test_build_agent_llms() -> None:
         assert isinstance(agent_llms[role], ResilientLLMClient)
         assert agent_llms[role].agent_role == role
 
-    # Exploit leads with Claude (reasoning); fast-profile agents lead with Gemini.
-    # Research moved to Gemini Flash-Lite, so it now leads with Gemini too.
-    assert agent_llms["exploit"].fallback_chain[0] == "anthropic"
-    assert agent_llms["research"].fallback_chain[0] == "gemini"
+    # The decision-bearing roles are Claude-only — not merely Claude-led. What
+    # they emit becomes the engagement's conclusions (which classes get tested,
+    # which findings survive the cross-check), so Gemini is absent from the
+    # chain rather than sitting behind Claude where a 429 would reach it.
+    for role in ("exploit", "research"):
+        assert agent_llms[role].fallback_chain[0] == "anthropic"
+        assert "gemini" not in agent_llms[role].fallback_chain
+
+    # The observation-producing roles still lead with Gemini: what they produce
+    # is re-derived from the live target by an oracle downstream.
     assert agent_llms["recon"].fallback_chain[0] == "gemini"
     assert agent_llms["scan"].fallback_chain[0] == "gemini"
     assert agent_llms["report"].fallback_chain[0] == "gemini"

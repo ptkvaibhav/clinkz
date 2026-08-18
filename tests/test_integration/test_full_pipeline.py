@@ -99,7 +99,7 @@ class _SequenceLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return ""
 
 
@@ -148,7 +148,7 @@ class _ReconSequenceLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return ""
 
 
@@ -189,7 +189,7 @@ class _ScanSequenceLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return ""
 
 
@@ -265,7 +265,7 @@ class _ExploitSequenceLLM(LLMClient):
             "Recommend OWASP Top 10 testing on web application."
         )
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return ""
 
 
@@ -325,7 +325,7 @@ class _ReportLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         try:
             return next(self._responses)
         except StopIteration:
@@ -749,7 +749,7 @@ async def test_complete_pentest_pipeline(tmp_path: Path) -> None:
         async def research(self, query: str) -> str:
             return ""
 
-        async def generate_text(self, prompt: str) -> str:
+        async def generate_text(self, prompt: str, **_kw: object) -> str:
             return "Response based on available engagement data."
 
     orchestrator = OrchestratorAgent(

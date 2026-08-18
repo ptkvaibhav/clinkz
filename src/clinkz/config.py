@@ -90,6 +90,35 @@ class Settings(BaseModel):
         default=16000, description="max_tokens for a single LLM call (covers thinking + text)"
     )
 
+    # Reserved when a call computes its own ceiling (OutputBudget.MAX):
+    #   max_tokens = min(model output ceiling, context - measured input - margin)
+    # The margin absorbs what count_tokens cannot see — the system-block framing
+    # the client adds, and the drift between measuring the prompt and sending
+    # it. 8000 is ~65% of the largest planning prompt on record, so it is slack
+    # rather than a rounding allowance; the term does not bind on any model
+    # currently in service and exists so that it will when one does.
+    llm_context_margin_tokens: int = Field(
+        default=8000, description="Tokens held back from the context window when sizing max_tokens"
+    )
+
+    # Above this ceiling a request is STREAMED. Not a preference: the SDK
+    # refuses a non-streaming request it estimates will exceed ten minutes, and
+    # raising max_tokens is what triggers that estimate — so a raised cap
+    # without streaming converts working requests into refused ones. 16000 is
+    # the documented non-streaming-safe value and the ceiling every call
+    # carried before ceilings were computed, which keeps every existing call on
+    # the existing path.
+    llm_stream_above_output_tokens: int = Field(
+        default=16000, description="Stream any request whose max_tokens exceeds this"
+    )
+
+    # Fraction of a computed ceiling that counts as a near miss. The last cliff
+    # was found by reading a traceback after the fact; at 0.8 the run says so
+    # while there is still headroom, and the number is in the trace either way.
+    llm_output_headroom_alarm_ratio: float = Field(
+        default=0.8, description="Warn when an answer consumes this fraction of its ceiling"
+    )
+
     # Prompt caching. OFF by default, because the measurement says so.
     #
     # Applies only where a caller supplied an INVARIANT prefix
@@ -371,6 +400,13 @@ class Settings(BaseModel):
             llm_provider_default=global_default,  # type: ignore[arg-type]
             llm_request_timeout=float(os.getenv("LLM_REQUEST_TIMEOUT", "120.0")),
             llm_max_output_tokens=int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "16000")),
+            llm_context_margin_tokens=int(os.getenv("LLM_CONTEXT_MARGIN_TOKENS", "8000")),
+            llm_stream_above_output_tokens=int(
+                os.getenv("LLM_STREAM_ABOVE_OUTPUT_TOKENS", "16000")
+            ),
+            llm_output_headroom_alarm_ratio=float(
+                os.getenv("LLM_OUTPUT_HEADROOM_ALARM_RATIO", "0.8")
+            ),
             llm_prompt_cache_enabled=os.getenv("LLM_PROMPT_CACHE_ENABLED", "false").lower()
             in ("1", "true", "yes"),
             llm_prompt_cache_ttl=os.getenv("LLM_PROMPT_CACHE_TTL", "5m"),

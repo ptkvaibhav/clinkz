@@ -36,8 +36,10 @@ from clinkz.llm.base import (
     LLMTimeoutError,
     LLMUnavailableError,
     LLMUsageTotals,
+    OutputBudget,
     PromptLike,
     ProviderAccountError,
+    ProviderPolicyError,
     RateLimitError,
     ServiceUnavailableError,
     flatten_prompt,
@@ -63,10 +65,35 @@ logger = logging.getLogger(__name__)
 #: still a stub, so putting it in a production chain guarantees terminal
 #: failure. Add it back once the Ollama client is fully implemented.
 LLM_FALLBACK_CHAINS: dict[str, list[str]] = {
-    "reasoning": ["anthropic", "gemini", "openai"],
+    "reasoning": ["anthropic", "openai"],
     "reasoning_pinned": ["anthropic"],
     "fast": ["gemini", "anthropic", "openai"],
 }
+
+#: Roles whose output DECIDES something, and which therefore may not be served
+#: by the cheap tier — not as a primary, and not as a fallback either.
+#:
+#: The distinction is not "important agent" but *what the answer becomes*:
+#:
+#: * **exploit** — the plan decides which classes are tested against which
+#:   endpoints, and the false-positive cross-check decides which findings
+#:   survive to the report. Both are the engagement's conclusions.
+#: * **research** — the runbook is folded into the exploit plan and persists to
+#:   the cross-engagement knowledge base, so a bad answer outlives the run.
+#:
+#: Recon and scan are deliberately NOT here. They produce observations that a
+#: later oracle re-derives from the live target, so a weaker model there costs
+#: recall and cannot manufacture a conclusion.
+#:
+#: The chain was already ``["anthropic", "gemini", "openai"]`` for exploit and
+#: Gemini-led for research, and both fired: across 164 recorded traces Gemini
+#: served the exploit stage 12 times in 9 engagements — 6 exploit PLANS and 6
+#: FP cross-checks. The cross-check is the suppression path, so the cheap tier
+#: has already been the thing deciding which confirmed findings were demoted.
+CLAUDE_ONLY_ROLES: frozenset[str] = frozenset({"exploit", "research"})
+
+#: Providers that may serve a :data:`CLAUDE_ONLY_ROLES` call.
+CLAUDE_PROVIDERS: frozenset[str] = frozenset({"anthropic"})
 
 #: Maps an agent role to the profile whose fallback chain it should use.
 AGENT_LLM_PROFILE: dict[str, str] = {
@@ -75,9 +102,13 @@ AGENT_LLM_PROFILE: dict[str, str] = {
     "crawl": "fast",
     "report": "fast",
     "exploit": "reasoning",
-    # Research now leads with Gemini Flash-Lite (cheap, high-volume, native
-    # Search Grounding) → fast profile. Anthropic/OpenAI remain as fallbacks.
-    "research": "fast",
+    # Research LED with Gemini Flash-Lite for its native Search Grounding, and
+    # that is exactly what this now forbids: the runbook decides what the
+    # exploit phase reaches for and is written into the persistent KB. The
+    # capability cost is real and is stated rather than absorbed — see
+    # ``_build_chain`` — but "cheap model with live search" is not a trade this
+    # role is allowed to make.
+    "research": "reasoning",
 }
 
 #: Environment variable that holds the API key for each provider. ``None``
@@ -215,14 +246,25 @@ class ResilientLLMClient(LLMClient):
     async def research(self, query: str) -> str:
         return await self._dispatch("research", query)
 
-    async def generate_text(self, prompt: PromptLike) -> str:
+    async def generate_text(
+        self, prompt: PromptLike, *, budget: OutputBudget = OutputBudget.DEFAULT
+    ) -> str:
+        """Serve one text generation through the chain, tracing what answered.
+
+        Args:
+            prompt: The prompt, plain or segmented.
+            budget: Output-ceiling policy, forwarded verbatim to whichever
+                provider serves the call. Forwarded rather than resolved here
+                because the ceiling is a function of the model, and which model
+                runs is exactly what this method is deciding.
+        """
         from clinkz.observability.trace import Stopwatch, get_active_trace_writer
 
         writer = get_active_trace_writer()
         stopwatch = Stopwatch()
         flat = flatten_prompt(prompt)
         try:
-            response = await self._dispatch("generate_text", prompt)
+            response = await self._dispatch("generate_text", prompt, budget=budget)
         except Exception as exc:
             if writer is not None:
                 writer.llm_call(
@@ -329,6 +371,14 @@ class ResilientLLMClient(LLMClient):
             "cache_write_tokens": stats.cache_creation_input_tokens,
             "cache_read_tokens": stats.cache_read_input_tokens,
             "stop_reason": stats.stop_reason,
+            # The ceiling the call carried, so headroom is derivable from the
+            # trace alone. output_tokens without it cannot distinguish a
+            # complete answer from a truncated one. ``None`` rather than 0 when
+            # the provider that served the call sets no per-request ceiling —
+            # zero headroom is what exhaustion looks like, and "not reported"
+            # must not read as "exhausted".
+            "max_output_tokens": stats.max_output_tokens or None,
+            "output_headroom": stats.output_headroom if stats.max_output_tokens else None,
         }
 
     # ------------------------------------------------------------------
@@ -375,8 +425,17 @@ class ResilientLLMClient(LLMClient):
             if not first_attempted:
                 first_attempted = provider
 
+            # The runtime gate. `_build_chain` already filters these roles, but
+            # a chain is a plan and this is the call: `override_chain`, a later
+            # edit to a profile, or a role added to CLAUDE_ONLY_ROLES without
+            # its chain being revisited would each route around the config-time
+            # filter. This is the last statement before the request leaves.
+            self._assert_provider_permitted(provider)
+
             try:
                 client = self._get_or_create_client(provider)
+            except ProviderPolicyError:
+                raise
             except Exception as exc:
                 self._logger.warning("Could not instantiate %s: %s", provider, exc)
                 last_error = exc
@@ -440,6 +499,8 @@ class ResilientLLMClient(LLMClient):
                     note=type(exc).__name__,
                 )
                 continue
+            except ProviderPolicyError:
+                raise
             except Exception as exc:
                 self._logger.error(
                     "LLM provider %s unexpected error (%s) — trying next in chain: %s",
@@ -465,6 +526,30 @@ class ResilientLLMClient(LLMClient):
     # Helpers
     # ------------------------------------------------------------------
 
+    def _assert_provider_permitted(self, provider: str) -> None:
+        """Refuse to let a forbidden provider serve a decision-bearing role.
+
+        Args:
+            provider: The provider about to be asked.
+
+        Raises:
+            ProviderPolicyError: ``self.agent_role`` is in
+                :data:`CLAUDE_ONLY_ROLES` and *provider* is not a Claude
+                provider. The engagement fails here rather than continuing on
+                an answer whose author it would have to caveat.
+        """
+        if self.agent_role not in CLAUDE_ONLY_ROLES:
+            return
+        if provider in CLAUDE_PROVIDERS:
+            return
+        raise ProviderPolicyError(
+            f"Refusing to serve decision-bearing role '{self.agent_role}' with provider "
+            f"'{provider}' (chain={self.fallback_chain}). Only {sorted(CLAUDE_PROVIDERS)} "
+            f"may plan, judge, or research: this role's output decides what gets tested "
+            f"and what gets reported, so a substitution here invalidates the engagement "
+            f"rather than degrading it."
+        )
+
     def _build_chain(self, agent_role: str, profile: str) -> list[str]:
         """Compute the effective fallback chain for an agent role.
 
@@ -485,7 +570,39 @@ class ResilientLLMClient(LLMClient):
         elif configured and configured not in base:
             base.insert(0, configured)
 
-        return base
+        return self._enforce_claude_only(agent_role, base)
+
+    def _enforce_claude_only(self, agent_role: str, chain: list[str]) -> list[str]:
+        """Drop every non-Claude provider from a role whose answer decides something.
+
+        Applied AFTER the ``LLM_PROVIDER_<ROLE>`` override, which is the only
+        placement that works: the override inserts its provider at the FRONT of
+        the chain, so filtering the profile first would leave
+        ``LLM_PROVIDER_EXPLOIT=gemini`` free to put the cheap tier ahead of
+        Claude. A configuration switch must not be able to reach a decision this
+        rule exists to keep away from it.
+
+        The chain is allowed to become empty and is NOT back-filled. An empty
+        chain raises :class:`LLMUnavailableError` on the first call, which is
+        the intended outcome: an engagement whose plan or runbook cannot be
+        served by Claude has no honest way to continue, and quietly substituting
+        a weaker model is precisely the failure this replaces.
+        """
+        if agent_role not in CLAUDE_ONLY_ROLES:
+            return chain
+        allowed = [p for p in chain if p in CLAUDE_PROVIDERS]
+        dropped = [p for p in chain if p not in CLAUDE_PROVIDERS]
+        if dropped:
+            # Module logger, not ``self._logger``: this runs from __init__
+            # before the per-instance logger exists.
+            logger.info(
+                "Role %s is decision-bearing: dropped %s from its chain, leaving %s. "
+                "A cheaper provider may not plan, judge, or research for this engagement.",
+                agent_role,
+                dropped,
+                allowed,
+            )
+        return allowed
 
     def has_usable_provider(self) -> bool:
         """Return True if at least one provider in the chain has a configured API key.

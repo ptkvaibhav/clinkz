@@ -101,7 +101,7 @@ class _SequenceLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return ""
 
 
@@ -156,7 +156,7 @@ class _ReconSequenceLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return ""
 
 
@@ -466,7 +466,7 @@ async def test_full_recon_engagement_via_orchestrator(tmp_path: Path) -> None:
         async def research(self, query: str) -> str:
             return ""
 
-        async def generate_text(self, prompt: str) -> str:
+        async def generate_text(self, prompt: str, **_kw: object) -> str:
             return "Mock response."
 
     orchestrator = OrchestratorAgent(llm=_SimpleOrchLLM(), db_path=str(tmp_path / "test1.db"))
@@ -638,7 +638,7 @@ async def test_orchestrator_respins_recon_on_demand(tmp_path: Path) -> None:
         async def research(self, query: str) -> str:
             return ""
 
-        async def generate_text(self, prompt: str) -> str:
+        async def generate_text(self, prompt: str, **_kw: object) -> str:
             return "Mock response based on available data."
 
     orchestrator = OrchestratorAgent(llm=_SimpleOrchLLM(), db_path=str(tmp_path / "test2.db"))

@@ -81,6 +81,9 @@ async def _call(client: Any, prompt: Any, **setting_overrides: Any) -> dict[str,
         "llm_retry_base_delay": 0.0,
         "llm_retry_max_delay": 0.0,
         "llm_request_timeout": 30.0,
+        "llm_context_margin_tokens": 8000,
+        "llm_stream_above_output_tokens": 16000,
+        "llm_output_headroom_alarm_ratio": 0.8,
     }
     defaults.update(setting_overrides)
     with patch("clinkz.llm.anthropic_client.settings", SimpleNamespace(**defaults)):
@@ -391,6 +394,9 @@ class TestUsageAccounting:
                 llm_max_output_tokens=16000,
                 llm_prompt_cache_enabled=True,
                 llm_prompt_cache_ttl="5m",
+                llm_context_margin_tokens=8000,
+                llm_stream_above_output_tokens=16000,
+                llm_output_headroom_alarm_ratio=0.8,
             ),
         ):
             with patch.object(
