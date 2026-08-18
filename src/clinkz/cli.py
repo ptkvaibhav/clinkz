@@ -402,6 +402,10 @@ def scan(
         load_credential_file,
         prompt_for_credentials,
     )
+    from clinkz.llm.providers import (
+        NoProviderKeyError,
+        assert_any_provider_available,
+    )
     from clinkz.models.engagement import CredentialSet
     from clinkz.orchestrator.orchestrator import OrchestratorAgent
     from clinkz.tools.docker_preflight import ClinkzDockerError
@@ -421,6 +425,19 @@ def scan(
     if resume is not None:
         _run_resume(resume, db_path=settings.db_path)
         return
+
+    # No provider key at all is the cold-start failure, so it is answered
+    # first: before scope assembly, before authorization, before docker.
+    # Detection only — this reads environment variables and sends nothing, so
+    # it does not disturb the invariant that the authorization gate precedes
+    # every packet. Placed after the --resume branch on purpose: rebuilding a
+    # report from persisted findings makes no LLM calls and must not require a
+    # key to do it.
+    try:
+        assert_any_provider_available()
+    except NoProviderKeyError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=EXIT_BAD_INPUT) from None
 
     try:
         scope_obj = _assemble_scope(

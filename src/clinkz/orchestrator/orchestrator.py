@@ -79,6 +79,7 @@ from clinkz.llm.fallback import (
     preflight_provider_available,
     validate_agent_chains,
 )
+from clinkz.llm.providers import ProviderPreflight, preflight_providers
 from clinkz.models.engagement import AuthorizationRecord, CredentialSet, RoleCredential
 from clinkz.models.finding import ExploitTask
 from clinkz.models.recon import (
@@ -305,6 +306,7 @@ class OrchestratorAgent:
         # covers for a dead one cannot make the run look healthy.
         self._ledger: ContributionLedger | None = None
         self._degradation: DegradationRegister | None = None
+        self._provider_preflight: ProviderPreflight | None = None
         # The composition view of every CONFIRMED chain the exploit phase proved.
         # Carried to the report so it can render the links; the chains themselves
         # are ordinary findings and are counted there, never here.
@@ -382,6 +384,30 @@ class OrchestratorAgent:
         # ClinkzDockerError to the caller (CLI) for clean exit.
         if settings.tool_exec_mode == "docker":
             await ensure_container_ready(settings.docker_container)
+
+        # Provider auto-detection. Runs before the chain check because it is
+        # the step that can explain WHY a chain has no usable provider, and
+        # because it registers every detected key with the redaction chokepoint
+        # — which must happen before anything can quote one back. An API key
+        # has no distinctive shape, so the shape rules cannot catch it and
+        # intake registration is the only thing that keeps it out of an
+        # artifact.
+        #
+        # Detection establishes AVAILABILITY and never priority: priority is
+        # declared in settings.llm_provider_priority with Anthropic pinned
+        # first. Auto-enrolling a discovered key into the chain is how a run
+        # gets a surprise model swap.
+        provider_preflight = await preflight_providers()
+        provider_preflight.log_summary(self._logger)
+        self._provider_preflight = provider_preflight
+        if not provider_preflight.primary_usable:
+            self._logger.error(
+                "Priority-1 provider %r is unusable (available=%s). Every call will "
+                "start by failing over, and under routing v2 a fallback disqualifies "
+                "the run as a baseline.",
+                provider_preflight.primary,
+                sorted(provider_preflight.available),
+            )
 
         # Fail fast if no agent has a usable LLM provider — otherwise every
         # LLM call later in the engagement walks an empty fallback chain.
@@ -778,6 +804,8 @@ class OrchestratorAgent:
                 # explicitly rather than leaving to an absent section.
                 degradation_summary_dict = degradation.summary()
                 summary["provider_degradation"] = degradation_summary_dict
+                if self._provider_preflight is not None:
+                    summary["provider_preflight"] = self._provider_preflight.to_dict()
                 if degradation.degraded:
                     self._logger.warning(
                         "PROVIDER DEGRADED — %d fallback(s) across %s. This run is "
