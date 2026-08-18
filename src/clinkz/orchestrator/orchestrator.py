@@ -69,6 +69,10 @@ from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
 from clinkz.llm.base import LLMClient
+from clinkz.llm.degradation import (
+    DegradationRegister,
+    set_active_degradation_register,
+)
 from clinkz.llm.factory import get_llm_client
 from clinkz.llm.fallback import (
     ResilientLLMClient,
@@ -300,6 +304,7 @@ class OrchestratorAgent:
         # Records what each component actually contributed, so a fallback that
         # covers for a dead one cannot make the run look healthy.
         self._ledger: ContributionLedger | None = None
+        self._degradation: DegradationRegister | None = None
         # The composition view of every CONFIRMED chain the exploit phase proved.
         # Carried to the report so it can render the links; the chains themselves
         # are ordinary findings and are counted there, never here.
@@ -402,6 +407,15 @@ class OrchestratorAgent:
             ledger = ContributionLedger(engagement_id=engagement_id)
             set_active_ledger(ledger)
             self._ledger = ledger
+
+            # Install the provider-degradation register. Routing v2 makes
+            # Anthropic priority 1 for every call; this is what records the
+            # cost when something else answered anyway. Absent by default for
+            # the same reason as the ledger — a direct methodology invocation
+            # has no run to disqualify.
+            degradation = DegradationRegister()
+            set_active_degradation_register(degradation)
+            self._degradation = degradation
 
             # Install the production safety rails for this engagement. Every
             # outbound request now passes through the governor: paced, capped,
@@ -756,6 +770,30 @@ class OrchestratorAgent:
                 summary["component_ledger"] = ledger.to_dict()
                 set_active_ledger(None)
                 self._ledger = None
+
+                # The provider-degradation stamp, alongside the ledger and for
+                # the same reason: reported before the trace writer closes, and
+                # unconditionally — a halted run that also degraded needs both
+                # facts, and "no fallback occurred" is a claim worth making
+                # explicitly rather than leaving to an absent section.
+                degradation_summary_dict = degradation.summary()
+                summary["provider_degradation"] = degradation_summary_dict
+                if degradation.degraded:
+                    self._logger.warning(
+                        "PROVIDER DEGRADED — %d fallback(s) across %s. This run is "
+                        "permanently INELIGIBLE as a baseline.",
+                        degradation_summary_dict["fallback_count"],
+                        ", ".join(degradation_summary_dict["call_sites"]),
+                    )
+                    for event in degradation.events():
+                        self._logger.warning("  %s", event.describe())
+                else:
+                    self._logger.info(
+                        "Provider routing clean — every call served by the primary; "
+                        "run is eligible as a baseline."
+                    )
+                set_active_degradation_register(None)
+                self._degradation = None
 
                 # Always close + unset the trace writer so module-level state
                 # cannot leak between back-to-back engagements (relevant in

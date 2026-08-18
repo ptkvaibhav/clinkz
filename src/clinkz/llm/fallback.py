@@ -44,6 +44,7 @@ from clinkz.llm.base import (
     ServiceUnavailableError,
     flatten_prompt,
 )
+from clinkz.llm.degradation import ProviderFallback, record_provider_fallback
 from clinkz.llm.factory import AGENT_PROVIDER_SETTINGS, get_llm_client
 from clinkz.observability.ledger import (
     ComponentKind,
@@ -98,9 +99,6 @@ LLM_FALLBACK_CHAINS: dict[str, list[str]] = {
 #: Anthropic priority 1 everywhere, so the question this set answers is no
 #: longer "who may serve it" but "how bad is it that something else did".
 CLAUDE_ONLY_ROLES: frozenset[str] = frozenset({"exploit", "research"})
-
-#: Providers that may serve a :data:`CLAUDE_ONLY_ROLES` call.
-CLAUDE_PROVIDERS: frozenset[str] = frozenset({"anthropic"})
 
 #: Maps an agent role to its profile. Every role is ``reasoning`` now, which is
 #: to say every role leads with Anthropic. The mapping is kept rather than
@@ -437,12 +435,12 @@ class ResilientLLMClient(LLMClient):
             if not first_attempted:
                 first_attempted = provider
 
-            # The runtime gate. `_build_chain` already filters these roles, but
-            # a chain is a plan and this is the call: `override_chain`, a later
-            # edit to a profile, or a role added to CLAUDE_ONLY_ROLES without
-            # its chain being revisited would each route around the config-time
-            # filter. This is the last statement before the request leaves.
-            self._assert_provider_permitted(provider)
+            # The disqualification gate — the last statement before the
+            # request leaves. Placed here and not in `_build_chain` because a
+            # chain is a plan and this is the call: `override_chain`, an
+            # `exclude_providers` that reshuffled the head, or a future edit to
+            # the priority order would each route around a config-time check.
+            self._assert_fallback_permitted(provider, primary=self.fallback_chain[0])
 
             try:
                 client = self._get_or_create_client(provider)
@@ -471,10 +469,29 @@ class ResilientLLMClient(LLMClient):
                     note=f"{self.agent_role}.{method}",
                 )
                 if provider != first_attempted:
+                    reason = type(last_error).__name__ if last_error else "chain rotation"
+                    # The ledger alarm fires in EVERY mode. It is the record
+                    # that something covered for something else, and it is
+                    # independent of what that cost the run.
                     record_fallback(
                         component=f"llm:{first_attempted}",
                         covered_by=f"llm:{provider}",
-                        reason=type(last_error).__name__ if last_error else "chain rotation",
+                        reason=reason,
+                    )
+                    # The disqualification. Separate from the ledger because it
+                    # answers a different question: not "did a fallback happen"
+                    # but "may this run's numbers be compared to another's".
+                    record_provider_fallback(
+                        ProviderFallback(
+                            agent_role=self.agent_role,
+                            method=method,
+                            asked_provider=first_attempted,
+                            asked_model=self._resolve_model(first_attempted),
+                            served_provider=provider,
+                            served_model=self._resolve_model(provider),
+                            reason=reason,
+                            decision_bearing=self.agent_role in CLAUDE_ONLY_ROLES,
+                        )
                     )
                 return result
             except ProviderAccountError as exc:
@@ -538,28 +555,48 @@ class ResilientLLMClient(LLMClient):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _assert_provider_permitted(self, provider: str) -> None:
-        """Refuse to let a forbidden provider serve a decision-bearing role.
+    def _assert_fallback_permitted(self, provider: str, *, primary: str) -> None:
+        """In baseline mode, refuse to let anything but the primary answer.
+
+        Called before the request leaves, so a baseline run fails *instead of*
+        buying an answer it would have to throw away.
+
+        **Every role, not only the decision-bearing ones.** ``exploit`` and
+        ``research`` are the roles whose answers become conclusions, and a
+        substitution there is a correctness problem. But the reason baseline
+        mode exists is comparability, and that is broken by any stage: the
+        27%-vs-80% swing that motivated the model stamp was measured on
+        *security-header analysis*, a scan/report-side call producing what
+        looks like a pure observation. A ladder number produced half by one
+        model and half by another is not a measurement of the target, whichever
+        phase did the producing. :data:`CLAUDE_ONLY_ROLES` still marks where a
+        fallback is *also* a correctness problem, and the register records
+        which kind each event was.
 
         Args:
             provider: The provider about to be asked.
+            primary: The head of this client's chain.
 
         Raises:
-            ProviderPolicyError: ``self.agent_role`` is in
-                :data:`CLAUDE_ONLY_ROLES` and *provider* is not a Claude
-                provider. The engagement fails here rather than continuing on
-                an answer whose author it would have to caveat.
+            ProviderPolicyError: Baseline mode, and *provider* is not the
+                primary. Deliberately a ``BaseException``: every LLM call site
+                is wrapped in a broad ``except Exception`` that degrades
+                gracefully, which is the behaviour being refused.
         """
-        if self.agent_role not in CLAUDE_ONLY_ROLES:
+        if provider == primary:
             return
-        if provider in CLAUDE_PROVIDERS:
+        if self.config.run_mode != "baseline":
             return
         raise ProviderPolicyError(
-            f"Refusing to serve decision-bearing role '{self.agent_role}' with provider "
-            f"'{provider}' (chain={self.fallback_chain}). Only {sorted(CLAUDE_PROVIDERS)} "
-            f"may plan, judge, or research: this role's output decides what gets tested "
-            f"and what gets reported, so a substitution here invalidates the engagement "
-            f"rather than degrading it."
+            f"Baseline run: refusing to let '{provider}' serve "
+            f"'{self.agent_role}' after primary '{primary}' failed "
+            f"(chain={self.fallback_chain}). A ladder served by two models is "
+            f"not a ladder — the same prompt on a byte-identical observation "
+            f"has produced materially different findings across models, so a "
+            f"number produced partly by each measures nothing about the target. "
+            f"Re-run once the primary is healthy, or set CLINKZ_RUN_MODE=client "
+            f"to complete the run with a provider_degraded stamp and no "
+            f"baseline eligibility."
         )
 
     def _build_chain(self, agent_role: str, profile: str) -> list[str]:

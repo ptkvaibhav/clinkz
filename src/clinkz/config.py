@@ -87,6 +87,31 @@ class Settings(BaseModel):
     # matches and the profile chain is exhausted.
     llm_provider_default: LLMProvider = Field(default="anthropic")
 
+    # ---- RUN MODE ----
+    #
+    # What a provider fallback COSTS, which is the only thing this changes.
+    #
+    #   "client"   — complete the run. Any fallback stamps the report
+    #                provider_degraded with its call sites and models, and
+    #                marks the run permanently ineligible as a baseline. A
+    #                client engagement should not die because a provider had a
+    #                bad minute; it should say what happened.
+    #   "baseline" — a fallback is a HARD FAILURE, refused before the request
+    #                leaves. A recorded baseline is only worth the comparison
+    #                it supports, and a ladder served by two models is not a
+    #                ladder: over 1,033 recorded phase-3 calls the same prompt
+    #                on a byte-identical header observation produced the
+    #                version-disclosure entries 27% of the time under one model
+    #                and 80% under another.
+    #
+    # "client" is the default because it is the one that cannot lose an
+    # engagement, and because a run that must not degrade is a deliberate act
+    # (a ladder, a graded benchmark) that its operator knows they are doing.
+    run_mode: Literal["client", "baseline"] = Field(
+        default="client",
+        description="'client' (degrade + stamp) or 'baseline' (a fallback fails the run).",
+    )
+
     # ---- PROVIDER PRIORITY (routing v2) ----
     #
     # THE declared order every fallback chain is built from, Anthropic first.
@@ -466,6 +491,7 @@ class Settings(BaseModel):
             research_llm_provider=_agent_provider("research", "anthropic"),  # type: ignore[arg-type]
             report_llm_provider=_agent_provider("report", "anthropic"),  # type: ignore[arg-type]
             llm_provider_default=global_default,  # type: ignore[arg-type]
+            run_mode=os.getenv("CLINKZ_RUN_MODE", "client"),  # type: ignore[arg-type]
             llm_request_timeout=float(os.getenv("LLM_REQUEST_TIMEOUT", "120.0")),
             llm_max_output_tokens=int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "16000")),
             llm_context_margin_tokens=int(os.getenv("LLM_CONTEXT_MARGIN_TOKENS", "8000")),

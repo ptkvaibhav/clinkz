@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
 from clinkz.engagement.secrets import redact, redact_structure
 from clinkz.llm.base import LLMClient
+from clinkz.llm.degradation import degradation_summary
 from clinkz.models.engagement import AuthorizationRecord, EngagementWindow
 from clinkz.models.finding import (
     ChainResearchLead,
@@ -368,6 +369,7 @@ class ReportAgent(BaseAgent):
             authentication=authentication,
             component_ledger=_active_ledger_snapshot(),
             model_stamp=_active_model_stamp(),
+            provider_degradation=degradation_summary(),
         )
 
         # The report is the artifact that actually reaches the client, so it
@@ -648,6 +650,7 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_chain_leads(lines, report.chain_leads)
             ReportAgent._render_not_tested(lines, report)
             ReportAgent._render_component_ledger(lines, report)
+            ReportAgent._render_provider_degradation(lines, report)
             return "\n".join(lines)
 
         lines.extend(["## Findings", ""])
@@ -684,7 +687,75 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_chain_leads(lines, report.chain_leads)
         ReportAgent._render_not_tested(lines, report)
         ReportAgent._render_component_ledger(lines, report)
+        ReportAgent._render_provider_degradation(lines, report)
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_provider_degradation(lines: list[str], report: PentestReport) -> None:
+        """Render which model actually served each call, when it was not the primary.
+
+        Sits beside *Component contribution* and answers the neighbouring
+        question. That section says which components produced nothing; this one
+        says whether the answers that WERE produced came from the model this
+        run asked for.
+
+        Always rendered, clean or not. The previous behaviour was to render
+        nothing, and that is exactly how six exploit plans and six
+        false-positive cross-checks written by the cheap tier reached six
+        reports that looked like reports it had not happened to.
+        """
+        stamp = report.provider_degradation
+        if not stamp:
+            return
+        lines.extend(["## Provider routing", ""])
+        if not stamp.get("provider_degraded"):
+            lines.extend(
+                [
+                    "Every LLM call was served by the provider this run asked for. "
+                    "No fallback activated, so the run is eligible for use as a "
+                    "baseline.",
+                    "",
+                ]
+            )
+            return
+
+        events = [e for e in (stamp.get("events") or []) if isinstance(e, dict)]
+        decision_bearing = int(stamp.get("decision_bearing_fallback_count") or 0)
+        lines.extend(
+            [
+                f"**This run is NOT eligible as a baseline.** {stamp.get('fallback_count', 0)} "
+                f"call(s) were served by a provider other than the one asked for. A "
+                f"number produced partly by one model and partly by another is not a "
+                f"measurement of the target, so nothing here should be compared against "
+                f"another run's figures.",
+                "",
+            ]
+        )
+        if decision_bearing:
+            lines.extend(
+                [
+                    f"{decision_bearing} of them were **decision-bearing** — the exploit "
+                    "plan decides what gets tested and the false-positive cross-check "
+                    "decides which findings survive, so those are not only a "
+                    "comparability problem.",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "| Call site | Asked for | Served by | Why | Decision-bearing |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+        )
+        for event in events:
+            asked = f"{event.get('asked_provider', '')}/{event.get('asked_model', '')}"
+            served = f"{event.get('served_provider', '')}/{event.get('served_model', '')}"
+            lines.append(
+                f"| {event.get('call_site', '')} | {asked} | {served} | "
+                f"{event.get('reason', '') or '-'} | "
+                f"{'yes' if event.get('decision_bearing') else 'no'} |"
+            )
+        lines.append("")
 
     @staticmethod
     def _render_component_ledger(lines: list[str], report: PentestReport) -> None:

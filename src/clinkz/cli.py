@@ -339,6 +339,18 @@ def scan(
         int | None,
         typer.Option("--max-concurrency", help="Max simultaneous in-flight requests."),
     ] = None,
+    run_mode: Annotated[
+        str | None,
+        typer.Option(
+            "--run-mode",
+            help=(
+                "What a provider fallback costs. 'client' (default) completes the run, "
+                "stamps the report provider_degraded and marks it ineligible as a "
+                "baseline. 'baseline' makes any fallback a HARD FAILURE - a ladder "
+                "served by two models is not a ladder."
+            ),
+        ),
+    ] = None,
     output: Annotated[
         Path | None,
         typer.Option(
@@ -465,6 +477,26 @@ def scan(
         scope_obj.safety.max_requests_per_second = rate
     if max_concurrency is not None:
         scope_obj.safety.max_concurrent_requests = max_concurrency
+
+    # Run mode. Set on the settings singleton rather than the scope because it
+    # governs the LLM chain, not the target - the resilient client reads it at
+    # dispatch time, which is after every writer has been constructed.
+    if run_mode is not None:
+        if run_mode not in ("client", "baseline"):
+            typer.echo(
+                f"--run-mode must be 'client' or 'baseline' (got {run_mode!r}).",
+                err=True,
+            )
+            raise typer.Exit(EXIT_BAD_INPUT)
+        settings.run_mode = run_mode  # type: ignore[assignment]
+    typer.echo(
+        f"Run mode: {settings.run_mode} "
+        + (
+            "(a provider fallback FAILS this run)"
+            if settings.run_mode == "baseline"
+            else "(a provider fallback is stamped and disqualifies the run as a baseline)"
+        )
+    )
 
     # Credentials. Never echoed, never written to the scope (which IS persisted).
     cred_set = CredentialSet()

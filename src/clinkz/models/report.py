@@ -221,6 +221,19 @@ class PentestReport(BaseModel):
     #: under one model and 80% under its predecessor, so a model bump silently
     #: re-baselines every comparison drawn against an earlier run.
     model_stamp: list[dict[str, str | int]] = Field(default_factory=list)
+    #: Whether any LLM call was served by a provider other than the one routing
+    #: v2 asked for, and what that cost. Anthropic is priority 1 for every call
+    #: on every phase; everything else is fallback only, and a fallback is a
+    #: disqualifying event rather than an invisible one. Carries
+    #: ``provider_degraded``, ``baseline_eligible``, the call sites and both
+    #: models per event.
+    #:
+    #: Populated even on a clean run, because "no fallback occurred" is a claim
+    #: the deliverable should make: a section that appears only on failure
+    #: cannot be told apart from a section nobody wrote. The eligibility flag is
+    #: one-way — a degraded answer is already inside the findings, so no later
+    #: clean call un-shapes it.
+    provider_degradation: dict[str, object] = Field(default_factory=dict)
 
     @property
     def finding_counts(self) -> dict[str, int]:
