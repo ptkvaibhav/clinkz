@@ -616,6 +616,13 @@ def _pdf_text(path: Path) -> str:
     except ImportError as exc:  # pragma: no cover — pypdf is a declared dependency
         raise _UnreadableError(f"no PDF extractor available: {exc}") from exc
 
+    # pypdf logs the first bytes of a file it cannot recognise
+    # (`invalid pdf header: b'...'`), which is document content on its way to
+    # the run log. Every failure here is reported by this function anyway, so
+    # the parser's own commentary is suppressed for the duration.
+    pypdf_logger = logging.getLogger("pypdf")
+    previous_level = pypdf_logger.level
+    pypdf_logger.setLevel(logging.CRITICAL)
     try:
         reader = PdfReader(str(path))
         if reader.is_encrypted:
@@ -648,7 +655,22 @@ def _pdf_text(path: Path) -> str:
         # undocumented set on a malformed document, and every one of them means
         # the same thing here. Nothing is absorbed — it converts to a skip with
         # no allow reason, which FAILS the gate.
-        raise _UnreadableError(f"{type(exc).__name__}: {exc}") from exc
+        #
+        # The TYPE is recorded and the MESSAGE is not, because the message is
+        # written by the parser out of the document. Several of pypdf's carry
+        # an object repr — `Outline Entry Missing /Title attribute: {node!r}`,
+        # `ColorSpace field not found in {x_object}` — so a failed parse would
+        # copy raw document bytes into `artifact_scan.json` and into everything
+        # `render()` prints. That is worse than the defect this module exists
+        # to prevent: a leak report reproducing a leak the scanner never even
+        # detected, because the file it came from is precisely the one it could
+        # not read. An exception class name is our vocabulary; its message is
+        # the document's.
+        raise _UnreadableError(
+            f"{type(exc).__name__} (parser message withheld: it can quote the document)"
+        ) from exc
+    finally:
+        pypdf_logger.setLevel(previous_level)
     return "\n".join(lines)
 
 

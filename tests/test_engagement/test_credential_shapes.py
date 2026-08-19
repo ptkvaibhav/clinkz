@@ -864,3 +864,38 @@ def test_a_pdf_over_the_file_size_cap_is_an_unexplained_skip(
     assert not report.clean
     assert [s.path for s in report.unexplained_skips] == ["huge.pdf"]
     assert "exceeds the" in report.unexplained_skips[0].detail
+
+
+def test_a_parser_error_message_never_reaches_the_scan_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure mode that is worse than the one this module prevents.
+
+    Several of pypdf's exception messages interpolate a document object —
+    ``Outline Entry Missing /Title attribute: {node!r}``, ``ColorSpace field not
+    found in {x_object}`` — so writing ``str(exc)`` into the report would copy
+    raw document bytes into ``artifact_scan.json`` and into everything
+    ``render()`` prints. And it would do so for the one file the scanner could
+    NOT read, meaning it would republish a secret it never even detected.
+
+    The exception class is recorded, its message is not. Driven through a raised
+    exception rather than a crafted document because the contract under test is
+    this module's handling, not any particular pypdf version's phrasing.
+    """
+    token = _jwt()
+
+    class _ChattyError(Exception):
+        pass
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise _ChattyError(f"Outline Entry Missing /Title attribute: {{'/T': '{token}'}}")
+
+    monkeypatch.setattr("pypdf.PdfReader", _explode)
+    (tmp_path / "report.pdf").write_bytes(_minimal_pdf(page_text="whatever"))
+
+    report = scan_artifact_tree(tmp_path, engagement_id="pdf-chatty")
+    serialised = report.model_dump_json() + report.render()
+
+    assert not report.clean, "an unreadable PDF must still fail the gate"
+    assert token not in serialised, "a parser error message republished the document"
+    assert "_ChattyError" in serialised, "the exception TYPE is still recorded"
