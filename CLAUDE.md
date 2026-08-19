@@ -569,6 +569,20 @@ LESSONS #17).
   separate renderings because they have different fixes: a bigger cap covers a
   truncated tail and does nothing for a task dropped from an endpoint carrying
   its own class's observed surface. Rendered on a clean run too.
+  **And `kept` is a total, so it is not evidence about its parts**:
+  `kept_by_class` + `classes_with_candidates` separate "the cap took every
+  candidate this class had" (a bigger cap) from "tasks survived and the class
+  still never ran" (the dispatcher) — indistinguishable before, and the second
+  is the ffuf shape at class granularity. The **class-coverage account**
+  (`scripts/d1_consistency_runner.py::class_coverage`) gives every dispatchable
+  class exactly one verdict on **how far its own pipeline got**, never on what
+  it says about itself; "the plan held nothing for it" is the fifth fact and is
+  NOT an alarm, an indeterminate answer IS one. Which skill names a class is
+  DECLARED by the producer (`_CLASS_TRACE_SKILL`), verified against the call
+  graph, because guessing `_test_x → "x"` is right 23 times and wrong for
+  `_test_javascript_attacks` — and a mis-guessed skill reports zero coverage,
+  which reads exactly like a class that never ran.
+  **Detail → [`docs/observability.md`](docs/observability.md).**
 - **Crawl-safety / session hygiene** — `is_state_changing_url` is the chokepoint
   guarding every crawl visit, endpoint emission, and exploit-plan entry; its
   submission counterpart `is_destructive_form_submission` guards every form

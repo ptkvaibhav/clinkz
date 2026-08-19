@@ -46,6 +46,8 @@ from clinkz.agents.exploit import (
     _CLASS_PARAM_PREDICATE_NAMES,
     _CLASS_PATH_TOKENS,
     _CLASS_PRECONDITIONS,
+    _CLASS_TRACE_SKILL,
+    _DETERMINISTIC_CATEGORY_ORDER,
     _param_name_tokens,
 )
 
@@ -464,6 +466,205 @@ def dropped_primary_targets(engagement: str) -> list[dict[str, Any]]:
     return dropped
 
 
+# ---------------------------------------------------------------------------
+# Class coverage — did every applicable class reach an endpoint?
+# ---------------------------------------------------------------------------
+
+#: Verdicts that are CORRECT outcomes and must never be reported as defects.
+#:
+#: The distinction is the one the component ledger already draws for discovery
+#: components, applied to vulnerability classes: a class that looked at the
+#: target and found nothing of its own shape is working perfectly, and a
+#: permanent false alarm trains an operator to skim the section where a real
+#: one will appear.
+CORRECT_COVERAGE_VERDICTS: frozenset[str] = frozenset(
+    {
+        "dispatched_deep",
+        "dispatched_applicability_only",
+        "dispatched_gate_refused",
+        "never_dispatched_no_candidates",
+    }
+)
+
+#: Verdicts that are coverage ALARMS. Each names a different fix, so they stay
+#: separate numbers exactly as ``DEAD_SEAM`` / ``SILENT`` / ``ALL_FAILED`` do.
+ALARM_COVERAGE_VERDICTS: frozenset[str] = frozenset(
+    {
+        "never_dispatched_all_candidates_dropped",
+        "never_dispatched_tasks_survived_the_cap",
+        "never_dispatched_kept_breakdown_absent",
+    }
+)
+
+
+def _plan_records(engagement: str) -> dict[str, dict[str, Any]]:
+    """The LAST ``plan_coverage`` truncation record per stage, from the trace."""
+    path = OUTPUTS / engagement / "trace.jsonl"
+    if not path.exists():
+        return {}
+    latest: dict[str, dict[str, Any]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                payload = json.loads(line).get("payload") or {}
+            except json.JSONDecodeError:
+                continue
+            if (
+                payload.get("skill") == "plan_coverage"
+                and payload.get("phase_name") == "truncation"
+            ):
+                latest[payload.get("stage", "?")] = payload
+    return latest
+
+
+def _phases_by_skill(engagement: str) -> dict[str, set[int]]:
+    """Every ``phase_number`` observed per methodology ``skill`` in this run.
+
+    This is the dispatch evidence. A class that reached an endpoint wrote at
+    least one phase event under its own skill; a class that did not wrote none.
+    """
+    path = OUTPUTS / engagement / "trace.jsonl"
+    seen: dict[str, set[int]] = {}
+    if not path.exists():
+        return seen
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                payload = json.loads(line).get("payload") or {}
+            except json.JSONDecodeError:
+                continue
+            skill = payload.get("skill")
+            phase = payload.get("phase_number")
+            if isinstance(skill, str) and isinstance(phase, int):
+                seen.setdefault(skill, set()).add(phase)
+    return seen
+
+
+def class_coverage(engagement: str) -> dict[str, Any]:
+    """Account for EVERY dispatchable class: did it reach at least one endpoint?
+
+    The registry already reported ranking inversions, and inversions saturated —
+    they answer "was the ORDER right among the tasks that existed". They cannot
+    answer the question that outlives them: **did this class run at all**, and
+    when it did not, was that correct or a hole?
+
+    The discriminator is the same one the component ledger uses, and it is
+    deliberately NOT a self-assessment — "there was nothing to find" is what a
+    broken class says too. It is **how far the class's own pipeline got**, read
+    from the run's own trace:
+
+    * phases at depth >= 2 — it got past applicability and probed. Whether it
+      then emitted is a different axis and not this one's business.
+    * phase 1 only — it looked at an endpoint and its own precondition was not
+      there. Correct, and falsifiable: the phase-1 payload records what it
+      looked for.
+    * phase 0 only — it was refused at the dispatch chokepoint
+      (``_serves_own_source``). Correct, and recorded.
+    * nothing at all — it never reached an endpoint. Which of three things that
+      is depends on what the PLAN held, so the plan is what decides it:
+
+      - no candidates anywhere: correct, nothing applicable was discovered;
+      - candidates existed and every one was dropped by the cap: **coverage
+        lost to the cap** — the fix is a bigger cap or better ranking;
+      - tasks survived the cap and the class still never ran: **a silent
+        hole** — the fix is in the dispatcher. This is the ffuf shape at class
+        granularity, and it is the outcome the old registry could not see.
+
+    The last two are only separable when the trace carries ``kept_by_class``. A
+    run recorded before that field existed gets its own verdict rather than a
+    guess: an indeterminate answer is reported as an alarm, never rounded down
+    to the benign side.
+    """
+    phases = _phases_by_skill(engagement)
+    records = _plan_records(engagement)
+
+    # ONLY the union stage, for the same reason
+    # :func:`dropped_primary_targets` reads only the union stage: that is the
+    # plan that actually dispatched. The deterministic stage is its SOURCE and
+    # drops hundreds of candidates by design, so counting a class's kept tasks
+    # there would say "tasks survived the cap" about tasks the union pass then
+    # removed — a dispatcher bug reported where a truncation happened. An
+    # absent union record means the union never ran, which is not the same as
+    # nothing being kept, so nothing is inferred from it.
+    record = records.get("union") or {}
+
+    dropped_counts: dict[str, int] = {
+        klass: len(urls) for klass, urls in (record.get("dropped_by_class") or {}).items()
+    }
+    raw_kept = record.get("kept_by_class")
+    kept_breakdown_present = isinstance(raw_kept, dict)
+    kept_counts: dict[str, int] = (
+        {klass: int(count or 0) for klass, count in raw_kept.items()}
+        if kept_breakdown_present
+        else {}
+    )
+
+    rows: list[dict[str, Any]] = []
+    for klass in _DETERMINISTIC_CATEGORY_ORDER:
+        skill = _CLASS_TRACE_SKILL[klass]
+        observed = phases.get(skill) or set()
+        row: dict[str, Any] = {
+            "test_method": klass,
+            "skill": skill,
+            "phases_observed": sorted(observed),
+            "plan_dropped": dropped_counts.get(klass, 0),
+            # 0, not None, when the breakdown exists: a class absent from a
+            # present kept_by_class kept nothing. ``None`` means "this trace
+            # cannot say", and conflating the two is what the indeterminate
+            # verdict exists to keep apart.
+            "plan_kept": kept_counts.get(klass, 0) if kept_breakdown_present else None,
+        }
+        if observed and max(observed) >= 2:
+            row["verdict"] = "dispatched_deep"
+            row["reason"] = f"ran to phase {max(observed)} under skill {skill!r}"
+        elif observed and max(observed) == 1:
+            row["verdict"] = "dispatched_applicability_only"
+            row["reason"] = (
+                "reached an endpoint and stopped at its own applicability check — "
+                "the precondition this class measures was not present"
+            )
+        elif observed:
+            row["verdict"] = "dispatched_gate_refused"
+            row["reason"] = "reached the dispatch chokepoint and was refused there (phase 0)"
+        elif not dropped_counts.get(klass) and not kept_counts.get(klass):
+            row["verdict"] = "never_dispatched_no_candidates"
+            row["reason"] = "the plan held no candidate endpoint for this class"
+        elif kept_breakdown_present and kept_counts.get(klass):
+            row["verdict"] = "never_dispatched_tasks_survived_the_cap"
+            row["reason"] = (
+                f"{kept_counts[klass]} task(s) survived the cap and the class wrote no "
+                f"phase event under {skill!r} — the plan reached it and the dispatcher "
+                "did not"
+            )
+        elif kept_breakdown_present:
+            row["verdict"] = "never_dispatched_all_candidates_dropped"
+            row["reason"] = (
+                f"all {dropped_counts.get(klass, 0)} candidate(s) were dropped by the plan "
+                "cap; no task remained to dispatch"
+            )
+        else:
+            row["verdict"] = "never_dispatched_kept_breakdown_absent"
+            row["reason"] = (
+                f"{dropped_counts.get(klass, 0)} candidate(s) were dropped and this trace "
+                "carries no kept_by_class, so 'the cap took them all' cannot be told from "
+                "'tasks survived and never ran'"
+            )
+        rows.append(row)
+
+    alarms = [r for r in rows if r["verdict"] in ALARM_COVERAGE_VERDICTS]
+    return {
+        "kept_breakdown_present": kept_breakdown_present,
+        "classes_accounted": len(rows),
+        "reached_an_endpoint": sum(1 for r in rows if r["phases_observed"]),
+        "rows": rows,
+        "alarms": [f"{r['test_method']} [{r['verdict']}]: {r['reason']}" for r in alarms],
+        "by_verdict": {
+            v: sorted(r["test_method"] for r in rows if r["verdict"] == v)
+            for v in sorted({r["verdict"] for r in rows})
+        },
+    }
+
+
 def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
     """Every VALIDATION assertion the brief asks for, evaluated from raw."""
     findings = report.get("findings", [])
@@ -481,6 +682,7 @@ def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
     # emitted nothing, is the ranking failing rather than the budget.
     fired = classes_that_fired(report)
     dropped_primary = dropped_primary_targets(engagement)
+    coverage = class_coverage(engagement)
     for entry in dropped_primary:
         if entry["test_method"] in fired or not entry.get("names_class_surface"):
             continue
@@ -546,7 +748,18 @@ def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
         "severities": sorted(f"{module_path_key(f)} [{f.get('severity')}]" for f in findings),
         "leads": sorted(f"{lead.get('why_unconfirmed')}: {lead.get('claim')}" for lead in leads),
         "research_leads": len(report.get("research_leads", [])),
+        # Which classes EMITTED. Kept, but read with its limit in mind: the
+        # technique -> class map is many-to-many (WSTG-CONF-05 is written by
+        # both _test_crypto and _test_secrets_exposure, WSTG-INPV-01 by three
+        # classes), so this cannot attribute a finding to a class and five of
+        # the twenty-four are not in the map at all. It is a lower bound on
+        # emission, never the coverage account.
         "classes_fired": sorted(fired),
+        # Which classes RAN — every dispatchable class accounted for, and each
+        # never-fired one classified as correct or as a hole. This is the
+        # question inversions could never answer.
+        "class_coverage": coverage,
+        "class_coverage_alarms": coverage["alarms"],
         "dropped_primary_targets": dropped_primary,
         "artifact_scan": disclosure,
         "ledger_alarms": [

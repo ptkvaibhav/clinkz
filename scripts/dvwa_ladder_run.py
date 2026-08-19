@@ -48,6 +48,7 @@ from typing import Any
 
 from _artifact_io import write_redacted_json, write_redacted_text
 from d1_consistency_runner import (
+    ALARM_COVERAGE_VERDICTS,
     DVWA_BASE,
     admin_password_hash,
     audit,
@@ -382,6 +383,28 @@ def report_gates(runs: list[dict[str, Any]], *, write: bool) -> int:
             print(f"      ledger: {alarm}")
         for violation in record.get("violations", []):
             print(f"      VIOLATION: {violation}")
+
+    # --- class coverage ------------------------------------------------------
+    # Every dispatchable class accounted for, per level. Ranking inversions
+    # answer "was the order right among the tasks that existed"; this answers
+    # the question that outlives them — did the class run at all, and if not,
+    # was that correct or a hole.
+    print(f"\n{'=' * 78}\nCLASS COVERAGE — did every applicable class reach an endpoint?\n{'=' * 78}")
+    for record in completed:
+        coverage = record.get("class_coverage") or {}
+        if not coverage:
+            print(f"  {record['level']:<11} (no coverage account — no trace on disk)")
+            continue
+        print(
+            f"\n  {record['level']}: {coverage['reached_an_endpoint']}"
+            f"/{coverage['classes_accounted']} classes reached an endpoint"
+            + ("" if coverage.get("kept_breakdown_present") else "  [trace has no kept_by_class]")
+        )
+        for verdict, classes in sorted((coverage.get("by_verdict") or {}).items()):
+            marker = "ALARM " if verdict in ALARM_COVERAGE_VERDICTS else "      "
+            print(f"    {marker}{verdict} ({len(classes)}): {', '.join(classes)}")
+        for alarm in coverage.get("alarms", []):
+            print(f"      COVERAGE ALARM: {alarm}")
 
     failed = verdict == "DIVERGENT" or any(r.get("violations") for r in runs)
     return 1 if failed else 0
