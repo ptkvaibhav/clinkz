@@ -3,6 +3,18 @@
 Part of the adaptive **behavioral family** (four-phase hypothesis / observe /
 analyze / emit; see [README](README.md) for the shared pattern).
 
+**Phase 3 calls no LLM** (since 2026-08-19), and this one was not a determinism
+nuance. The model ran alongside the classifier under a one-way rule — it could
+ADD a protection the deterministic pass missed, never clear one it found — and
+across **296 recorded calls it overrode 3 verdicts, every one of them by writing
+an `observed_at_attempt` of its own (5, 4, 6) against 138 the engine derived
+from a real observation**. That ordinal is carried on the result and into the
+trace and is read as a measurement; nothing checked that the model's number
+corresponded to anything. Three findings were suppressed on it. The residual —
+a throttle outside the classifier's vocabulary is now reported `none` — is a
+stated recall loss, pinned by a test so it stays a decision. See
+[deterministic-verdict-classes.md](deterministic-verdict-classes.md).
+
 ## Emission rule
 
 A "no brute-force protection" finding is an argument from **absence**, which

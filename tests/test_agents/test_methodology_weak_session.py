@@ -4,7 +4,7 @@ Each phase is exercised in isolation with mocked HTTP + LLM:
 
     Phase 1 (hypothesis)   — session-generation trigger detection
     Phase 2 (observation)  — 8-sample cookie collection + flag inspection
-    Phase 3 (analysis)     — LLM JSON parsing + deterministic fallback
+    Phase 3 (analysis)     — deterministic classification (no LLM on this path)
     Phase 4 (finding)      — Finding evidence chain
 """
 
@@ -171,20 +171,32 @@ class TestPhase2Observation:
 
 class TestPhase3Analysis:
     @pytest.mark.asyncio
-    async def test_llm_classification_parsed(self) -> None:
+    async def test_the_llm_is_never_consulted(self) -> None:
+        """The model is not asked — asserted on the CALL, not on the answer.
+
+        The verdict was already deterministic; what the model still produced was
+        an advisory rationale that phase 4 copies verbatim into the finding's
+        evidence. Model prose sitting in an evidence field beside measurements
+        is a claim nobody made, so the call is gone. Only the absence of the
+        call establishes that — a test comparing verdicts passes just as
+        happily against a version that asks and discards the answer.
+        """
         llm = _ScriptedLLM(
             answers=['{"weakness_types": ["sequential"], "weak": true, "rationale": "arithmetic"}']
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        types, weak, rationale = await agent._weak_session_phase3_analyze(
-            "dvwaSession",
-            ["1", "2", "3", "4"],
-            {"httponly": False, "secure": False, "samesite": False},
-        )
+
+        types, weak, rationale = await agent._weak_session_phase3_analyze(["1", "2", "3", "4"])
+
+        assert llm.prompts == []
+        assert llm.answers, "the scripted answer must still be unconsumed"
         assert SessionWeaknessType.SEQUENTIAL in types
         assert weak is True
-        assert "arithmetic" in rationale
+        # The rationale is the deterministic evidence line. The advisory marker
+        # the model's prose used to be appended under is gone with the call.
+        assert "LLM advisory" not in rationale
+        assert "integer arithmetic sequence" in rationale
 
     @pytest.mark.asyncio
     async def test_sequential_fallback(self) -> None:
@@ -192,9 +204,7 @@ class TestPhase3Analysis:
         agent = _make_agent(llm)
         agent._methodology_llm = llm
         types, weak, _r = await agent._weak_session_phase3_analyze(
-            "dvwaSession",
-            ["1", "2", "3", "4", "5", "6", "7", "8"],
-            {"httponly": True, "secure": False, "samesite": True},
+            ["1", "2", "3", "4", "5", "6", "7", "8"]
         )
         assert SessionWeaknessType.SEQUENTIAL in types
         assert weak is True
@@ -204,11 +214,7 @@ class TestPhase3Analysis:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        types, weak, _r = await agent._weak_session_phase3_analyze(
-            "sid",
-            ["aa", "ab", "ba", "bb"],
-            {"httponly": True, "secure": False, "samesite": True},
-        )
+        types, weak, _r = await agent._weak_session_phase3_analyze(["aa", "ab", "ba", "bb"])
         assert SessionWeaknessType.LOW_ENTROPY in types
         assert weak is True
 
@@ -221,13 +227,11 @@ class TestPhase3Analysis:
         agent = _make_agent(llm)
         agent._methodology_llm = llm
         types, weak, _r = await agent._weak_session_phase3_analyze(
-            "session",
             [
                 "Z9q3xQv6dFrK4mWyL2hN8aB1Cs",
                 "U7t1xQv6dFrK4mWyL2hN8aB1Df",
                 "V8u2xQv6dFrK4mWyL2hN8aB1Eg",
-            ],
-            {"httponly": False, "secure": False, "samesite": False},
+            ]
         )
         assert types == []
         assert weak is False
@@ -235,8 +239,9 @@ class TestPhase3Analysis:
     @pytest.mark.asyncio
     async def test_high_entropy_random_token_not_weak_despite_llm(self) -> None:
         """FIX 1 (the DVWA-impossible phantom): a 160-bit random token
-        (bin2hex(random_bytes(20))) is NEVER predictable, even when the LLM
-        free-writes 'predictable_format' with confident prose."""
+        (bin2hex(random_bytes(20))) is NEVER predictable. The prose that used to
+        say otherwise is now unreachable — kept as a regression because the
+        scripted answer proves the model is not asked at all."""
         llm = _ScriptedLLM(
             answers=[
                 '{"weakness_types": ["predictable_format"], "weak": true, '
@@ -247,16 +252,15 @@ class TestPhase3Analysis:
         agent._methodology_llm = llm
         # HttpOnly+Secure, missing SameSite — exactly the impossible cookie shape.
         types, weak, _r = await agent._weak_session_phase3_analyze(
-            "dvwaSession",
             [
                 "558435b215ef0d8329d92ba1ec1e85b9d1f0a8c1",
                 "3a3479869209db45a91b2cf0e1d6f7a8b9c0d1e2",
                 "49964a0a53432bd1f3b6c7d8e9f0a1b2c3d4e5f6",
-            ],
-            {"httponly": True, "secure": True, "samesite": False},
+            ]
         )
         assert weak is False
         assert SessionWeaknessType.PREDICTABLE_FORMAT not in types
+        assert llm.prompts == []
 
     @pytest.mark.asyncio
     async def test_md5_of_sequential_int_is_predictable_format(self) -> None:
@@ -266,9 +270,7 @@ class TestPhase3Analysis:
         agent = _make_agent(llm)
         agent._methodology_llm = llm
         values = [hashlib.md5(str(i).encode()).hexdigest() for i in range(1, 9)]
-        types, weak, _r = await agent._weak_session_phase3_analyze(
-            "dvwaSession", values, {"httponly": False, "secure": False, "samesite": False}
-        )
+        types, weak, _r = await agent._weak_session_phase3_analyze(values)
         assert SessionWeaknessType.PREDICTABLE_FORMAT in types
         assert weak is True
 
@@ -281,9 +283,7 @@ class TestPhase3Analysis:
         agent._methodology_llm = llm
         now = int(time.time())
         values = [str(now), str(now), str(now + 1), str(now + 1), str(now + 2)]
-        types, weak, _r = await agent._weak_session_phase3_analyze(
-            "dvwaSession", values, {"httponly": False, "secure": False, "samesite": False}
-        )
+        types, weak, _r = await agent._weak_session_phase3_analyze(values)
         assert SessionWeaknessType.TIME_CORRELATED in types
         assert weak is True
 
@@ -292,11 +292,7 @@ class TestPhase3Analysis:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        types, weak, _r = await agent._weak_session_phase3_analyze(
-            "sid",
-            ["same", "same", "same"],
-            {"httponly": True, "secure": True, "samesite": True},
-        )
+        types, weak, _r = await agent._weak_session_phase3_analyze(["same", "same", "same"])
         assert types == []
         assert weak is False
 

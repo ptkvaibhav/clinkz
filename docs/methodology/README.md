@@ -25,7 +25,17 @@ one-shot skills:
 The **deterministic check GATES the LLM**: the LLM reasons/ranks/synthesizes; a
 deterministic signal decides emission. When phase-2 has empirically confirmed the
 primitive, phase-4 **prefers the deterministic build and skips the LLM** for that
-type. See `.claude/skills/clinkz-dev/honesty-patterns.md` for the full per-vuln
+type.
+
+Five of the behavioural family go further and **make no LLM call on the verdict
+path at all** — `security_headers`, `csrf`, `weak_session`, `brute_force`, and
+`js_attacks`'s classifier. Their inputs are fully observed and every rule is a
+pure function of them, so the model was answering a question the code could
+already answer while remaining a surface on which a model change re-baselines the
+class silently. Each carries a test asserting the model is not *called*. The
+measurements that justify each removal — including the `brute_force` one that was
+a fabrication surface in evidence rather than a determinism nuance — are in
+[deterministic-verdict-classes.md](deterministic-verdict-classes.md). See `.claude/skills/clinkz-dev/honesty-patterns.md` for the full per-vuln
 oracle set.
 
 ## Classes
@@ -69,6 +79,7 @@ oracle set.
 | DVWA per-level honesty (the phantom control) | [dvwa-per-level-honesty.md](dvwa-per-level-honesty.md) |
 | The SQLi context ladder, measured (110 rungs, 0 confirmations) | [dvwa-sqli-context-ladder.md](dvwa-sqli-context-ladder.md) |
 | D1 Phase-3 consistency + the honest per-level baseline | [d1-consistency-and-baseline.md](d1-consistency-and-baseline.md) |
+| Classes whose verdict asks no model (and the measurements that removed the call) | [deterministic-verdict-classes.md](deterministic-verdict-classes.md) |
 
 The gray-box discovery engine (Δ-capability model, capability classes, capability
 learning, cross-language, cross-service) lives under `docs/discovery-engine-*.md`.

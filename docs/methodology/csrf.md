@@ -4,6 +4,16 @@ Four-phase behavioral methodology (hypothesis / observe / analyze / emit). Emits
 only for a state change that alters the victim's **security posture**, gated to
 stay honest.
 
+**Phase 3 calls no LLM** (since 2026-08-19). Every input the verdict needs is
+observed in phase 2 — the token fields, their values across three fetches, the
+`SameSite` directive, whether a token survives a cookie-stripped fetch — and
+every rule is a pure function of them. The model was asked anyway across **227
+recorded phase-3 calls and changed the verdict zero times**, while remaining a
+surface on which a model change could re-baseline the class silently. The
+rotating session-bound protection override below still runs first and is
+unaffected. See
+[deterministic-verdict-classes.md](deterministic-verdict-classes.md).
+
 ## Security-sensitivity gate (BUG 3)
 
 `_csrf_is_security_sensitive` (phase 1): emit only for a `DELETE`/`PUT`/`PATCH`

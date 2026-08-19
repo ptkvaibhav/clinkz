@@ -1,7 +1,17 @@
 # Weak session — `_test_weak_session`
 
 Four-phase behavioral methodology. Session-token predictability is a
-**deterministic gate** — the phase-3 LLM is demoted to advisory rationale only.
+**deterministic gate**, and since 2026-08-19 **no LLM is called on the verdict
+path at all**.
+
+The gate itself was already deterministic; what the model still produced was an
+advisory rationale that phase 4 copies verbatim into the finding's `evidence`
+list. Model prose sitting in an evidence field beside measurements is a claim
+nobody made, and across the recorded phase-3 calls the advisory changed the
+verdict zero times — so the call bought nothing and carried a fabrication surface
+into the deliverable. Removed rather than filtered: an advisory that may not be
+quoted has no consumer. See
+[deterministic-verdict-classes.md](deterministic-verdict-classes.md).
 
 ## Deterministic predictability gate (impossible-level honesty)
 

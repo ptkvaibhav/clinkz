@@ -4,7 +4,7 @@ Each phase is exercised in isolation with mocked HTTP + LLM:
 
     Phase 1 (hypothesis)   — auth-endpoint detection
     Phase 2 (observation)  — 8 failed-auth attempts, response signatures
-    Phase 3 (analysis)     — LLM JSON parsing + deterministic fallback
+    Phase 3 (analysis)     — deterministic classification (no LLM on this path)
     Phase 4 (finding)      — Finding evidence chain
 """
 
@@ -224,7 +224,17 @@ def _obs(
 
 class TestPhase3Analysis:
     @pytest.mark.asyncio
-    async def test_llm_classification_parsed(self) -> None:
+    async def test_the_llm_is_never_consulted(self) -> None:
+        """Asserted on the CALL, not on the answer.
+
+        The model used to run alongside the classifier under a one-way rule and
+        overrode 3 verdicts in 296 calls — every one of them by writing an
+        ``observed_at_attempt`` of its own (5, 4, 6) against 138 the engine
+        derived from a real observation. The ordinal is carried into the result
+        and the trace as a measurement, so that is a fabrication surface in
+        evidence, and three findings were suppressed on it. Only the absence of
+        the call closes it.
+        """
         llm = _ScriptedLLM(
             answers=[
                 '{"protection_type": "rate_limit", "protected": true, '
@@ -234,14 +244,21 @@ class TestPhase3Analysis:
         agent = _make_agent(llm)
         agent._methodology_llm = llm
         observations = [_obs(i) for i in range(8)]
+
         ptype, protected, attempt, rationale = await agent._brute_force_phase3_analyze(observations)
-        assert ptype == BruteForceProtectionType.RATE_LIMIT
-        assert protected is True
-        assert attempt == 3
-        assert "429" in rationale
+
+        assert llm.prompts == []
+        assert llm.answers, "the scripted answer must still be unconsumed"
+        # The scripted answer would have invented a rate limit and an ordinal.
+        # The deterministic verdict stands, and the ordinal is None because no
+        # observation carried a control.
+        assert ptype == BruteForceProtectionType.NONE
+        assert protected is False
+        assert attempt is None
+        assert "429" not in rationale
 
     @pytest.mark.asyncio
-    async def test_no_protection_fallback(self) -> None:
+    async def test_no_protection(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
@@ -252,7 +269,7 @@ class TestPhase3Analysis:
         assert attempt is None
 
     @pytest.mark.asyncio
-    async def test_retry_after_fallback_detects_rate_limit(self) -> None:
+    async def test_retry_after_detects_rate_limit(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
@@ -265,7 +282,7 @@ class TestPhase3Analysis:
         assert attempt == 3
 
     @pytest.mark.asyncio
-    async def test_captcha_marker_fallback(self) -> None:
+    async def test_captcha_marker(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
@@ -277,7 +294,7 @@ class TestPhase3Analysis:
         assert protected is True
 
     @pytest.mark.asyncio
-    async def test_delay_fallback(self) -> None:
+    async def test_progressive_delay(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
@@ -294,6 +311,30 @@ class TestPhase3Analysis:
         ptype, protected, _a, _r = await agent._brute_force_phase3_analyze(observations)
         assert ptype == BruteForceProtectionType.DELAY
         assert protected is True
+
+    @pytest.mark.asyncio
+    async def test_every_reported_ordinal_is_an_observed_attempt(self) -> None:
+        """The ordinal is never authored — it is quoted from an observation.
+
+        This is the property the LLM path could not hold: the model was handed
+        eight observation dicts and asked to name a number, and nothing checked
+        that the number corresponded to anything. Every deterministic branch
+        takes it from ``o.attempt``.
+        """
+        cases = [
+            [
+                _obs(i, status=429 if i == 6 else 200, retry_after="30" if i == 6 else "")
+                for i in range(8)
+            ],
+            [_obs(i, body_marker="captcha required" if i == 2 else "") for i in range(8)],
+            [_obs(i, body_marker="account locked" if i == 5 else "") for i in range(8)],
+            [_obs(i, auth_reached=i < 3) for i in range(8)],
+        ]
+        agent = _make_agent(_ScriptedLLM(answers=[""]))
+        agent._methodology_llm = agent.llm
+        for observations in cases:
+            _t, _p, attempt, _r = await agent._brute_force_phase3_analyze(observations)
+            assert attempt in {o.attempt for o in observations}
 
 
 # ===========================================================================
@@ -569,9 +610,9 @@ class TestConstantDelayIsProtection:
         assert protected is False
 
 
-class TestDeterministicGatesTheLLM:
+class TestTheDeterministicClassifierIsTheWholeVerdict:
     @pytest.mark.asyncio
-    async def test_llm_cannot_clear_a_deterministic_protection(self) -> None:
+    async def test_model_prose_cannot_clear_a_deterministic_protection(self) -> None:
         llm = _ScriptedLLM(
             answers=[
                 '{"protection_type": "none", "protected": false, '
@@ -584,9 +625,20 @@ class TestDeterministicGatesTheLLM:
         ptype, protected, _a, _r = await agent._brute_force_phase3_analyze(observations)
         assert ptype == BruteForceProtectionType.RATE_LIMIT
         assert protected is True
+        assert llm.prompts == []
 
     @pytest.mark.asyncio
-    async def test_llm_may_add_a_protection_the_deterministic_pass_missed(self) -> None:
+    async def test_model_can_no_longer_add_a_protection_it_alone_saw(self) -> None:
+        """The one thing removing the call gives up, pinned so it is a decision.
+
+        The model could previously ADD a protection the classifier missed, and
+        on this observation series it would have: eight unremarkable auth
+        failures, and prose asserting a lockout at attempt 4. That suppression
+        is now unreachable. The residual is a stated recall loss — a throttle
+        outside the classifier's vocabulary is reported ``none`` — and the fix
+        is a new rule, tested, not a model improvising one and suppressing a
+        finding on an ordinal it authored.
+        """
         llm = _ScriptedLLM(
             answers=[
                 '{"protection_type": "lockout", "protected": true, '
@@ -597,6 +649,7 @@ class TestDeterministicGatesTheLLM:
         agent._methodology_llm = llm
         observations = [_obs(i) for i in range(8)]
         ptype, protected, attempt, _r = await agent._brute_force_phase3_analyze(observations)
-        assert ptype == BruteForceProtectionType.LOCKOUT
-        assert protected is True
-        assert attempt == 4
+        assert llm.prompts == []
+        assert ptype == BruteForceProtectionType.NONE
+        assert protected is False
+        assert attempt is None

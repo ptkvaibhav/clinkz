@@ -42,6 +42,17 @@ Two things were wrong and both are fixed:
 2. **The mechanism description could emit.** Phase 4 now raises unless
    `forge_confirmed`; the caller records a lead instead.
 
+A third followed on 2026-08-19: **phase 3 now calls no LLM at all.** The model
+flipped the classification on 5 of 57 recorded calls and none of those five could
+reach a finding — `severity` is overwritten to `high` on the only emitting path,
+`should_attempt_bypass` gates nothing (see 1), and `rationale` is reconciled
+against what the confirmation then did. What *was* live: a `none` verdict makes
+the caller skip the form, so a confirmable forge would never have been attempted.
+A suppression path decided by a checkpoint whose other three outputs are inert is
+worth removing, and the 5/57 is recorded in the docstring so it is not re-read as
+consequential. See
+[deterministic-verdict-classes.md](deterministic-verdict-classes.md).
+
 `1f9a0932` **predates** the emission-chokepoint ground (`c2f64ac`, 64 minutes
 later), and replaying that finding's exact evidence through today's
 `_fp_ground_observation_is_rationale` returns the mechanism string — so the
