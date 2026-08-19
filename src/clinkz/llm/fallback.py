@@ -31,18 +31,29 @@ from clinkz.config import settings as global_settings
 from clinkz.llm.base import (
     AgentAction,
     CallStats,
+    DecisionPathFallbackError,
     LLMClient,
     LLMMessage,
     LLMTimeoutError,
     LLMUnavailableError,
     LLMUsageTotals,
+    OutputBudget,
     PromptLike,
     ProviderAccountError,
+    ProviderPolicyError,
     RateLimitError,
+    ResearchGrounding,
     ServiceUnavailableError,
     flatten_prompt,
 )
+from clinkz.llm.call_purpose import (
+    LLMCallPurpose,
+    current_call_purpose,
+    current_call_site,
+)
+from clinkz.llm.degradation import ProviderFallback, record_provider_fallback
 from clinkz.llm.factory import AGENT_PROVIDER_SETTINGS, get_llm_client
+from clinkz.llm.spend import HALT_SPEND_CAP, record_spend, spend_cap_exceeded
 from clinkz.observability.ledger import (
     ComponentKind,
     declare_component,
@@ -53,31 +64,69 @@ from clinkz.observability.ledger import (
 logger = logging.getLogger(__name__)
 
 
-#: Fallback chain per profile. ``reasoning`` prioritises Claude (best for
-#: multi-step planning); ``fast`` prioritises Gemini Flash (cheap + high
-#: volume). ``reasoning_pinned`` is a single-provider chain — Claude only,
-#: no fallback — used by Exploit-Agent methodology checkpoints (character
-#: probing, payload synthesis, encoding selection) where switching mid-test
-#: from Claude to Gemini changes the deterministic path the test depends on.
-#: Ollama is intentionally omitted from the fallback chains: the client is
-#: still a stub, so putting it in a production chain guarantees terminal
-#: failure. Add it back once the Ollama client is fully implemented.
+#: Profiles, retained as trace/telemetry labels rather than as different
+#: routings. Under routing v2 they no longer disagree about who goes first:
+#: ``reasoning`` and ``fast`` both resolve to
+#: ``settings.llm_provider_priority``, which is validated to lead with
+#: Anthropic, and ``reasoning_pinned`` is Anthropic with no tail at all.
+#:
+#: ``fast`` used to lead with Gemini Flash, and that was the hole. It was not a
+#: rule anybody would defend once stated — "the cheap tier answers first on
+#: recon, scan and report" — it was a cost decision that quietly became a
+#: routing decision, and the run's own traces are the evidence: Gemini served
+#: the exploit stage 12 times across 9 engagements, 6 of them exploit PLANS and
+#: 6 of them false-positive cross-checks, i.e. the suppression path.
+#:
+#: Ollama stays out: the client is a stub, so putting it in a production chain
+#: guarantees terminal failure. Add it back once it is implemented.
+LLM_PROFILES: frozenset[str] = frozenset({"reasoning", "reasoning_pinned", "fast"})
+
+#: Kept as a module-level name because callers and tests read it. Derived from
+#: the DEFAULT priority; :meth:`ResilientLLMClient._build_chain` reads the
+#: priority off its own ``config`` so a Settings override is honoured.
 LLM_FALLBACK_CHAINS: dict[str, list[str]] = {
-    "reasoning": ["anthropic", "gemini", "openai"],
+    "reasoning": list(global_settings.llm_provider_priority),
     "reasoning_pinned": ["anthropic"],
-    "fast": ["gemini", "anthropic", "openai"],
+    "fast": list(global_settings.llm_provider_priority),
 }
 
-#: Maps an agent role to the profile whose fallback chain it should use.
+#: Roles whose output DECIDES something.
+#:
+#: The distinction is not "important agent" but *what the answer becomes*:
+#:
+#: * **exploit** — the plan decides which classes are tested against which
+#:   endpoints, and the false-positive cross-check decides which findings
+#:   survive to the report. Both are the engagement's conclusions.
+#: * **research** — the runbook is folded into the exploit plan and persists to
+#:   the cross-engagement knowledge base, so a bad answer outlives the run.
+#:
+#: Recon and scan are deliberately NOT here. They produce observations that a
+#: later oracle re-derives from the live target, so a weaker model there costs
+#: recall and cannot manufacture a conclusion. That distinction survives
+#: routing v2 even though the ROUTING no longer varies by role: v2 made
+#: Anthropic priority 1 everywhere, so the question this set answers is no
+#: longer "who may serve it" but "how bad is it that something else did".
+CLAUDE_ONLY_ROLES: frozenset[str] = frozenset({"exploit", "research"})
+
+#: Maps an agent role to its profile. Every role is ``reasoning`` now, which is
+#: to say every role leads with Anthropic. The mapping is kept rather than
+#: deleted because it is where a future per-role divergence would be written,
+#: and because the trace records the profile a call ran under.
+#:
+#: Research is the one that cost something real. It led with Gemini Flash-Lite
+#: for native Search Grounding, and that capability does not exist on the
+#: Anthropic path — the runbook is now assembled without live grounded search.
+#: Stated rather than absorbed: the runbook is folded into the exploit plan and
+#: persisted to the cross-engagement KB, so a cheap model's answer there
+#: outlives the run that produced it, and "cheap model with live search" is not
+#: a trade this role is allowed to make on its own.
 AGENT_LLM_PROFILE: dict[str, str] = {
-    "recon": "fast",
-    "scan": "fast",
-    "crawl": "fast",
-    "report": "fast",
+    "recon": "reasoning",
+    "scan": "reasoning",
+    "crawl": "reasoning",
+    "report": "reasoning",
     "exploit": "reasoning",
-    # Research now leads with Gemini Flash-Lite (cheap, high-volume, native
-    # Search Grounding) → fast profile. Anthropic/OpenAI remain as fallbacks.
-    "research": "fast",
+    "research": "reasoning",
 }
 
 #: Environment variable that holds the API key for each provider. ``None``
@@ -107,6 +156,37 @@ _ACCOUNT_DISABLED_PROVIDERS: set[str] = set()
 def reset_account_disabled_providers() -> None:
     """Clear the terminal-account set. For tests and for a fresh process."""
     _ACCOUNT_DISABLED_PROVIDERS.clear()
+
+
+def _provider_client_class(provider: str) -> type[LLMClient] | None:
+    """The client CLASS for a provider, imported but not instantiated.
+
+    Used to read a class-level declaration — today only
+    :attr:`LLMClient.RESEARCH_GROUNDING` — without building a client. Building
+    one requires a key, opens a connection and can raise, none of which a stamp
+    should be able to do. Returns ``None`` for an unknown provider, which every
+    caller renders as the undeclared/ungrounded value rather than a guess.
+    """
+    try:
+        if provider == "anthropic":
+            from clinkz.llm.anthropic_client import AnthropicClient
+
+            return AnthropicClient
+        if provider == "gemini":
+            from clinkz.llm.gemini_client import GeminiClient
+
+            return GeminiClient
+        if provider == "openai":
+            from clinkz.llm.openai_client import OpenAIClient
+
+            return OpenAIClient
+        if provider == "ollama":
+            from clinkz.llm.ollama_client import OllamaClient
+
+            return OllamaClient
+    except Exception as exc:  # noqa: BLE001 — a stamp must never fail a run
+        logger.warning("Could not import the client class for %s: %s", provider, exc)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -213,16 +293,70 @@ class ResilientLLMClient(LLMClient):
         return await self._dispatch("reason", messages, tools)
 
     async def research(self, query: str) -> str:
+        """Serve one research call through the chain.
+
+        The grounding of the answer is whatever the provider that ANSWERED
+        declares, which is only knowable after the chain resolves — see
+        :meth:`research_grounding`.
+        """
         return await self._dispatch("research", query)
 
-    async def generate_text(self, prompt: PromptLike) -> str:
+    def research_grounding(self) -> ResearchGrounding:
+        """What the last research answer was grounded in — read from who SERVED it.
+
+        The same rule as ``model_stamp``: configuration says who was asked, the
+        run's own record says who answered, and it is the one that answered
+        whose capability the output actually has. Before any call has run this
+        reports the head of the chain, which is what the next call would get.
+
+        Grounding is the one capability routing v2 traded away. Research led
+        with Gemini Flash-Lite for native Search Grounding; Anthropic has no
+        equivalent on this path. So a chain that resolves to Anthropic answers
+        from a training corpus, every CVE published after its cutoff is
+        invisible, and nothing in the text says so. This is the seam that lets
+        the runbook and the report say it.
+        """
+        provider = self._last_used_provider or (
+            self.fallback_chain[0] if self.fallback_chain else ""
+        )
+        if not provider:
+            return ResearchGrounding.UNDECLARED
+        # Read from an ALREADY-BUILT client when there is one, else off the
+        # class. Never instantiate: a stamp must not need an API key, must not
+        # cost a connection, and must not be the thing that raises. Same shape
+        # as _resolve_model, which reads a provider's model without building it.
+        existing = self._clients.get(provider)
+        if existing is not None:
+            return existing.research_grounding()
+        client_class = _provider_client_class(provider)
+        if client_class is None:
+            self._logger.warning(
+                "No client class known for provider %s — reporting research grounding as "
+                "UNDECLARED, which is treated as ungrounded",
+                provider,
+            )
+            return ResearchGrounding.UNDECLARED
+        return client_class.RESEARCH_GROUNDING
+
+    async def generate_text(
+        self, prompt: PromptLike, *, budget: OutputBudget = OutputBudget.DEFAULT
+    ) -> str:
+        """Serve one text generation through the chain, tracing what answered.
+
+        Args:
+            prompt: The prompt, plain or segmented.
+            budget: Output-ceiling policy, forwarded verbatim to whichever
+                provider serves the call. Forwarded rather than resolved here
+                because the ceiling is a function of the model, and which model
+                runs is exactly what this method is deciding.
+        """
         from clinkz.observability.trace import Stopwatch, get_active_trace_writer
 
         writer = get_active_trace_writer()
         stopwatch = Stopwatch()
         flat = flatten_prompt(prompt)
         try:
-            response = await self._dispatch("generate_text", prompt)
+            response = await self._dispatch("generate_text", prompt, budget=budget)
         except Exception as exc:
             if writer is not None:
                 writer.llm_call(
@@ -273,6 +407,15 @@ class ResilientLLMClient(LLMClient):
             return None
         self.run_totals.add(stats)
         self._record_cache_economics(stats)
+        # Fold into the engagement's spend ledger here, for the same reason the
+        # run totals are folded in here: this is the one place that knows WHICH
+        # provider actually served the call after the chain resolved, and the
+        # cap is meaningless if it is attributed to the model that was asked.
+        record_spend(
+            model=self._resolve_model(provider),
+            input_tokens=stats.billed_prompt_tokens,
+            output_tokens=stats.output_tokens,
+        )
         return stats
 
     @staticmethod
@@ -329,6 +472,14 @@ class ResilientLLMClient(LLMClient):
             "cache_write_tokens": stats.cache_creation_input_tokens,
             "cache_read_tokens": stats.cache_read_input_tokens,
             "stop_reason": stats.stop_reason,
+            # The ceiling the call carried, so headroom is derivable from the
+            # trace alone. output_tokens without it cannot distinguish a
+            # complete answer from a truncated one. ``None`` rather than 0 when
+            # the provider that served the call sets no per-request ceiling —
+            # zero headroom is what exhaustion looks like, and "not reported"
+            # must not read as "exhausted".
+            "max_output_tokens": stats.max_output_tokens or None,
+            "output_headroom": stats.output_headroom if stats.max_output_tokens else None,
         }
 
     # ------------------------------------------------------------------
@@ -344,6 +495,21 @@ class ResilientLLMClient(LLMClient):
         finish the engagement on a backup than halt on a transient provider
         quirk.
         """
+        # The spend cap, checked BEFORE the call so the run stops AT the cap
+        # rather than one unbounded call past it. A halt rather than an
+        # exception: raising here would land in one of the methodology layers'
+        # broad handlers and be reported as "that probe failed", while the
+        # governor's halt winds the phases down cooperatively and still
+        # produces the report — which matters most exactly when the cap fires.
+        exceeded = spend_cap_exceeded()
+        if exceeded:
+            from clinkz.safety.governor import get_active_governor
+
+            governor = get_active_governor()
+            if governor is not None and not governor.halted:
+                governor.halt(HALT_SPEND_CAP, exceeded)
+            raise LLMUnavailableError(f"LLM budget exhausted — {exceeded}")
+
         last_error: Exception | None = None
         # The provider we actually reached for first. A later provider serving
         # the call is a fallback ACTIVATION, and it is recorded — this is the
@@ -375,8 +541,17 @@ class ResilientLLMClient(LLMClient):
             if not first_attempted:
                 first_attempted = provider
 
+            # The disqualification gate — the last statement before the
+            # request leaves. Placed here and not in `_build_chain` because a
+            # chain is a plan and this is the call: `override_chain`, an
+            # `exclude_providers` that reshuffled the head, or a future edit to
+            # the priority order would each route around a config-time check.
+            self._assert_fallback_permitted(provider, primary=self.fallback_chain[0])
+
             try:
                 client = self._get_or_create_client(provider)
+            except ProviderPolicyError:
+                raise
             except Exception as exc:
                 self._logger.warning("Could not instantiate %s: %s", provider, exc)
                 last_error = exc
@@ -400,10 +575,29 @@ class ResilientLLMClient(LLMClient):
                     note=f"{self.agent_role}.{method}",
                 )
                 if provider != first_attempted:
+                    reason = type(last_error).__name__ if last_error else "chain rotation"
+                    # The ledger alarm fires in EVERY mode. It is the record
+                    # that something covered for something else, and it is
+                    # independent of what that cost the run.
                     record_fallback(
                         component=f"llm:{first_attempted}",
                         covered_by=f"llm:{provider}",
-                        reason=type(last_error).__name__ if last_error else "chain rotation",
+                        reason=reason,
+                    )
+                    # The disqualification. Separate from the ledger because it
+                    # answers a different question: not "did a fallback happen"
+                    # but "may this run's numbers be compared to another's".
+                    record_provider_fallback(
+                        ProviderFallback(
+                            agent_role=self.agent_role,
+                            method=method,
+                            asked_provider=first_attempted,
+                            asked_model=self._resolve_model(first_attempted),
+                            served_provider=provider,
+                            served_model=self._resolve_model(provider),
+                            reason=reason,
+                            decision_bearing=self.agent_role in CLAUDE_ONLY_ROLES,
+                        )
                     )
                 return result
             except ProviderAccountError as exc:
@@ -440,6 +634,8 @@ class ResilientLLMClient(LLMClient):
                     note=type(exc).__name__,
                 )
                 continue
+            except ProviderPolicyError:
+                raise
             except Exception as exc:
                 self._logger.error(
                     "LLM provider %s unexpected error (%s) — trying next in chain: %s",
@@ -465,25 +661,126 @@ class ResilientLLMClient(LLMClient):
     # Helpers
     # ------------------------------------------------------------------
 
+    def _assert_fallback_permitted(self, provider: str, *, primary: str) -> None:
+        """Refuse a fallback that this run, or this call, must not take.
+
+        Called before the request leaves, so the run fails *instead of* buying
+        an answer it would have to throw away.
+
+        Two independent refusals, and they answer different questions.
+
+        **The run's mode — comparability.** In ``baseline`` mode nothing but
+        the primary may answer, for **every** role and not only the
+        decision-bearing ones. ``exploit`` and ``research`` are the roles whose
+        answers become conclusions, and a substitution there is a correctness
+        problem. But the reason baseline mode exists is comparability, and that
+        is broken by any stage: the 27%-vs-80% swing that motivated the model
+        stamp was measured on *security-header analysis*, a scan/report-side
+        call producing what looks like a pure observation. A ladder number
+        produced half by one model and half by another is not a measurement of
+        the target, whichever phase did the producing.
+        :data:`CLAUDE_ONLY_ROLES` still marks where a fallback is *also* a
+        correctness problem, and the register records which kind each event was.
+
+        **The call's purpose — disclosability.** In ``client`` mode a fallback
+        is permitted and stamped, because a client engagement should not die
+        because a provider had a bad minute and because reduced coverage is a
+        thing a stamp can honestly disclose. That reasoning does not extend to a
+        call whose answer EMITS a finding or SUPPRESSES one
+        (:mod:`clinkz.llm.call_purpose`). A suppressed finding is not in the
+        report: there is no row to caveat, no section that names it, and nothing
+        distinguishes "the engine did not find it" from "a provider we did not
+        choose decided it was not real". Six of the twelve recorded
+        Gemini-served exploit calls were false-positive cross-checks — the
+        suppression path — so this is the observed failure, not a hypothetical
+        one. Refusing is the conservative direction on both paths: the caller's
+        existing unreachable-model handling leaves the finding standing and the
+        methodology on its deterministic build.
+
+        Args:
+            provider: The provider about to be asked.
+            primary: The head of this client's chain.
+
+        Raises:
+            ProviderPolicyError: The fallback is refused. Deliberately a
+                ``BaseException``: every LLM call site is wrapped in a broad
+                ``except Exception`` that degrades gracefully, which is the
+                behaviour being refused.
+        """
+        if provider == primary:
+            return
+
+        # The run-mode refusal is checked FIRST, and raises the uncatchable
+        # error, because a baseline run wants the RUN to stop — on any role and
+        # any purpose. The purpose refusal below wants only the CALL to stop.
+        if self.config.run_mode == "baseline":
+            raise ProviderPolicyError(
+                f"Baseline run: refusing to let '{provider}' serve "
+                f"'{self.agent_role}' after primary '{primary}' failed "
+                f"(chain={self.fallback_chain}). A ladder served by two models is "
+                f"not a ladder — the same prompt on a byte-identical observation "
+                f"has produced materially different findings across models, so a "
+                f"number produced partly by each measures nothing about the target. "
+                f"Re-run once the primary is healthy, or set CLINKZ_RUN_MODE=client "
+                f"to complete the run with a provider_degraded stamp and no "
+                f"baseline eligibility."
+            )
+
+        purpose = current_call_purpose()
+        if purpose.permits_fallback:
+            return
+        site = current_call_site() or self.agent_role
+        effect = (
+            "REMOVES findings from the report"
+            if purpose is LLMCallPurpose.SUPPRESS
+            else "shapes a finding that reaches the report"
+        )
+        raise DecisionPathFallbackError(
+            f"Refusing to let '{provider}' serve '{site}' after primary "
+            f"'{primary}' failed (chain={self.fallback_chain}). This call is "
+            f"declared {purpose.value.upper()}: its answer {effect}. The "
+            f"provider_degraded stamp can disclose reduced coverage; it cannot "
+            f"disclose a finding that was {purpose.value}ed and is therefore not "
+            f"in the deliverable. Planning calls still fall back and stamp. This "
+            f"call fails instead, and its caller degrades the way it already does "
+            f"when a model is unreachable — leaving the finding standing, and the "
+            f"methodology on its deterministic build."
+        )
+
     def _build_chain(self, agent_role: str, profile: str) -> list[str]:
         """Compute the effective fallback chain for an agent role.
 
-        The profile chain is the baseline. If ``LLM_PROVIDER_<ROLE>`` (or the
-        legacy ``<ROLE>_LLM_PROVIDER``) pins a provider, move it to the
-        front; the remaining providers keep their relative order.
+        ``settings.llm_provider_priority`` is the baseline, and it is validated
+        to lead with Anthropic. ``LLM_PROVIDER_<ROLE>`` (or the legacy
+        ``<ROLE>_LLM_PROVIDER``) still has an effect, but a **narrowed** one: it
+        promotes its provider to the head of the FALLBACK TAIL — position 2 —
+        and can no longer displace position 1.
+
+        That narrowing is the point of routing v2 and it is a real behaviour
+        change, so it is worth being explicit about what it forbids. Before
+        this, ``LLM_PROVIDER_RECON=gemini`` meant "Gemini answers recon", and
+        the setting reads exactly like it still should. It now means "if
+        Anthropic cannot answer recon, try Gemini before OpenAI". An operator
+        who genuinely wants a non-Anthropic provider serving a phase has to
+        change the declared priority in config, where the change is one line,
+        visible, and validated — rather than reaching it sideways through a
+        per-role env var that looks like a preference.
         """
-        base = list(LLM_FALLBACK_CHAINS.get(profile, LLM_FALLBACK_CHAINS["fast"]))
+        if profile == "reasoning_pinned":
+            return ["anthropic"]
+
+        base = list(self.config.llm_provider_priority)
 
         setting_name = AGENT_PROVIDER_SETTINGS.get(agent_role)
         configured: str | None = None
         if setting_name is not None:
             configured = getattr(self.config, setting_name, None)
 
-        if configured and configured in base:
-            base.remove(configured)
-            base.insert(0, configured)
-        elif configured and configured not in base:
-            base.insert(0, configured)
+        if configured and configured != base[0]:
+            if configured in base:
+                base.remove(configured)
+            # Position 1, never 0: the head is Anthropic and stays Anthropic.
+            base.insert(1, configured)
 
         return base
 

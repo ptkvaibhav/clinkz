@@ -68,13 +68,20 @@ from clinkz.engagement.secrets import clear_secrets, register_secret
 from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
-from clinkz.llm.base import LLMClient
+from clinkz.llm.base import LLMClient, ResearchGrounding
+from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
+from clinkz.llm.degradation import (
+    DegradationRegister,
+    set_active_degradation_register,
+)
 from clinkz.llm.factory import get_llm_client
 from clinkz.llm.fallback import (
     ResilientLLMClient,
     preflight_provider_available,
     validate_agent_chains,
 )
+from clinkz.llm.providers import ProviderPreflight, preflight_providers
+from clinkz.llm.spend import SpendLedger, set_active_spend_ledger, spend_summary
 from clinkz.models.engagement import AuthorizationRecord, CredentialSet, RoleCredential
 from clinkz.models.finding import ExploitTask
 from clinkz.models.recon import (
@@ -90,6 +97,11 @@ from clinkz.observability.ledger import (
     ContributionLedger,
     set_active_ledger,
 )
+from clinkz.observability.plan_alarms import (
+    PlanAlarmRegister,
+    plan_alarm_summary,
+    set_active_plan_alarms,
+)
 from clinkz.observability.trace import (
     TraceWriter,
     set_active_trace_writer,
@@ -99,6 +111,11 @@ from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.orchestrator.target_resolver import resolve_target_for_docker_mode
 from clinkz.safety.benchmark import set_active_benchmark_profile
 from clinkz.safety.governor import EngagementGovernor, set_active_governor
+from clinkz.safety.scope_refusals import (
+    ScopeRefusalLog,
+    scope_refusal_summary,
+    set_active_scope_refusal_log,
+)
 from clinkz.state import StateStore
 from clinkz.tools.docker_preflight import ensure_container_ready
 from clinkz.tools.resolver import ToolResolver
@@ -300,6 +317,12 @@ class OrchestratorAgent:
         # Records what each component actually contributed, so a fallback that
         # covers for a dead one cannot make the run look healthy.
         self._ledger: ContributionLedger | None = None
+        self._plan_alarms: PlanAlarmRegister | None = None
+        self._degradation: DegradationRegister | None = None
+        self._provider_preflight: ProviderPreflight | None = None
+        #: Set by the CLI before ``run()`` when the operator declared caps.
+        self._spend_ledger: SpendLedger | None = None
+        self._scope_refusals: ScopeRefusalLog | None = None
         # The composition view of every CONFIRMED chain the exploit phase proved.
         # Carried to the report so it can render the links; the chains themselves
         # are ordinary findings and are counted there, never here.
@@ -378,6 +401,30 @@ class OrchestratorAgent:
         if settings.tool_exec_mode == "docker":
             await ensure_container_ready(settings.docker_container)
 
+        # Provider auto-detection. Runs before the chain check because it is
+        # the step that can explain WHY a chain has no usable provider, and
+        # because it registers every detected key with the redaction chokepoint
+        # — which must happen before anything can quote one back. An API key
+        # has no distinctive shape, so the shape rules cannot catch it and
+        # intake registration is the only thing that keeps it out of an
+        # artifact.
+        #
+        # Detection establishes AVAILABILITY and never priority: priority is
+        # declared in settings.llm_provider_priority with Anthropic pinned
+        # first. Auto-enrolling a discovered key into the chain is how a run
+        # gets a surprise model swap.
+        provider_preflight = await preflight_providers()
+        provider_preflight.log_summary(self._logger)
+        self._provider_preflight = provider_preflight
+        if not provider_preflight.primary_usable:
+            self._logger.error(
+                "Priority-1 provider %r is unusable (available=%s). Every call will "
+                "start by failing over, and under routing v2 a fallback disqualifies "
+                "the run as a baseline.",
+                provider_preflight.primary,
+                sorted(provider_preflight.available),
+            )
+
         # Fail fast if no agent has a usable LLM provider — otherwise every
         # LLM call later in the engagement walks an empty fallback chain.
         validate_agent_chains(["recon", "scan", "exploit", "research", "report"])
@@ -402,6 +449,43 @@ class OrchestratorAgent:
             ledger = ContributionLedger(engagement_id=engagement_id)
             set_active_ledger(ledger)
             self._ledger = ledger
+
+            # Install the provider-degradation register. Routing v2 makes
+            # Anthropic priority 1 for every call; this is what records the
+            # cost when something else answered anyway. Absent by default for
+            # the same reason as the ledger — a direct methodology invocation
+            # has no run to disqualify.
+            degradation = DegradationRegister()
+            set_active_degradation_register(degradation)
+            self._degradation = degradation
+
+            # The engagement's third bound, beside the governor's request rate
+            # and the window's hard stop. Installed even when no cap is set:
+            # the accounting is what makes "actual API spend" a measurement
+            # rather than an estimate, and a run that reports its consumption
+            # is the only one that can justify the next run's cap.
+            spend_ledger = self._spend_ledger or SpendLedger()
+            set_active_spend_ledger(spend_ledger)
+            self._spend_ledger = spend_ledger
+
+            # The plan cap is the sixth bound, and the one that most directly
+            # decides what gets TESTED: candidate (class, endpoint) pairs are
+            # ranked and everything past the cap is dropped. That has been loud
+            # in the log and the trace since D1 truncated ~1,500 candidates to
+            # 150 four times over — and neither of those reaches the client.
+            plan_alarms = PlanAlarmRegister()
+            set_active_plan_alarms(plan_alarms)
+            self._plan_alarms = plan_alarms
+
+            # The scope-refusal log. THE control on an external engagement:
+            # a real application links out, the crawler follows links, and the
+            # scope check refuses the ones that leave the authorised host.
+            # Until this existed the refusal left no evidence, so a run that
+            # enforced it perfectly and one that never had a link to follow
+            # produced identical artifacts.
+            scope_refusals = ScopeRefusalLog()
+            set_active_scope_refusal_log(scope_refusals)
+            self._scope_refusals = scope_refusals
 
             # Install the production safety rails for this engagement. Every
             # outbound request now passes through the governor: paced, capped,
@@ -687,6 +771,17 @@ class OrchestratorAgent:
                         else None,
                         "safety": governor.stats(),
                         "authentication": self._authentication_summary(),
+                        # What the research phase actually READ. Routing v2
+                        # leads with Anthropic, which has no search grounding on
+                        # the research path, so a runbook may be a recollection
+                        # of a training corpus — and every CVE published after
+                        # that cutoff is invisible with nothing in the text
+                        # saying so. Read off the phase result rather than
+                        # configuration: it is the provider that ANSWERED whose
+                        # capability the output has.
+                        "research_grounding": self._research_grounding_summary(
+                            concurrent_results.get("research", {})
+                        ),
                         # Empty on a black-box engagement. Present whenever
                         # ``--source`` was supplied, so a tree that could not be
                         # ingested is stated rather than silently absent.
@@ -756,6 +851,65 @@ class OrchestratorAgent:
                 summary["component_ledger"] = ledger.to_dict()
                 set_active_ledger(None)
                 self._ledger = None
+
+                # The provider-degradation stamp, alongside the ledger and for
+                # the same reason: reported before the trace writer closes, and
+                # unconditionally — a halted run that also degraded needs both
+                # facts, and "no fallback occurred" is a claim worth making
+                # explicitly rather than leaving to an absent section.
+                degradation_summary_dict = degradation.summary()
+                summary["provider_degradation"] = degradation_summary_dict
+                if self._provider_preflight is not None:
+                    summary["provider_preflight"] = self._provider_preflight.to_dict()
+                if degradation.degraded:
+                    self._logger.warning(
+                        "PROVIDER DEGRADED — %d fallback(s) across %s. This run is "
+                        "permanently INELIGIBLE as a baseline.",
+                        degradation_summary_dict["fallback_count"],
+                        ", ".join(degradation_summary_dict["call_sites"]),
+                    )
+                    for event in degradation.events():
+                        self._logger.warning("  %s", event.describe())
+                else:
+                    self._logger.info(
+                        "Provider routing clean — every call served by the primary; "
+                        "run is eligible as a baseline."
+                    )
+                set_active_degradation_register(None)
+                self._degradation = None
+
+                # The bounds report themselves, whatever the run did. Both are
+                # rendered even when empty: "nothing out of scope was reached
+                # for" and "this is what the run cost" are claims a deliverable
+                # should make, and a section that appears only on an incident
+                # cannot be told apart from one nobody wrote.
+                scope_refusals.log_summary(self._logger)
+                summary["scope_refusals"] = scope_refusal_summary()
+                self._logger.info("LLM budget — %s", spend_ledger.describe())
+                summary["llm_spend"] = spend_summary()
+                plan_summary = plan_alarm_summary()
+                summary["plan_coverage"] = plan_summary
+                if plan_summary["ranking_inversion_count"]:
+                    self._logger.warning(
+                        "PLAN RANKING FAILURE — %d dropped task(s) sat on an endpoint "
+                        "carrying their own class's observed surface. An ordering defect, "
+                        "not a budget one: a larger cap does not fix it.",
+                        plan_summary["ranking_inversion_count"],
+                    )
+                elif plan_summary["plan_truncated"]:
+                    self._logger.warning(
+                        "Plan cap truncated %d candidate task(s) across %s — coverage is "
+                        "bounded by the cap, and the report says so.",
+                        plan_summary["dropped_total"],
+                        ", ".join(plan_summary["classes_truncated"]) or "no class",
+                    )
+                else:
+                    self._logger.info("Plan fit inside its cap — no class was truncated.")
+                set_active_plan_alarms(None)
+                self._plan_alarms = None
+                set_active_scope_refusal_log(None)
+                set_active_spend_ledger(None)
+                self._scope_refusals = None
 
                 # Always close + unset the trace writer so module-level state
                 # cannot leak between back-to-back engagements (relevant in
@@ -1705,7 +1859,8 @@ class OrchestratorAgent:
                     f"If no and this requires an exploit task, respond with: RESPIN_EXPLOIT\n"
                     f"Respond with ONLY the action keyword."
                 )
-                routing_decision = (await self._llm.generate_text(routing_prompt)).strip()
+                with llm_call_purpose(LLMCallPurpose.PLANNING, site="orchestrator._handle_query"):
+                    routing_decision = (await self._llm.generate_text(routing_prompt)).strip()
                 self._logger.info(
                     "Orchestrator routing decision for query from '%s': %s",
                     requesting_agent,
@@ -1757,7 +1912,8 @@ class OrchestratorAgent:
                 f"Provide a concise, factual response based on the available data. "
                 f"If you don't have the information, say so clearly."
             )
-            response_text = await self._llm.generate_text(prompt)
+            with llm_call_purpose(LLMCallPurpose.PLANNING, site="orchestrator._handle_query"):
+                response_text = await self._llm.generate_text(prompt)
         except Exception as exc:
             self._logger.warning("LLM query response failed: %s", exc)
             response_text = f"Could not generate response: {exc}"
@@ -2797,6 +2953,35 @@ class OrchestratorAgent:
             "session_checks_performed": self._session_sentinel.checks_requested,
             "session_false_alarms": self._session_sentinel.false_alarms,
             "reauthentications": self._session_sentinel.reauths_triggered,
+        }
+
+    @staticmethod
+    def _research_grounding_summary(research_phase: dict[str, Any]) -> dict[str, Any]:
+        """What the research phase read, as the report renders it.
+
+        Built from the phase's own returned result, never from
+        ``settings.research_llm_provider``: configuration says who was asked and
+        the result carries who answered, and it is the one that answered whose
+        grounding the runbook actually has.
+
+        A research phase that did not run, errored, or was skipped reports
+        ``undeclared`` — which is treated as ungrounded, the direction that
+        cannot overstate.
+        """
+        result = research_phase.get("result") if isinstance(research_phase, dict) else None
+        if not isinstance(result, dict):
+            return {
+                "grounding": ResearchGrounding.UNDECLARED.value,
+                "is_grounded": False,
+                "providers": [],
+                "runbook_entries": 0,
+            }
+        grounding = str(result.get("grounding") or ResearchGrounding.UNDECLARED.value)
+        return {
+            "grounding": grounding,
+            "is_grounded": grounding == ResearchGrounding.LIVE_SEARCH.value,
+            "providers": list(result.get("grounding_providers") or []),
+            "runbook_entries": len(result.get("runbook") or []),
         }
 
     # ------------------------------------------------------------------

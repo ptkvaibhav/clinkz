@@ -4,7 +4,7 @@ Each phase is exercised in isolation with mocked HTTP + LLM:
 
     Phase 1 (hypothesis)   — form + script gate
     Phase 2 (observation)  — hidden-field / JS-write / validation collection
-    Phase 3 (analysis)     — LLM JSON parsing + deterministic fallback, then
+    Phase 3 (analysis)     — deterministic classification (no LLM on this path), then
                              the DETERMINISTIC forge-and-accept confirmation
     Phase 4 (finding)      — emission only for a confirmed forgery
 
@@ -70,7 +70,7 @@ class _ScriptedLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         self.prompts.append(prompt)
         if not self.answers:
             return ""
@@ -241,15 +241,15 @@ class TestCandidateInputDiscovery:
 
 
 # ===========================================================================
-# Phase 3 — Analysis (deterministic fallback)
+# Phase 3 — Analysis (deterministic; the LLM is not on this path)
 # ===========================================================================
 
 
-class TestPhase3FallbackAnalysis:
+class TestPhase3DeterministicAnalysis:
     def test_hidden_field_write_without_token_name(self) -> None:
         agent = _make_agent()
         controlled = [("submit_btn", "document.getElementById('submit_btn').value = 'go'")]
-        pattern, severity, _r, should_bypass = agent._fallback_js_attacks_analysis(
+        pattern, severity, _r, should_bypass = agent._deterministic_js_attacks_analysis(
             controlled, ["submit_btn"], []
         )
         assert pattern == JSAttackPatternType.HIDDEN_FIELD_WRITE
@@ -259,13 +259,15 @@ class TestPhase3FallbackAnalysis:
     def test_token_named_field_classified_as_token_computation(self) -> None:
         agent = _make_agent()
         controlled = [("csrf_token", "document.getElementById('csrf_token').value = 'abc'")]
-        pattern, _sev, _r, _bp = agent._fallback_js_attacks_analysis(controlled, ["csrf_token"], [])
+        pattern, _sev, _r, _bp = agent._deterministic_js_attacks_analysis(
+            controlled, ["csrf_token"], []
+        )
         assert pattern == JSAttackPatternType.TOKEN_COMPUTATION
 
     def test_validation_only_classified_as_client_validation(self) -> None:
         agent = _make_agent()
         validation_hits = ["if (input.value === 'expected') { ... }"]
-        pattern, _sev, _r, should_bypass = agent._fallback_js_attacks_analysis(
+        pattern, _sev, _r, should_bypass = agent._deterministic_js_attacks_analysis(
             [], [], validation_hits
         )
         assert pattern == JSAttackPatternType.CLIENT_VALIDATION
@@ -275,48 +277,64 @@ class TestPhase3FallbackAnalysis:
         agent = _make_agent()
         # Concatenation / function call — not a string literal.
         controlled = [("token", "document.getElementById('token').value = computeHash(time)")]
-        _p, _s, _r, should_bypass = agent._fallback_js_attacks_analysis(controlled, ["token"], [])
+        _p, _s, _r, should_bypass = agent._deterministic_js_attacks_analysis(
+            controlled, ["token"], []
+        )
         assert should_bypass is False
 
     def test_no_evidence_classified_as_none(self) -> None:
         agent = _make_agent()
-        pattern, _sev, _r, _bp = agent._fallback_js_attacks_analysis([], [], [])
+        pattern, _sev, _r, _bp = agent._deterministic_js_attacks_analysis([], [], [])
         assert pattern == JSAttackPatternType.NONE
 
 
 # ===========================================================================
-# Phase 3 — LLM analysis parsing
+# Phase 3 — the LLM is not consulted
 # ===========================================================================
 
 
-class TestPhase3LLMAnalysis:
+class TestPhase3NoLLM:
     @pytest.mark.asyncio
-    async def test_llm_classification_parsed(self) -> None:
+    async def test_the_llm_is_never_consulted(self) -> None:
+        """Asserted on the CALL, not on the answer.
+
+        Three of this checkpoint's four outputs are inert on the emitting path
+        (severity is overwritten to ``high`` at confirmation, the bypass flag
+        gates nothing, the rationale is reconciled against the outcome), so the
+        5/57 recorded classification flips changed no deliverable. The fourth
+        was live: a ``none`` verdict skips the form, which is a suppression path.
+        Only the absence of the call closes it.
+        """
         llm = _ScriptedLLM(
             answers=[
-                '{"pattern_type": "token_computation", "severity": "high", '
+                '{"pattern_type": "none", "severity": "high", '
                 '"rationale": "JS computes token", "should_attempt_bypass": true}'
             ]
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
         controlled = [("csrf", "elem.value = 'literal'")]
+
         pattern, severity, rationale, bp = await agent._js_attacks_phase3_analyze(
             controlled, ["csrf"], []
         )
+
+        assert llm.prompts == []
+        assert llm.answers, "the scripted answer must still be unconsumed"
+        # The scripted "none" would have suppressed the class. The deterministic
+        # verdict stands instead.
         assert pattern == JSAttackPatternType.TOKEN_COMPUTATION
-        assert severity == "high"
-        assert "computes" in rationale
-        assert bp is True
+        assert severity == "medium"
+        assert "computes" not in rationale
+        assert bp is True  # string literal — the deterministic replayability read
 
     @pytest.mark.asyncio
-    async def test_llm_unparseable_falls_back_to_deterministic(self) -> None:
+    async def test_deterministic_classification_is_the_verdict(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
         controlled = [("name", "elem.value = 'val'")]
         pattern, _sev, _r, _bp = await agent._js_attacks_phase3_analyze(controlled, ["name"], [])
-        # Deterministic fallback would pick HIDDEN_FIELD_WRITE for non-token name.
         assert pattern == JSAttackPatternType.HIDDEN_FIELD_WRITE
 
 

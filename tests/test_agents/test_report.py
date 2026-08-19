@@ -59,7 +59,7 @@ class MockReportLLM(LLMClient):
     async def research(self, query: str) -> str:
         raise AssertionError("ReportAgent must not call research()")
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         self.generate_text_calls.append(prompt)
         return "Should not be called."
 

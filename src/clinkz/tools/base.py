@@ -280,6 +280,24 @@ class ToolBase(ABC):
             ValueError: If target is outside the engagement scope.
         """
         if not self.scope.contains(target):
+            # Recorded BEFORE the raise. Every tool wrapper passes through
+            # here, so this is where an out-of-scope attempt is guaranteed to
+            # land — including the crawler's enrichment fetches, whose caller
+            # catches the error below and returns None. That catch is correct
+            # (a discoverer must not die on one bad link) and it is exactly
+            # what made this control silent: the refusal happened, worked, and
+            # left no evidence it had ever been tested.
+            from clinkz.safety.scope_refusals import record_scope_refusal
+
+            record_scope_refusal(
+                target,
+                # ``_stage`` is the wrapper convention (HTTPClientTool sets it);
+                # ``stage`` is read as a fallback so a wrapper that names it
+                # either way is still attributed, and a wrapper that carries
+                # neither is recorded WITHOUT a stage rather than not at all.
+                stage=getattr(self, "_stage", None) or getattr(self, "stage", "") or "",
+                tool=type(self).__name__,
+            )
             raise ValueError(
                 f"Target '{target}' is outside the engagement scope. "
                 "Refusing to run tool. Check your scope definition."

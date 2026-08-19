@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
+from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
 from clinkz.models.recon import (
     DetectedComponent,
     PortScanResult,
@@ -324,7 +325,8 @@ class ReconAgent(BaseAgent):
             "3. Priority services to investigate further\n"
             "Respond concisely."
         )
-        return await self.llm.generate_text(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="recon._llm_analyze_ports"):
+            return await self.llm.generate_text(prompt)
 
     # ------------------------------------------------------------------
     # Step 3: Service Scan
@@ -460,7 +462,8 @@ class ReconAgent(BaseAgent):
             "JSON array:"
         )
 
-        response = await self.llm.generate_text(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="recon._llm_extract_technologies"):
+            response = await self.llm.generate_text(prompt)
 
         # Parse LLM JSON response into TechStack
         try:
@@ -750,7 +753,8 @@ class ReconAgent(BaseAgent):
             "Data:\n" + "\n".join(parts) + "\n\n"
             "Provide a concise but thorough synthesis."
         )
-        return await self.llm.generate_text(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="recon._llm_synthesize"):
+            return await self.llm.generate_text(prompt)
 
     # ------------------------------------------------------------------
     # Step 7: Build Result

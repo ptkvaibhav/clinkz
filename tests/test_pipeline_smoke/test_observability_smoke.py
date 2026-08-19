@@ -167,7 +167,7 @@ def test_step_inputs_recorded_for_wrapped_step(tmp_path: Path, monkeypatch) -> N
         async def research(self, query: str) -> str:
             return ""
 
-        async def generate_text(self, prompt: str) -> str:
+        async def generate_text(self, prompt: str, **_kw: object) -> str:
             return "[]"
 
     async def _go() -> None:

@@ -191,3 +191,42 @@ fast, and `clinkz tool-invoke` keeps reading authoritative.
 If a future version of the trace needs to embed more data inline, do it
 on a new category — never bloat the existing summary lines past 500
 chars, or `clinkz trace inspect` becomes unreadable on a real run.
+
+## A bound that decides coverage belongs in the DELIVERABLE, not just the log
+
+`observability/plan_alarms.py`.
+
+`clinkz scan` states five bounds before it dispatches anything — rate,
+concurrency, window, token cap, spend cap. The **plan cap** is the sixth, and it
+is the one that most directly decides what gets tested: candidate
+`(class, endpoint)` pairs are ranked and everything past the cap is dropped. Four
+recorded D1 baseline runs each truncated ~1,500 candidates to 150.
+
+That has never been *silent* — `_log_plan_truncation` names every truncated
+class, the count, the first omitted endpoint, and separately any ranking
+inversion. It was only ever loud in the run log and `trace.jsonl`, and a client
+reads neither. So a report could say "we tested the target" over a plan that
+dropped the one endpoint a class could have confirmed on, and nothing in the
+deliverable would say so.
+
+`PlanTruncation` is recorded per planning pass, carried on
+`PentestReport.plan_coverage`, and rendered as a **Plan coverage** section. Two
+facts, kept apart because they have different fixes:
+
+| Fact | What it means | The fix |
+|------|---------------|---------|
+| `dropped_total` | The cap removed a class's tail. The budget working. | A larger cap (`EXPLOIT_MAX_PLAN_TASKS`). |
+| `ranking_inversion_count` | A task was dropped from an endpoint where **that class's own attack surface was observed**, while lower-relevance tasks survived. | Not a larger cap — the planner's ordering. It is what cost D1 its weak-session and SQLi findings. |
+
+Summing them would hide the ordering defect inside the budget, the same reason
+the contribution ledger keeps `DEAD_SEAM` apart from `SILENT`.
+
+The section renders when the plan **fit**, too: "no class was truncated" is a
+claim, and a run that fit inside its cap and a run whose truncation nobody
+recorded must not produce identical artifacts.
+
+Absent by default, like the governor, the ledger and the scope-refusal log. A
+directly invoked methodology, a replay or a driver installs no register, every
+hook no-ops, and the black-box floor is byte-identical. The per-class endpoint
+list is capped at 20; **the counts stay exact past the cap**, because a truncated
+record of a truncation is the failure the module exists to prevent.

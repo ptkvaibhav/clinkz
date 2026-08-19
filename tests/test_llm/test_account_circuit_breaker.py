@@ -87,7 +87,7 @@ class _CountingClient(LLMClient):
         self.error = error
         self.attempts = 0
 
-    async def generate_text(self, prompt: Any) -> str:
+    async def generate_text(self, prompt: Any, **_kw: object) -> str:
         self.attempts += 1
         raise self.error
 
@@ -102,7 +102,7 @@ class _WorkingClient(LLMClient):
     def __init__(self) -> None:
         self.attempts = 0
 
-    async def generate_text(self, prompt: Any) -> str:
+    async def generate_text(self, prompt: Any, **_kw: object) -> str:
         self.attempts += 1
         return "answer"
 
@@ -114,7 +114,10 @@ class _WorkingClient(LLMClient):
 
 
 def _wire(monkeypatch: pytest.MonkeyPatch, clients: dict[str, LLMClient]) -> ResilientLLMClient:
-    resilient = ResilientLLMClient("exploit", override_chain=list(clients))
+    # "recon": the breaker's behaviour is role-independent, but "exploit" may no
+    # longer rotate to a non-Claude provider at all, so a depletion test there
+    # would be testing the policy refusal rather than the breaker.
+    resilient = ResilientLLMClient("recon", override_chain=list(clients))
     monkeypatch.setattr(resilient, "_has_api_key", lambda provider: True)
     monkeypatch.setattr(resilient, "_get_or_create_client", lambda provider: clients[provider])
     resilient._clients = dict(clients)

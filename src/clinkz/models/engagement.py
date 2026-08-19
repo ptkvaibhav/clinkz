@@ -30,7 +30,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 # A permitted-technique entry that authorizes every technique. Spelled out
 # rather than implied by an empty list: an EMPTY permitted list means nothing is
@@ -453,6 +460,15 @@ class RoleCredential(BaseModel):
         description: Free-text note (e.g. "read-only reporting account").
     """
 
+    # An unknown key is REFUSED, not dropped. Pydantic's default is to ignore
+    # extras, and this model is filled from a hand-written JSON file by an
+    # operator working from documentation — the one population where a silently
+    # discarded key is indistinguishable from a key that did nothing. A
+    # misplaced ``login_url`` validated cleanly, changed nothing, and the run
+    # then hard-aborted on an unprovable session with no connection between the
+    # two. Refusing names the key.
+    model_config = ConfigDict(extra="forbid")
+
     role: str
     username: str = ""
     password: SecretStr = SecretStr("")
@@ -489,7 +505,43 @@ class CredentialSet(BaseModel):
         credentials: One :class:`RoleCredential` per role.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     credentials: list[RoleCredential] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _name_a_misplaced_role_field(cls, data: object) -> object:
+        """Refuse a per-role key written at the top level, and say where it goes.
+
+        ``login_url`` is per ROLE — an application whose login is undiscoverable
+        or differs per principal is exactly why the field exists, and a single
+        engagement-wide value could not express the second case. So it lives on
+        :class:`RoleCredential`, inside each entry of ``credentials``.
+
+        Nothing said so. It appears in no example, in no ``--help`` text and in
+        no document; only in this module's docstrings. An operator who needs it
+        guesses, and the natural guess is the top level of the credential file
+        or the scope — and until ``extra="forbid"``, both guesses parsed
+        cleanly and did nothing. The engagement then aborted on an unprovable
+        session, which is the correct refusal delivered as though the operator's
+        input had been fine.
+
+        ``extra="forbid"`` alone would say "Extra inputs are not permitted",
+        which is true and unhelpful. This says where the key belongs.
+        """
+        if not isinstance(data, dict):
+            return data
+        misplaced = sorted(set(data) & set(RoleCredential.model_fields) - {"credentials"})
+        if misplaced:
+            raise ValueError(
+                f"{', '.join(misplaced)} belongs on each entry inside 'credentials', "
+                "not at the top level of the credential file. Per-role, because an "
+                "application's login can differ per principal. For example: "
+                '{"credentials": [{"role": "admin", "username": "...", '
+                '"password": "...", "login_url": "https://app/rest/user/login"}]}'
+            )
+        return data
 
     @property
     def roles(self) -> list[str]:

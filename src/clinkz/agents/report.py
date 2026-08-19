@@ -38,6 +38,8 @@ if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
 from clinkz.engagement.secrets import redact, redact_structure
 from clinkz.llm.base import LLMClient
+from clinkz.llm.degradation import degradation_summary
+from clinkz.llm.spend import spend_summary
 from clinkz.models.engagement import AuthorizationRecord, EngagementWindow
 from clinkz.models.finding import (
     ChainResearchLead,
@@ -62,8 +64,10 @@ from clinkz.models.vuln_classes import (
     for_finding,
 )
 from clinkz.observability.ledger import get_active_ledger
+from clinkz.observability.plan_alarms import plan_alarm_summary
 from clinkz.observability.trace import get_active_trace_writer
 from clinkz.safety.action_log import ActionLog, RefusalTally
+from clinkz.safety.scope_refusals import scope_refusal_summary
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 
@@ -368,6 +372,11 @@ class ReportAgent(BaseAgent):
             authentication=authentication,
             component_ledger=_active_ledger_snapshot(),
             model_stamp=_active_model_stamp(),
+            provider_degradation=degradation_summary(),
+            scope_refusals=scope_refusal_summary(),
+            llm_spend=spend_summary(),
+            plan_coverage=plan_alarm_summary(),
+            research_grounding=dict(input_data.get("research_grounding") or {}),
         )
 
         # The report is the artifact that actually reaches the client, so it
@@ -648,6 +657,11 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_chain_leads(lines, report.chain_leads)
             ReportAgent._render_not_tested(lines, report)
             ReportAgent._render_component_ledger(lines, report)
+            ReportAgent._render_provider_degradation(lines, report)
+            ReportAgent._render_scope_refusals(lines, report)
+            ReportAgent._render_plan_coverage(lines, report)
+            ReportAgent._render_research_grounding(lines, report)
+            ReportAgent._render_llm_spend(lines, report)
             return "\n".join(lines)
 
         lines.extend(["## Findings", ""])
@@ -684,7 +698,330 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_chain_leads(lines, report.chain_leads)
         ReportAgent._render_not_tested(lines, report)
         ReportAgent._render_component_ledger(lines, report)
+        ReportAgent._render_provider_degradation(lines, report)
+        ReportAgent._render_scope_refusals(lines, report)
+        ReportAgent._render_plan_coverage(lines, report)
+        ReportAgent._render_research_grounding(lines, report)
+        ReportAgent._render_llm_spend(lines, report)
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_scope_refusals(lines: list[str], report: PentestReport) -> None:
+        """Render every out-of-scope target the run reached for, and refused.
+
+        The most important control in an external engagement, and the one that
+        used to leave no trace at all: the scope check raised, the crawler's
+        fetch helper caught the error and returned ``None``, and nothing
+        recorded that a third-party host had been reached for and stopped.
+
+        Rendered on a clean run too. "No out-of-scope target was reached for"
+        is a claim; an absent section is not.
+        """
+        stamp = report.scope_refusals
+        if not stamp:
+            return
+        total = int(stamp.get("total_refused") or 0)
+        lines.extend(["## Scope enforcement", ""])
+        if not total:
+            lines.extend(
+                [
+                    "No out-of-scope target was reached for. Every request this "
+                    "engagement made was inside the authorised scope.",
+                    "",
+                ]
+            )
+            return
+        hosts = stamp.get("out_of_scope_hosts") or {}
+        lines.extend(
+            [
+                f"{total} attempt(s) to reach a target outside the authorised scope were "
+                f"**refused**, across {len(hosts)} host(s). Nothing was sent to any of "
+                f"them. These are links the target's own pages point at; following one "
+                f"would mean testing a third party who authorised nothing.",
+                "",
+                "| Out-of-scope host | Attempts refused |",
+                "| --- | ---: |",
+            ]
+        )
+        for host, count in hosts.items():
+            lines.append(f"| {host} | {count} |")
+        lines.append("")
+        if stamp.get("truncated"):
+            lines.extend(
+                [
+                    f"The per-URL list below retains the first "
+                    f"{stamp.get('retained')} of {total}; the counts above are exact.",
+                    "",
+                ]
+            )
+
+    @staticmethod
+    def _render_plan_coverage(lines: list[str], report: PentestReport) -> None:
+        """Render what the exploit plan's task cap dropped, and in what order.
+
+        The plan cap is the bound that most directly decides what gets tested:
+        candidate ``(class, endpoint)`` pairs are ranked and everything past the
+        cap is dropped. It has been loud in the run log and the trace since four
+        D1 baseline runs each truncated ~1,500 candidates to 150 in silence —
+        and neither a log line nor ``trace.jsonl`` is something a client reads.
+        Without this section a deliverable can say "we tested the target" over a
+        plan that dropped the one endpoint a class could have confirmed on.
+
+        Two facts, rendered apart because they have different fixes:
+
+        * **Truncation** is the budget working. A larger cap
+          (``EXPLOIT_MAX_PLAN_TASKS``) covers more.
+        * A **ranking inversion** is the ordering failing: a task dropped from
+          an endpoint carrying that class's own observed surface while
+          lower-relevance tasks survived. A larger cap does not fix it, and it
+          is what cost D1 its weak-session and SQLi findings. It reads nothing
+          like tail truncation and must not be summed into it.
+
+        Rendered when the plan fit too — "no class was truncated" is a claim,
+        and a section that appears only on truncation cannot be told apart from
+        one nobody wrote.
+        """
+        stamp = report.plan_coverage
+        if not stamp or not stamp.get("passes_recorded"):
+            return
+        lines.extend(["## Plan coverage", ""])
+        if not stamp.get("plan_truncated"):
+            lines.extend(
+                [
+                    "Every candidate test the planner produced was dispatched — the plan "
+                    "fit inside its task cap, so no class was truncated and the coverage "
+                    "below is the whole plan.",
+                    "",
+                ]
+            )
+            return
+
+        dropped_total = int(stamp.get("dropped_total") or 0)
+        classes = list(stamp.get("classes_truncated") or [])
+        inversions = int(stamp.get("ranking_inversion_count") or 0)
+        lines.extend(
+            [
+                f"The task cap dropped **{dropped_total} candidate test(s)** across "
+                f"{len(classes)} class(es). Those endpoints were identified and not "
+                f"tested; nothing below reflects on them either way.",
+                "",
+                "| Class | Candidates dropped | First endpoint omitted |",
+                "| --- | ---: | --- |",
+            ]
+        )
+        for one_pass in stamp.get("passes") or []:
+            if not isinstance(one_pass, dict):
+                continue
+            for name, endpoints in (one_pass.get("dropped_by_class") or {}).items():
+                first = endpoints[0] if endpoints else "-"
+                lines.append(f"| `{name}` | {len(endpoints)} | {first} |")
+        lines.append("")
+
+        if not inversions:
+            lines.extend(
+                [
+                    "The ordering held: every dropped task ranked below the ones kept on "
+                    "the signals its own class attacks. Raising the task cap is what "
+                    "covers them.",
+                    "",
+                ]
+            )
+            return
+
+        lines.extend(
+            [
+                f"**Ranking failure — {inversions} dropped task(s) should not have been.** "
+                "Each sat on an endpoint where that class's own attack surface was "
+                "observed, while lower-relevance tasks were kept. This is an ordering "
+                "defect in the planner, not a budget one: raising the cap is not the "
+                "fix, and the endpoints below were the ones most likely to confirm.",
+                "",
+                "| Class | Endpoint | Relevance grade |",
+                "| --- | --- | ---: |",
+            ]
+        )
+        for one_pass in stamp.get("passes") or []:
+            if not isinstance(one_pass, dict):
+                continue
+            for inversion in one_pass.get("ranking_inversions") or []:
+                if not isinstance(inversion, dict):
+                    continue
+                lines.append(
+                    f"| `{inversion.get('test_method', '?')}` | "
+                    f"{inversion.get('endpoint_url', '?')} | {inversion.get('grade', '?')} |"
+                )
+        lines.append("")
+
+    @staticmethod
+    def _render_research_grounding(lines: list[str], report: PentestReport) -> None:
+        """State what the research behind this report actually read.
+
+        A grounded research call reads today's advisories. An ungrounded one
+        recites a training corpus, so **every vulnerability disclosed after that
+        model's cutoff is invisible to it** — and, crucially, the answer carries
+        no signal that anything is missing. A CVE list that looks complete and
+        stops eighteen months ago is worse than no CVE list, because a reader
+        cannot tell the two apart.
+
+        Routing v2 is what made this reachable. Research led with Gemini
+        Flash-Lite precisely for native Search Grounding; the Anthropic path
+        that is now priority 1 has no equivalent, so the capability was traded
+        away with the routing. This section is the disclosure of that trade on
+        the run that took it, not a promise to restore it.
+
+        Rendered whichever way it went — "this research read the live web" is a
+        claim the deliverable should make explicitly, and a caveat that appears
+        only when things went badly cannot be told apart from one nobody wrote.
+        """
+        stamp = report.research_grounding
+        if not stamp:
+            return
+        lines.extend(["## Research grounding", ""])
+        entries = int(stamp.get("runbook_entries") or 0)
+        providers = ", ".join(str(p) for p in (stamp.get("providers") or [])) or "none"
+        if stamp.get("is_grounded"):
+            lines.extend(
+                [
+                    f"The research behind this report was **grounded in live web search** "
+                    f"(served by: {providers}). Its {entries} runbook entr(ies) reflect "
+                    f"advisories available at the time of testing.",
+                    "",
+                ]
+            )
+            return
+
+        grounding = str(stamp.get("grounding") or "undeclared")
+        why = {
+            "training_data": (
+                "the provider that served the research calls has no live-search "
+                "capability on this path, so the answers came from its training corpus"
+            ),
+            "undeclared": (
+                "the provider that served the research calls did not declare what its "
+                "answers are grounded in, which is treated the same as ungrounded"
+            ),
+        }.get(grounding, "the grounding could not be established")
+
+        lines.extend(
+            [
+                f"**This research was NOT grounded in live web search** "
+                f"(`{grounding}`; served by: {providers}).",
+                "",
+                f"Why: {why}.",
+                "",
+                f"What this means for the {entries} runbook entr(ies) and any CVE named "
+                "in them: they are bounded by the serving model's training cutoff. A "
+                "vulnerability disclosed after that date is invisible here, and the "
+                "research text gives no indication that anything is missing — so an "
+                "apparently complete CVE list may simply stop. Treat the research half "
+                "of this engagement as a starting point requiring an independent, "
+                "current advisory check.",
+                "",
+                "This does not affect the findings above. Every finding in this report "
+                "was confirmed by this engine's own oracles against the live target; a "
+                "CVE from research is a LEAD that must reach one of those oracles before "
+                "it can become a finding, and none of them consults the research text.",
+                "",
+            ]
+        )
+
+    @staticmethod
+    def _render_llm_spend(lines: list[str], report: PentestReport) -> None:
+        """Render what the run consumed and the caps it ran under."""
+        stamp = report.llm_spend
+        if not stamp or not stamp.get("total_tokens"):
+            return
+        token_cap = stamp.get("token_cap")
+        usd_cap = stamp.get("usd_cap")
+        lines.extend(["## LLM consumption", ""])
+        caps = []
+        caps.append(f"token cap {int(token_cap):,}" if token_cap else "no token cap")
+        caps.append(f"spend cap ${float(usd_cap):.2f}" if usd_cap else "no spend cap")
+        lines.extend(
+            [
+                f"Ran under: {', '.join(caps)}.",
+                "",
+                f"- Input tokens: {int(stamp.get('input_tokens') or 0):,}",
+                f"- Output tokens: {int(stamp.get('output_tokens') or 0):,}",
+                f"- Total tokens: {int(stamp.get('total_tokens') or 0):,}",
+            ]
+        )
+        if stamp.get("usd_is_complete"):
+            lines.append(f"- Cost: ${float(stamp.get('usd_spent') or 0.0):.4f}")
+        else:
+            unpriced = ", ".join(stamp.get("unpriced_models") or [])
+            lines.append(
+                f"- Cost: ${float(stamp.get('usd_spent') or 0.0):.4f} "
+                f"(**lower bound** — no rate declared for: {unpriced})"
+            )
+        lines.append("")
+
+    @staticmethod
+    def _render_provider_degradation(lines: list[str], report: PentestReport) -> None:
+        """Render which model actually served each call, when it was not the primary.
+
+        Sits beside *Component contribution* and answers the neighbouring
+        question. That section says which components produced nothing; this one
+        says whether the answers that WERE produced came from the model this
+        run asked for.
+
+        Always rendered, clean or not. The previous behaviour was to render
+        nothing, and that is exactly how six exploit plans and six
+        false-positive cross-checks written by the cheap tier reached six
+        reports that looked like reports it had not happened to.
+        """
+        stamp = report.provider_degradation
+        if not stamp:
+            return
+        lines.extend(["## Provider routing", ""])
+        if not stamp.get("provider_degraded"):
+            lines.extend(
+                [
+                    "Every LLM call was served by the provider this run asked for. "
+                    "No fallback activated, so the run is eligible for use as a "
+                    "baseline.",
+                    "",
+                ]
+            )
+            return
+
+        events = [e for e in (stamp.get("events") or []) if isinstance(e, dict)]
+        decision_bearing = int(stamp.get("decision_bearing_fallback_count") or 0)
+        lines.extend(
+            [
+                f"**This run is NOT eligible as a baseline.** {stamp.get('fallback_count', 0)} "
+                f"call(s) were served by a provider other than the one asked for. A "
+                f"number produced partly by one model and partly by another is not a "
+                f"measurement of the target, so nothing here should be compared against "
+                f"another run's figures.",
+                "",
+            ]
+        )
+        if decision_bearing:
+            lines.extend(
+                [
+                    f"{decision_bearing} of them were **decision-bearing** — the exploit "
+                    "plan decides what gets tested and the false-positive cross-check "
+                    "decides which findings survive, so those are not only a "
+                    "comparability problem.",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "| Call site | Asked for | Served by | Why | Decision-bearing |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+        )
+        for event in events:
+            asked = f"{event.get('asked_provider', '')}/{event.get('asked_model', '')}"
+            served = f"{event.get('served_provider', '')}/{event.get('served_model', '')}"
+            lines.append(
+                f"| {event.get('call_site', '')} | {asked} | {served} | "
+                f"{event.get('reason', '') or '-'} | "
+                f"{'yes' if event.get('decision_bearing') else 'no'} |"
+            )
+        lines.append("")
 
     @staticmethod
     def _render_component_ledger(lines: list[str], report: PentestReport) -> None:

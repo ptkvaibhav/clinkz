@@ -153,7 +153,10 @@ class PentestReport(BaseModel):
         generated_at: Timestamp of report generation.
         executive_summary: High-level summary (populated by ReportAgent).
         hosts: All discovered hosts.
-        findings: Validated findings (Critic-approved only).
+        findings: The engagement's confirmed findings. Emitted through
+            ``_persist_finding``, which is the only gate they pass: the
+            CriticAgent that this line used to name is archived, having run
+            0 times across 2,774 recorded agent steps.
         methodology: Narrative describing the testing approach.
         appendices: Optional extra sections keyed by title.
     """
@@ -221,6 +224,50 @@ class PentestReport(BaseModel):
     #: under one model and 80% under its predecessor, so a model bump silently
     #: re-baselines every comparison drawn against an earlier run.
     model_stamp: list[dict[str, str | int]] = Field(default_factory=list)
+    #: Whether any LLM call was served by a provider other than the one routing
+    #: v2 asked for, and what that cost. Anthropic is priority 1 for every call
+    #: on every phase; everything else is fallback only, and a fallback is a
+    #: disqualifying event rather than an invisible one. Carries
+    #: ``provider_degraded``, ``baseline_eligible``, the call sites and both
+    #: models per event.
+    #:
+    #: Populated even on a clean run, because "no fallback occurred" is a claim
+    #: the deliverable should make: a section that appears only on failure
+    #: cannot be told apart from a section nobody wrote. The eligibility flag is
+    #: one-way — a degraded answer is already inside the findings, so no later
+    #: clean call un-shapes it.
+    provider_degradation: dict[str, object] = Field(default_factory=dict)
+    #: Every out-of-scope target the engagement reached for and refused. THE
+    #: control on an external engagement: a real application links out, the
+    #: crawler follows links, and this is the evidence that the ones leaving
+    #: the authorised host were stopped. Rendered even when empty, because
+    #: otherwise a run that enforced scope perfectly and one that never had a
+    #: link to follow produce identical artifacts.
+    scope_refusals: dict[str, object] = Field(default_factory=dict)
+    #: What the run consumed from the LLM providers, and the caps it ran under.
+    #: ``usd_spent`` is a LOWER BOUND whenever ``usd_is_complete`` is false —
+    #: clinkz ships no default rate card, so a model with no declared price
+    #: contributes tokens and no dollars rather than a guess.
+    llm_spend: dict[str, object] = Field(default_factory=dict)
+    #: What the Research phase actually READ. ``is_grounded`` is true only when
+    #: the provider that SERVED the research calls declares native live search.
+    #: Anything else means the runbook is a recollection of a training corpus
+    #: with a cutoff — every vulnerability disclosed after it is invisible, and
+    #: nothing in the research text signals the absence. Routing v2 is what made
+    #: this reachable: Research led with Gemini Flash-Lite precisely for native
+    #: Search Grounding, and the Anthropic path has no equivalent. Stated in the
+    #: deliverable rather than absorbed, because an ungrounded CVE claim in a
+    #: security report is a new unbacked claim, not merely a thinner one.
+    research_grounding: dict[str, object] = Field(default_factory=dict)
+    #: What the exploit plan's task cap dropped, and whether the ordering held.
+    #: The plan cap is the bound that most directly decides what gets TESTED,
+    #: and it was the one bound reported only in the log and the trace — neither
+    #: of which reaches a client. Two numbers kept apart because they have
+    #: different fixes: ``dropped_total`` is the budget working, while
+    #: ``ranking_inversion_count`` is a task dropped from an endpoint carrying
+    #: its own class's observed surface while lower-relevance tasks survived,
+    #: which a larger cap does not fix. Rendered even when the plan fit.
+    plan_coverage: dict[str, object] = Field(default_factory=dict)
 
     @property
     def finding_counts(self) -> dict[str, int]:

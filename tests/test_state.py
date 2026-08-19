@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from clinkz.config import Settings
+from clinkz.config import GEMINI_PINNED_MODEL, Settings
 from clinkz.state import StateStore
 
 EID = "eng-test-0001"
@@ -231,14 +231,12 @@ class TestMigrations:
 
 class TestPerAgentLLMConfig:
     def test_defaults(self) -> None:
+        """Routing v2: Anthropic is priority 1 for every call on every phase."""
         s = Settings()
-        # Fast agents → Gemini (high-volume). Research runs on Gemini 3.1
-        # Flash-Lite with native Search Grounding.
-        assert s.recon_llm_provider == "gemini"
-        assert s.scan_llm_provider == "gemini"
-        assert s.report_llm_provider == "gemini"
-        assert s.research_llm_provider == "gemini"
-        # Exploit reasoning → Claude (complex, fewer calls; pinned).
+        assert s.recon_llm_provider == "anthropic"
+        assert s.scan_llm_provider == "anthropic"
+        assert s.report_llm_provider == "anthropic"
+        assert s.research_llm_provider == "anthropic"
         assert s.exploit_llm_provider == "anthropic"
 
     def test_override_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,7 +246,7 @@ class TestPerAgentLLMConfig:
         assert s.recon_llm_provider == "openai"
         assert s.exploit_llm_provider == "ollama"
         # Unchanged defaults
-        assert s.scan_llm_provider == "gemini"
+        assert s.scan_llm_provider == "anthropic"
 
     def test_override_via_modern_env_names(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Modern ``LLM_PROVIDER_<ROLE>`` names take priority over legacy names."""
@@ -257,29 +255,29 @@ class TestPerAgentLLMConfig:
         s = Settings.from_env()
         assert s.research_llm_provider == "gemini"
 
-    def test_research_model_is_flash_lite_ga(self) -> None:
-        """Research pins Gemini 3.1 Flash-Lite (GA) — never the shut-down preview."""
+    def test_research_model_is_the_pin(self) -> None:
+        """Research pins the exact model string — never a preview or an alias."""
         s = Settings()
-        assert s.gemini_research_model == "gemini-3.1-flash-lite"
+        assert s.gemini_research_model == GEMINI_PINNED_MODEL
         assert "preview" not in s.gemini_research_model
 
-    def test_all_gemini_models_pinned_to_flash_lite_ga(self) -> None:
-        """Every Gemini model value is the GA Flash-Lite ID — no 2.5 / preview.
+    def test_all_gemini_models_pinned_to_the_exact_string(self) -> None:
+        """Every Gemini model value is the one pin — no 2.x, preview or alias.
 
-        Regression guard for the credit-depletion run: the only sanctioned
-        Gemini model is gemini-3.1-flash-lite (GA). The deprecated
-        gemini-3.1-flash-lite-preview was shut down 2026-05-25 and must never
-        appear as a model value, nor may any gemini-2.x string survive.
+        Regression guard for the credit-depletion run and for routing v2's
+        pin: a floating alias moves under a fixed configuration and silently
+        re-baselines every number the run contributes.
         """
         s = Settings()
         for model in (s.gemini_model, s.gemini_exploit_model, s.gemini_research_model):
-            assert model == "gemini-3.1-flash-lite"
+            assert model == GEMINI_PINNED_MODEL
             assert "2.5" not in model
             assert "gemini-2" not in model
             assert "preview" not in model
+            assert not model.endswith("-latest")
 
     def test_research_model_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("GEMINI_RESEARCH_MODEL", "gemini-3.1-flash-lite")
+        monkeypatch.setenv("GEMINI_RESEARCH_MODEL", GEMINI_PINNED_MODEL)
         s = Settings.from_env()
-        assert s.gemini_research_model == "gemini-3.1-flash-lite"
+        assert s.gemini_research_model == GEMINI_PINNED_MODEL
         assert "preview" not in s.gemini_research_model

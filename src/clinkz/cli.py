@@ -339,6 +339,41 @@ def scan(
         int | None,
         typer.Option("--max-concurrency", help="Max simultaneous in-flight requests."),
     ] = None,
+    token_cap: Annotated[
+        int | None,
+        typer.Option(
+            "--token-cap",
+            help=(
+                "Total LLM tokens this engagement may consume. Measured exactly, so "
+                "it needs no rate card. The run halts cleanly at the cap and still "
+                "produces its report."
+            ),
+        ),
+    ] = None,
+    spend_cap_usd: Annotated[
+        float | None,
+        typer.Option(
+            "--spend-cap-usd",
+            help=(
+                "Total USD this engagement may spend. Requires a declared rate per "
+                "model in CLINKZ_LLM_PRICES - clinkz ships no default rate card, "
+                "because a built-in table would be right the day it was written and "
+                "silently wrong afterwards."
+            ),
+        ),
+    ] = None,
+    run_mode: Annotated[
+        str | None,
+        typer.Option(
+            "--run-mode",
+            help=(
+                "What a provider fallback costs. 'client' (default) completes the run, "
+                "stamps the report provider_degraded and marks it ineligible as a "
+                "baseline. 'baseline' makes any fallback a HARD FAILURE - a ladder "
+                "served by two models is not a ladder."
+            ),
+        ),
+    ] = None,
     output: Annotated[
         Path | None,
         typer.Option(
@@ -390,6 +425,11 @@ def scan(
         load_credential_file,
         prompt_for_credentials,
     )
+    from clinkz.llm.providers import (
+        NoProviderKeyError,
+        assert_any_provider_available,
+    )
+    from clinkz.llm.spend import SpendCapError, SpendLedger, load_price_table
     from clinkz.models.engagement import CredentialSet
     from clinkz.orchestrator.orchestrator import OrchestratorAgent
     from clinkz.tools.docker_preflight import ClinkzDockerError
@@ -409,6 +449,19 @@ def scan(
     if resume is not None:
         _run_resume(resume, db_path=settings.db_path)
         return
+
+    # No provider key at all is the cold-start failure, so it is answered
+    # first: before scope assembly, before authorization, before docker.
+    # Detection only — this reads environment variables and sends nothing, so
+    # it does not disturb the invariant that the authorization gate precedes
+    # every packet. Placed after the --resume branch on purpose: rebuilding a
+    # report from persisted findings makes no LLM calls and must not require a
+    # key to do it.
+    try:
+        assert_any_provider_available()
+    except NoProviderKeyError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=EXIT_BAD_INPUT) from None
 
     try:
         scope_obj = _assemble_scope(
@@ -465,6 +518,80 @@ def scan(
         scope_obj.safety.max_requests_per_second = rate
     if max_concurrency is not None:
         scope_obj.safety.max_concurrent_requests = max_concurrency
+
+    # LLM budget. Assembled here so a bad cap is refused before anything is
+    # dispatched, rather than discovered as an under-count at the end.
+    spend_ledger = SpendLedger(
+        token_cap=int(token_cap or 0),
+        usd_cap=float(spend_cap_usd or 0.0),
+    )
+    try:
+        spend_ledger.prices = load_price_table()
+        # Every model that could serve a call, not just the primary: a USD cap
+        # that stops counting the moment the chain rotates is not a cap.
+        spend_ledger.assert_enforceable(
+            [
+                settings.anthropic_model,
+                settings.gemini_model,
+                settings.gemini_research_model,
+                settings.agent_model,
+            ]
+        )
+    except SpendCapError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=EXIT_BAD_INPUT) from None
+
+    # Run mode. Set on the settings singleton rather than the scope because it
+    # governs the LLM chain, not the target - the resilient client reads it at
+    # dispatch time, which is after every writer has been constructed.
+    if run_mode is not None:
+        if run_mode not in ("client", "baseline"):
+            typer.echo(
+                f"--run-mode must be 'client' or 'baseline' (got {run_mode!r}).",
+                err=True,
+            )
+            raise typer.Exit(EXIT_BAD_INPUT)
+        settings.run_mode = run_mode  # type: ignore[assignment]
+    # Every bound, stated before anything is dispatched. An operator asked to
+    # authorise a run against their own production site needs to read the
+    # limits BEFORE the first packet, not reconstruct them from the report.
+    typer.echo("Bounds (as configured, before dispatch):")
+    typer.echo(f"  request rate  : {scope_obj.safety.max_requests_per_second:g} req/s")
+    typer.echo(f"  concurrency   : {scope_obj.safety.max_concurrent_requests} in flight")
+    window = scope_obj.window
+    typer.echo(
+        "  wall clock    : "
+        + (
+            f"{window.start.isoformat()} -> {window.end.isoformat()} "
+            "(hard stop, re-checked on every request)"
+            if window is not None
+            else "no engagement window declared - set one in the scope file to bound it"
+        )
+    )
+    typer.echo(
+        "  token cap     : "
+        + (f"{spend_ledger.token_cap:,} tokens" if spend_ledger.token_cap else "none")
+    )
+    typer.echo(
+        "  spend cap     : " + (f"${spend_ledger.usd_cap:.2f}" if spend_ledger.usd_cap else "none")
+    )
+    typer.echo(
+        "  benchmark     : "
+        + (
+            "PROFILE SUPPLIED — destructive categories may be permitted"
+            if benchmark_profile is not None
+            else "OFF (no --benchmark-profile; unsafe_method, deletion and data_reset "
+            "are refused, and there is no flag that permits them)"
+        )
+    )
+    typer.echo(
+        f"Run mode: {settings.run_mode} "
+        + (
+            "(a provider fallback FAILS this run)"
+            if settings.run_mode == "baseline"
+            else "(a provider fallback is stamped and disqualifies the run as a baseline)"
+        )
+    )
 
     # Credentials. Never echoed, never written to the scope (which IS persisted).
     cred_set = CredentialSet()

@@ -40,6 +40,7 @@ from clinkz.agents._url_shape import (
 from clinkz.agents.base import BaseAgent
 from clinkz.browser.csp_policy import parse_csp
 from clinkz.llm.base import LLMClient
+from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
 from clinkz.models.recon import (
     ReconResult,
 )
@@ -61,6 +62,7 @@ from clinkz.observability.ledger import (
     record_contribution,
     record_dead_seam,
 )
+from clinkz.safety.scope_refusals import record_scope_refusal
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 from clinkz.tools.resolver import ToolResolver
@@ -387,7 +389,8 @@ class ScanAgent(BaseAgent):
             "4. Any special considerations (authentication, WAF, etc.)\n"
             "Respond concisely."
         )
-        return await self.llm.generate_text(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="scan._llm_plan_scan_strategy"):
+            return await self.llm.generate_text(prompt)
 
     # ------------------------------------------------------------------
     # Step 2: Execute Service-Specific Scans
@@ -893,11 +896,18 @@ class ScanAgent(BaseAgent):
         refs = getattr(self, "_session_setter_refs", None)
         if refs is None or not body:
             return
-        resolved = [
-            u
-            for u in find_session_setter_urls(page_url, body)
-            if self.scope.contains(u) and not is_state_changing_url(u)
-        ]
+        resolved = []
+        for u in find_session_setter_urls(page_url, body):
+            if not self.scope.contains(u):
+                # This filter drops the URL without ever constructing a tool,
+                # so ToolBase._check_scope never sees it. Recorded here for the
+                # same reason it is recorded there: an out-of-scope link the
+                # crawler found and did not follow is the evidence that the
+                # control ran.
+                record_scope_refusal(u, stage="scan", tool="session_setter_link_filter")
+                continue
+            if not is_state_changing_url(u):
+                resolved.append(u)
         if not resolved:
             return
         existing = refs.setdefault(page_url, [])
@@ -1761,7 +1771,8 @@ class ScanAgent(BaseAgent):
             "Scan results:\n" + "\n".join(f"  - {s}" for s in summaries) + "\n\n"
             "Provide a concise analysis."
         )
-        return await self.llm.generate_text(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="scan._llm_review_scan_results"):
+            return await self.llm.generate_text(prompt)
 
     # ------------------------------------------------------------------
     # Step 4: LLM Coverage Check
@@ -1800,7 +1811,8 @@ class ScanAgent(BaseAgent):
             "JSON:"
         )
 
-        response = await self.llm.generate_text(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="scan._llm_check_coverage"):
+            response = await self.llm.generate_text(prompt)
 
         # Parse LLM JSON response
         try:

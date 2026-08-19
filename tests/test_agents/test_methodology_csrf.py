@@ -4,7 +4,7 @@ Each phase is exercised in isolation with mocked HTTP + LLM:
 
     Phase 1 (hypothesis)   — state-changing detection
     Phase 2 (observation)  — token-shape extraction + rotation sampling
-    Phase 3 (analysis)     — LLM JSON parsing + deterministic fallback
+    Phase 3 (analysis)     — deterministic classification (no LLM on this path)
     Phase 4 (finding)      — Finding evidence chain + dedup behaviour
 """
 
@@ -45,7 +45,7 @@ class _ScriptedLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         self.prompts.append(prompt)
         if not self.answers:
             return ""
@@ -256,7 +256,15 @@ class TestPhase2Observation:
 
 class TestPhase3Analysis:
     @pytest.mark.asyncio
-    async def test_llm_classification_parsed(self) -> None:
+    async def test_the_llm_is_never_consulted(self) -> None:
+        """The model is not asked — asserted on the CALL, not on the answer.
+
+        A behavioural test ("the verdict matches the deterministic one") passes
+        just as happily against a version that consults the model and discards
+        its reply, which is not the property being claimed. The claim is that
+        this class cannot vary with the model that served it, and only the
+        absence of the call establishes that.
+        """
         llm = _ScriptedLLM(
             answers=[
                 '{"weakness": "predictable", "protected": false, "rationale": "constant token"}'
@@ -264,22 +272,25 @@ class TestPhase3Analysis:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        form = {"method": "POST", "action": "/x", "fields": []}
+
         weakness, protected, rationale = await agent._csrf_phase3_analyze(
-            form, {"csrf": ["v1", "v1", "v1"]}, {}
+            {"csrf": ["v1", "v1", "v1"]}, {}
         )
+
+        assert llm.prompts == []
+        assert llm.answers, "the scripted answer must still be unconsumed"
+        # And the verdict is the deterministic one, not the model's.
         assert weakness == CSRFWeaknessType.PREDICTABLE
         assert protected is False
-        assert "constant" in rationale
+        assert "stayed constant" in rationale
 
     @pytest.mark.asyncio
-    async def test_missing_token_fallback_marks_unprotected(self) -> None:
+    async def test_missing_token_marks_unprotected(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        form = {"method": "POST", "action": "/x", "fields": []}
         weakness, protected, _r = await agent._csrf_phase3_analyze(
-            form, {}, {"set_cookie_present": False, "cookie_samesite": ""}
+            {}, {"set_cookie_present": False, "cookie_samesite": ""}
         )
         assert weakness == CSRFWeaknessType.MISSING
         assert protected is False
@@ -289,43 +300,39 @@ class TestPhase3Analysis:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        form = {"method": "POST", "action": "/x", "fields": []}
         weakness, protected, _r = await agent._csrf_phase3_analyze(
-            form, {}, {"set_cookie_present": True, "cookie_samesite": "strict"}
+            {}, {"set_cookie_present": True, "cookie_samesite": "strict"}
         )
         assert weakness == CSRFWeaknessType.SAMESITE_COMPENSATED
         assert protected is True
 
     @pytest.mark.asyncio
-    async def test_constant_token_fallback_marks_predictable(self) -> None:
+    async def test_constant_token_marks_predictable(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        form = {"method": "POST", "action": "/x", "fields": []}
         weakness, protected, _r = await agent._csrf_phase3_analyze(
-            form, {"csrf_token": ["t1", "t1", "t1"]}, {}
+            {"csrf_token": ["t1", "t1", "t1"]}, {}
         )
         assert weakness == CSRFWeaknessType.PREDICTABLE
         assert protected is False
 
     @pytest.mark.asyncio
-    async def test_rotating_tokens_fallback_marks_protected(self) -> None:
+    async def test_rotating_tokens_marks_protected(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        form = {"method": "POST", "action": "/x", "fields": []}
         weakness, protected, _r = await agent._csrf_phase3_analyze(
-            form, {"csrf_token": ["t1", "t2", "t3"]}, {}
+            {"csrf_token": ["t1", "t2", "t3"]}, {}
         )
         assert weakness is None
         assert protected is True
 
     @pytest.mark.asyncio
-    async def test_rotating_session_bound_token_overrides_llm_missing(self) -> None:
-        """FIX 2 (the DVWA-high/impossible phantom): a rotating, session-bound
-        user_token transmitted via GET is genuine protection. The phase-3 LLM
-        wrongly rules it 'missing' (citing GET transmission); the deterministic
-        override forces protected and ignores the LLM verdict."""
+    async def test_rotating_session_bound_token_is_protection(self) -> None:
+        """A rotating, session-bound ``user_token`` transmitted via GET is genuine
+        protection (the DVWA-high phantom). The override fires before the
+        classifier, and no model opinion can reach the verdict at all now."""
         llm = _ScriptedLLM(
             answers=[
                 '{"weakness": "missing", "protected": false, '
@@ -334,29 +341,19 @@ class TestPhase3Analysis:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        form = {
-            "method": "GET",
-            "action": "",
-            "fields": [
-                {"name": "user_token", "type": "hidden", "value": "a1b2"},
-                {"name": "password_new", "type": "password"},
-                {"name": "password_conf", "type": "password"},
-                {"name": "Change", "type": "submit"},
-            ],
-        }
         weakness, protected, _r = await agent._csrf_phase3_analyze(
-            form,
             {"user_token": ["a1b2", "c3d4", "e5f6"]},
             {"tokens_without_cookies": {}, "cookie_samesite": "", "set_cookie_present": False},
         )
         assert protected is True
         assert weakness is None
+        assert llm.prompts == []
 
     @pytest.mark.asyncio
     async def test_token_present_without_cookies_not_session_bound(self) -> None:
         """A 'token' that is still served on the cookie-stripped fetch is not
-        session-bound, so the protection override does NOT fire — the LLM/
-        fallback classification stands (here: a constant value → predictable)."""
+        session-bound, so the protection override does NOT fire — the deterministic
+        classification stands (here: a constant value → predictable)."""
         agent = _make_agent(_ScriptedLLM(answers=[""]))
         agent._methodology_llm = agent.llm
         protected, _reason = agent._csrf_token_provides_protection(

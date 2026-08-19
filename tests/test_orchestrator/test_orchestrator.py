@@ -70,7 +70,7 @@ class _MockLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return "Mock LLM response based on available data."
 
 
@@ -432,13 +432,12 @@ def test_build_agent_llms() -> None:
         assert isinstance(agent_llms[role], ResilientLLMClient)
         assert agent_llms[role].agent_role == role
 
-    # Exploit leads with Claude (reasoning); fast-profile agents lead with Gemini.
-    # Research moved to Gemini Flash-Lite, so it now leads with Gemini too.
-    assert agent_llms["exploit"].fallback_chain[0] == "anthropic"
-    assert agent_llms["research"].fallback_chain[0] == "gemini"
-    assert agent_llms["recon"].fallback_chain[0] == "gemini"
-    assert agent_llms["scan"].fallback_chain[0] == "gemini"
-    assert agent_llms["report"].fallback_chain[0] == "gemini"
+    # Routing v2: Anthropic is priority 1 for every one of them, decision-
+    # bearing or not. Gemini is still in the tail — v2 replaced "the cheap tier
+    # may not serve this role" with "if it does, the run declares it and is
+    # disqualified as a baseline".
+    for role in ("recon", "scan", "exploit", "research", "report"):
+        assert agent_llms[role].fallback_chain[0] == "anthropic", role
 
 
 # ---------------------------------------------------------------------------

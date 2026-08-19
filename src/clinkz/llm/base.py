@@ -7,6 +7,7 @@ only ever interacts with LLMClient — never with provider SDKs directly.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
@@ -60,6 +61,78 @@ class LLMUnavailableError(LLMError):
     """Every provider in the fallback chain failed."""
 
 
+class ProviderPolicyError(BaseException):
+    """A decision-bearing role was about to be served by a forbidden provider.
+
+    **Inherits BaseException, not Exception, and that is the whole mechanism.**
+
+    Every LLM call site in the agents is already wrapped in a broad
+    ``except Exception`` that degrades gracefully — the exploit planner falls
+    back to its deterministic plan, the research agent skips a technique, the
+    methodology checkpoint returns ``""``. Those handlers are correct for what
+    they were written for: a provider quirk should not end an engagement. They
+    are exactly wrong for this, because "degrade gracefully" is how the run
+    continues with the wrong model's answer in it — which is the outcome this
+    class exists to prevent.
+
+    Fixing that by re-raising at each of the eight current call sites would
+    work today and rot immediately: the ninth call site would re-derive only
+    the obvious half. So the refusal is made structurally uncatchable instead,
+    the way ``KeyboardInterrupt`` is — a stop, not an error to handle. There is
+    no next provider to try and no partial result worth keeping: a plan or a
+    suppression verdict written by the wrong model invalidates the run it
+    appears in.
+
+    The last instance was found by reading traces after the fact — Gemini had
+    served 6 exploit plans and 6 false-positive cross-checks across 9
+    engagements, and every one of those reports looked exactly like a report
+    that had not happened to it. This raises instead.
+
+    It is deliberately NOT an :class:`LLMError`: the fallback chain rotates on
+    those, and rotating is the behaviour being refused.
+
+    **Reserved for the run-mode refusal**, i.e. ``baseline``. The call-purpose
+    refusal on an emit/suppress path in ``client`` mode raises
+    :class:`DecisionPathFallbackRefused` instead — see that class for why the
+    two want opposite catchability.
+    """
+
+
+class DecisionPathFallbackError(LLMError):
+    """A call whose answer EMITS or SUPPRESSES a finding may not be served by
+    a fallback provider, and the caller should degrade rather than die.
+
+    The sibling of :class:`ProviderPolicyError`, and the difference between them
+    is the intended outcome rather than the severity.
+
+    ``baseline`` mode wants the **run** to fail: a recorded baseline served
+    partly by two models measures nothing, so there is no partial result worth
+    keeping and ``ProviderPolicyError`` is uncatchable on purpose.
+
+    ``client`` mode wants only the **call** to fail. The engagement should still
+    complete — that is the whole reason client mode degrades — and the callers
+    on these two paths already have exactly the right handling for a model they
+    cannot reach:
+
+    * ``ExploitAgent._llm_analyze_results`` catches, logs, and returns an empty
+      analysis: no false-positive suspects, so **nothing is demoted**.
+    * ``ExploitAgent._llm_analyze`` catches and returns ``""``, leaving the
+      methodology on its deterministic build — where the invariants put the
+      verdict anyway.
+
+    Both are the conservative direction, and both are reached by an ordinary
+    ``except Exception``. So this one is an :class:`LLMError` and is meant to be
+    caught. It is raised from ``_assert_fallback_permitted``, i.e. *before* the
+    request leaves, so nothing is bought and nothing is stamped: a degradation
+    the run did not take must not appear in the register.
+
+    It does not rotate the chain further. Being raised outside the loop's
+    ``try`` in ``_dispatch``, it propagates straight to the caller — every
+    remaining provider is a fallback too, so trying the next one asks the same
+    forbidden question.
+    """
+
+
 class EmptyResponseError(LLMError):
     """The provider answered, but the answer carried no usable text.
 
@@ -100,6 +173,29 @@ class CallStats(BaseModel):
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
     stop_reason: str | None = None
+    #: The ``max_tokens`` this request actually carried. Recorded because
+    #: ``output_tokens`` alone cannot say whether a call finished or was cut
+    #: off: 16000 is a complete answer under a 64000 ceiling and a truncation
+    #: under a 16000 one. The last cliff was found by reading a traceback,
+    #: which is one engagement too late.
+    max_output_tokens: int = 0
+
+    @property
+    def output_headroom(self) -> int:
+        """Tokens left unspent under the ceiling this call carried.
+
+        Negative is impossible; zero means the ceiling bound the answer.
+        """
+        if self.max_output_tokens <= 0:
+            return 0
+        return max(0, self.max_output_tokens - self.output_tokens)
+
+    @property
+    def output_utilisation(self) -> float:
+        """Fraction of the requested ceiling the answer actually consumed."""
+        if self.max_output_tokens <= 0:
+            return 0.0
+        return self.output_tokens / self.max_output_tokens
 
     @property
     def billed_prompt_tokens(self) -> int:
@@ -236,6 +332,30 @@ class PromptSegments(BaseModel):
         return "\n\n".join(part for part in (self.invariant, self.stable, self.volatile) if part)
 
 
+class OutputBudget(StrEnum):
+    """How a call wants its ``max_tokens`` ceiling chosen.
+
+    A *policy*, never a number: only the client that is about to serve the call
+    knows which model will run it, and the ceiling is a function of that model's
+    output cap and context window. An agent naming a token count would be
+    guessing on behalf of a provider it is not allowed to import.
+
+    * ``DEFAULT`` — ``settings.llm_max_output_tokens``, the flat ceiling every
+      call has always carried. Non-streaming-safe by construction.
+    * ``MAX`` — computed per call as
+      ``min(model output ceiling, context limit - measured input - margin)``.
+      For the one call whose answer scales with the discovered attack surface.
+
+    Why ``MAX`` is not simply the default. It costs a ``count_tokens``
+    round-trip to measure the input, and it produces a ceiling large enough to
+    require streaming. Both are right for a once-per-engagement planning call
+    and wrong for the ~5,000 short checkpoint calls a run also makes.
+    """
+
+    DEFAULT = "default"
+    MAX = "max"
+
+
 #: What ``generate_text`` accepts. A bare ``str`` is the unchanged path: no
 #: breakpoint, no system block, byte-identical request to what shipped before.
 PromptLike = str | PromptSegments
@@ -282,6 +402,43 @@ class LLMMessage(BaseModel):
     tool_calls: list[ToolCall] | None = None  # populated for assistant tool-call turns
 
 
+class ResearchGrounding(StrEnum):
+    """Whether a client's :meth:`LLMClient.research` answer saw the live web.
+
+    Declared by the PRODUCER, like ``ToolOutput.discovered_urls`` and
+    ``detected_components()``, and for the same reason: a consumer that guesses
+    is a consumer that will be silently wrong the first time a provider changes.
+
+    This is not a preference. A grounded research call reads today's CVE feeds;
+    an ungrounded one recites a training corpus with a cutoff, so **every
+    vulnerability disclosed after that cutoff is invisible to it** and the
+    answer contains no signal that anything is missing. For a security tool
+    that is a correctness failure, not a quality one — and an ungrounded
+    research answer folded silently into the runbook and persisted to the
+    cross-engagement KB is a new unbacked claim that outlives the run.
+
+    So the grounding is stamped wherever the research output goes: the runbook
+    and the report. Routing v2 is what made this urgent — Research used to lead
+    with Gemini Flash-Lite precisely for native Search Grounding, and Anthropic
+    has no equivalent on this path, so the capability was lost with the routing
+    change. Stated rather than absorbed.
+    """
+
+    #: The provider searched the live web for this answer.
+    LIVE_SEARCH = "live_search"
+    #: The answer came from the model's training corpus. Bounded by its cutoff.
+    TRAINING_DATA = "training_data"
+    #: The client never said. Treated as ungrounded everywhere, because
+    #: "we do not know whether this saw the web" and "this did not see the web"
+    #: license exactly the same claim in a deliverable.
+    UNDECLARED = "undeclared"
+
+    @property
+    def is_grounded(self) -> bool:
+        """Whether output produced under this grounding may be called grounded."""
+        return self is ResearchGrounding.LIVE_SEARCH
+
+
 class LLMClient(ABC):
     """Abstract base class for all LLM provider clients.
 
@@ -297,6 +454,24 @@ class LLMClient(ABC):
     #: one completes. Read at the ``ResilientLLMClient`` seam for the trace, so
     #: the value is only meaningful immediately after an awaited call returns.
     last_call_stats: CallStats | None = None
+
+    #: What this client's :meth:`research` answers are grounded in. Every
+    #: shipped client overrides it (asserted by
+    #: ``tests/test_llm/test_research_grounding.py``); the default is
+    #: ``UNDECLARED`` rather than an abstract method so a test double and a
+    #: third-party client keep working — and ``UNDECLARED`` is treated as
+    #: ungrounded, which is the direction that cannot overstate.
+    RESEARCH_GROUNDING: ResearchGrounding = ResearchGrounding.UNDECLARED
+
+    def research_grounding(self) -> ResearchGrounding:
+        """What the answer this client would give is grounded in.
+
+        A method rather than a bare attribute read because the resilient client
+        overrides it: which provider *served* a research call is only known
+        after the chain resolves, and it is the one that served it whose
+        grounding the answer actually has.
+        """
+        return self.RESEARCH_GROUNDING
 
     @abstractmethod
     async def reason(
@@ -329,7 +504,9 @@ class LLMClient(ABC):
         ...
 
     @abstractmethod
-    async def generate_text(self, prompt: PromptLike) -> str:
+    async def generate_text(
+        self, prompt: PromptLike, *, budget: OutputBudget = OutputBudget.DEFAULT
+    ) -> str:
         """Generate free-form text from a prompt without tool calling.
 
         Args:
@@ -337,6 +514,9 @@ class LLMClient(ABC):
                 which leading bytes repeat across the calls of one engagement.
                 A client that cannot exploit the split flattens it and behaves
                 exactly as it did for the string form.
+            budget: Which ceiling policy to apply (:class:`OutputBudget`). A
+                client with a single fixed ceiling may ignore it; the default
+                is the behaviour every call had before the policy existed.
 
         Returns:
             Generated text. Never the empty string — a response carrying no

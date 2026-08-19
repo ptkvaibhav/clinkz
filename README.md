@@ -14,7 +14,7 @@
 
 Clinkz is an autonomous, multi-agent AI system that performs end-to-end black-box penetration testing. Give it a target scope and it produces a professional pentest report — no human intervention required.
 
-Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamically discovering and executing security tools as needed. The system follows the MITRE ATT&CK framework and OWASP WSTG methodology to ensure comprehensive coverage.
+Agents collaborate through a central Orchestrator on a deterministic phase sequence, dynamically discovering and executing security tools as needed. The system follows the MITRE ATT&CK framework and OWASP WSTG methodology to ensure comprehensive coverage.
 
 ## Architecture
 
@@ -45,15 +45,15 @@ Agents collaborate in real-time through an LLM-mediated Orchestrator, dynamicall
 2. **Scan**, **Research**, and **Exploit** then run **concurrently**, sharing SQLite state. Exploit's only hard dependency is Scan — it starts as soon as Scan completes and never waits for Research (Research's runbook is folded in only if it has already finished)
 3. **Recon** discovers subdomains, ports, services, and tech stack
 4. **Scan** crawls + fuzzes every HTTP service and enumerates non-HTTP services (FTP/SSH/SMB/DB), under its own wall-clock budget (`SCAN_TIME_BUDGET`) so an over-running phase returns a partial attack surface instead of being force-killed and returning none. For single-page apps it adds **API surface discovery** (`agents/_route_discovery.py`, behind a pluggable discoverer seam) — because on an SPA the `/api`+`/rest` routes *are* the surface and an HTML/JS crawl cannot see them. The frontend declares the API contract, so Clinkz reads it: `agents/_js_api_mining.py` mines the served bundles for **HTTP call sites** (fetch/XHR/axios/Angular `HttpClient`/navigation) and recovers each one's method, URL template, query parameters and request **body shape**, resolving minified class-field bindings and scoping a body shape to its enclosing function. OpenAPI and GraphQL introspection are used when served (a *disabled* introspection is reported as such, never guessed around). What the source can't say is learned from the live target using **safe methods only** (`agents/_api_schema.py`): `OPTIONS` for a resource's `Allow` header, and a collection's own `GET` representation for the fields its writes accept. No discoverer carries a hardcoded endpoint, body-field or route-word list for any application. Crawl-safety skips links that mutate the target (WAF/security toggles, logout) so the shared session is never poisoned for later phases
-5. **Research** queries the persistent KB for known techniques and live-searches the web for new CVEs/writeups (Gemini 3.1 Flash-Lite with native Search Grounding), under a hard wall-clock budget, persisting results back to the KB
+5. **Research** queries the persistent KB for known techniques and the NVD CVE feed, under a hard wall-clock budget, persisting results back to the KB. Under routing v2 its LLM half is **not web-grounded** — that is stamped on every runbook entry and in the report rather than absorbed
 6. **Exploit** plans tests with an LLM and executes deterministic `_test_*` skills (all are adaptive multi-phase methodologies — the injection family spans SQLi, NoSQL, SSTI, XSS, CMDi, LFI, …)
-7. **Critic** validates findings; **Report** emits JSON + Markdown
+7. **Report** emits JSON + Markdown. Findings are gated on the emitting path (`_persist_finding`, `verification_strength`, the deterministic false-positive cross-check), not by a separate review agent — the Critic that used to be described here is archived, having run 0 times in 2,774 recorded steps
 
 Phase agents follow **deterministic step sequences with LLM checkpoints** (no free-form ReAct). Confirmed capabilities are recorded to the persistent KB's Layer-2 capability memory so future engagements adapt.
 
 ## Features
 
-- **Concurrent multi-agent execution** — Scan, Research, and Exploit run in parallel through an LLM-mediated orchestrator
+- **Concurrent multi-agent execution** — Scan, Research, and Exploit run in parallel through a central orchestrator, on a deterministic phase sequence
 - **Deterministic skills + LLM checkpoints** — Each `_test_*` is a contract: if the vuln is present it MUST be found; LLMs only step in at named planning/synthesis points
 - **Adaptive methodologies** — every `_test_*` is a multi-phase methodology: the injection family (SQLi, NoSQL, SSTI, XSS, CMDi, LFI, …) maps → fingerprints (SQL dialect / NoSQL carrier / template engine / shell) → ranks → LLM-synthesizes → verifies; SSTI sends polyglot arithmetic probes and is read-back aware for second-order Pug; CMDi candidacy uses a reflection-guarded echo-canary probe so injection surfaces even when the base command writes only to stderr
 - **Gray-box discovery engine** — when an engagement supplies a source tree, `src/clinkz/discovery/` ingests it (bounded regex, no whole-program analysis) and derives *Δ-capability × untrusted-channel-reachability × provable-impact* hypotheses that union into the exploit plan alongside the LLM and deterministic plans. Ingestion is **cross-language** behind a `SourceIngestor` seam (`select_ingestor` picks per source tree): a Java ingestor (servlet / param-bag / typed path-param / log-sink idioms) and a JS/TS **Node/Express backend** ingestor (Express route entrypoints incl. cross-file factory-per-file handlers; `axios`/`fetch`/`fs` sink shapes; `package.json` manifest) — the JS path is **live-proven on OWASP Juice Shop**, surfacing its own-code SSRF (`fetch(req.body.imageUrl)`) and confirming it out-of-band (P6) on the running instance. A class-generic capability catalog holds three classes today — **SSRF** (`openConnection` / `axios.get` egress → `_test_ssrf`), **file read** (`new File(pathParam)` / `fs.readFile` → `_test_lfi`), and **Log4Shell** (`log4j-core` log-sink JNDI egress → `_test_log4shell`) — each learned from the target's own source with no target literal, N/A by construction on a patched/absent instance; the SSRF/file-read classes are language-agnostic (the same catalog entry fires on Java or Node)
@@ -210,11 +210,40 @@ credential file is refused outright):
 ```json
 {
   "credentials": [
-    {"role": "admin", "username": "admin@example.com", "password": "..."},
-    {"role": "user",  "username": "user@example.com",  "password": "..."}
+    {
+      "role": "admin",
+      "username": "admin@example.com",
+      "password": "...",
+      "login_url": "https://app.example.com/rest/user/login",
+      "assert_url": "https://app.example.com/account",
+      "description": "full-access account"
+    },
+    {"role": "user", "username": "user@example.com", "password": "..."},
+    {"role": "anonymous"}
   ]
 }
 ```
+
+Only `role` is required. The other five are per role, and every field lives on
+the role entry — **not** at the top level of the file, and not in `scope.json`;
+a key at the wrong level is refused by name rather than silently ignored.
+
+| Field | What it does | When you need it |
+|-------|--------------|------------------|
+| `role` | Labels the principal (`admin` / `user` / `anonymous` / anything meaningful). Required. | Always. Two labelled roles is what makes access-control testing possible — an IDOR/authz class needs two principals to compare. `anonymous` names the unauthenticated baseline. |
+| `username` / `password` | The credentials. `password` is a `SecretStr` and is registered for redaction on intake. | Any authenticating role. Omit both for `anonymous`. |
+| `login_url` | Where to authenticate **this role**. Overrides the login endpoint discovery found. | The app's login is not at a conventional path (`/login`, `/signin`, `/api/auth`, `/rest/user/login`), or it differs per role. Without it, an undiscoverable login means the engagement **aborts** rather than scanning blind — see below. |
+| `assert_url` | A URL known to behave differently authenticated vs anonymous. Tried **first** by the authenticated-state assertion. | The protected surface is named something unconventional, so the assertion's fallback guesses will not find it. |
+| `description` | Free-text note, echoed nowhere sensitive. | Documentation for whoever reads the file next. |
+
+**If authentication fails, the engagement stops.** Credentials supplied and the
+session not provable is a hard abort before any testing (exit code `3`), with a
+message naming what was tried and which of the three causes to fix. The run does
+*not* continue anonymously: scanning an authenticated application without a
+session produces an empty report that reads like a clean bill of health, which is
+worse than no report. Starting with **no** credentials at all is a different and
+legitimate case — the run proceeds anonymously and both the log and the report's
+authentication section say so explicitly.
 
 > Note: `recon`, `crawl`, `exploit`, and `report` subcommands exist for future per-phase invocation but are still TODO. Use `scan` for the full pipeline.
 
@@ -224,29 +253,49 @@ All configuration is via environment variables in `.env`. The defaults below are
 
 ### LLM providers and models
 
+**Routing v2: Anthropic is priority 1 for every call, on every phase.** Gemini
+and OpenAI are fallback only, and a fallback is a *disqualifying event* — a hard
+failure in `baseline` mode, a `provider_degraded` stamp plus permanent
+baseline-ineligibility in `client` mode, and **refused outright in both modes on
+a call that emits or suppresses a finding**. Full rationale, the call-purpose
+rule, and what the run reports about its own routing:
+**[`docs/provider-routing.md`](docs/provider-routing.md)**.
+
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LLM_PROVIDER` | Legacy top-level provider (last-resort fallback; `openai`/`anthropic`/`gemini`/`ollama`) | `gemini` |
-| `LLM_PROVIDER_DEFAULT` | Default for any agent without an explicit override | `gemini` |
-| `LLM_PROVIDER_RECON` | Recon agent provider | `gemini` |
-| `LLM_PROVIDER_SCAN` | Scan agent provider | `gemini` |
-| `LLM_PROVIDER_REPORT` | Report agent provider | `gemini` |
+| `LLM_PROVIDER` | Legacy top-level provider (last-resort fallback; `openai`/`anthropic`/`gemini`/`ollama`) | `anthropic` |
+| `LLM_PROVIDER_DEFAULT` | Default for any agent without an explicit override | `anthropic` |
+| `LLM_PROVIDER_RECON` | Recon agent provider | `anthropic` |
+| `LLM_PROVIDER_SCAN` | Scan agent provider | `anthropic` |
+| `LLM_PROVIDER_REPORT` | Report agent provider — **read by nothing; the Report agent makes zero LLM calls** | `anthropic` |
 | `LLM_PROVIDER_EXPLOIT` | Exploit agent provider | `anthropic` |
-| `LLM_PROVIDER_RESEARCH` | Research agent provider | `gemini` |
-| `ORCHESTRATOR_MODEL` | Model for the Orchestrator agent | `gpt-4o` |
+| `LLM_PROVIDER_RESEARCH` | Research agent provider | `anthropic` |
+| `CLINKZ_RUN_MODE` | `client` (a fallback degrades + stamps) or `baseline` (a fallback fails the run) | `client` |
+| `ORCHESTRATOR_MODEL` | Model for the Orchestrator agent when the provider is OpenAI | `gpt-4o` |
 | `AGENT_MODEL` | Model for phase agents (when provider is OpenAI) | `gpt-4o-mini` |
-| `ANTHROPIC_MODEL` | Claude model name | `claude-sonnet-4-6` |
-| `GEMINI_MODEL` | Gemini model for Recon / Scan / Report (GA; never the `-preview` variant) | `gemini-3.1-flash-lite` |
-| `GEMINI_EXPLOIT_MODEL` | Gemini model used when Exploit falls back to Gemini | `gemini-3.1-flash-lite` |
-| `GEMINI_RESEARCH_MODEL` | Gemini model for Research (GA; never the `-preview` variant) | `gemini-3.1-flash-lite` |
+| `ANTHROPIC_MODEL` | Claude model for every priority-1 call — i.e. every call | `claude-sonnet-5` |
+| `GEMINI_MODEL` | Gemini model for any call that fell back (pinned exactly; never a floating alias) | `gemini-3.7-flash` |
+| `GEMINI_EXPLOIT_MODEL` | Gemini model used when Exploit falls back to Gemini | `gemini-3.7-flash` |
+| `GEMINI_RESEARCH_MODEL` | Gemini model used when Research falls back to Gemini | `gemini-3.7-flash` |
+| `GEMINI_THINKING_LEVEL` | `LOW` / `MEDIUM` / `HIGH`. `MINIMAL` is offered by the SDK enum and rejected by the API, so config refuses it | `MEDIUM` |
 | `GEMINI_MAX_RPM` | Per-client Gemini requests/minute ceiling (Tier-1 sized) | `30` |
 | `RESEARCH_TIME_BUDGET` | Hard wall-clock budget (seconds) for the Research phase | `180` |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | Provider API keys | — |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | Provider API keys. A detected key confers *availability*, never priority | — |
 | `GOOGLE_API_KEY` | Legacy alias for `GEMINI_API_KEY` | — |
-| `OLLAMA_BASE_URL` | Ollama server URL (Ollama client is currently a stub) | `http://localhost:11434` |
+| `OLLAMA_BASE_URL` | Ollama server URL (Ollama client is a stub and is in no fallback chain) | `http://localhost:11434` |
+| `LLM_REQUEST_TIMEOUT` | Hard timeout (seconds) for a single LLM call | `120.0` |
 | `LLM_MAX_RETRIES` | Per-provider retry budget before falling over to the next provider | `3` |
 | `LLM_RETRY_BASE_DELAY` | Initial exponential backoff delay (seconds) | `2.0` |
 | `LLM_RETRY_MAX_DELAY` | Cap on exponential backoff (seconds) | `30.0` |
+
+**Research is not web-grounded under v2.** It led with Gemini Flash-Lite for
+native Search Grounding; the Anthropic path has no equivalent, so a research
+answer is bounded by the serving model's training cutoff and its text gives no
+sign that anything is missing. This is stamped rather than absorbed: the
+grounding travels on every runbook entry and the report carries a **Research
+grounding** section stating what it means — and stating explicitly that it does
+not reach the findings, since a CVE from research is a lead that must reach one
+of this engine's own oracles before it can be a finding.
 
 ### Tool execution + state
 
@@ -282,15 +331,32 @@ Tools are discovered dynamically at runtime via `ToolResolver.find_tool(capabili
 
 ## Agents
 
-| Agent | Default LLM | Role |
-|-------|-------------|------|
-| **Orchestrator** | Anthropic (resilient fallback) | Central coordinator — Recon → concurrent (Scan + Research + Exploit) → Report |
-| **Recon** | Gemini Flash | Port scan → service/version → web recon → tech stack |
-| **Scan** | Gemini Flash | Crawl + fuzz HTTP, enumerate FTP/SSH/SMB/DB; coverage checkpoint via fallback chains |
-| **Research** | Gemini 3.1 Flash-Lite (Search Grounding) | Cross-engagement KB lookup + live web search; rate-limit-aware with a wall-clock budget; persists techniques back to `clinkz_knowledge.db` |
-| **Exploit** | Anthropic Claude | LLM plans tests; deterministic `_test_*` skills execute; 19 adaptive multi-phase methodologies (injection family: SQLi, NoSQL, SSTI, XXE, …; plus Tier-2 JWT token forgery and SSRF) |
-| **Critic** | (LLM-only) | Validates findings, checks CVSS, eliminates false positives |
-| **Report** | (no LLM today) | Pulls findings from state store, emits JSON + Markdown |
+Every agent runs on Anthropic (routing v2); the "LLM" column says what each one
+uses the model *for*, since that is what actually differs.
+
+| Agent | LLM used for | Role |
+|-------|--------------|------|
+| **Orchestrator** | Nothing on the running path — the phase sequence is deterministic | Central coordinator — Recon → concurrent (Scan + Research + Exploit) → Report |
+| **Recon** | Port analysis, tech-stack extraction, synthesis | Port scan → service/version → web recon → tech stack |
+| **Scan** | Strategy planning, output review, coverage check | Crawl + fuzz HTTP, enumerate FTP/SSH/SMB/DB; coverage checkpoint via fallback chains |
+| **Research** | Query generation + technique synthesis. **Not web-grounded** — see above | Cross-engagement KB lookup + NVD CVE feed; rate-limit-aware with a wall-clock budget; persists techniques back to `clinkz_knowledge.db` |
+| **Exploit** | Plans tests, and named checkpoints inside each methodology | Deterministic `_test_*` skills execute; 24 adaptive multi-phase methodologies (injection family: SQLi, NoSQL, SSTI, XXE, …; plus Tier-2 JWT token forgery and SSRF) |
+| **Report** | **Zero LLM calls** | Pulls findings from state store, emits JSON + Markdown in <30 s |
+
+> **Critic:** archived (`src/clinkz/agents/_archive/critic.py`). It was
+> registered in the lifecycle manager and invoked in **0 of 2,774 recorded agent
+> steps** — registration made it constructible, never called. Finding validation
+> is done by deterministic gates on the emitting path instead: the
+> false-positive cross-check, `verification_strength` enforced at
+> `_persist_finding`, and CVSS computed in the report.
+
+Four methodology classes decide **without consulting a model at all** —
+`security_headers`, `csrf`, `weak_session`, `brute_force`. Their inputs are fully
+observed and every rule is a pure function of them, so the LLM was answering a
+question the code could already answer, while remaining a live surface on which a
+model change could silently re-baseline a class. Each has a test asserting the
+model is not *called*, since a test that only compares verdicts passes against a
+version that asks and discards the answer.
 
 ## Report Output
 

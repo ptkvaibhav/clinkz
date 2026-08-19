@@ -4,7 +4,7 @@ Each phase is exercised in isolation with mocked HTTP + LLM:
 
     Phase 1 (hypothesis)   — endpoint reachable
     Phase 2 (observation)  — endpoint + origin-root header capture
-    Phase 3 (analysis)     — LLM JSON parsing + deterministic fallback
+    Phase 3 (analysis)     — deterministic evaluation (no LLM on this path)
     Phase 4 (finding)      — Finding evidence chain + dedup behaviour
 
 Dedup test verifies that a multi-URL run on the same origin produces N
@@ -47,7 +47,7 @@ class _ScriptedLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         self.prompts.append(prompt)
         if not self.answers:
             return ""

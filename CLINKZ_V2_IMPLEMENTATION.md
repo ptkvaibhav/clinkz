@@ -189,8 +189,13 @@ REPORT                                                           [partial]
   (SPA-200 guarded) — union into `HTTPScanResult.endpoints`; session-carrying,
   same-origin, bounded. Headless discoverer is a documented future slot-in — done
 - Research Agent with persistent KB integration — done
-- Research on Gemini 3.1 Flash-Lite (GA) with native Search Grounding,
-  configurable RPM, bounded backoff, and a hard wall-clock budget — done
+- Research with configurable RPM, bounded backoff, and a hard wall-clock budget
+  — done. It ran on Gemini 3.1 Flash-Lite with native Search Grounding until
+  routing v2 made Anthropic priority 1 on every phase; the Anthropic path has no
+  search grounding, so research answers are now bounded by the serving model's
+  training cutoff and every artifact says so
+  (`docs/provider-routing.md` §8) — the grounding is stamped on every runbook
+  entry and rendered in the report rather than absorbed
 - Cross-technology adaptation — done
 - Concurrent execution wiring (Scan + Research + Exploit); Exploit decoupled
   from Research (depends on Scan only) — done

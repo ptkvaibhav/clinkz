@@ -177,7 +177,7 @@ class _StubLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return "Mock LLM response."
 
 
@@ -212,7 +212,7 @@ class _ReconLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         # LLM checkpoint for tech extraction
         import json
 
@@ -252,7 +252,7 @@ class _ScanLLM(LLMClient):
     async def research(self, query: str) -> str:
         return ""
 
-    async def generate_text(self, prompt: str) -> str:
+    async def generate_text(self, prompt: str, **_kw: object) -> str:
         return '{"sufficient": true}'
 
 
