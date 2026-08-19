@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from clinkz.agents._control_arm import ControlVerdict, control_evidence_lines
 from clinkz.agents.exploit import ExploitAgent, _HTTPResponse
 from clinkz.chaining.models import ChainKind
 from clinkz.llm.base import LLMClient, LLMMessage
@@ -136,6 +137,16 @@ def _agent(*, accepts_anything: bool) -> ExploitAgent:
     return agent
 
 
+#: SSRF and LFI are marker-oracle classes, so a real finding of either carries
+#: the never-sent control arm that licensed it. These fixtures stand in for
+#: findings a methodology emitted, so they carry it too — without it
+#: ``_persist_finding`` refuses them, correctly, for a reason no chaining test is
+#: about.
+_CONTROL_ARM: list[str] = control_evidence_lines(
+    ControlVerdict(decoy="clinkzdecoyfixture1", dispatched=True, oracle_refused=True)
+)
+
+
 def _secrets_finding() -> Finding:
     return Finding(
         title="Secret exposure in /config",
@@ -174,6 +185,7 @@ def _ssrf_finding() -> Finding:
         evidence=[
             "Request: GET https://app.test/fetch?url=http://127.0.0.1/",
             "Response: fetched 200 from the supplied address",
+            *_CONTROL_ARM,
         ],
     )
 
@@ -429,6 +441,7 @@ async def test_a_recovered_document_is_not_registered_as_a_secret() -> None:
             evidence=[
                 "Request: GET https://app.test/?page=../../etc/hosts",
                 "Response: " + ("ordinary recovered document text " * 40),
+                *_CONTROL_ARM,
             ],
         )
         await agent._persist_finding(lfi)
