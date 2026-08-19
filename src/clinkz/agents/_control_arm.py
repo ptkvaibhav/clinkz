@@ -51,6 +51,7 @@ from dataclasses import dataclass
 __all__ = [
     "CONTROL_EXEMPT_CLASSES",
     "rebind_marker",
+    "sqli_inert_control",
     "strip_shell_separators",
     "strip_template_delimiters",
     "MARKER_ORACLE_CLASSES",
@@ -234,6 +235,90 @@ def strip_template_delimiters(payload: str) -> str:
     for token in _TEMPLATE_DELIMITERS:
         out = out.replace(token, "")
     return out
+
+
+#: SQL keywords mapped to same-length non-keywords. Length and character class
+#: are preserved deliberately — see :func:`sqli_inert_control`.
+_SQL_KEYWORD_MANGLE: dict[str, str] = {
+    "UNION": "UNIQN",
+    "SELECT": "SELEQT",
+    "SLEEP": "SLEEQ",
+    "WAITFOR": "WAITFOQ",
+    "PG_SLEEP": "PG_SLEEQ",
+    "BENCHMARK": "BENCHMAQK",
+    "DELAY": "DELAQ",
+    "FROM": "FROQ",
+    "WHERE": "WHEQE",
+    "CONCAT": "CONCAQ",
+    "AND": "AQD",
+    "OR": "OQ",
+    "LIKE": "LIQE",
+    "CASE": "CAQE",
+    "WHEN": "WHEQ",
+}
+
+#: Characters and tokens that let a value escape its literal and become syntax.
+_SQL_BREAKOUT = ("'", '"', "`", ")", "(", "--", "#", "/*", "*/", ";")
+
+
+def sqli_inert_control(payload: str, indicator_type: str, live_marker: str, decoy: str) -> str:
+    """The SQLi control payload: same value, no SQL.
+
+    **What the defining effect of a UNION confirmation actually is:** structured
+    data the application could not have echoed — a cell the database returned
+    because our query asked for it. The oracle approximates that by finding the
+    marker somewhere the payload's own echo does not explain, and the whole
+    approximation rests on ``_marker_only_in_payload_echo`` recognising the echo.
+    That guard blanks a *verbatim* copy of the payload, so it fails against any
+    sink that re-encodes on the way out — which is what Next.js App Router does
+    when it puts the request's query string into the RSC flight payload
+    percent-encoded, and why seven UNION HIGHs shipped from engagement
+    ``d67835f5``.
+
+    **The control has to round-trip the same way, or it is not a control.** A
+    bare alphanumeric decoy is inert, but it is also encoding-invariant: it comes
+    back byte-identical, the echo guard blanks it, and the oracle refuses — on
+    the phantom target as readily as on the real one. It would have passed the
+    portfolio run cleanly. So the control keeps every space, quote and comment
+    marker the confirming payload carried, and neutralises only the SQL: each
+    keyword becomes a same-length non-keyword (``UNION`` -> ``UNIQN``), so the
+    percent-encoding of the control is byte-for-byte the shape of the confirming
+    one and only the semantics differ. Against Next.js the control now reflects
+    exactly as the payload did, the guard misses it exactly as it missed the
+    payload, the oracle confirms on a probe that cannot union, and the finding
+    dies. Against DVWA the mangled keyword is a syntax error, the union branch
+    rejects a marker inside a database error, the oracle refuses, and the genuine
+    finding stands.
+
+    That is the whole answer to "is a UNION-specific oracle larger than the
+    never-sent arm": it is not. The arm is sufficient once the control differs
+    from the confirming payload in the primitive and in nothing else.
+
+    Every other channel has a different primitive, so the neutralisation follows
+    it: ``error_string`` and ``time_delta`` confirm on the value ESCAPING its
+    literal, so the break-out punctuation goes too and what is left is an
+    ordinary value; ``content_diff`` and ``auth_bypass`` confirm on a difference
+    between two arms, so the caller sends the same value down both and any
+    surviving difference is noise rather than signal.
+
+    Args:
+        payload: The confirming payload.
+        indicator_type: The channel it confirmed on.
+        live_marker: The marker the confirming payload carried.
+        decoy: The marker the control carries instead.
+
+    Returns:
+        A payload that cannot alter a query and reflects like the original.
+    """
+    out = rebind_marker(payload, live_marker, decoy)
+    if not is_minted_marker(live_marker) and live_marker and live_marker in out:
+        out = out.replace(live_marker, decoy)
+    for keyword, mangled in _SQL_KEYWORD_MANGLE.items():
+        out = re.sub(rf"\b{keyword}\b", mangled, out, flags=re.I)
+    if (indicator_type or "").strip().lower() not in ("union_data", "union", "union_based"):
+        for token in _SQL_BREAKOUT:
+            out = out.replace(token, "")
+    return out or decoy
 
 
 def rebind_marker(payload: str, live_marker: str, decoy: str) -> str:
