@@ -250,11 +250,38 @@ def _plan_classes(scope: EngagementScope) -> list[DryRunClass]:
     return out
 
 
+def _client_oracle_present() -> bool:
+    """Whether P7 is usable on the runtime THIS run would use.
+
+    Asked rather than assumed. The note below used to state the oracle absent
+    unconditionally for every client-side class, which is a claim about the
+    machine made without looking at it — and on a docker-mode host with the
+    tools image built it is the opposite of the truth. A pre-dispatch document
+    that under-reports coverage is the same defect as one that over-reports it:
+    the operator reads "reachability only" and plans around a gap that is not
+    there.
+
+    :meth:`~clinkz.browser.oracle.PlaywrightExecutionOracle.native_availability`
+    is the engine's own answer for the runtime tied to ``TOOL_EXEC_MODE``, and
+    it is cached, so the ``docker exec`` it costs is paid once. Any failure to
+    determine it falls back to the pessimistic answer — a dry run must never be
+    the optimistic one.
+    """
+    try:
+        from clinkz.browser.oracle import PlaywrightExecutionOracle
+
+        return bool(PlaywrightExecutionOracle.native_availability())
+    except Exception:  # noqa: BLE001 — a dry run never fails over a capability probe
+        return False
+
+
 def _capability_note(vc: VulnClass) -> str:
     """One line about what confirmation of *vc* depends on."""
     if vc.capability is ConfirmationCapability.OUT_OF_BAND:
         return "blind cases need the out-of-band collaborator to confirm"
     if vc.capability is ConfirmationCapability.CLIENT_SIDE_ORACLE_REQUIRED:
+        if _client_oracle_present():
+            return "client-side execution oracle IS available - this class can confirm"
         return "reachability only - no client-side execution oracle"
     return ""
 

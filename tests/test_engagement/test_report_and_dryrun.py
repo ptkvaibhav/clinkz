@@ -50,31 +50,30 @@ def _agent(scope: EngagementScope, tmp_path: Path) -> ReportAgent:
 
 
 async def _render(scope: EngagementScope, tmp_path: Path, **extra: object) -> tuple[dict, str]:
-    """Run the report agent in *tmp_path* and return (report dict, markdown)."""
-    import os
+    """Run the report agent and return (report dict, markdown).
 
+    No ``chdir``: the suite-wide ``_redirect_outputs_root`` fixture already
+    points every writer at this test's ``tmp_path``, so the paths the agent
+    returns are absolute and resolve the same before and after. The previous
+    version relied on the default root being the relative string ``outputs``
+    and on the working directory being ``tmp_path`` at the moment the path was
+    read — a coincidence, and one that hid whether the reader and the writer
+    agreed on a root at all.
+    """
     agent = _agent(scope, tmp_path)
-    cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        result = await agent.run(
-            {
-                "engagement_id": "eng-report",
-                "engagement_name": scope.name,
-                "authorization": scope.authorization.model_dump(mode="json"),
-                "scope_in": [f"{t.value} ({t.type.value})" for t in scope.targets],
-                "scope_out": [f"{e.value} ({e.type.value}) - {e.notes}" for e in scope.excluded],
-                "rules_of_engagement": ["No testing during business hours"],
-                "engagement_window": scope.window.model_dump(mode="json") if scope.window else None,
-                **extra,
-            }
-        )
-        # The agent writes to outputs/<id>/ relative to the cwd, so read it back
-        # before restoring — a relative path resolved afterwards points at the
-        # developer's own outputs/ directory.
-        markdown = Path(result["markdown_path"]).read_text(encoding="utf-8")
-    finally:
-        os.chdir(cwd)
+    result = await agent.run(
+        {
+            "engagement_id": "eng-report",
+            "engagement_name": scope.name,
+            "authorization": scope.authorization.model_dump(mode="json"),
+            "scope_in": [f"{t.value} ({t.type.value})" for t in scope.targets],
+            "scope_out": [f"{e.value} ({e.type.value}) - {e.notes}" for e in scope.excluded],
+            "rules_of_engagement": ["No testing during business hours"],
+            "engagement_window": scope.window.model_dump(mode="json") if scope.window else None,
+            **extra,
+        }
+    )
+    markdown = Path(result["markdown_path"]).read_text(encoding="utf-8")
     return result["report"], markdown
 
 
@@ -197,9 +196,16 @@ async def test_techniques_the_client_withheld_are_named(tmp_path: Path) -> None:
 
 async def test_refused_actions_are_reported_from_the_runs_own_action_log(
     tmp_path: Path,
+    _redirect_outputs_root: Path,
 ) -> None:
-    """Generated from the run's artifacts, so it cannot disagree with the run."""
-    log = ActionLog("eng-report", outputs_root=tmp_path / "outputs")
+    """Generated from the run's artifacts, so it cannot disagree with the run.
+
+    The log is written to the same root the report agent RESOLVES, taken from
+    the fixture rather than reconstructed as ``tmp_path / "outputs"``. Spelling
+    it twice is what made this test a check on two literals matching instead of
+    a check that the writer and the reader agree.
+    """
+    log = ActionLog("eng-report", outputs_root=_redirect_outputs_root)
     log.record_refused(
         method="POST",
         url="https://app.test/account/change-password",
@@ -334,3 +340,54 @@ def test_dry_run_marks_unauthorized_classes_as_not_planned() -> None:
     assert planned == {"sql_injection"}
     skipped = {c.key: c.reason for c in plan.classes if not c.planned}
     assert "permitted-technique list" in skipped["command_injection"]
+
+
+# ---------------------------------------------------------------------------
+# The dry run's capability notes describe THIS machine, not a default one
+# ---------------------------------------------------------------------------
+
+
+def _dom_note(plan: object) -> str:
+    """The capability note the dry run would print for DOM-based XSS."""
+    return next(c.reason for c in plan.classes if c.key == "xss_dom")  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("available", "expected_fragment"),
+    [
+        (True, "IS available"),
+        (False, "no client-side execution oracle"),
+    ],
+)
+def test_the_client_oracle_note_reports_what_this_machine_actually_has(
+    monkeypatch: pytest.MonkeyPatch, available: bool, expected_fragment: str
+) -> None:
+    """It used to state the oracle absent unconditionally.
+
+    A pre-dispatch document that under-reports coverage is the same defect as
+    one that over-reports it: on a docker-mode host with the tools image built,
+    P7 confirms DOM-XSS, CSP bypass and client-side logic — and the operator was
+    told to plan around a gap that was not there. Parametrised in both
+    directions, because a note pinned only to the present case would pass
+    against a version that ignores the probe and always says "IS available".
+    """
+    from clinkz.engagement import dryrun as dryrun_module
+
+    monkeypatch.setattr(dryrun_module, "_client_oracle_present", lambda: available)
+    plan = dryrun_module.build_dry_run_plan(_scope(), CredentialSet())
+    assert expected_fragment in _dom_note(plan)
+
+
+def test_an_unprobeable_client_oracle_reports_the_pessimistic_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run never fails, and never guesses upward, over a capability probe."""
+    from clinkz.engagement import dryrun as dryrun_module
+
+    def _boom() -> bool:
+        raise RuntimeError("docker is not running")
+
+    monkeypatch.setattr(
+        "clinkz.browser.oracle.PlaywrightExecutionOracle.native_availability", _boom
+    )
+    assert dryrun_module._client_oracle_present() is False

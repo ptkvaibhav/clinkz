@@ -221,6 +221,60 @@ facts, kept apart because they have different fixes:
 Summing them would hide the ordering defect inside the budget, the same reason
 the contribution ledger keeps `DEAD_SEAM` apart from `SILENT`.
 
+### `kept` is a total, and a total is not evidence about its parts
+
+`PlanTruncation` also carries **`kept_by_class`** — per class, how many of its
+tasks survived the cap — and the register's summary carries
+**`classes_with_candidates`**, every class the plan held a candidate for at all.
+
+`kept: int` beside `dropped_by_class: dict` is the same shape this codebase has
+had to break down before. A class that emitted nothing is one of two entirely
+different bugs, and the total cannot tell them apart:
+
+| Observation | What it means | The fix |
+|-------------|---------------|---------|
+| every candidate dropped, none kept | coverage lost to the cap | a larger cap, or better ranking |
+| tasks kept and the class still never ran | the plan reached it and the **dispatcher** did not | the dispatcher — nothing about the cap |
+
+The second is the ffuf shape at class granularity: a component invoked,
+succeeding as far as anything checked, contributing zero. Without the
+breakdown both look like a quiet class, and a quiet class looks like a target
+with nothing to find.
+
+The **class-coverage account** (`scripts/d1_consistency_runner.py::class_coverage`)
+reads these to give every dispatchable class exactly one verdict, discriminating
+on how far the class's own pipeline got — never on what it says about itself,
+because "there was nothing to find" is what a broken class reports too:
+
+* `dispatched_deep` — reached phase 2+; it probed.
+* `dispatched_applicability_only` — phase 1 only; its precondition was absent.
+  Correct, and falsifiable from the phase-1 payload.
+* `dispatched_gate_refused` — refused at the dispatch chokepoint. Correct.
+* `never_dispatched_no_candidates` — the plan held nothing for it. Correct, and
+  **not an alarm** — the same fifth fact the ledger records as NOT APPLICABLE.
+* `never_dispatched_all_candidates_dropped` — ALARM: the cap.
+* `never_dispatched_tasks_survived_the_cap` — ALARM: the dispatcher.
+* `never_dispatched_kept_breakdown_absent` — ALARM: a trace older than
+  `kept_by_class` cannot separate the last two, and an indeterminate answer is
+  reported rather than rounded to the benign side.
+
+Only the **union** stage is read, for the same reason `dropped_primary_targets`
+reads only the union stage: it is the plan that actually dispatched, and the
+deterministic stage is its source.
+
+Which class each verdict is about comes from `_CLASS_TRACE_SKILL` in
+`agents/exploit.py` — the PRODUCER declaring which `skill` string its own
+methodology phases are traced under, rather than a consumer guessing
+`_test_x -> "x"` (right for 23 of 24 and wrong for `_test_javascript_attacks`).
+`tests/test_agents/test_class_trace_skills.py` walks the call graph and asserts
+the declaration against the source, so it cannot become a wish.
+
+The account covers the 24 classes in `_DETERMINISTIC_CATEGORY_ORDER`. The other
+six dispatchable methods — `_test_log4shell`, the two tier-2/3 technique
+dispatchers and the three business-logic methods — are not planned per endpoint
+the same way and are **unaccounted rather than reported**, so 24/24 is not read
+as total coverage.
+
 The section renders when the plan **fit**, too: "no class was truncated" is a
 claim, and a run that fit inside its cap and a run whose truncation nobody
 recorded must not produce identical artifacts.

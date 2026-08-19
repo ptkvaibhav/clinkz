@@ -300,39 +300,39 @@ async def test_research_leads_render_even_with_no_findings(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_json_and_markdown_files_written(tmp_path: Path) -> None:
-    """Report writes JSON and Markdown files to disk."""
-    import os
+async def test_json_and_markdown_files_written(
+    tmp_path: Path, _redirect_outputs_root: Path
+) -> None:
+    """Report writes JSON and Markdown files under the CONFIGURED outputs root.
 
+    This used to ``chdir`` into ``tmp_path`` and assert the literal relative
+    path ``outputs/<id>``, which passed only because the default root is the
+    relative string ``outputs`` and the two happened to coincide. That made the
+    assertion a statement about the process's working directory rather than
+    about the writer, and it broke the moment the root was redirected — which
+    is what the suite-wide redirect does. Asserting against the resolved root
+    says the thing the test is actually for.
+    """
     async with StateStore(tmp_path / "test.db") as state:
         eid = await state.create_engagement("Test", SCOPE.model_dump())
         await _seed_state(state, eid)
 
         llm = MockReportLLM()
         agent = ReportAgent(llm=llm, tools=[], scope=SCOPE, state=state, engagement_id=eid)
+        result = await agent.run({})
 
-        # Run from tmp_path so output files land there
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            result = await agent.run({})
-        finally:
-            os.chdir(old_cwd)
-
-    # Reports are written under outputs/<engagement_id>/ relative to the cwd
-    # at run time (tmp_path here), not the repo root.
     json_path = Path(result["json_path"])
     md_path = Path(result["markdown_path"])
-    assert json_path.parent == Path("outputs") / eid
-    assert (tmp_path / json_path).exists()
-    assert (tmp_path / md_path).exists()
+    assert json_path.parent == _redirect_outputs_root / eid
+    assert json_path.exists()
+    assert md_path.exists()
 
     # JSON is valid and contains findings
-    data = json.loads((tmp_path / json_path).read_text())
+    data = json.loads(json_path.read_text())
     assert len(data["findings"]) == 2
 
     # Markdown contains finding titles
-    md_content = (tmp_path / md_path).read_text()
+    md_content = md_path.read_text()
     assert "SQL Injection" in md_content
     assert "Reflected XSS" in md_content
 

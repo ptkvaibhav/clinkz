@@ -65,6 +65,14 @@ class PlanTruncation:
         stage: Which pass reported ("deterministic" / "union").
         cap: The task cap in force.
         kept: How many tasks survived it.
+        kept_by_class: Per class, HOW MANY of its tasks survived. The total
+            above cannot answer the question the class-coverage account asks —
+            a class that produced no finding either had every candidate dropped
+            (the cap's fault, fixed by a bigger cap) or had tasks in the plan
+            and never ran them (the dispatcher's fault, an entirely different
+            bug). ``kept`` and ``dropped_by_class`` together leave those two
+            indistinguishable, which is the same shape as every other total
+            this codebase has had to break down into its parts.
         dropped_total: How many candidates the cap removed.
         dropped_by_class: Per class, the endpoints dropped (bounded by
             :data:`MAX_RETAINED_PER_CLASS`; the count above is exact).
@@ -77,6 +85,7 @@ class PlanTruncation:
     cap: int
     kept: int
     dropped_total: int
+    kept_by_class: dict[str, int] = field(default_factory=dict)
     dropped_by_class: dict[str, list[str]] = field(default_factory=dict)
     ranking_inversions: list[dict[str, Any]] = field(default_factory=list)
 
@@ -91,6 +100,7 @@ class PlanTruncation:
             "stage": self.stage,
             "cap": self.cap,
             "kept": self.kept,
+            "kept_by_class": dict(sorted(self.kept_by_class.items())),
             "dropped_total": self.dropped_total,
             "classes_truncated": sorted(self.dropped_by_class),
             "dropped_by_class": {
@@ -139,13 +149,20 @@ class PlanAlarmRegister:
         """
         passes = self.passes()
         classes: set[str] = set()
+        planned: set[str] = set()
         for event in passes:
             classes.update(event.dropped_by_class)
+            planned.update(event.dropped_by_class)
+            planned.update(k for k, n in event.kept_by_class.items() if n)
         return {
             "plan_truncated": any(p.truncated for p in passes),
             "passes_recorded": len(passes),
             "dropped_total": sum(p.dropped_total for p in passes),
             "classes_truncated": sorted(classes),
+            # Every class the plan held a candidate for, kept or dropped. The
+            # class-coverage account reads this to tell "no applicable endpoint
+            # existed" from "the plan had one and the class never ran".
+            "classes_with_candidates": sorted(planned),
             "ranking_inversion_count": sum(len(p.ranking_inversions) for p in passes),
             "passes": [p.to_dict() for p in passes],
         }
