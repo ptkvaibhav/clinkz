@@ -576,6 +576,20 @@ class _UnreadableError(Exception):
     """A file this gate must cover and could not read. Never swallowed."""
 
 
+class _TruncatedError(Exception):
+    """Extraction stopped at the size cap. Carries what was read so far.
+
+    Distinct from :class:`_UnreadableError` because the outcomes differ: what
+    was extracted is still scanned and the file is listed as truncated, which is
+    the same treatment an over-cap text file gets. Refusing the whole document
+    would discard evidence the gate already holds.
+    """
+
+    def __init__(self, partial: str) -> None:
+        super().__init__("extraction stopped at the size cap")
+        self.partial = partial
+
+
 def _pdf_text(path: Path) -> str:
     """Both of a PDF's text channels, as one blob with located markers.
 
@@ -611,11 +625,22 @@ def _pdf_text(path: Path) -> str:
             if reader.decrypt("") == 0:
                 raise _UnreadableError("encrypted; no empty-password decryption")
         lines: list[str] = []
+        extracted = 0
         for key, value in (reader.metadata or {}).items():
             lines.append(f"[metadata] {key}: {value}")
+            extracted += len(lines[-1])
         for number, page in enumerate(reader.pages, start=1):
+            # Bounded on the EXTRACTED size, not just the file size. A
+            # compressed stream expands by an unbounded ratio, so a small file
+            # can decompress to gigabytes, and the companion region holds
+            # whatever an operator dropped beside the bundle rather than only
+            # what this engine wrote. Stopping is reported by the caller as a
+            # truncation, exactly like an over-cap text file.
+            if extracted >= _MAX_FILE_BYTES:
+                raise _TruncatedError("\n".join(lines))
             lines.append(f"[page {number}] {page.extract_text() or ''}")
-    except _UnreadableError:
+            extracted += len(lines[-1])
+    except (_UnreadableError, _TruncatedError):
         raise
     except Exception as exc:
         # Deliberately broad, and the opposite of the swallowed-exception
@@ -647,7 +672,11 @@ def _scan_one_file(path: Path, relative: str, report: ArtifactScanReport, *, reg
                 # one rather than filed under "truncated" beside files that WERE
                 # substantially read.
                 raise _UnreadableError(f"{size} bytes exceeds the {_MAX_FILE_BYTES}-byte cap")
-            text = _pdf_text(path)
+            try:
+                text = _pdf_text(path)
+            except _TruncatedError as exc:
+                text = exc.partial
+                report.files_truncated.append(relative)
         else:
             with path.open("r", encoding="utf-8", errors="replace") as handle:
                 text = handle.read() if size <= _MAX_FILE_BYTES else handle.read(_MAX_FILE_BYTES)
