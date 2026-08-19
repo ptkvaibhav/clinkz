@@ -63,6 +63,33 @@ apart.
 A directory whose name is an engagement id belongs to some other engagement's
 bundle, so it is not swept into this one's verdict — a run must not be told to
 answer for a leak it did not write.
+
+**Every file this gate does not read is named, and an unexplained one FAILS.**
+The region gap above was the second guard in a month to report CLEAN over
+somewhere it never looked, and a silently skipped file is the mechanism every
+time: the verdict is true about the bytes examined and is read as a statement
+about the directory. So the skip list is inverted. :data:`_SKIP_ALLOWED` is an
+allow-list keyed by suffix, each entry carrying *the reason that suffix is not
+read*, and anything skipped without an entry — an unreadable file, a format no
+extractor handles, a file over the size cap — is recorded with an empty reason
+and makes :attr:`~ArtifactScanReport.clean` ``False``. The counts are in
+:meth:`~ArtifactScanReport.summary_line` next to the scanned ones, because a
+coverage number that omits what it declined to look at is the same defect one
+level down.
+
+Note what the allow reasons do NOT claim. ``.db`` is skipped because this gate
+has no SQLite reader, not because a SQLite file is safe — its ``TEXT`` columns
+sit in page data in plaintext. The reason strings say so. An allowed skip is a
+disclosed hole, never an absolution.
+
+**A PDF is read through two channels, because each is blind to the other.**
+Page text lives in Flate-compressed content streams and document metadata in a
+separate ``/Info`` dictionary; a byte scan of the file sees neither, and an
+extractor that reads only pages misses a token pasted into ``/Title`` (and the
+reverse). Both are pulled — via :mod:`pypdf`, the one dependency here with a
+consumer — into a single blob with ``[metadata]`` / ``[page N]`` markers, so a
+reported line number still tells an operator where to look. A PDF that cannot
+be parsed is an unexplained skip, not a clean file.
 """
 
 from __future__ import annotations
@@ -103,10 +130,36 @@ REGION_COMPANION: Final = "companion"
 #: matching it is some engagement's bundle rather than a companion artifact.
 _ENGAGEMENT_DIR_RE: Final = re.compile(r"\A[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\Z")
 
-#: Files never worth scanning as text.
-_BINARY_SUFFIXES: Final = frozenset(
-    {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".gz", ".tar", ".db", ".sqlite", ".ico"}
-)
+#: Reason recorded for the gate's own output file. Excluded so a re-scan is
+#: idempotent rather than a report of itself.
+SKIP_SELF: Final = "this gate's own output; excluded so a re-scan is idempotent"
+
+#: The ONLY skips that do not fail the gate, each with the reason it is allowed.
+#: A suffix absent from this table is read; a file that cannot be read despite
+#: being absent from it is recorded with an empty reason and fails.
+#:
+#: The reasons are deliberately narrow. Three of these formats can carry text —
+#: a SQLite ``TEXT`` column and an archive member are both plaintext on disk —
+#: and say so, because an allow-list whose entries read as safety assessments
+#: would relaunch the failure this table exists to close. What is allowed here
+#: is a hole this gate DISCLOSES, not one it dismisses.
+_SKIP_ALLOWED: Final[dict[str, str]] = {
+    ".png": "raster image; carries no extractable text",
+    ".jpg": "raster image; carries no extractable text",
+    ".jpeg": "raster image; carries no extractable text",
+    ".gif": "raster image; carries no extractable text",
+    ".ico": "raster image; carries no extractable text",
+    ".db": "SQLite; no reader here, and its TEXT columns are NOT covered by this verdict",
+    ".sqlite": "SQLite; no reader here, and its TEXT columns are NOT covered by this verdict",
+    ".zip": "archive; members are NOT covered by this verdict",
+    ".gz": "archive; members are NOT covered by this verdict",
+    ".tar": "archive; members are NOT covered by this verdict",
+}
+
+#: Suffix read through :mod:`pypdf` rather than as text. Absent from
+#: :data:`_SKIP_ALLOWED` on purpose: it used to be there, which made every PDF
+#: in a bundle a region the gate certified without reading.
+_PDF_SUFFIX: Final = ".pdf"
 
 #: Cap per file. An artifact larger than this is pathological, and the scan must
 #: not be the reason a run appears to hang. Truncation is REPORTED, never silent.
@@ -158,6 +211,31 @@ class ArtifactFinding(BaseModel):
     region: str = REGION_BUNDLE
 
 
+class SkippedFile(BaseModel):
+    """One file the gate did not read, and whether that was allowed.
+
+    Attributes:
+        path: Path relative to the scanned root.
+        reason: Why it was not read. An entry from :data:`_SKIP_ALLOWED` or
+            :data:`SKIP_SELF` when the skip is allowed, and **empty when it is
+            not** — an unreadable file, an unparseable PDF, a file over the size
+            cap. An empty reason fails the gate: the verdict cannot cover bytes
+            nobody looked at, and saying so is the whole job.
+        detail: Non-secret elaboration — the OSError text, the parser message.
+        region: :data:`REGION_BUNDLE` or :data:`REGION_COMPANION`.
+    """
+
+    path: str
+    reason: str = ""
+    detail: str = ""
+    region: str = REGION_BUNDLE
+
+    @property
+    def allowed(self) -> bool:
+        """Whether this skip carries an explicit allow reason."""
+        return bool(self.reason)
+
+
 class ArtifactScanReport(BaseModel):
     """The gate's verdict over one engagement's artifact directory.
 
@@ -167,6 +245,8 @@ class ArtifactScanReport(BaseModel):
         files_scanned: How many files were read.
         bytes_scanned: Total bytes read.
         files_truncated: Files that exceeded the size cap and were read partially.
+        files_skipped: Every file not read, with the reason. An entry whose
+            reason is empty was skipped with no allow reason and FAILS the gate.
         findings: Credential-severity hits. Non-empty means the gate FAILED.
         suspicions: Entropy-severity hits. Advisory; never fails the gate.
         errors: Files that could not be read, with the reason.
@@ -182,6 +262,7 @@ class ArtifactScanReport(BaseModel):
     files_scanned: int = 0
     bytes_scanned: int = 0
     files_truncated: list[str] = Field(default_factory=list)
+    files_skipped: list[SkippedFile] = Field(default_factory=list)
     findings: list[ArtifactFinding] = Field(default_factory=list)
     suspicions: list[ArtifactFinding] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
@@ -189,23 +270,73 @@ class ArtifactScanReport(BaseModel):
     companion_files_scanned: int = 0
 
     @property
+    def unexplained_skips(self) -> list[SkippedFile]:
+        """Files not read, for no reason this gate is willing to stand behind."""
+        return [s for s in self.files_skipped if not s.allowed]
+
+    @property
     def clean(self) -> bool:
-        """Whether the bundle may be handed over."""
-        return not self.findings
+        """Whether the bundle may be handed over.
+
+        Two ways to fail, and the second one is the newer half: a credential
+        shape was found, OR a file was skipped with no allow reason. A verdict
+        that passes over something it could not read is not a verdict about the
+        directory, and every guard in this repository that got caught reporting
+        CLEAN over the wrong region did it through a file nobody read.
+        """
+        return not self.findings and not self.unexplained_skips
 
     def region_findings(self, region: str) -> list[ArtifactFinding]:
         """Credential-severity findings from one region."""
         return [f for f in self.findings if f.region == region]
 
+    def absorb_companion(self, companions: ArtifactScanReport) -> None:
+        """Fold a companion-region scan into this verdict.
+
+        One verdict over two regions, so the merge lives here rather than at
+        each caller. It used to be written out twice — in
+        :func:`run_disclosure_gate` and again in the ``artifact-scan`` command —
+        which is precisely how a newly added field ends up counted in one place
+        and dropped in the other.
+        """
+        self.companion_root = companions.root
+        self.companion_files_scanned = companions.files_scanned
+        self.bytes_scanned += companions.bytes_scanned
+        self.files_truncated.extend(companions.files_truncated)
+        self.files_skipped.extend(companions.files_skipped)
+        self.findings.extend(companions.findings)
+        self.suspicions.extend(companions.suspicions)
+        self.errors.extend(companions.errors)
+
+    def _skip_clause(self) -> str:
+        """The skipped-file half of the coverage statement, or ``""``.
+
+        Rendered next to the scanned count rather than below it: an operator
+        reads one line, and "12 files, clean" beside "3 files never opened" is a
+        different sentence from "12 files, clean".
+        """
+        if not self.files_skipped:
+            return ""
+        unexplained = len(self.unexplained_skips)
+        allowed = len(self.files_skipped) - unexplained
+        parts = []
+        if allowed:
+            parts.append(f"{allowed} skipped (allowed)")
+        if unexplained:
+            parts.append(f"{unexplained} skipped with NO allow reason")
+        return ", " + ", ".join(parts)
+
     def _coverage(self) -> str:
         """What the verdict actually covered, in one clause."""
         if not self.companion_root:
-            return f"{self.files_scanned} file(s), {self.bytes_scanned} bytes"
-        return (
-            f"{self.files_scanned} bundle file(s) + "
-            f"{self.companion_files_scanned} companion file(s), "
-            f"{self.bytes_scanned} bytes"
-        )
+            scanned = f"{self.files_scanned} file(s), {self.bytes_scanned} bytes"
+        else:
+            scanned = (
+                f"{self.files_scanned} bundle file(s) + "
+                f"{self.companion_files_scanned} companion file(s), "
+                f"{self.bytes_scanned} bytes"
+            )
+        return scanned + self._skip_clause()
 
     def summary_line(self) -> str:
         """One line for a log, the run summary, or a CLI.
@@ -222,6 +353,14 @@ class ArtifactScanReport(BaseModel):
         if self.clean:
             return f"ARTIFACT SCAN CLEAN - {self._coverage()}, 0 credential shapes" + (
                 f", {len(self.suspicions)} advisory" if self.suspicions else ""
+            )
+        if not self.findings:
+            # Failing on coverage alone. Saying "0 credential shapes" here would
+            # be true and would read as a pass, so the reason leads instead.
+            return (
+                f"ARTIFACT SCAN FAILED - {len(self.unexplained_skips)} file(s) could not be "
+                f"read and carry no allow reason, so this verdict does not cover them; "
+                f"of {self._coverage()}"
             )
         kinds = Counter(f.kind for f in self.findings)
         breakdown = ", ".join(f"{n}x {kind}" for kind, n in sorted(kinds.items()))
@@ -289,6 +428,24 @@ class ArtifactScanReport(BaseModel):
             lines.append("")
             lines.append("NOT FULLY SCANNED (exceeded the size cap):")
             lines.extend(f"  {path}" for path in self.files_truncated)
+        unexplained = self.unexplained_skips
+        if unexplained:
+            lines.append("")
+            lines.append("NOT READ, WITH NO ALLOW REASON (this verdict does not cover them):")
+            for skip in unexplained[:_RENDER_LIMIT]:
+                detail = f"  {skip.detail}" if skip.detail else ""
+                lines.append(f"  {skip.path}{detail}")
+            if len(unexplained) > _RENDER_LIMIT:
+                lines.append(f"  ... and {len(unexplained) - _RENDER_LIMIT} more")
+        allowed = [s for s in self.files_skipped if s.allowed]
+        if allowed:
+            # Grouped by reason: the operator needs to know a hole exists and
+            # what shape it is, not to read the same sentence once per file.
+            lines.append("")
+            lines.append("NOT READ, ALLOWED (a disclosed gap in coverage, not a clean bill):")
+            by_reason = Counter(s.reason for s in allowed)
+            for reason, count in sorted(by_reason.items()):
+                lines.append(f"  {count}x {reason}")
         if self.errors:
             lines.append("")
             lines.append("UNREADABLE:")
@@ -415,6 +572,61 @@ def is_engagement_dir(path: Path) -> bool:
     return path.is_dir() and bool(_ENGAGEMENT_DIR_RE.match(path.name))
 
 
+class _UnreadableError(Exception):
+    """A file this gate must cover and could not read. Never swallowed."""
+
+
+def _pdf_text(path: Path) -> str:
+    """Both of a PDF's text channels, as one blob with located markers.
+
+    A PDF holds text in two places that do not overlap, and an extractor that
+    reads one is blind to the other:
+
+      * **page content streams**, Flate-compressed, which is why a byte scan of
+        the file finds nothing however carefully it is written;
+      * the **document information dictionary** (``/Info``) — ``/Title``,
+        ``/Author``, ``/Subject``, ``/Keywords``, and any custom key a producer
+        added — which never appears in page text.
+
+    Both go into one blob, prefixed ``[metadata]`` and ``[page N]``, so the line
+    number on a finding still points an operator at the channel to look in.
+
+    Raises:
+        _UnreadableError: The file could not be parsed. The caller records an
+            unexplained skip and the gate fails — an unparseable PDF is a region
+            nobody read, and this module exists because that was once reported
+            as clean.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:  # pragma: no cover — pypdf is a declared dependency
+        raise _UnreadableError(f"no PDF extractor available: {exc}") from exc
+
+    try:
+        reader = PdfReader(str(path))
+        if reader.is_encrypted:
+            # Permissions-only encryption uses an empty user password and is
+            # common in generated documents. A real password is not guessed:
+            # the file stays unread and the gate says so.
+            if reader.decrypt("") == 0:
+                raise _UnreadableError("encrypted; no empty-password decryption")
+        lines: list[str] = []
+        for key, value in (reader.metadata or {}).items():
+            lines.append(f"[metadata] {key}: {value}")
+        for number, page in enumerate(reader.pages, start=1):
+            lines.append(f"[page {number}] {page.extract_text() or ''}")
+    except _UnreadableError:
+        raise
+    except Exception as exc:
+        # Deliberately broad, and the opposite of the swallowed-exception
+        # failure this repository has been bitten by: pypdf raises a wide and
+        # undocumented set on a malformed document, and every one of them means
+        # the same thing here. Nothing is absorbed — it converts to a skip with
+        # no allow reason, which FAILS the gate.
+        raise _UnreadableError(f"{type(exc).__name__}: {exc}") from exc
+    return "\n".join(lines)
+
+
 def _scan_one_file(path: Path, relative: str, report: ArtifactScanReport, *, region: str) -> None:
     """Read one file into *report*, honouring the size cap.
 
@@ -427,26 +639,61 @@ def _scan_one_file(path: Path, relative: str, report: ArtifactScanReport, *, reg
     """
     try:
         size = path.stat().st_size
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            text = handle.read() if size <= _MAX_FILE_BYTES else handle.read(_MAX_FILE_BYTES)
-    except OSError as exc:
+        if path.suffix.lower() == _PDF_SUFFIX:
+            if size > _MAX_FILE_BYTES:
+                # Unlike a text file, a PDF has no useful partial read: the
+                # first N bytes of a compressed container are not the first N
+                # bytes of its content. So this is a hole, and it is declared as
+                # one rather than filed under "truncated" beside files that WERE
+                # substantially read.
+                raise _UnreadableError(f"{size} bytes exceeds the {_MAX_FILE_BYTES}-byte cap")
+            text = _pdf_text(path)
+        else:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read() if size <= _MAX_FILE_BYTES else handle.read(_MAX_FILE_BYTES)
+            if size > _MAX_FILE_BYTES:
+                report.files_truncated.append(relative)
+    except (OSError, _UnreadableError) as exc:
         report.errors.append(f"{relative}: {exc}")
+        # Also an unexplained skip, which is what actually fails the gate. The
+        # two lists have different jobs: `errors` carries the message a human
+        # reads, `files_skipped` carries the verdict. A file that could not be
+        # read is not a file that was found clean.
+        report.files_skipped.append(
+            SkippedFile(path=relative, reason="", detail=str(exc), region=region)
+        )
         return
-    if size > _MAX_FILE_BYTES:
-        report.files_truncated.append(relative)
     report.bytes_scanned += len(text)
     findings, suspicions = scan_text(text, path=relative, region=region)
     report.findings.extend(findings)
     report.suspicions.extend(suspicions)
 
 
-def _scannable(path: Path) -> bool:
-    """Whether *path* is a file this gate reads as text."""
-    return (
-        path.is_file()
-        and path.name != SCAN_REPORT_FILENAME
-        and path.suffix.lower() not in _BINARY_SUFFIXES
-    )
+def skip_reason(path: Path) -> str | None:
+    """The allow reason for not reading *path*, or ``None`` when it must be read.
+
+    The allow-list is the whole contract: a suffix with an entry is a declared
+    gap, and anything else is read or fails.
+    """
+    if path.name == SCAN_REPORT_FILENAME:
+        return SKIP_SELF
+    return _SKIP_ALLOWED.get(path.suffix.lower())
+
+
+def _visit(path: Path, relative: str, report: ArtifactScanReport, *, region: str) -> None:
+    """Read one path into *report*, or record why it was not read.
+
+    The single place a file is accounted for. Both region walks call it, so
+    "scanned" and "skipped" cannot diverge between them.
+    """
+    if not path.is_file():
+        return
+    reason = skip_reason(path)
+    if reason is not None:
+        report.files_skipped.append(SkippedFile(path=relative, reason=reason, region=region))
+        return
+    report.files_scanned += 1
+    _scan_one_file(path, relative, report, region=region)
 
 
 def scan_artifact_tree(root: Path | str, *, engagement_id: str = "") -> ArtifactScanReport:
@@ -467,10 +714,7 @@ def scan_artifact_tree(root: Path | str, *, engagement_id: str = "") -> Artifact
         return report
 
     for path in sorted(root_path.rglob("*")):
-        if not _scannable(path):
-            continue
-        report.files_scanned += 1
-        _scan_one_file(path, path.relative_to(root_path).as_posix(), report, region=REGION_BUNDLE)
+        _visit(path, path.relative_to(root_path).as_posix(), report, region=REGION_BUNDLE)
 
     return report
 
@@ -513,12 +757,7 @@ def scan_companion_artifacts(
             continue
         candidates = sorted(entry.rglob("*")) if entry.is_dir() else [entry]
         for path in candidates:
-            if not _scannable(path):
-                continue
-            report.files_scanned += 1
-            _scan_one_file(
-                path, path.relative_to(root_path).as_posix(), report, region=REGION_COMPANION
-            )
+            _visit(path, path.relative_to(root_path).as_posix(), report, region=REGION_COMPANION)
 
     return report
 
@@ -562,14 +801,7 @@ def run_disclosure_gate(
     """
     report = scan_artifact_tree(root, engagement_id=engagement_id)
     if companion_root is not None:
-        companions = scan_companion_artifacts(companion_root, bundle_root=root)
-        report.companion_root = companions.root
-        report.companion_files_scanned = companions.files_scanned
-        report.bytes_scanned += companions.bytes_scanned
-        report.files_truncated.extend(companions.files_truncated)
-        report.findings.extend(companions.findings)
-        report.suspicions.extend(companions.suspicions)
-        report.errors.extend(companions.errors)
+        report.absorb_companion(scan_companion_artifacts(companion_root, bundle_root=root))
     write_scan_report(report, root)
     if report.clean:
         logger.info("%s", report.summary_line())
@@ -599,8 +831,10 @@ __all__ = [
     "SCAN_REPORT_FILENAME",
     "SEVERITY_CREDENTIAL",
     "SEVERITY_SUSPICIOUS",
+    "SKIP_SELF",
     "ArtifactFinding",
     "ArtifactScanReport",
+    "SkippedFile",
     "is_engagement_dir",
     "load_scan_report",
     "run_disclosure_gate",
@@ -608,5 +842,6 @@ __all__ = [
     "scan_companion_artifacts",
     "scan_text",
     "shannon_entropy",
+    "skip_reason",
     "write_scan_report",
 ]
