@@ -359,3 +359,137 @@ primary artifact and they already held every number; the defect was in the
 extraction. A `--regrade` mode that re-scores finished bundles from disk turned a
 three-hour re-run into a second of work, and there is no reason a harness that
 spends hours against a live target should be able to lose its own analysis.
+
+<a id="lesson-54"></a>
+
+## #54 — A field that exists, works, and appears in no document does not exist for the user
+
+`RoleCredential.login_url` was built, honoured (`login_url = cred.login_url or
+default_login_url`), and even named in the abort message the failure prints:
+
+```
+Fix one of:
+  - the login URL is wrong (set "login_url" on the role in the credential file)
+```
+
+It appeared in **no example, no `--help` text and no document** — only in the
+model's own docstring. An operator working from `README.md`, whose credential
+example showed `role` / `username` / `password` and nothing else, had no way to
+find it.
+
+That alone is a documentation gap. What made it a hard block is the second half.
+
+**Pydantic ignores unknown keys by default.** So every natural guess —
+`login_url` at the top level of the credential file, `login_url` in `scope.json`,
+a `LOGIN_URL` environment variable — *validated cleanly and did nothing*. Three
+correct-looking attempts, three silent no-ops, and then the engagement aborted on
+an unprovable session with nothing connecting the abort to the input. The abort
+is the correct refusal; delivered that way it reads as though the operator's
+input had been fine.
+
+Two fixes, and the second is the one that matters:
+
+1. **Instance.** Document the field, with the other four, in the README's
+   credential example and in `docs/productization-engagement-safety.md` — with
+   *why* it is per role (an application's login can differ per principal, which a
+   single engagement-wide value could not express, which is also why it is not on
+   `EngagementScope` beside `EngagementWindow`).
+
+2. **Class.** `extra="forbid"` on every model an operator hand-writes, plus a
+   `model_validator(mode="before")` that names the level a misplaced key belongs
+   at. `extra="forbid"` alone produces *"Extra inputs are not permitted"*, which
+   is true and useless; the validator says:
+
+   > `login_url` belongs on each entry inside 'credentials', not at the top level
+   > of the credential file. Per-role, because an application's login can differ
+   > per principal.
+
+   And `tests/test_docs/test_documented_configs_parse.py` loads **every** JSON
+   example under `docs/` and `README.md` through its real validator, plus
+   `.env.example` through `Settings.from_env` — the same guarantee
+   `test_every_documented_flag_is_actually_accepted` gives the CLI, which is why
+   the CLI does not have this problem.
+
+**Assert the scanner works.** A recogniser that silently matches nothing makes
+the whole file green and vacuous — the same shape as the `[] == []` in
+[#53](#lesson-53). `TestTheScannerWorks` requires the known examples to be found
+before any of the validation assertions mean anything.
+
+**The same defect one layer over:** a variable documented in `.env.example` that
+`config.py` never reads is also a silent no-op, so the test checks that too,
+against the loader's source rather than a hand-kept list.
+
+
+<a id="lesson-56"></a>
+
+## #56 — A stamp can disclose reduced coverage; it cannot disclose an absence
+
+Routing v2 made Anthropic priority 1 on every phase and made any fallback a
+**disqualifying event**: fatal in `baseline` mode, `provider_degraded` plus
+permanent baseline-ineligibility in `client` mode. `client` degrades rather than
+dies because a client engagement should not be lost to a provider having a bad
+minute, and because reduced coverage is something a stamp can honestly disclose.
+
+Then the traces were read properly. Gemini had served the exploit stage 12 times
+across 9 engagements: **6 exploit plans and 6 false-positive cross-checks.**
+
+The cross-check is the *suppression* path. And the two halves are not
+symmetrical:
+
+* A degraded **plan** costs coverage. `provider_degraded` names the call site,
+  the *What was NOT tested* section is beside it, and the remedy is to re-run.
+  A reader can act on all of that.
+* A degraded **cross-check** demotes a confirmed finding. That finding is not in
+  the report. There is no row to caveat, no section that names it, and nothing in
+  the deliverable separates *"the engine did not find it"* from *"a provider we
+  did not choose decided it was not real."*
+
+The stamp describes the run. It cannot describe what the run removed.
+
+So the classification is **what the answer becomes**, not which agent made the
+call — the exploit agent writes the plan (`PLANNING`), runs the cross-check
+(`SUPPRESS`) and drives every methodology checkpoint (`EMIT`) through clients it
+holds at the same time. `EMIT` and `SUPPRESS` refuse a fallback in **both** run
+modes.
+
+**Refusing is the conservative direction on both paths, which is not luck.** The
+callers already handle an unreachable model: `_llm_analyze_results` catches, logs
+and returns an empty analysis — no suspects, nothing demoted — and `_llm_analyze`
+returns `""`, leaving the methodology on its deterministic build, which is where
+the invariants put the verdict anyway. So the refusal falls into the same
+failure the code was already written for.
+
+**And it has to be catchable, which the first cut got wrong.** The obvious move
+was to reuse baseline mode's `ProviderPolicyError` — it already refuses a
+fallback before the request leaves. But that class is a `BaseException` *on
+purpose*, so no broad `except Exception` can degrade past it, because a baseline
+run wants the RUN to fail. Client mode wants only the CALL to fail; reusing the
+uncatchable error would have meant refusing one suppression took the engagement
+down with it, which is the opposite of why client mode exists. Two errors, two
+intents: `ProviderPolicyError` for the mode, `DecisionPathFallbackError` (an
+ordinary `LLMError`) for the purpose. When two refusals look identical, check
+what each wants to *survive*.
+
+**Enforce it where forgetting is possible.** The default purpose is `PLANNING`,
+the permissive value, because a driver or a direct methodology invocation is
+exactly that and must stay byte-identical. An *agent* call site left on that
+default by accident is the failure mode, so
+`tests/test_llm/test_call_purpose_classification.py` parses the source of
+`agents/`, `orchestrator/` and `research/` and fails on any LLM call site missing
+from `DECLARED_CALL_SITES` or wrapped with a purpose the table disagrees with.
+A decision nobody wrote down is a red build, not a default — the same shape as
+`test_tool_wiring_decisions`.
+
+**A capability lost to routing is stated, not absorbed.** The same change cost
+Research its native Search Grounding, since it led with Gemini for exactly that
+and the Anthropic path has no equivalent. An ungrounded research answer is not a
+thinner one: every CVE disclosed after the serving model's cutoff is invisible
+and the text carries no sign that anything is missing — a list that looks
+complete and quietly stops. So the producer declares
+(`LLMClient.RESEARCH_GROUNDING`), the resilient client reports the provider that
+*answered*, the phase reports the **weakest** grounding any of its calls ran
+under, every runbook entry carries it (the claim persists to the
+cross-engagement KB, so the caveat must outlive the run), and the report renders
+a section either way — including, explicitly, that the limitation does not reach
+the findings.
+

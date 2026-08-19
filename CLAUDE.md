@@ -2,8 +2,9 @@
 
 An autonomous, multi-agent AI system that performs end-to-end black-box
 penetration testing: it takes a target scope (IPs/domains) and produces a
-professional pentest report, no human in the loop. Agents collaborate through an
-LLM-mediated Orchestrator, discovering and running tools dynamically.
+professional pentest report, no human in the loop. Agents collaborate through a
+central Orchestrator on a deterministic phase sequence, discovering and running
+tools dynamically.
 
 > **This file is the lean operating core, loaded every session.** Per-methodology
 > forensic history → [`docs/methodology/`](docs/methodology/README.md) (one file
@@ -47,23 +48,33 @@ LLM-mediated Orchestrator, discovering and running tools dynamically.
 - Maintain one open PR for the branch against `main`; keep its description (the
   human-readable branch narrative) current on every push.
 
-## Core Architecture: LLM-Mediated Multi-Agent System
+## Core Architecture: Orchestrated Multi-Agent System
 
 ### The Orchestrator pattern
 All inter-agent communication flows through a central **Orchestrator Agent** — no
 agent talks directly to another. It receives the scope, spins phase agents up/down
-**on demand** (not all-at-once), routes messages between them, re-spins an earlier
-agent when a later phase needs it (capped at `MAX_CROSS_PHASE_RESPINS = 3`),
-triggers the Report Agent, and owns the global engagement context. This is **not**
-a linear pipeline; agents can run concurrently when optimal.
+**on demand** (not all-at-once), passes each phase's result to the next, triggers
+the Report Agent, and owns the global engagement context. Agents run concurrently
+where the phase shape says so, not wherever a router decides.
+
+**What actually runs is the v2 deterministic phase sequence, not LLM-mediated
+dynamic routing.** `OrchestratorAgent.run()` is a fixed sequence of `_run_phase`
+calls; the message bus carries `task` / `result` / `error` / `status`. The
+LLM-routed branch (`_handle_query`, `RESPIN_RECON` / `RESPIN_SCAN` /
+`RESPIN_EXPLOIT`, `MAX_CROSS_PHASE_RESPINS = 3`) is still in the code and has
+**never fired**: no phase agent constructs a `QUERY` message, so nothing reaches
+it in any recorded run. Treat the phase sequence as the architecture and that
+branch as unreached code — it is not a capability the engine has, and describing
+it as one is how three other claims in this file went stale.
 
 **Phase shape:** Recon (sequential) → **Scan + Research + Exploit run concurrently**
 sharing SQLite state → Report (sequential). Exploit's only hard dependency is Scan
 (it never blocks on Research — Research's runbook is folded in only if already
 done). **Credit pre-flight** (`llm/fallback.py::preflight_provider_available`):
 with both keys present, one cheap Gemini probe at start; a depleted signal
-excludes Gemini from every fallback chain for the engagement and the run completes
-on Anthropic — detecting depletion up front instead of storming 429s mid-pipeline.
+excludes Gemini from every **fallback** chain for the engagement (under v2 Gemini
+answers only where Anthropic could not) — detecting depletion up front instead of
+storming 429s mid-pipeline.
 
 ### Message format
 ```python
@@ -84,13 +95,14 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
 
 ## Agents
 
-- **Orchestrator** — coordinator/router. Anthropic (Claude) primary for strategic
-  reasoning, resilient fallback to Gemini then OpenAI. Delegates all tool work.
-- **Recon (v2)** — Gemini Flash (`LLM_PROVIDER_RECON=gemini`). Full TCP scan → LLM
+- **Orchestrator** — coordinator. Anthropic primary, like every other role under
+  routing v2 (**detail → [`docs/provider-routing.md`](docs/provider-routing.md)**).
+  Delegates all tool work.
+- **Recon (v2)** — Anthropic (`LLM_PROVIDER_RECON=anthropic`). Full TCP scan → LLM
   analyses ports → service/version detection → LLM extracts tech stack →
   web-specific recon → LLM synthesizes → `ReconResult`. Tools always via
   `ToolResolver.find_tool(capability=...)`.
-- **Scan (v2)** — Gemini Flash. LLM plans strategy → service-specific methods
+- **Scan (v2)** — Anthropic. LLM plans strategy → service-specific methods
   (HTTP/FTP/SSH/SMB/DB) → LLM reviews output → coverage check → expand via fallback
   chains (`katana→gospider→hakrawler` crawl; `ffuf→gobuster→feroxbuster` fuzz).
   **The phase budgets its own wall clock** (`SCAN_TIME_BUDGET`, default 900 s):
@@ -127,12 +139,27 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   records the **response features** each page showed — `Endpoint.sets_cookies`
   (cookie NAMES only; a value is authentication material) and `has_form` — which
   are the observations the Exploit planner's class preconditions rank on.
-- **Research (v2)** — Gemini 3.1 Flash-Lite (GA), pinned via
-  `GEMINI_RESEARCH_MODEL` (never `-preview`). Live web research via native Gemini
-  Search Grounding + NVD structured CVE data. Runs concurrently with Scan/Exploit;
-  rate-limit aware (`GEMINI_MAX_RPM` default 30, `RESEARCH_TIME_BUDGET` default
-  180s). Persists to the engagement runbook AND `clinkz_knowledge.db`.
-- **Exploit (v2)** — Anthropic Claude Opus (`LLM_PROVIDER_EXPLOIT=anthropic`). LLM
+- **Research (v2)** — Anthropic, like every role under routing v2. **Its answers
+  are therefore NOT web-grounded by default, and that is stamped rather than
+  absorbed.** It led with Gemini Flash-Lite for exactly one reason — native
+  Search Grounding — and the Anthropic path has no equivalent, so a research
+  answer is a recollection of a training corpus: every CVE disclosed after the
+  serving model's cutoff is invisible, with no signal in the text that anything
+  is missing. `LLMClient.RESEARCH_GROUNDING` is declared by every client,
+  `ResilientLLMClient.research_grounding()` reports the provider that ANSWERED,
+  `ResearchResult.grounding` is the WEAKEST grounding any call in the phase ran
+  under, every runbook `Technique` carries it (a runbook entry persists to the
+  cross-engagement KB, so the caveat must outlive the run), and the report
+  renders a *Research grounding* section either way — stating explicitly that
+  the limitation does not reach the findings, since a CVE from research is a
+  LEAD that must reach one of our own oracles. `undeclared` counts as
+  ungrounded. NVD structured CVE data is a separate feed and is unaffected.
+  Runs concurrently with Scan/Exploit; rate-limit aware (`GEMINI_MAX_RPM`
+  default 30 when it falls back, `RESEARCH_TIME_BUDGET` default 180s). Persists
+  to the engagement runbook AND `clinkz_knowledge.db`.
+- **Exploit (v2)** — Anthropic (`LLM_PROVIDER_EXPLOIT=anthropic`), on whatever
+  `ANTHROPIC_MODEL` resolves to — `claude-sonnet-5` by default. **Not Opus**: this
+  line said Opus and no configuration ever selected it. LLM
   plans exploits from scan+research → deterministic `_test_*` methods by tier →
   LLM reasons through results → adaptive retry/bypass → records capability outcome
   to the persistent KB. **P7** (`src/clinkz/browser/`) is the client-side
@@ -169,8 +196,14 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   where the developer's intent is the APPLICATION. Intent is inferred from the
   app's own surface and every finding states the intent, its EVIDENCE, and the
   observation exceeding it.
-- **Critic** — validates findings before the report (CVSS, FP elimination,
-  evidence, repro); can reject back to Exploit.
+- **Critic** — **archived** (`agents/_archive/critic.py`). It was registered in
+  the lifecycle manager, described here as validating findings before the report,
+  and invoked in **0 of 2,774 recorded agent steps**: registration made it
+  constructible, never called. Its stated job is done by deterministic gates on
+  the emitting path — the FP cross-check + `_fp_deterministic_contradiction`,
+  `verification_strength` enforced at `_persist_finding`, CVSS computed in the
+  report — and an LLM reviewer after those could only overrule them, which the
+  invariants forbid in that direction.
 - **Report** — zero LLM calls; emits JSON + a Markdown summary from the state
   store in <30 s. Client-ready header (authorization record verbatim, window,
   in-scope AND out-of-scope, authentication proof, testing conduct), remediation
@@ -339,13 +372,24 @@ reports the missing capability to the Orchestrator.
 
 - Python 3.12+, asyncio everywhere, Pydantic v2 for all models, structured logging.
 - **LLM-agnostic**: all calls through `llm/base.py`; never import a provider SDK
-  outside `llm/`. Backends: Anthropic (Exploit pinned; Orchestrator primary),
-  Gemini (Recon/Scan/Report/Research; `gemini-3.1-flash-lite` GA, never `-preview`),
-  OpenAI (fallback tail), Ollama (stub). Per-agent overrides via
-  `LLM_PROVIDER_<AGENT>`; `ResilientLLMClient` rotates providers on
-  rate-limit/timeout. **Operation-level timeouts** (per HTTP request, tool
-  subprocess, and LLM call via `LLM_REQUEST_TIMEOUT`) are the safety valve — the
-  exploit phase has no wall-clock deadline by default.
+  outside `llm/`. **Routing v2: Anthropic is priority 1 for EVERY call on EVERY
+  phase** (`claude-sonnet-5` by default — not Opus); Gemini
+  (`gemini-3.7-flash`, pinned, never a floating alias) and OpenAI are the
+  fallback tail; Ollama is a stub and is in no chain. **The Report agent makes
+  zero LLM calls** — `report_llm_provider` exists for interface symmetry and
+  nothing reads it at runtime, so listing Report as a Gemini-backed agent (as
+  this line did) described a narrative pass that has never existed. Per-agent
+  overrides via `LLM_PROVIDER_<AGENT>`, all defaulting to Anthropic;
+  `ResilientLLMClient` rotates on rate-limit/timeout, and every rotation is a
+  **disqualifying event** — hard failure in `baseline` mode, a
+  `provider_degraded` stamp plus permanent baseline-ineligibility in `client`
+  mode, and **refused outright in both modes on an emit or suppress path**
+  (`llm/call_purpose.py`: a stamp can disclose reduced coverage; it cannot
+  disclose a finding that was suppressed and is therefore not in the report).
+  **Detail → [`docs/provider-routing.md`](docs/provider-routing.md).**
+  **Operation-level timeouts** (per HTTP request, tool subprocess, and LLM call
+  via `LLM_REQUEST_TIMEOUT`) are the safety valve — the exploit phase has no
+  wall-clock deadline by default.
 - SQLite: `clinkz.db` (per-engagement state), `clinkz_knowledge.db` (cross-
   engagement KB incl. Layer-2 `capability_facts`/`capability_observations`).
 - **Playwright + Chromium** backs the P7 oracle, and lives in
@@ -370,7 +414,7 @@ src/clinkz/
 │                     #   read via outputs_root() at CALL time, never as a default arg)
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
-├── agents/           # recon, scan, exploit, research, critic, report, _route_discovery,
+├── agents/           # recon, scan, exploit, research, report, _route_discovery,
 │                     #   _js_api_mining (what does the frontend CALL?), _api_schema
 │                     #   (what does the live target ACCEPT? — safe methods only),
 │                     #   _json_body (addressing a field INSIDE a structure),
@@ -381,7 +425,8 @@ src/clinkz/
 │                     #   _business_logic (intent inferred from the app's OWN surface,
 │                     #   with the evidence — offline-testable),
 │                     #   _auth_bypass (THE one vocabulary for "did this response log us
-│                     #   in?" — artifact reader + the three-arm differential)
+│                     #   in?" — artifact reader + the three-arm differential),
+│                     #   _archive/ (built, registered, invoked zero times: critic)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
 │                     #   planner, composition (THE ORACLE — the decoy control), impact
@@ -406,7 +451,11 @@ src/clinkz/
 ├── knowledge/        # KnowledgeBase, persistent_kb, seeders, MITRE/OWASP datasets, payloads,
 │                     #   component_cves (published CVE ↔ observed version — a LEAD, never
 │                     #   a finding; see the dependency→CVE rule below)
-├── llm/              # base, factory, fallback, {anthropic,gemini,openai,ollama}_client
+├── llm/              # base (+ ResearchGrounding: does research() see the live web?),
+│                     #   call_purpose (does this call's answer EMIT, SUPPRESS, or
+│                     #   only PLAN? -> whether a fallback is refused), degradation,
+│                     #   factory, fallback, providers, spend,
+│                     #   {anthropic,gemini,openai,ollama}_client
 ├── tools/            # ToolBase (discovery + fingerprint contracts), resolver, mcp_client,
 │                     #   auth, http_client, component_names (one name/version split rule),
 │                     #   nmap/ffuf/whatweb/httpx/sqlmap/…
@@ -418,7 +467,8 @@ src/clinkz/
 │                     #   ZERO clinkz imports, so it runs in the tools container)
 ├── observability/    # trace.py (JSONL), replay.py, corpus_replay.py (offline gate),
 │                     #   ledger.py (what each component CONTRIBUTED — the silent-
-│                     #   degradation gate)
+│                     #   degradation gate), plan_alarms.py (what the task cap
+│                     #   DROPPED, and separately whether the ORDERING held)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes, target, recon, scan, methodology, research,
                       #   finding, report
@@ -480,14 +530,45 @@ LESSONS #17).
 ## Key Design Decisions (invariants — non-negotiable)
 
 - **Deterministic steps + LLM checkpoints**; no free-form ReAct.
-- **LLM-mediated comms** — agents never talk directly; all messages route through
-  the Orchestrator.
-- **Dynamic lifecycle** — agents spun up/down on demand; re-spins capped at
-  `MAX_CROSS_PHASE_RESPINS`.
+- **Orchestrator-mediated comms** — agents never talk directly; all messages
+  route through the Orchestrator. What routes them is the v2 deterministic phase
+  sequence, NOT an LLM router: `_handle_query`'s `RESPIN_*` branch has never
+  fired because no agent constructs a `QUERY`, and
+  `MAX_CROSS_PHASE_RESPINS` bounds a path nothing reaches.
+- **Agents are spun up/down on demand**, in the order the phase shape declares.
 - **Dynamic tool discovery** — `ToolResolver.find_tool(capability=...)`, never a
   tool name or direct import.
 - **LLM-agnostic + per-agent providers** — never import a provider SDK outside
-  `llm/`.
+  `llm/`. **Anthropic is priority 1 for every call on every phase**; priority is
+  declared in `Settings.llm_provider_priority` (validated Anthropic-first) and a
+  discovered key confers *availability*, never a position. **Detail →
+  [`docs/provider-routing.md`](docs/provider-routing.md).**
+- **A fallback is a disqualifying event, and on an emit or suppress path it is
+  refused outright — in BOTH run modes** (`llm/call_purpose.py`). `client` mode
+  degrades and stamps because a client engagement should not die over a bad
+  minute at a provider, and because reduced coverage is something a stamp can
+  honestly disclose. That reasoning stops at the two paths where it is false: a
+  finding a degraded cross-check DEMOTED is not in the report, so there is no row
+  to caveat and nothing separates "the engine did not find it" from "a cheaper
+  model decided it was not real". Six of the twelve recorded Gemini-served
+  exploit calls were false-positive cross-checks. Every agent call site declares
+  its purpose and an unclassified one is a red build, not a permissive default.
+- **A capability lost to routing is STATED, never absorbed.** Research led with
+  Gemini for native Search Grounding and the Anthropic path has none, so a
+  research answer is bounded by a training cutoff with no signal in the text that
+  anything is missing. The producer declares (`LLMClient.RESEARCH_GROUNDING`),
+  the resilient client reports who ANSWERED, the phase reports the WEAKEST
+  grounding any of its calls ran under, every runbook entry carries it (the claim
+  persists to the KB, so the caveat must too), and the report renders it either
+  way. `undeclared` counts as ungrounded.
+- **A bound that decides coverage is reported in the DELIVERABLE, not just the
+  log** (`observability/plan_alarms.py`). The plan cap ranks `(class, endpoint)`
+  pairs and drops the tail — four D1 runs each truncated ~1,500 candidates to 150
+  — and it was loud only in the run log and `trace.jsonl`, neither of which a
+  client reads. Truncation and **ranking inversions** stay separate numbers with
+  separate renderings because they have different fixes: a bigger cap covers a
+  truncated tail and does nothing for a task dropped from an endpoint carrying
+  its own class's observed surface. Rendered on a clean run too.
 - **Crawl-safety / session hygiene** — `is_state_changing_url` is the chokepoint
   guarding every crawl visit, endpoint emission, and exploit-plan entry; its
   submission counterpart `is_destructive_form_submission` guards every form
