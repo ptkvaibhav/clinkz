@@ -68,7 +68,8 @@ from clinkz.engagement.secrets import clear_secrets, register_secret
 from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
-from clinkz.llm.base import LLMClient
+from clinkz.llm.base import LLMClient, ResearchGrounding
+from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
 from clinkz.llm.degradation import (
     DegradationRegister,
     set_active_degradation_register,
@@ -95,6 +96,11 @@ from clinkz.models.scope import EngagementScope
 from clinkz.observability.ledger import (
     ContributionLedger,
     set_active_ledger,
+)
+from clinkz.observability.plan_alarms import (
+    PlanAlarmRegister,
+    plan_alarm_summary,
+    set_active_plan_alarms,
 )
 from clinkz.observability.trace import (
     TraceWriter,
@@ -311,6 +317,7 @@ class OrchestratorAgent:
         # Records what each component actually contributed, so a fallback that
         # covers for a dead one cannot make the run look healthy.
         self._ledger: ContributionLedger | None = None
+        self._plan_alarms: PlanAlarmRegister | None = None
         self._degradation: DegradationRegister | None = None
         self._provider_preflight: ProviderPreflight | None = None
         #: Set by the CLI before ``run()`` when the operator declared caps.
@@ -460,6 +467,15 @@ class OrchestratorAgent:
             spend_ledger = self._spend_ledger or SpendLedger()
             set_active_spend_ledger(spend_ledger)
             self._spend_ledger = spend_ledger
+
+            # The plan cap is the sixth bound, and the one that most directly
+            # decides what gets TESTED: candidate (class, endpoint) pairs are
+            # ranked and everything past the cap is dropped. That has been loud
+            # in the log and the trace since D1 truncated ~1,500 candidates to
+            # 150 four times over — and neither of those reaches the client.
+            plan_alarms = PlanAlarmRegister()
+            set_active_plan_alarms(plan_alarms)
+            self._plan_alarms = plan_alarms
 
             # The scope-refusal log. THE control on an external engagement:
             # a real application links out, the crawler follows links, and the
@@ -755,6 +771,17 @@ class OrchestratorAgent:
                         else None,
                         "safety": governor.stats(),
                         "authentication": self._authentication_summary(),
+                        # What the research phase actually READ. Routing v2
+                        # leads with Anthropic, which has no search grounding on
+                        # the research path, so a runbook may be a recollection
+                        # of a training corpus — and every CVE published after
+                        # that cutoff is invisible with nothing in the text
+                        # saying so. Read off the phase result rather than
+                        # configuration: it is the provider that ANSWERED whose
+                        # capability the output has.
+                        "research_grounding": self._research_grounding_summary(
+                            concurrent_results.get("research", {})
+                        ),
                         # Empty on a black-box engagement. Present whenever
                         # ``--source`` was supplied, so a tree that could not be
                         # ingested is stated rather than silently absent.
@@ -860,6 +887,26 @@ class OrchestratorAgent:
                 summary["scope_refusals"] = scope_refusal_summary()
                 self._logger.info("LLM budget — %s", spend_ledger.describe())
                 summary["llm_spend"] = spend_summary()
+                plan_summary = plan_alarm_summary()
+                summary["plan_coverage"] = plan_summary
+                if plan_summary["ranking_inversion_count"]:
+                    self._logger.warning(
+                        "PLAN RANKING FAILURE — %d dropped task(s) sat on an endpoint "
+                        "carrying their own class's observed surface. An ordering defect, "
+                        "not a budget one: a larger cap does not fix it.",
+                        plan_summary["ranking_inversion_count"],
+                    )
+                elif plan_summary["plan_truncated"]:
+                    self._logger.warning(
+                        "Plan cap truncated %d candidate task(s) across %s — coverage is "
+                        "bounded by the cap, and the report says so.",
+                        plan_summary["dropped_total"],
+                        ", ".join(plan_summary["classes_truncated"]) or "no class",
+                    )
+                else:
+                    self._logger.info("Plan fit inside its cap — no class was truncated.")
+                set_active_plan_alarms(None)
+                self._plan_alarms = None
                 set_active_scope_refusal_log(None)
                 set_active_spend_ledger(None)
                 self._scope_refusals = None
@@ -1812,7 +1859,8 @@ class OrchestratorAgent:
                     f"If no and this requires an exploit task, respond with: RESPIN_EXPLOIT\n"
                     f"Respond with ONLY the action keyword."
                 )
-                routing_decision = (await self._llm.generate_text(routing_prompt)).strip()
+                with llm_call_purpose(LLMCallPurpose.PLANNING, site="orchestrator._handle_query"):
+                    routing_decision = (await self._llm.generate_text(routing_prompt)).strip()
                 self._logger.info(
                     "Orchestrator routing decision for query from '%s': %s",
                     requesting_agent,
@@ -1864,7 +1912,8 @@ class OrchestratorAgent:
                 f"Provide a concise, factual response based on the available data. "
                 f"If you don't have the information, say so clearly."
             )
-            response_text = await self._llm.generate_text(prompt)
+            with llm_call_purpose(LLMCallPurpose.PLANNING, site="orchestrator._handle_query"):
+                response_text = await self._llm.generate_text(prompt)
         except Exception as exc:
             self._logger.warning("LLM query response failed: %s", exc)
             response_text = f"Could not generate response: {exc}"
@@ -2904,6 +2953,35 @@ class OrchestratorAgent:
             "session_checks_performed": self._session_sentinel.checks_requested,
             "session_false_alarms": self._session_sentinel.false_alarms,
             "reauthentications": self._session_sentinel.reauths_triggered,
+        }
+
+    @staticmethod
+    def _research_grounding_summary(research_phase: dict[str, Any]) -> dict[str, Any]:
+        """What the research phase read, as the report renders it.
+
+        Built from the phase's own returned result, never from
+        ``settings.research_llm_provider``: configuration says who was asked and
+        the result carries who answered, and it is the one that answered whose
+        grounding the runbook actually has.
+
+        A research phase that did not run, errored, or was skipped reports
+        ``undeclared`` — which is treated as ungrounded, the direction that
+        cannot overstate.
+        """
+        result = research_phase.get("result") if isinstance(research_phase, dict) else None
+        if not isinstance(result, dict):
+            return {
+                "grounding": ResearchGrounding.UNDECLARED.value,
+                "is_grounded": False,
+                "providers": [],
+                "runbook_entries": 0,
+            }
+        grounding = str(result.get("grounding") or ResearchGrounding.UNDECLARED.value)
+        return {
+            "grounding": grounding,
+            "is_grounded": grounding == ResearchGrounding.LIVE_SEARCH.value,
+            "providers": list(result.get("grounding_providers") or []),
+            "runbook_entries": len(result.get("runbook") or []),
         }
 
     # ------------------------------------------------------------------

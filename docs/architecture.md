@@ -34,11 +34,7 @@ ReconAgent             (sequential — full TCP scan + service/version + tech st
                   Persistent KB (clinkz_knowledge.db)
     │
     ▼
-CriticAgent      (validates findings — CVSS, evidence completeness,
-                  reproduction steps, false-positive rejection)
-    │
-    ▼
-ReportAgent      (zero LLM today — emits JSON + Markdown)
+ReportAgent      (zero LLM calls — emits JSON + Markdown)
 ```
 
 Exploit's only hard dependency is Scan: it starts as soon as Scan completes
@@ -196,8 +192,9 @@ page — on an SPA there are no other pages.
 
 ```
 1. Query persistent KB for tech        (DETERMINISTIC)
-2. Web search for new vulns            (TOOL — runtime_research +
-                                        native Gemini Search Grounding)
+2. Vulnerability lookup                (TOOL — runtime_research: the NVD CVE
+                                        feed, plus an LLM call that is NOT
+                                        web-grounded under routing v2)
 3. LLM synthesizes techniques          (REASONING checkpoint)
 4. Query related technologies          (DETERMINISTIC — skipped if budget spent)
 5. LLM adapts past techniques          (REASONING checkpoint — skipped if budget spent)
@@ -242,13 +239,27 @@ Per-phase intermediate results are modelled in `models/methodology.py`
 (`ReflectionPoint`, `CharacterMap`, `SynthesizedPayload`,
 `SQLiMethodologyResult`, ...) and persisted in the execution trace.
 
-### Critic + Report
+### Report
 
-- **Critic** is LLM-only with no tools — validates each finding before it
-  enters the report (CVSS accuracy, evidence completeness, FP rejection).
-- **Report** is currently zero-LLM — pulls findings from the state store and
-  emits JSON + Markdown in <30 s. The LLM-driven multi-pass narrative + HTML/
-  PDF rendering remain on the W3 horizon.
+- **Report** makes **zero LLM calls** — it pulls findings from the state store
+  and emits JSON + Markdown in <30 s. `report_llm_provider` exists for interface
+  symmetry and nothing reads it at runtime; the LLM-driven multi-pass narrative
+  has never been built, and describing it as a phase of the pipeline made the
+  report look like something a model wrote.
+
+- **Critic is archived** (`agents/_archive/critic.py`). It was registered in the
+  lifecycle manager's `_AGENT_CLASSES`, described here as validating findings
+  before the report, and invoked in **0 of 2,774 recorded agent steps** —
+  registration made it constructible, never called, and this document read the
+  registration as a wiring. `docs/analysis/control_flow.md` flagged the drift at
+  the time and recommended wiring it in; it is resolved the other way, because
+  the job moved somewhere stricter. False-positive elimination is
+  `_mark_false_positive_suspects` + `_fp_deterministic_contradiction`, where a
+  demotion must name a deterministic contradiction in the evidence rather than
+  rest on a model's opinion; evidence and reproduction sufficiency is
+  `verification_strength` enforced at `_persist_finding`; CVSS is computed in the
+  report. An LLM reviewer sitting after those could only overrule them, which the
+  invariants forbid in that direction.
 
 ## LLM abstraction layer
 
@@ -266,21 +277,35 @@ wraps it in a `ResilientLLMClient` that rotates providers on rate-limit /
 timeout, with per-provider retry budgets (`LLM_MAX_RETRIES`,
 `LLM_RETRY_BASE_DELAY`, `LLM_RETRY_MAX_DELAY`).
 
-Each agent has a default provider:
+**Routing v2: every agent leads with Anthropic.** Full rationale and the
+call-purpose rule → [`provider-routing.md`](provider-routing.md).
 
 | Agent     | Default provider | Override env var          |
 |-----------|------------------|---------------------------|
-| Recon     | Gemini Flash     | `LLM_PROVIDER_RECON`      |
-| Scan      | Gemini Flash     | `LLM_PROVIDER_SCAN`       |
-| Report    | Gemini Flash     | `LLM_PROVIDER_REPORT`     |
-| Exploit   | Anthropic Claude | `LLM_PROVIDER_EXPLOIT`    |
-| Research  | Gemini 3.1 Flash-Lite (GA) | `LLM_PROVIDER_RESEARCH` |
+| Recon     | Anthropic        | `LLM_PROVIDER_RECON`      |
+| Scan      | Anthropic        | `LLM_PROVIDER_SCAN`       |
+| Report    | Anthropic — **but the Report agent makes no LLM calls**, so nothing reads this | `LLM_PROVIDER_REPORT` |
+| Exploit   | Anthropic        | `LLM_PROVIDER_EXPLOIT`    |
+| Research  | Anthropic        | `LLM_PROVIDER_RESEARCH`   |
 
-Research pins its own Gemini model via `GEMINI_RESEARCH_MODEL`
-(default `gemini-3.1-flash-lite`) so Recon/Scan/Report keep `GEMINI_MODEL`.
-Its `research()` calls use native Gemini Search Grounding for live CVE/writeup
-retrieval, and it is rate-limit-aware (`GEMINI_MAX_RPM`, bounded backoff +
-fallback) under a hard wall-clock budget (`RESEARCH_TIME_BUDGET`).
+Priority is declared in `Settings.llm_provider_priority` and validated
+Anthropic-first; a provider key discovered in the environment confers
+*availability* and never a position in the chain. A fallback is a
+**disqualifying event**: a hard failure in `baseline` mode, a
+`provider_degraded` stamp plus permanent baseline-ineligibility in `client`
+mode, and refused outright in **both** modes when the call's declared purpose is
+`EMIT` or `SUPPRESS` — a stamp can disclose reduced coverage, but a finding a
+degraded cross-check demoted is simply absent, with no row left to caveat.
+
+Research still pins `GEMINI_RESEARCH_MODEL` for the case where it falls back,
+and it is rate-limit-aware (`GEMINI_MAX_RPM`, bounded backoff) under a hard
+wall-clock budget (`RESEARCH_TIME_BUDGET`). What it **lost** to v2 is native
+Search Grounding, which the Anthropic path has no equivalent for. That is
+stamped, not absorbed: `LLMClient.RESEARCH_GROUNDING` is declared by every
+client, `ResilientLLMClient.research_grounding()` reports the provider that
+*answered*, the phase reports the weakest grounding any of its calls ran under,
+every runbook `Technique` carries it, and the report renders a **Research
+grounding** section either way.
 
 Agent code never imports openai / anthropic / google-genai directly.
 
@@ -385,7 +410,6 @@ StateStore.create_engagement()
     │                           PersistentKB.add_playbook_entry()
     ├─► ExploitAgent         ─► StateStore.add_finding()
     │                           PersistentKB.record_technique_result()
-    ├─► CriticAgent          ─► StateStore.mark_finding_validated()
     └─► ReportAgent          ─► report_<engagement_id>.json
                                 report_<engagement_id>.md
 ```

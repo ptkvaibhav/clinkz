@@ -97,8 +97,11 @@ _AGENT_CLASS_MAP: dict[str, tuple[str, str]] = {
     "ExploitAgent": ("clinkz.agents.exploit", "ExploitAgent"),
     "ResearchAgent": ("clinkz.agents.research", "ResearchAgent"),
     "ReportAgent": ("clinkz.agents.report", "ReportAgent"),
-    "CriticAgent": ("clinkz.agents.critic", "CriticAgent"),
 }
+#: ``CriticAgent`` is deliberately absent. It is archived
+#: (``clinkz.agents._archive.critic``) because it ran 0 times across 2,774
+#: recorded agent steps, so no trace on disk carries a step to replay into it —
+#: an entry here would be a replay target for a recording that cannot exist.
 
 
 def _load_agent_class(class_name: str) -> type[Any]:

@@ -1,14 +1,25 @@
-"""Critic agent — validates findings before they enter the report.
+"""ARCHIVED — the Critic agent. Built, registered, and invoked zero times.
 
-Reviews each finding for:
+**Nothing in an engagement reaches this module.** It is retained under
+``agents/_archive/`` for the reason stated in that package's docstring: it was
+described in the architecture as the component that validates findings before
+the report, it was constructible through the lifecycle manager's
+``_AGENT_CLASSES``, and across 2,774 recorded agent steps it ran **0** times.
+The orchestrator's phase sequence never spins it up and nothing sends it a
+task. Registration is not wiring, and the docs had been reading it as wiring.
+
+Its stated job now belongs to deterministic gates on the emitting path — the
+false-positive cross-check and ``_fp_deterministic_contradiction`` in the
+Exploit Agent, ``verification_strength`` enforced at ``_persist_finding``, CVSS
+computed in the report — and an LLM reviewer placed after those could only
+overrule them, which the invariants forbid in that direction.
+
+What it did, as built:
+
 - Evidence completeness (at least one evidence string required for non-info)
 - CVSS score presence (assigns a score if missing but evidence is valid)
 - Non-empty description and remediation
 - LLM-assisted quality review (VALID / INVALID verdict)
-
-Confirmed findings are marked validated in the state store.
-Rejected findings are returned in the result for the Orchestrator to route
-back to the Exploit Agent for re-testing.
 """
 
 from __future__ import annotations
@@ -23,7 +34,10 @@ from clinkz.models.finding import FindingStatus, Severity
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_PATH = Path(__file__).parent / "prompts" / "critic_system.md"
+# The prompt still lives with the live agents' prompts. Kept there rather than
+# moved: prompts/ is one directory by design, and an archived module reaching
+# for it is the honest shape — nothing loads this, so nothing loads that.
+_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic_system.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
 # Severities that require a CVSS score — if missing, we assign one

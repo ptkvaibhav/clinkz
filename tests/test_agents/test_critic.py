@@ -1,4 +1,15 @@
-"""Tests for CriticAgent — finding validation and state store marking.
+"""Tests for the ARCHIVED CriticAgent.
+
+The agent is at ``clinkz.agents._archive.critic``: built, registered in the
+lifecycle manager, and invoked in 0 of 2,774 recorded agent steps. The tests
+stay green because an archived module that no longer parses against its own
+models is worse than an absent one — the next person to reconsider the idea
+would read rot and conclude the idea was wrong.
+
+They assert nothing about the running engine. What used to be the critic's job
+is done by deterministic gates on the emitting path, and
+``test_the_critic_is_reachable_from_no_run`` below is the assertion that
+actually constrains the product.
 
 Coverage:
 - Valid finding (evidence + CVSS + description + remediation) → validated
@@ -22,7 +33,7 @@ from typing import Any
 
 import pytest
 
-from clinkz.agents.critic import CriticAgent
+from clinkz.agents._archive.critic import CriticAgent
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage
 from clinkz.models.finding import Finding, FindingStatus, Severity
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
@@ -404,3 +415,74 @@ async def test_generate_text_called_once_per_valid_finding(tmp_path: Path) -> No
 
     # 3 findings × 1 LLM review call each
     assert len(llm.generate_text_calls) == 3
+
+
+class TestTheCriticIsArchived:
+    """The property the product depends on: nothing reaches this agent."""
+
+    def test_it_is_not_in_the_lifecycle_agent_registry(self) -> None:
+        """Registration made it constructible, which the docs read as wiring."""
+        from clinkz.orchestrator.lifecycle import _AGENT_CLASSES
+
+        assert "critic" not in _AGENT_CLASSES
+
+    def test_no_live_module_imports_it(self) -> None:
+        """An import is how it would come back, so look for one — in the AST.
+
+        Parsed rather than grepped (LESSONS #42): the prose explaining *why* the
+        agent is absent necessarily contains its name, and a text scan cannot
+        tell a docstring saying "the CriticAgent is archived" from an import
+        that resurrects it. Only a real name reference counts.
+        """
+        import ast
+        import pathlib as _pathlib
+
+        src = _pathlib.Path(__file__).resolve().parents[2] / "src" / "clinkz"
+        offenders = []
+        for path in src.rglob("*.py"):
+            if "_archive" in path.parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name | ast.Attribute):
+                    name = node.id if isinstance(node, ast.Name) else node.attr
+                    if name == "CriticAgent":
+                        offenders.append(f"{path.relative_to(src)}:{node.lineno}")
+                elif isinstance(node, ast.ImportFrom) and (node.module or "").endswith(
+                    "agents.critic"
+                ):
+                    offenders.append(f"{path.relative_to(src)}:{node.lineno}")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.endswith("agents.critic"):
+                            offenders.append(f"{path.relative_to(src)}:{node.lineno}")
+        assert not offenders, (
+            "The archived CriticAgent is referenced by live code. It ran zero "
+            f"times across 2,774 recorded steps; wire it deliberately or not at "
+            f"all: {sorted(set(offenders))}"
+        )
+
+    def test_the_ast_scanner_would_catch_a_reintroduction(self) -> None:
+        """A scanner that matches nothing makes the test above vacuous."""
+        import ast
+
+        source = "\n".join(
+            [
+                "from clinkz.agents.critic import CriticAgent",
+                "x = CriticAgent",
+            ]
+        )
+        tree = ast.parse(source)
+        names = {
+            (n.id if isinstance(n, ast.Name) else n.attr)
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Name | ast.Attribute)
+        }
+        modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+        assert "CriticAgent" in names
+        assert any(m.endswith("agents.critic") for m in modules)
+
+    def test_it_has_no_iteration_budget(self) -> None:
+        from clinkz.agents.base import DEFAULT_MAX_ITERATIONS
+
+        assert "critic" not in DEFAULT_MAX_ITERATIONS

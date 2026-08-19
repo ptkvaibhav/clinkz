@@ -107,10 +107,6 @@ class _MockReportAgent(_MockAgent):
     _agent_name = "report"
 
 
-class _MockCriticAgent(_MockAgent):
-    _agent_name = "critic"
-
-
 # Mock agent class registry patch
 _MOCK_AGENT_CLASSES = {
     "recon": _MockReconAgent,
@@ -118,7 +114,6 @@ _MOCK_AGENT_CLASSES = {
     "crawl": _MockCrawlAgent,
     "exploit": _MockExploitAgent,
     "report": _MockReportAgent,
-    "critic": _MockCriticAgent,
 }
 
 

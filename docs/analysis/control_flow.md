@@ -244,14 +244,20 @@ short-circuit.
 | "Monitor completion → stop all when done" with poll loop | No 10s poll loop — single `await scan_task; await research_task; run exploit` | ✅ Cleaner than the plan; the plan's poll loop was unnecessary given asyncio.Task. |
 | "Post-engagement: commit results to persistent KB" | Per-task `record_technique_result` happens inside Exploit, not as a discrete post-engagement step | Minor — the plan's "commit at end" is now scattered through Exploit. |
 | "Recon retry / re-spin if Exploit needs more intel" | Implemented via `_handle_query` + re-spin (orchestrator.py:684) | ✅ Match |
-| "Critic Agent reviews findings before report" | `CriticAgent` exists (agents/critic.py) but is not called by `Orchestrator.run` | 🔴 **Drift — Critic isn't wired in.** Plan #5 lists Critic as part of the agent flow; orchestrator.py never spins one up. |
+| "Critic Agent reviews findings before report" | `CriticAgent` existed but was never called by `Orchestrator.run` | ✅ **RESOLVED 2026-08-19 — archived, not wired.** Confirmed at 0 invocations across 2,774 recorded agent steps. Moved to `agents/_archive/critic.py` and removed from `_AGENT_CLASSES`; see "Actionable Findings" #1 below. |
 
 ## Actionable Findings
 
-1. **Wire Critic into the flow.** Either between Exploit and Report
-   (review findings, kick back false positives) or as a check-pass
-   before findings are persisted to state. Today `agents/critic.py`
-   exists but is dead code.
+1. ~~**Wire Critic into the flow.**~~ **RESOLVED 2026-08-19 in the other
+   direction: archived.** The recommendation assumed the missing piece was the
+   wiring. It was not — the *job* had already moved onto the emitting path and
+   somewhere stricter, so wiring an LLM reviewer in after those gates could only
+   let it overrule them, which the invariants forbid in that direction. FP
+   elimination is `_mark_false_positive_suspects` +
+   `_fp_deterministic_contradiction` (a demotion must name a deterministic
+   contradiction in the evidence); evidence/repro sufficiency is
+   `verification_strength` enforced at `_persist_finding`; CVSS is computed in
+   the report. `agents/_archive/critic.py` keeps the code and the reasoning.
 2. **Update CLINKZ_V2_IMPLEMENTATION.md to match code.** Step counts
    (Recon 5 → 7), concurrency wording (Exploit is sequential after
    Scan+Research), and "monitor completion poll loop" wording all

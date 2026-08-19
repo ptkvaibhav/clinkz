@@ -36,7 +36,6 @@ from typing import TYPE_CHECKING, Any
 
 from clinkz.agents.base import BaseAgent
 from clinkz.agents.crawl import CrawlAgent
-from clinkz.agents.critic import CriticAgent
 from clinkz.agents.exploit import ExploitAgent
 from clinkz.agents.recon import ReconAgent
 from clinkz.agents.report import ReportAgent
@@ -64,6 +63,15 @@ logger = logging.getLogger(__name__)
 #: Maps agent type strings accepted by spin_up/restart to the agent class.
 #: "crawl" is an alias for "scan" (the file was named crawl.py but the
 #: canonical protocol name is "scan").
+#:
+#: ``critic`` is gone from this map, and its absence is the point. Being here
+#: made CriticAgent *constructible*; it never made it *called*. Across 2,774
+#: recorded agent steps the orchestrator spun one up zero times, because the
+#: phase sequence has no statement that does — yet the README, CLAUDE.md and
+#: the architecture doc all read this entry as a wiring and described a
+#: finding-validation stage that has never run. The module is at
+#: ``clinkz.agents._archive.critic`` with the reasoning; the work it claimed
+#: is done by deterministic gates on the emitting path.
 _AGENT_CLASSES: dict[str, type[BaseAgent]] = {
     "recon": ReconAgent,
     "scan": ScanAgent,  # protocol name → full implementation
@@ -71,7 +79,6 @@ _AGENT_CLASSES: dict[str, type[BaseAgent]] = {
     "exploit": ExploitAgent,
     "research": ResearchAgent,
     "report": ReportAgent,
-    "critic": CriticAgent,
 }
 
 # How long shut_down() waits for an agent task to finish before cancelling.
@@ -170,7 +177,7 @@ class AgentLifecycleManager:
 
         Args:
             agent_type: One of: "recon", "scan", "crawl", "exploit",
-                        "report", "critic".
+                        "report".
             task: Initial AgentMessage task to process immediately.
 
         Returns:

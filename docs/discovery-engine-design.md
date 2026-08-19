@@ -182,7 +182,7 @@ ReconAgent (sequential — fingerprint, tech stack)
                                                     hypotheses (clinkz.db)
     │
     ▼
-CriticAgent → ReportAgent   (unchanged — consume the same Finding rows)
+ReportAgent                 (unchanged — consumes the same Finding rows)
 ```
 
 The **Capability Agent absorbs the current Research Agent's slot** in the
@@ -297,7 +297,7 @@ hypothesis queue — unioned the same way, bounded by `EXPLOIT_MAX_PLAN_TASKS`,
 dispatched through the same round-robin fairness (`_step_execute_exploits`), and
 deduped through the same chokepoint (`_persist_finding` / `_emitted_finding_keys`).
 No parallel dispatch, no parallel report path, no parallel dedup. Findings come
-back as the existing `Finding` model, so Critic/Report/KB all work unchanged.
+back as the existing `Finding` model, so Report/KB all work unchanged.
 
 ---
 
