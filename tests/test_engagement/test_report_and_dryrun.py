@@ -340,3 +340,54 @@ def test_dry_run_marks_unauthorized_classes_as_not_planned() -> None:
     assert planned == {"sql_injection"}
     skipped = {c.key: c.reason for c in plan.classes if not c.planned}
     assert "permitted-technique list" in skipped["command_injection"]
+
+
+# ---------------------------------------------------------------------------
+# The dry run's capability notes describe THIS machine, not a default one
+# ---------------------------------------------------------------------------
+
+
+def _dom_note(plan: object) -> str:
+    """The capability note the dry run would print for DOM-based XSS."""
+    return next(c.reason for c in plan.classes if c.key == "xss_dom")  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("available", "expected_fragment"),
+    [
+        (True, "IS available"),
+        (False, "no client-side execution oracle"),
+    ],
+)
+def test_the_client_oracle_note_reports_what_this_machine_actually_has(
+    monkeypatch: pytest.MonkeyPatch, available: bool, expected_fragment: str
+) -> None:
+    """It used to state the oracle absent unconditionally.
+
+    A pre-dispatch document that under-reports coverage is the same defect as
+    one that over-reports it: on a docker-mode host with the tools image built,
+    P7 confirms DOM-XSS, CSP bypass and client-side logic — and the operator was
+    told to plan around a gap that was not there. Parametrised in both
+    directions, because a note pinned only to the present case would pass
+    against a version that ignores the probe and always says "IS available".
+    """
+    from clinkz.engagement import dryrun as dryrun_module
+
+    monkeypatch.setattr(dryrun_module, "_client_oracle_present", lambda: available)
+    plan = dryrun_module.build_dry_run_plan(_scope(), CredentialSet())
+    assert expected_fragment in _dom_note(plan)
+
+
+def test_an_unprobeable_client_oracle_reports_the_pessimistic_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run never fails, and never guesses upward, over a capability probe."""
+    from clinkz.engagement import dryrun as dryrun_module
+
+    def _boom() -> bool:
+        raise RuntimeError("docker is not running")
+
+    monkeypatch.setattr(
+        "clinkz.browser.oracle.PlaywrightExecutionOracle.native_availability", _boom
+    )
+    assert dryrun_module._client_oracle_present() is False
