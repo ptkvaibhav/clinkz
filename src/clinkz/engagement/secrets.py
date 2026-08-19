@@ -188,6 +188,50 @@ class CredentialFileError(Exception):
     """Raised when a credential file is unusable or unsafe to read."""
 
 
+def describe_credential_validation_error(exc: Exception) -> str:
+    """Render a credential-file validation failure WITHOUT echoing the file.
+
+    Pydantic's ``ValidationError`` stringifies each error with an
+    ``input_value=`` fragment showing the data that failed. On every other
+    model that is exactly what an operator needs. On this one it is a
+    **plaintext password on stderr**::
+
+        invalid credential set - 1 validation error for CredentialSet
+          Value error, login_url belongs on each entry inside 'credentials' ...
+          [type=value_error, input_value={'login_url': 'https://ap...S3cr3t-Real-Password'}]}]
+
+    ``SecretStr`` cannot help here: the value is still a raw ``str`` in the
+    input dict, because validation is what would have turned it into a
+    ``SecretStr`` and validation is what failed. Neither can
+    :func:`redact` — :func:`_register_all` runs only after a *successful*
+    parse, so at this moment the chokepoint has never seen the password.
+
+    The window is small and it is the only one there is, so it is closed by
+    construction: this reads the ValidationError's STRUCTURED errors and quotes
+    only ``loc``, ``msg`` and ``type``. The input is never touched, so no
+    formatting choice downstream can put it back.
+
+    Args:
+        exc: The exception raised by ``CredentialSet.model_validate``.
+
+    Returns:
+        A message naming what is wrong and where, and nothing from the file.
+    """
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        # Not a ValidationError. Its own message is ours, and no model
+        # validator in this module puts a value into one.
+        return str(exc)
+    lines: list[str] = []
+    try:
+        for error in errors():
+            where = ".".join(str(part) for part in error.get("loc", ())) or "(root)"
+            lines.append(f"  {where}: {error.get('msg', '')} [{error.get('type', '')}]")
+    except Exception:  # noqa: BLE001 — a redaction helper must never raise
+        return "the credential file did not validate (details withheld: they would quote the file)"
+    return "\n".join(lines) or str(type(exc).__name__)
+
+
 def load_credential_file(path: Path | str) -> CredentialSet:
     """Load a credential set from an untracked local JSON file.
 
@@ -247,7 +291,16 @@ def load_credential_file(path: Path | str) -> CredentialSet:
     try:
         cred_set = CredentialSet.model_validate(raw)
     except Exception as exc:  # noqa: BLE001 — surfaced as a setup error, not swallowed
-        raise CredentialFileError(f"{cred_path}: invalid credential set — {exc}") from exc
+        # NOT f"{exc}". Pydantic's stringified ValidationError carries an
+        # ``input_value=`` echo of the data that failed, and the data that
+        # failed is a credential file — so the plaintext password lands on
+        # stderr, which `clinkz scan` prints verbatim. See
+        # describe_credential_validation_error for why neither SecretStr nor
+        # redact() can help at this point.
+        detail = describe_credential_validation_error(exc)
+        raise CredentialFileError(
+            f"{cred_path}: invalid credential set —{chr(10)}{detail}"
+        ) from None
 
     _register_all(cred_set)
     logger.info(
@@ -345,6 +398,7 @@ __all__ = [
     "REDACTION_PLACEHOLDER",
     "CredentialFileError",
     "clear_secrets",
+    "describe_credential_validation_error",
     "load_credential_file",
     "prompt_for_credentials",
     "redact",

@@ -419,6 +419,39 @@ before any of the validation assertions mean anything.
 `config.py` never reads is also a silent no-op, so the test checks that too,
 against the loader's source rather than a hand-kept list.
 
+### The fix opened a leak the silence had been hiding
+
+Making a malformed credential file *raise* is the point of the change. It is
+also what put the file's contents on stderr: Pydantic stringifies a
+`ValidationError` with an `input_value=` echo of the data that failed, and
+`cli.py` prints `CredentialFileError` verbatim.
+
+```
+invalid credential set - 1 validation error for CredentialSet
+  Value error, login_url belongs on each entry inside 'credentials' ...
+  [type=value_error, input_value={'login_url': 'https://ap...S3cr3t-Real-Password'}]}]
+```
+
+Both existing defences miss it, and the reasons are worth keeping:
+
+* `SecretStr` cannot help, because validation is what would have *produced* the
+  `SecretStr` and validation is what failed. The value is still a raw `str` in
+  the input dict.
+* `redact()` cannot help, because `_register_all` runs only after a
+  **successful** parse. At the moment of the error the chokepoint has never seen
+  this password.
+
+So the window is exactly "the parse failed", it is the only one, and it is
+closed by construction rather than by filtering: read the error's *structured*
+entries and quote only `loc`, `msg` and `type`. The input is never touched, so
+no downstream formatting choice can put it back.
+
+**Generalising:** when a validation failure is surfaced to a human, ask what the
+validated object IS. For most models the input echo is the whole value of the
+message. For a credential set, a token, or a request body under test, it is the
+one thing that must not be in it — and "we redact everywhere" is not an answer
+when the redactor is registered by the code path that just failed.
+
 
 <a id="lesson-56"></a>
 

@@ -24,6 +24,7 @@ from clinkz.engagement.secrets import (
     REDACTION_PLACEHOLDER,
     CredentialFileError,
     clear_secrets,
+    describe_credential_validation_error,
     load_credential_file,
     redact,
     redact_structure,
@@ -379,3 +380,144 @@ def test_the_trace_writer_and_invocation_store_redact(tmp_path: Path) -> None:
     assert password not in invocation_text, "the password reached the invocation record"
     assert REDACTION_PLACEHOLDER in trace_text
     assert REDACTION_PLACEHOLDER in invocation_text
+
+
+# ---------------------------------------------------------------------------
+# A rejected credential file must not quote itself
+# ---------------------------------------------------------------------------
+
+
+_LEAK_PASSWORD = "S3cr3t-Real-Password-9d2f"
+_LEAK_USERNAME = "admin@acme-client.example"
+
+
+def _write_creds(tmp_path: Path, payload: dict) -> Path:
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        (
+            "a per-role key written at the top level",
+            {
+                "login_url": "https://app.example.com/login",
+                "credentials": [
+                    {
+                        "role": "admin",
+                        "username": _LEAK_USERNAME,
+                        "password": _LEAK_PASSWORD,
+                    }
+                ],
+            },
+        ),
+        (
+            "a typo on a role entry",
+            {
+                "credentials": [
+                    {
+                        "role": "admin",
+                        "username": _LEAK_USERNAME,
+                        "password": _LEAK_PASSWORD,
+                        "loginUrl": "https://app.example.com/login",
+                    }
+                ]
+            },
+        ),
+        (
+            "a blank role",
+            {"credentials": [{"role": "", "username": _LEAK_USERNAME, "password": _LEAK_PASSWORD}]},
+        ),
+        (
+            "a field of the wrong type",
+            {
+                "credentials": [
+                    {
+                        "role": "admin",
+                        "username": [_LEAK_USERNAME],
+                        "password": _LEAK_PASSWORD,
+                    }
+                ]
+            },
+        ),
+    ],
+)
+def test_a_rejected_credential_file_never_quotes_the_password(
+    tmp_path: Path, label: str, payload: dict
+) -> None:
+    """The error `clinkz scan` prints to stderr must not carry the file's contents.
+
+    Pydantic stringifies a ``ValidationError`` with an ``input_value=`` echo of
+    the data that failed. On every other model that is what an operator needs;
+    on this one it is a plaintext password on stderr, and ``cli.py`` echoes
+    ``CredentialFileError`` verbatim.
+
+    Neither existing defence reaches it. ``SecretStr`` does not, because
+    validation is what would have produced a ``SecretStr`` and validation is
+    what failed — the value is still a raw ``str`` in the input dict. ``redact``
+    does not, because ``_register_all`` runs only after a *successful* parse, so
+    the chokepoint has never seen this password.
+
+    Every case below is a way an operator's file can be rejected, and
+    ``extra="forbid"`` plus the misplaced-key validator made two of them
+    reachable where the input used to be silently accepted.
+    """
+    clear_secrets()
+    path = _write_creds(tmp_path, payload)
+
+    with pytest.raises(CredentialFileError) as excinfo:
+        load_credential_file(path)
+
+    message = str(excinfo.value)
+    assert _LEAK_PASSWORD not in message, f"the password leaked via {label}"
+    assert _LEAK_USERNAME not in message, f"the username leaked via {label}"
+    # And it is still a usable diagnostic, not a blanket refusal.
+    assert str(path) in message
+
+
+def test_the_rejection_still_names_what_is_wrong_and_where(tmp_path: Path) -> None:
+    """Withholding the input must not cost the operator the diagnosis.
+
+    A message that says only "the credential file did not validate" would trade
+    one unusable outcome for another — this is the same defect as the field
+    that existed and was documented nowhere.
+    """
+    clear_secrets()
+    path = _write_creds(
+        tmp_path,
+        {"credentials": [{"role": "admin", "password": _LEAK_PASSWORD, "loginUrl": "x"}]},
+    )
+
+    with pytest.raises(CredentialFileError) as excinfo:
+        load_credential_file(path)
+
+    message = str(excinfo.value)
+    assert "loginUrl" in message, "the offending KEY is named"
+    assert "credentials.0" in message, "and where it sits"
+    assert "not permitted" in message
+
+
+def test_a_misplaced_login_url_names_the_level_it_belongs_at(tmp_path: Path) -> None:
+    clear_secrets()
+    path = _write_creds(
+        tmp_path,
+        {
+            "login_url": "https://app.example.com/login",
+            "credentials": [{"role": "admin", "username": "u", "password": _LEAK_PASSWORD}],
+        },
+    )
+
+    with pytest.raises(CredentialFileError) as excinfo:
+        load_credential_file(path)
+
+    message = str(excinfo.value)
+    assert "login_url" in message
+    assert "inside 'credentials'" in message
+    assert _LEAK_PASSWORD not in message
+
+
+def test_the_describer_passes_a_non_validation_error_through(tmp_path: Path) -> None:
+    """Only a ValidationError carries an input echo; anything else is our own text."""
+    assert describe_credential_validation_error(RuntimeError("plain message")) == "plain message"

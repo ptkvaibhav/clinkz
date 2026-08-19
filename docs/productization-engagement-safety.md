@@ -106,6 +106,20 @@ abort on an unprovable session, with nothing connecting the two. `RoleCredential
 and `CredentialSet` now set `extra="forbid"`, and a per-role key written at the
 top level is refused with the level it belongs at named.
 
+**A rejected credential file must not quote itself.** Making those cases *raise*
+exposed a leak the previous silence had hidden: Pydantic stringifies a
+`ValidationError` with an `input_value=` echo of the data that failed, and
+`cli.py` prints `CredentialFileError` verbatim to stderr — so a malformed
+credential file put the plaintext password on the terminal. Neither existing
+defence reaches it. `SecretStr` does not, because validation is what would have
+produced a `SecretStr` and validation is what failed; `redact()` does not,
+because `_register_all` runs only after a *successful* parse, so the chokepoint
+has never seen that password. `describe_credential_validation_error` reads the
+error's STRUCTURED entries and quotes only `loc`, `msg` and `type` — the input is
+never touched, so no formatting choice downstream can put it back. The message
+still names the offending key and where it sits; withholding the input must not
+cost the operator the diagnosis.
+
 `tests/test_docs/test_documented_configs_parse.py` loads every JSON example in
 `README.md` and `docs/`, plus `.env.example`, through its real validator. It is
 the same guarantee as `test_every_documented_flag_is_actually_accepted`, applied
