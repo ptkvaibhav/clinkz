@@ -575,4 +575,13 @@ class ExploitResult(BaseModel):
     # survived the decoy control. Each is also emitted as a Finding through the
     # normal chokepoint; this field carries the structured form for the report.
     confirmed_chains: list[dict[str, Any]] = Field(default_factory=list)
+    # What the P7 client-side execution oracle actually DID this run: whether one
+    # was resolved, how many times it ran, and how many of those witnessed script
+    # execution. Carried so the report can tell "this engine has no client-side
+    # oracle" apart from "the oracle ran N times and did not witness execution".
+    # The portfolio run filed the second as the first: three classes listed under
+    # ``no_client_side_oracle`` while P7 executed 40 times and correctly refused
+    # every candidate. That refusal is the product working, and it was reported
+    # as a gap in the product.
+    client_oracle: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -632,7 +632,9 @@ def scan(
     )
 
     try:
-        orchestrator = OrchestratorAgent(provider=provider, credentials=cred_set)
+        orchestrator = OrchestratorAgent(
+            provider=provider, credentials=cred_set, spend_ledger=spend_ledger
+        )
     except ValueError as exc:
         # No usable LLM provider. An operator-input problem with a fix the
         # operator can act on, not a crash to read a stack trace for.

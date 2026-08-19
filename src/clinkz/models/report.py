@@ -98,7 +98,15 @@ class NotTestedCategory(StrEnum):
         OUT_OF_SCOPE: Explicitly excluded by the client.
         NOT_PERMITTED: Outside the authorized permitted-technique list.
         NO_CLIENT_SIDE_ORACLE: The defining effect happens in a browser and this
-            engine has no client-side execution oracle.
+            engine had no client-side execution oracle for this run. A capability
+            that was ABSENT.
+        CLIENT_ORACLE_FOUND_NOTHING: The defining effect happens in a browser,
+            the client-side oracle RAN, and it witnessed no execution. A
+            capability that was EXERCISED — a different fact, and the stronger
+            one. These were filed together until engagement ``d67835f5`` listed
+            three classes as having no oracle while P7 executed 40 times and
+            correctly refused every candidate: the product's best behaviour,
+            reported as a gap in the product.
         NOT_IMPLEMENTED: No methodology exists for the class.
         DESTRUCTIVE_REFUSED: The safety rails refused the action.
         ENGAGEMENT_HALTED: The engagement stopped before coverage completed.
@@ -113,6 +121,7 @@ class NotTestedCategory(StrEnum):
     OUT_OF_SCOPE = "out_of_scope"
     NOT_PERMITTED = "not_permitted"
     NO_CLIENT_SIDE_ORACLE = "no_client_side_oracle"
+    CLIENT_ORACLE_FOUND_NOTHING = "client_oracle_found_nothing"
     NOT_IMPLEMENTED = "not_implemented"
     DESTRUCTIVE_REFUSED = "destructive_refused"
     ENGAGEMENT_HALTED = "engagement_halted"
