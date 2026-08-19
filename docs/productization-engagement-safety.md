@@ -69,8 +69,47 @@ engagement happens to run on.
 ### Credentials
 
 `CredentialSet` holds one `RoleCredential` per role, with `SecretStr` passwords.
-Loaded from an **untracked local file** (`--credentials`) or a secure prompt
-(`--prompt-credentials admin,user`, read without echo).
+Loaded from an **untracked local file** (`--creds`, alias `--credentials`) or a
+secure prompt (`--creds-prompt admin,user`, alias `--prompt-credentials`, read
+without echo).
+
+Every field except `role` is optional, and **every one of them lives on the role
+entry** — `login_url` and `assert_url` included:
+
+```json
+{
+  "credentials": [
+    {
+      "role": "admin",
+      "username": "admin@example.com",
+      "password": "...",
+      "login_url": "https://app.example.com/rest/user/login",
+      "assert_url": "https://app.example.com/account"
+    },
+    {"role": "anonymous"}
+  ]
+}
+```
+
+`login_url` is per role rather than per engagement because an application's
+login can differ per principal, which a single engagement-wide value could not
+express — so it is not on `EngagementScope` beside `EngagementWindow`, and it is
+not an environment variable. `assert_url` names a URL known to behave
+differently authenticated vs anonymous; the assertion tries it first, before its
+conventional-path fallbacks.
+
+Both existed and appeared in **no example, no `--help` text and no document** —
+only in the model's own docstrings. A misplaced key used to validate cleanly and
+do nothing (Pydantic ignores extras by default), so an operator working from
+documentation could write correct-looking input three ways and get the same hard
+abort on an unprovable session, with nothing connecting the two. `RoleCredential`
+and `CredentialSet` now set `extra="forbid"`, and a per-role key written at the
+top level is refused with the level it belongs at named.
+
+`tests/test_docs/test_documented_configs_parse.py` loads every JSON example in
+`README.md` and `docs/`, plus `.env.example`, through its real validator. It is
+the same guarantee as `test_every_documented_flag_is_actually_accepted`, applied
+to config files instead of flags.
 
 Hygiene is structural first and defensive second:
 
