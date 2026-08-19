@@ -14,6 +14,7 @@ import logging
 import aiohttp
 
 from clinkz.llm.base import LLMClient
+from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,8 @@ class RuntimeResearcher:
 
         # Then use LLM to synthesise a research summary
         prompt = f"{query}\n\nKnown CVE data from NVD:\n{cve_data}"
-        summary = await self.llm.research(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="runtime_research.research_technology"):
+            summary = await self.llm.research(prompt)
         return summary
 
     # ------------------------------------------------------------------

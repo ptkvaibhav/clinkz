@@ -66,6 +66,7 @@ from clinkz.llm.base import (
     OutputBudget,
     PromptLike,
     RateLimitError,
+    ResearchGrounding,
     ServiceUnavailableError,
     ToolCall,
     flatten_prompt,
@@ -253,6 +254,10 @@ class GeminiClient(LLMClient):
         max_rpm: Requests-per-minute ceiling for this client's sliding-window
             limiter. Defaults to ``settings.gemini_max_rpm`` (Tier 1 sized).
     """
+
+    #: Native Google Search grounding: research() attaches types.Tool(google_search=...) so the
+    #: model reads live results.
+    RESEARCH_GROUNDING = ResearchGrounding.LIVE_SEARCH
 
     def __init__(self, model: str | None = None, max_rpm: int | None = None) -> None:
         api_key = settings.gemini_api_key or settings.google_api_key

@@ -31,6 +31,7 @@ from clinkz.config import settings as global_settings
 from clinkz.llm.base import (
     AgentAction,
     CallStats,
+    DecisionPathFallbackError,
     LLMClient,
     LLMMessage,
     LLMTimeoutError,
@@ -41,8 +42,14 @@ from clinkz.llm.base import (
     ProviderAccountError,
     ProviderPolicyError,
     RateLimitError,
+    ResearchGrounding,
     ServiceUnavailableError,
     flatten_prompt,
+)
+from clinkz.llm.call_purpose import (
+    LLMCallPurpose,
+    current_call_purpose,
+    current_call_site,
 )
 from clinkz.llm.degradation import ProviderFallback, record_provider_fallback
 from clinkz.llm.factory import AGENT_PROVIDER_SETTINGS, get_llm_client
@@ -151,6 +158,37 @@ def reset_account_disabled_providers() -> None:
     _ACCOUNT_DISABLED_PROVIDERS.clear()
 
 
+def _provider_client_class(provider: str) -> type[LLMClient] | None:
+    """The client CLASS for a provider, imported but not instantiated.
+
+    Used to read a class-level declaration — today only
+    :attr:`LLMClient.RESEARCH_GROUNDING` — without building a client. Building
+    one requires a key, opens a connection and can raise, none of which a stamp
+    should be able to do. Returns ``None`` for an unknown provider, which every
+    caller renders as the undeclared/ungrounded value rather than a guess.
+    """
+    try:
+        if provider == "anthropic":
+            from clinkz.llm.anthropic_client import AnthropicClient
+
+            return AnthropicClient
+        if provider == "gemini":
+            from clinkz.llm.gemini_client import GeminiClient
+
+            return GeminiClient
+        if provider == "openai":
+            from clinkz.llm.openai_client import OpenAIClient
+
+            return OpenAIClient
+        if provider == "ollama":
+            from clinkz.llm.ollama_client import OllamaClient
+
+            return OllamaClient
+    except Exception as exc:  # noqa: BLE001 — a stamp must never fail a run
+        logger.warning("Could not import the client class for %s: %s", provider, exc)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # ResilientLLMClient
 # ---------------------------------------------------------------------------
@@ -255,7 +293,50 @@ class ResilientLLMClient(LLMClient):
         return await self._dispatch("reason", messages, tools)
 
     async def research(self, query: str) -> str:
+        """Serve one research call through the chain.
+
+        The grounding of the answer is whatever the provider that ANSWERED
+        declares, which is only knowable after the chain resolves — see
+        :meth:`research_grounding`.
+        """
         return await self._dispatch("research", query)
+
+    def research_grounding(self) -> ResearchGrounding:
+        """What the last research answer was grounded in — read from who SERVED it.
+
+        The same rule as ``model_stamp``: configuration says who was asked, the
+        run's own record says who answered, and it is the one that answered
+        whose capability the output actually has. Before any call has run this
+        reports the head of the chain, which is what the next call would get.
+
+        Grounding is the one capability routing v2 traded away. Research led
+        with Gemini Flash-Lite for native Search Grounding; Anthropic has no
+        equivalent on this path. So a chain that resolves to Anthropic answers
+        from a training corpus, every CVE published after its cutoff is
+        invisible, and nothing in the text says so. This is the seam that lets
+        the runbook and the report say it.
+        """
+        provider = self._last_used_provider or (
+            self.fallback_chain[0] if self.fallback_chain else ""
+        )
+        if not provider:
+            return ResearchGrounding.UNDECLARED
+        # Read from an ALREADY-BUILT client when there is one, else off the
+        # class. Never instantiate: a stamp must not need an API key, must not
+        # cost a connection, and must not be the thing that raises. Same shape
+        # as _resolve_model, which reads a provider's model without building it.
+        existing = self._clients.get(provider)
+        if existing is not None:
+            return existing.research_grounding()
+        client_class = _provider_client_class(provider)
+        if client_class is None:
+            self._logger.warning(
+                "No client class known for provider %s — reporting research grounding as "
+                "UNDECLARED, which is treated as ungrounded",
+                provider,
+            )
+            return ResearchGrounding.UNDECLARED
+        return client_class.RESEARCH_GROUNDING
 
     async def generate_text(
         self, prompt: PromptLike, *, budget: OutputBudget = OutputBudget.DEFAULT
@@ -581,47 +662,89 @@ class ResilientLLMClient(LLMClient):
     # ------------------------------------------------------------------
 
     def _assert_fallback_permitted(self, provider: str, *, primary: str) -> None:
-        """In baseline mode, refuse to let anything but the primary answer.
+        """Refuse a fallback that this run, or this call, must not take.
 
-        Called before the request leaves, so a baseline run fails *instead of*
-        buying an answer it would have to throw away.
+        Called before the request leaves, so the run fails *instead of* buying
+        an answer it would have to throw away.
 
-        **Every role, not only the decision-bearing ones.** ``exploit`` and
-        ``research`` are the roles whose answers become conclusions, and a
-        substitution there is a correctness problem. But the reason baseline
-        mode exists is comparability, and that is broken by any stage: the
-        27%-vs-80% swing that motivated the model stamp was measured on
-        *security-header analysis*, a scan/report-side call producing what
-        looks like a pure observation. A ladder number produced half by one
-        model and half by another is not a measurement of the target, whichever
-        phase did the producing. :data:`CLAUDE_ONLY_ROLES` still marks where a
-        fallback is *also* a correctness problem, and the register records
-        which kind each event was.
+        Two independent refusals, and they answer different questions.
+
+        **The run's mode — comparability.** In ``baseline`` mode nothing but
+        the primary may answer, for **every** role and not only the
+        decision-bearing ones. ``exploit`` and ``research`` are the roles whose
+        answers become conclusions, and a substitution there is a correctness
+        problem. But the reason baseline mode exists is comparability, and that
+        is broken by any stage: the 27%-vs-80% swing that motivated the model
+        stamp was measured on *security-header analysis*, a scan/report-side
+        call producing what looks like a pure observation. A ladder number
+        produced half by one model and half by another is not a measurement of
+        the target, whichever phase did the producing.
+        :data:`CLAUDE_ONLY_ROLES` still marks where a fallback is *also* a
+        correctness problem, and the register records which kind each event was.
+
+        **The call's purpose — disclosability.** In ``client`` mode a fallback
+        is permitted and stamped, because a client engagement should not die
+        because a provider had a bad minute and because reduced coverage is a
+        thing a stamp can honestly disclose. That reasoning does not extend to a
+        call whose answer EMITS a finding or SUPPRESSES one
+        (:mod:`clinkz.llm.call_purpose`). A suppressed finding is not in the
+        report: there is no row to caveat, no section that names it, and nothing
+        distinguishes "the engine did not find it" from "a provider we did not
+        choose decided it was not real". Six of the twelve recorded
+        Gemini-served exploit calls were false-positive cross-checks — the
+        suppression path — so this is the observed failure, not a hypothetical
+        one. Refusing is the conservative direction on both paths: the caller's
+        existing unreachable-model handling leaves the finding standing and the
+        methodology on its deterministic build.
 
         Args:
             provider: The provider about to be asked.
             primary: The head of this client's chain.
 
         Raises:
-            ProviderPolicyError: Baseline mode, and *provider* is not the
-                primary. Deliberately a ``BaseException``: every LLM call site
-                is wrapped in a broad ``except Exception`` that degrades
-                gracefully, which is the behaviour being refused.
+            ProviderPolicyError: The fallback is refused. Deliberately a
+                ``BaseException``: every LLM call site is wrapped in a broad
+                ``except Exception`` that degrades gracefully, which is the
+                behaviour being refused.
         """
         if provider == primary:
             return
-        if self.config.run_mode != "baseline":
+
+        # The run-mode refusal is checked FIRST, and raises the uncatchable
+        # error, because a baseline run wants the RUN to stop — on any role and
+        # any purpose. The purpose refusal below wants only the CALL to stop.
+        if self.config.run_mode == "baseline":
+            raise ProviderPolicyError(
+                f"Baseline run: refusing to let '{provider}' serve "
+                f"'{self.agent_role}' after primary '{primary}' failed "
+                f"(chain={self.fallback_chain}). A ladder served by two models is "
+                f"not a ladder — the same prompt on a byte-identical observation "
+                f"has produced materially different findings across models, so a "
+                f"number produced partly by each measures nothing about the target. "
+                f"Re-run once the primary is healthy, or set CLINKZ_RUN_MODE=client "
+                f"to complete the run with a provider_degraded stamp and no "
+                f"baseline eligibility."
+            )
+
+        purpose = current_call_purpose()
+        if purpose.permits_fallback:
             return
-        raise ProviderPolicyError(
-            f"Baseline run: refusing to let '{provider}' serve "
-            f"'{self.agent_role}' after primary '{primary}' failed "
-            f"(chain={self.fallback_chain}). A ladder served by two models is "
-            f"not a ladder — the same prompt on a byte-identical observation "
-            f"has produced materially different findings across models, so a "
-            f"number produced partly by each measures nothing about the target. "
-            f"Re-run once the primary is healthy, or set CLINKZ_RUN_MODE=client "
-            f"to complete the run with a provider_degraded stamp and no "
-            f"baseline eligibility."
+        site = current_call_site() or self.agent_role
+        effect = (
+            "REMOVES findings from the report"
+            if purpose is LLMCallPurpose.SUPPRESS
+            else "shapes a finding that reaches the report"
+        )
+        raise DecisionPathFallbackError(
+            f"Refusing to let '{provider}' serve '{site}' after primary "
+            f"'{primary}' failed (chain={self.fallback_chain}). This call is "
+            f"declared {purpose.value.upper()}: its answer {effect}. The "
+            f"provider_degraded stamp can disclose reduced coverage; it cannot "
+            f"disclose a finding that was {purpose.value}ed and is therefore not "
+            f"in the deliverable. Planning calls still fall back and stamp. This "
+            f"call fails instead, and its caller degrades the way it already does "
+            f"when a model is unreachable — leaving the finding standing, and the "
+            f"methodology on its deterministic build."
         )
 
     def _build_chain(self, agent_role: str, profile: str) -> list[str]:

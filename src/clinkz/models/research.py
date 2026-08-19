@@ -12,6 +12,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from clinkz.llm.base import ResearchGrounding
+
 
 class ExistingKnowledge(BaseModel):
     """Knowledge already in the persistent KB for requested technologies."""
@@ -38,7 +40,14 @@ class NewResearch(BaseModel):
 
 
 class Technique(BaseModel):
-    """An actionable exploitation technique synthesized by the LLM."""
+    """An actionable exploitation technique synthesized by the LLM.
+
+    ``grounding`` is what the research this technique came from actually saw.
+    It travels with the technique rather than sitting only on the result,
+    because a runbook entry is persisted to the cross-engagement KB and read
+    back by later engagements: the claim outlives the run that made it, so the
+    caveat has to outlive it too.
+    """
 
     name: str
     description: str
@@ -47,6 +56,15 @@ class Technique(BaseModel):
     severity: str = "info"
     source: str = ""
     source_url: str | None = None
+    #: ``live_search`` / ``training_data`` / ``undeclared``. Anything other than
+    #: ``live_search`` means this entry cannot know about a CVE published after
+    #: the serving model's cutoff, and nothing in its text would say so.
+    grounding: str = ResearchGrounding.UNDECLARED.value
+
+    @property
+    def is_grounded(self) -> bool:
+        """Whether this entry came from research that read the live web."""
+        return self.grounding == ResearchGrounding.LIVE_SEARCH.value
 
 
 class AdaptedTechnique(BaseModel):
@@ -64,6 +82,19 @@ class ResearchResult(BaseModel):
     Consumed by the Orchestrator and the Exploit Agent.
     """
 
+    #: What the research calls this result was built from actually read.
+    #: ``live_search`` only when the provider that SERVED them declares native
+    #: search grounding; anything else means the runbook below is a recollection
+    #: of a training corpus with a cutoff, and every vulnerability disclosed
+    #: after that cutoff is invisible to it — with no signal in the text that
+    #: anything is missing. For a security tool that is a correctness failure,
+    #: so it is stamped here, on every runbook entry, and in the report.
+    grounding: str = ResearchGrounding.UNDECLARED.value
+    #: Which providers served the research calls, in the order first seen. A
+    #: fallback mid-phase can change the grounding under a single result, and
+    #: :attr:`grounding` is then the WEAKEST of them — the honest reading of a
+    #: runbook where some entries saw the web and some did not.
+    grounding_providers: list[str] = Field(default_factory=list)
     technologies: list[str] = Field(default_factory=list)
     existing_knowledge: ExistingKnowledge = Field(default_factory=ExistingKnowledge)
     new_techniques: list[Technique] = Field(default_factory=list)

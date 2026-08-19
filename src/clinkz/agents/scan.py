@@ -40,6 +40,7 @@ from clinkz.agents._url_shape import (
 from clinkz.agents.base import BaseAgent
 from clinkz.browser.csp_policy import parse_csp
 from clinkz.llm.base import LLMClient
+from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
 from clinkz.models.recon import (
     ReconResult,
 )
@@ -388,7 +389,8 @@ class ScanAgent(BaseAgent):
             "4. Any special considerations (authentication, WAF, etc.)\n"
             "Respond concisely."
         )
-        return await self.llm.generate_text(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="scan._llm_plan_scan_strategy"):
+            return await self.llm.generate_text(prompt)
 
     # ------------------------------------------------------------------
     # Step 2: Execute Service-Specific Scans
@@ -1769,7 +1771,8 @@ class ScanAgent(BaseAgent):
             "Scan results:\n" + "\n".join(f"  - {s}" for s in summaries) + "\n\n"
             "Provide a concise analysis."
         )
-        return await self.llm.generate_text(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="scan._llm_review_scan_results"):
+            return await self.llm.generate_text(prompt)
 
     # ------------------------------------------------------------------
     # Step 4: LLM Coverage Check
@@ -1808,7 +1811,8 @@ class ScanAgent(BaseAgent):
             "JSON:"
         )
 
-        response = await self.llm.generate_text(prompt)
+        with llm_call_purpose(LLMCallPurpose.PLANNING, site="scan._llm_check_coverage"):
+            response = await self.llm.generate_text(prompt)
 
         # Parse LLM JSON response
         try:

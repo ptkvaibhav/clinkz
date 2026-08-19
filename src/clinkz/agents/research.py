@@ -25,7 +25,8 @@ from typing import TYPE_CHECKING, Any
 
 from clinkz.agents.base import BaseAgent
 from clinkz.config import settings
-from clinkz.llm.base import LLMClient
+from clinkz.llm.base import LLMClient, ResearchGrounding
+from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
 from clinkz.models.research import (
     AdaptedTechnique,
     ExistingKnowledge,
@@ -97,6 +98,8 @@ class ResearchAgent(BaseAgent):
         self._runtime_researcher = runtime_researcher
         # Accumulated runbook for the engagement (grows with research_additional)
         self._runbook: list[Technique | AdaptedTechnique] = []
+        # Every grounding a research call in this engagement ran under.
+        self._grounding_seen: set[str] = set()
         self._new_kb_entries_added: int = 0
         # Hard wall-clock deadline for run(), set when run() starts. Optional
         # per-instance budget override (seconds) lets tests force an immediate
@@ -396,12 +399,21 @@ class ResearchAgent(BaseAgent):
             queries = await self._llm_generate_search_queries(tech)
             self._logger.info("Web research for '%s' (angles: %s)", tech, queries)
 
-            # One grounded research call per technology. Native Gemini Search
-            # Grounding already searches broadly, so we no longer fan out an
-            # identical call per generated query — that tripled request volume
-            # and fed the 503 storm.
+            # One research call per technology. Native Gemini Search Grounding
+            # already searches broadly, so we no longer fan out an identical
+            # call per generated query — that tripled request volume and fed the
+            # 503 storm.
+            #
+            # WHETHER it is grounded is read off the client that SERVED the
+            # call, not assumed from the phase's name. Routing v2 leads with
+            # Anthropic, which has no search grounding on this path, so an
+            # answer here may be a recollection of a training corpus — and a CVE
+            # published after that cutoff is invisible with nothing in the text
+            # saying so. Recorded per call because a fallback mid-phase can
+            # change it under a single result.
             try:
                 result_text = await researcher.research_technology(tech)
+                self._record_research_grounding()
                 cve_matches = re.findall(r"CVE-\d{4}-\d{4,}", result_text)
                 cves_found.extend(cve_matches)
                 findings.append(
@@ -468,7 +480,10 @@ class ResearchAgent(BaseAgent):
             f'"{technology} penetration testing technique"]'
         )
         try:
-            response = await self.llm.generate_text(prompt)
+            with llm_call_purpose(
+                LLMCallPurpose.PLANNING, site="research._llm_generate_search_queries"
+            ):
+                response = await self.llm.generate_text(prompt)
             json_start = response.find("[")
             json_end = response.rfind("]") + 1
             if json_start >= 0 and json_end > json_start:
@@ -550,7 +565,10 @@ class ResearchAgent(BaseAgent):
         )
 
         try:
-            response = await self.llm.generate_text(prompt)
+            with llm_call_purpose(
+                LLMCallPurpose.PLANNING, site="research._llm_synthesize_techniques"
+            ):
+                response = await self.llm.generate_text(prompt)
             json_start = response.find("[")
             json_end = response.rfind("]") + 1
             if json_start >= 0 and json_end > json_start:
@@ -677,7 +695,8 @@ class ResearchAgent(BaseAgent):
         )
 
         try:
-            response = await self.llm.generate_text(prompt)
+            with llm_call_purpose(LLMCallPurpose.PLANNING, site="research._llm_adapt_techniques"):
+                response = await self.llm.generate_text(prompt)
             json_start = response.find("[")
             json_end = response.rfind("]") + 1
             if json_start >= 0 and json_end > json_start:
@@ -831,7 +850,26 @@ class ResearchAgent(BaseAgent):
         # Update internal runbook
         self._runbook = runbook
 
+        grounding = self._effective_grounding()
+        for entry in runbook:
+            technique = entry.original if isinstance(entry, AdaptedTechnique) else entry
+            technique.grounding = grounding.value
+        for technique in techniques:
+            technique.grounding = grounding.value
+
+        if not grounding.is_grounded:
+            self._logger.warning(
+                "RESEARCH IS UNGROUNDED (%s) — %d runbook entr(ies) came from a model's "
+                "training corpus rather than a live search, so any vulnerability disclosed "
+                "after its cutoff is invisible here and nothing in the text says so. "
+                "Stamped on every entry and in the report.",
+                grounding.value,
+                len(runbook),
+            )
+
         return ResearchResult(
+            grounding=grounding.value,
+            grounding_providers=sorted(self._grounding_seen),
             technologies=technologies,
             existing_knowledge=existing,
             new_techniques=techniques,
@@ -839,3 +877,44 @@ class ResearchAgent(BaseAgent):
             runbook=runbook,
             new_kb_entries_added=self._new_kb_entries_added,
         )
+
+    # ------------------------------------------------------------------
+    # Grounding — what the research actually read
+    # ------------------------------------------------------------------
+
+    def _record_research_grounding(self) -> None:
+        """Note what the client that just served a research call is grounded in.
+
+        Read AFTER the call, because ``ResilientLLMClient.research_grounding``
+        reports the provider that answered and that is only settled once the
+        chain resolves.
+        """
+        try:
+            grounding = self.llm.research_grounding()
+        except Exception as exc:  # noqa: BLE001 — a stamp must never fail the phase
+            self._logger.warning("Could not read research grounding: %s", exc)
+            grounding = ResearchGrounding.UNDECLARED
+        self._grounding_seen.add(grounding.value)
+
+    def _effective_grounding(self) -> ResearchGrounding:
+        """The WEAKEST grounding any research call in this phase ran under.
+
+        A phase whose first two calls were grounded and whose third fell back is
+        a runbook where some entries saw the web and some did not, and the
+        deliverable must not describe the whole of it as grounded. Reporting the
+        weakest is the reading that cannot overstate; the full set is carried in
+        ``grounding_providers`` so the mixed case is still legible.
+
+        No research call at all ⇒ ``UNDECLARED``, which is treated as ungrounded
+        everywhere. An empty runbook is a true "we did not read the web".
+        """
+        if not self._grounding_seen:
+            return ResearchGrounding.UNDECLARED
+        for weakest in (
+            ResearchGrounding.UNDECLARED,
+            ResearchGrounding.TRAINING_DATA,
+            ResearchGrounding.LIVE_SEARCH,
+        ):
+            if weakest.value in self._grounding_seen:
+                return weakest
+        return ResearchGrounding.UNDECLARED

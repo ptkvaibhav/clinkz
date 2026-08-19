@@ -90,6 +90,46 @@ class ProviderPolicyError(BaseException):
 
     It is deliberately NOT an :class:`LLMError`: the fallback chain rotates on
     those, and rotating is the behaviour being refused.
+
+    **Reserved for the run-mode refusal**, i.e. ``baseline``. The call-purpose
+    refusal on an emit/suppress path in ``client`` mode raises
+    :class:`DecisionPathFallbackRefused` instead — see that class for why the
+    two want opposite catchability.
+    """
+
+
+class DecisionPathFallbackError(LLMError):
+    """A call whose answer EMITS or SUPPRESSES a finding may not be served by
+    a fallback provider, and the caller should degrade rather than die.
+
+    The sibling of :class:`ProviderPolicyError`, and the difference between them
+    is the intended outcome rather than the severity.
+
+    ``baseline`` mode wants the **run** to fail: a recorded baseline served
+    partly by two models measures nothing, so there is no partial result worth
+    keeping and ``ProviderPolicyError`` is uncatchable on purpose.
+
+    ``client`` mode wants only the **call** to fail. The engagement should still
+    complete — that is the whole reason client mode degrades — and the callers
+    on these two paths already have exactly the right handling for a model they
+    cannot reach:
+
+    * ``ExploitAgent._llm_analyze_results`` catches, logs, and returns an empty
+      analysis: no false-positive suspects, so **nothing is demoted**.
+    * ``ExploitAgent._llm_analyze`` catches and returns ``""``, leaving the
+      methodology on its deterministic build — where the invariants put the
+      verdict anyway.
+
+    Both are the conservative direction, and both are reached by an ordinary
+    ``except Exception``. So this one is an :class:`LLMError` and is meant to be
+    caught. It is raised from ``_assert_fallback_permitted``, i.e. *before* the
+    request leaves, so nothing is bought and nothing is stamped: a degradation
+    the run did not take must not appear in the register.
+
+    It does not rotate the chain further. Being raised outside the loop's
+    ``try`` in ``_dispatch``, it propagates straight to the caller — every
+    remaining provider is a fallback too, so trying the next one asks the same
+    forbidden question.
     """
 
 
@@ -362,6 +402,43 @@ class LLMMessage(BaseModel):
     tool_calls: list[ToolCall] | None = None  # populated for assistant tool-call turns
 
 
+class ResearchGrounding(StrEnum):
+    """Whether a client's :meth:`LLMClient.research` answer saw the live web.
+
+    Declared by the PRODUCER, like ``ToolOutput.discovered_urls`` and
+    ``detected_components()``, and for the same reason: a consumer that guesses
+    is a consumer that will be silently wrong the first time a provider changes.
+
+    This is not a preference. A grounded research call reads today's CVE feeds;
+    an ungrounded one recites a training corpus with a cutoff, so **every
+    vulnerability disclosed after that cutoff is invisible to it** and the
+    answer contains no signal that anything is missing. For a security tool
+    that is a correctness failure, not a quality one — and an ungrounded
+    research answer folded silently into the runbook and persisted to the
+    cross-engagement KB is a new unbacked claim that outlives the run.
+
+    So the grounding is stamped wherever the research output goes: the runbook
+    and the report. Routing v2 is what made this urgent — Research used to lead
+    with Gemini Flash-Lite precisely for native Search Grounding, and Anthropic
+    has no equivalent on this path, so the capability was lost with the routing
+    change. Stated rather than absorbed.
+    """
+
+    #: The provider searched the live web for this answer.
+    LIVE_SEARCH = "live_search"
+    #: The answer came from the model's training corpus. Bounded by its cutoff.
+    TRAINING_DATA = "training_data"
+    #: The client never said. Treated as ungrounded everywhere, because
+    #: "we do not know whether this saw the web" and "this did not see the web"
+    #: license exactly the same claim in a deliverable.
+    UNDECLARED = "undeclared"
+
+    @property
+    def is_grounded(self) -> bool:
+        """Whether output produced under this grounding may be called grounded."""
+        return self is ResearchGrounding.LIVE_SEARCH
+
+
 class LLMClient(ABC):
     """Abstract base class for all LLM provider clients.
 
@@ -377,6 +454,24 @@ class LLMClient(ABC):
     #: one completes. Read at the ``ResilientLLMClient`` seam for the trace, so
     #: the value is only meaningful immediately after an awaited call returns.
     last_call_stats: CallStats | None = None
+
+    #: What this client's :meth:`research` answers are grounded in. Every
+    #: shipped client overrides it (asserted by
+    #: ``tests/test_llm/test_research_grounding.py``); the default is
+    #: ``UNDECLARED`` rather than an abstract method so a test double and a
+    #: third-party client keep working — and ``UNDECLARED`` is treated as
+    #: ungrounded, which is the direction that cannot overstate.
+    RESEARCH_GROUNDING: ResearchGrounding = ResearchGrounding.UNDECLARED
+
+    def research_grounding(self) -> ResearchGrounding:
+        """What the answer this client would give is grounded in.
+
+        A method rather than a bare attribute read because the resilient client
+        overrides it: which provider *served* a research call is only known
+        after the chain resolves, and it is the one that served it whose
+        grounding the answer actually has.
+        """
+        return self.RESEARCH_GROUNDING
 
     @abstractmethod
     async def reason(

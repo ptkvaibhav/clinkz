@@ -8,7 +8,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, OutputBudget, PromptLike
+from clinkz.llm.base import (
+    AgentAction,
+    LLMClient,
+    LLMMessage,
+    OutputBudget,
+    PromptLike,
+    ResearchGrounding,
+)
 
 
 class OllamaClient(LLMClient):
@@ -17,6 +24,9 @@ class OllamaClient(LLMClient):
     TODO: Implement using the ollama Python SDK.
     Note: tool calling support varies by model — verify before using.
     """
+
+    #: A stub, and a local model has no search tool in any case.
+    RESEARCH_GROUNDING = ResearchGrounding.TRAINING_DATA
 
     def __init__(self) -> None:
         raise NotImplementedError(

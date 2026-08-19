@@ -31,6 +31,7 @@ from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.knowledge.skills_loader import SkillsLoader
 from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
+from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
 from clinkz.models.scope import EngagementScope
 from clinkz.observability.trace import Stopwatch, get_active_trace_writer
 from clinkz.state import StateStore
@@ -51,7 +52,6 @@ DEFAULT_MAX_ITERATIONS: dict[str, int] = {
     "exploit": 40,
     "research": 10,
     "report": 10,
-    "critic": 10,
 }
 
 # Fallback when an agent name is not in the map above.
@@ -629,7 +629,8 @@ class BaseAgent(ABC):
                 )
 
             # Reason
-            action: AgentAction = await self.llm.reason(self.messages, tools=tool_schemas)
+            with llm_call_purpose(LLMCallPurpose.PLANNING, site="base._react_loop"):
+                action: AgentAction = await self.llm.reason(self.messages, tools=tool_schemas)
 
             # Done?
             if action.final_answer is not None:

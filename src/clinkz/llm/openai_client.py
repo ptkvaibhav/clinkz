@@ -22,6 +22,7 @@ from clinkz.llm.base import (
     OutputBudget,
     PromptLike,
     RateLimitError,
+    ResearchGrounding,
     ServiceUnavailableError,
     ToolCall,
     flatten_prompt,
@@ -53,6 +54,9 @@ class OpenAIClient(LLMClient):
     - Automatic retry on transient errors
     - Token usage tracking across all calls
     """
+
+    #: No search tool is attached on this path.
+    RESEARCH_GROUNDING = ResearchGrounding.TRAINING_DATA
 
     def __init__(
         self,

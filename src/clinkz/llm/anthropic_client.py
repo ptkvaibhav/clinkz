@@ -29,6 +29,7 @@ from clinkz.llm.base import (
     PromptLike,
     ProviderAccountError,
     RateLimitError,
+    ResearchGrounding,
     ServiceUnavailableError,
     ToolCall,
     as_prompt_segments,
@@ -296,6 +297,12 @@ class AnthropicClient(LLMClient):
 
     Rate limiting and exponential backoff are applied to every API call.
     """
+
+    #: No search grounding on this path. research() is generate_text() over Claude's training
+    #: knowledge, bounded by its cutoff. The Gemini hop that used to supply grounding here was
+    #: removed because a provider client reaching for another provider routes around the fallback
+    #: chain entirely.
+    RESEARCH_GROUNDING = ResearchGrounding.TRAINING_DATA
 
     def __init__(self, model: str | None = None) -> None:
         if not settings.anthropic_api_key:
