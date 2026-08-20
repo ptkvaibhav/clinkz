@@ -13,6 +13,7 @@ Each phase is exercised in isolation with mocked HTTP + LLM:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -83,6 +84,55 @@ def _make_agent(llm: LLMClient | None = None) -> ExploitAgent:
     )
     agent._methodology_llm = agent.llm
     return agent
+
+
+def _php_interpreter(agent: ExploitAgent, upload_body: str) -> None:
+    """Wire *agent* to a fake store whose fetch-back EVALUATES the PHP it stored.
+
+    The oracle no longer looks for a string it wrote — it looks for a value only
+    an interpreter can produce (``<?php echo 'clinkz'.'exec'.(A*B); ?>`` ->
+    ``clinkzexec<A*B>``). A fake whose fetch-back returns a hardcoded canary is
+    therefore testing nothing, and would pass against the broken oracle the
+    never-sent control arm killed. This fake does the multiplication, so the
+    assertion is about execution.
+
+    Its counterpart is :func:`_php_static_server`, which serves the same bytes
+    back verbatim — the property that made the old control arm confirm.
+    """
+    stored: dict[str, str] = {}
+
+    async def post(*_a: object, **kw: object) -> _HTTPResponse:
+        stored["content"] = str(kw.get("content", ""))
+        return _HTTPResponse(status=200, body=upload_body)
+
+    async def get(*_a: object, **_kw: object) -> _HTTPResponse:
+        rendered = re.sub(
+            r"<\?php\s+echo\s+'clinkz'\.'exec'\.\((\d+)\*(\d+)\);\s+\?>",
+            lambda m: f"clinkzexec{int(m.group(1)) * int(m.group(2))}",
+            stored.get("content", ""),
+        )
+        # Anything still wrapped in tags did not run; strip it so the body looks
+        # like interpreter OUTPUT rather than source.
+        rendered = re.sub(r"<\?php.*?\?>", "", rendered, flags=re.DOTALL)
+        return _HTTPResponse(status=200, body=rendered.strip())
+
+    agent._http_post_multipart = post  # type: ignore[method-assign]
+    agent._http_get = get  # type: ignore[method-assign]
+
+
+def _php_static_server(agent: ExploitAgent, upload_body: str) -> None:
+    """A store that hands the uploaded bytes back verbatim — no interpreter."""
+    stored: dict[str, str] = {}
+
+    async def post(*_a: object, **kw: object) -> _HTTPResponse:
+        stored["content"] = str(kw.get("content", ""))
+        return _HTTPResponse(status=200, body=upload_body)
+
+    async def get(*_a: object, **_kw: object) -> _HTTPResponse:
+        return _HTTPResponse(status=200, body=stored.get("content", ""))
+
+    agent._http_get = get  # type: ignore[method-assign]
+    agent._http_post_multipart = post  # type: ignore[method-assign]
 
 
 def _make_upload_form() -> dict[str, Any]:
@@ -317,22 +367,13 @@ class TestPhase5Verification:
     @pytest.mark.asyncio
     async def test_upload_accepted_with_canary_executes(self) -> None:
         agent = _make_agent()
-        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
-            return_value=_HTTPResponse(
-                status=200,
-                body="../../hackable/uploads/shell.php uploaded successfully",
-            )
-        )
-        # When the methodology fetches the uploaded URL, the response
-        # mimics PHP execution echoing the canary without source.
-        agent._http_get = AsyncMock(  # type: ignore[method-assign]
-            return_value=_HTTPResponse(status=200, body="clinkzupload12345")
-        )
+        # The fetch-back EVALUATES what was stored, so "verified" means the
+        # interpreter computed the indicator rather than the store echoing it.
+        _php_interpreter(agent, "../../hackable/uploads/shell.php uploaded successfully")
         synth = {
             "filename": "shell.php",
-            "content": "<?php echo 'clinkzupload12345'; ?>",
+            "content": "<?php phpinfo(); ?>",
             "content_type": "application/x-php",
-            "canary": "clinkzupload12345",
         }
         verified, uploaded_url, observed = await agent._file_upload_phase5_verify(
             "http://example.com/upload", synth, FileUploadExecutionType.DIRECT_EXECUTION
@@ -442,19 +483,11 @@ class TestPhase5Verification:
     async def test_interpreter_misconfig_confirms_on_execution(self) -> None:
         """A .phtml that the server executes (canary echoed as output) confirms."""
         agent = _make_agent()
-        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
-            return_value=_HTTPResponse(
-                status=200, body="../../uploads/clinkz_misconfig.phtml was uploaded successfully"
-            )
-        )
-        agent._http_get = AsyncMock(  # type: ignore[method-assign]
-            return_value=_HTTPResponse(status=200, body="clinkzexec9")
-        )
+        _php_interpreter(agent, "../../uploads/clinkz_misconfig.phtml was uploaded successfully")
         synth = {
             "filename": "clinkz_misconfig.phtml",
-            "content": "<?php echo 'clinkzexec9'; ?>",
+            "content": "<?php phpinfo(); ?>",
             "content_type": "application/octet-stream",
-            "canary": "clinkzexec9",
         }
         verified, _url, observed = await agent._file_upload_phase5_verify(
             "http://example.com/upload", synth, FileUploadExecutionType.INTERPRETER_MISCONFIG
@@ -518,16 +551,19 @@ class TestFileUploadMethodologyIntegration:
             return _HTTPResponse(status=200, body=f"uploaded {filename}")
 
         async def fake_get(url: str, _params: dict[str, str]) -> _HTTPResponse:
-            # The methodology probes /uploads/<filename>.
+            # The methodology probes /uploads/<filename>. The server EVALUATES
+            # the stored PHP rather than echoing a string we wrote — the oracle
+            # confirms on a product only an interpreter can compute, so a fake
+            # that returned a canary verbatim would pass against the broken
+            # version its own control arm killed.
             if stored.get("last") and stored["last"] in url:
-                # Pretend the server executed our PHP and echoed canary.
-                body = stored.get("body", "")
-                # Extract canary from body for the test.
-                import re
-
-                m = re.search(r"clinkzupload\d+", body)
-                canary = m.group(0) if m else "clinkz"
-                return _HTTPResponse(status=200, body=canary)
+                rendered = re.sub(
+                    r"<\?php\s+echo\s+'clinkz'\.'exec'\.\((\d+)\*(\d+)\);\s+\?>",
+                    lambda m: f"clinkzexec{int(m.group(1)) * int(m.group(2))}",
+                    stored.get("body", ""),
+                )
+                rendered = re.sub(r"<\?php.*?\?>", "", rendered, flags=re.DOTALL)
+                return _HTTPResponse(status=200, body=rendered.strip())
             return _HTTPResponse(status=404, body="not found")
 
         agent._http_post_multipart = fake_post  # type: ignore[method-assign]
@@ -538,6 +574,35 @@ class TestFileUploadMethodologyIntegration:
         joined = " ".join(findings[0].evidence)
         assert "phases_completed=6" in joined
         assert "execution_type=" in joined
+
+    @pytest.mark.asyncio
+    async def test_a_store_that_only_serves_the_file_never_confirms(self) -> None:
+        """The property the never-sent control arm reported, as a direct test.
+
+        A PHP interpreter emits text outside ``<?php ?>`` verbatim, so the old
+        oracle ("a nonce we wrote came back") could not tell execution from
+        static serving — and its control, which uploaded the decoy as plain text,
+        confirmed. Four ladder findings died on that, at two DVWA levels where
+        the vulnerability is real.
+
+        Here the store hands the bytes straight back. The uploaded source
+        contains the factors and never their product, so the indicator cannot
+        appear and phase 5 must refuse.
+        """
+        agent = _make_agent()
+        _php_static_server(agent, "../../uploads/clinkz_shell.php uploaded successfully")
+        verified, uploaded_url, observed = await agent._file_upload_phase5_verify(
+            "http://example.com/upload",
+            {
+                "filename": "clinkz_shell.php",
+                "content": "<?php phpinfo(); ?>",
+                "content_type": "application/octet-stream",
+            },
+            FileUploadExecutionType.DIRECT_EXECUTION,
+        )
+        assert verified is False
+        assert uploaded_url is not None
+        assert observed is not None and "served as source" in observed
 
     @pytest.mark.asyncio
     async def test_form_rerender_emits_no_finding(self) -> None:
@@ -676,21 +741,13 @@ class TestG22BranchEffectContract:
     async def test_direct_execution_still_confirms_on_the_canary(self) -> None:
         """The control. The fix removes no confirmation that was ever earned."""
         agent = _make_agent()
-        agent._http_post_multipart = AsyncMock(  # type: ignore[method-assign]
-            return_value=_HTTPResponse(
-                status=200, body="../../hackable/uploads/clinkz_shell.php succesfully uploaded!"
-            )
-        )
-        agent._http_get = AsyncMock(  # type: ignore[method-assign]
-            return_value=_HTTPResponse(status=200, body="clinkzcanary1")
-        )
+        _php_interpreter(agent, "../../hackable/uploads/clinkz_shell.php succesfully uploaded!")
         verified, uploaded_url, observed = await agent._file_upload_phase5_verify(
             "http://example.com/upload",
             {
                 "filename": "clinkz_shell.php",
-                "content": "<?php echo 'clinkzcanary1'; ?>",
+                "content": "<?php phpinfo(); ?>",
                 "content_type": "application/octet-stream",
-                "canary": "clinkzcanary1",
             },
             FileUploadExecutionType.DIRECT_EXECUTION,
         )

@@ -353,13 +353,28 @@ class TestUploadIndicatorIsComputedNotWritten:
         _indicator, source = agent._upload_execution_canary({})
         assert re.search(r"\.\(\d+\*\d+\)", source), source
 
-    def test_a_caller_supplied_canary_is_honoured(self) -> None:
+    def test_a_caller_supplied_canary_is_honoured_with_an_explicit_source(self) -> None:
+        """The control arm's shape: it asks for nothing to be appended."""
         agent = _make_agent()
         indicator, source = agent._upload_execution_canary(
             {"canary": "clinkzexec999", "canary_source": ""}
         )
         assert indicator == "clinkzexec999"
         assert source == ""
+
+    def test_a_bare_canary_is_ignored_and_the_pair_is_minted(self) -> None:
+        """The deterministic fallbacks pass one; honouring it re-breaks the oracle.
+
+        ``_direct_execution_synth`` writes ``<?php echo '<canary>'; phpinfo(); ?>``
+        and puts that canary in ``synth``. Reading it back as the indicator makes
+        the confirming observation a string that IS in the uploaded bytes — the
+        exact property the rebuild removed — for every LLM-silent run.
+        """
+        agent = _make_agent()
+        indicator, source = agent._upload_execution_canary({"canary": "clinkzupload12345"})
+        assert indicator != "clinkzupload12345"
+        assert source, "the computing source must still be appended"
+        assert indicator not in source
 
     def test_two_mintings_do_not_collide(self) -> None:
         agent = _make_agent()
