@@ -32,7 +32,8 @@ dependencies = [
     # Both of these are declared for a report renderer that does not exist. They
     # are left in place deliberately: removing a dependency is a separate
     # decision from noticing it is unused, and the audit that found them
-    # (docs/analysis/dependencies.md section 6) covers the whole set at once.
+    # (docs/analysis/dependencies.md, Actionable findings) covers the whole set
+    # at once.
     "weasyprint>=62.0",
     "jinja2>=3.1.0",
     # Read by the DISCLOSURE GATE, not by any renderer, and the only dependency
@@ -45,7 +46,7 @@ dependencies = [
     # by the fix for it.
     #
     # Floored at 6.9.1, not the 5.x that would satisfy the import: 6.8.0 carries
-    # the 7 advisories tabulated in docs/analysis/dependencies.md, and adding a
+    # the 7 advisories tabulated in docs/analysis/dependencies.md §2, and adding a
     # known-vulnerable package in the same change that reports pillow's five is
     # not a position worth defending.
     "pypdf>=6.9.1",
