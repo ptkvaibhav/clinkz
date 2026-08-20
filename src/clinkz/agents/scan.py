@@ -34,6 +34,7 @@ from clinkz.agents._route_discovery import (
 from clinkz.agents._url_safety import find_session_setter_urls, is_state_changing_url
 from clinkz.agents._url_shape import (
     STATIC_ASSET_EXTENSIONS,
+    crawl_dedup_key,
     crawl_visit_priority,
     path_extension,
 )
@@ -61,6 +62,10 @@ from clinkz.observability.ledger import (
     ComponentKind,
     record_contribution,
     record_dead_seam,
+)
+from clinkz.observability.plan_alarms import (
+    CrawlBudgetTruncation,
+    record_crawl_budget,
 )
 from clinkz.safety.scope_refusals import record_scope_refusal
 from clinkz.state import StateStore
@@ -1235,18 +1240,35 @@ class ScanAgent(BaseAgent):
         if not urls:
             return []
 
-        # De-duplicate URLs (strip fragment + trailing slash) before visiting.
-        # Cap the visit count so a giant katana run doesn't make scan O(n).
+        # De-duplicate URLs before visiting, and cap the visit count so a giant
+        # katana run doesn't make scan O(n).
+        #
+        # The dedup key strips the fragment, a trailing slash AND any trailing
+        # escape artifact (``_url_shape.crawl_dedup_key``). Reading a URL out of
+        # a JSON-escaped payload without unescaping it turns one href into
+        # several — ``/x``, ``/x%5C``, ``/x%5C%5C%5C`` — and on the portfolio run
+        # 14 of 212 candidates were those, each consuming a slot of a budget 132
+        # candidates never reached. What is kept is the smallest spelling in the
+        # group, which is the clean URL whenever it was discovered, and the
+        # mangled one unchanged when it was not: this dedups, it does not rewrite
+        # a request the target never offered.
         max_visits = 80
-        visited: set[str] = set()
-        candidates: list[str] = []
+        by_key: dict[str, str] = {}
+        duplicates_collapsed = 0
         for u in urls:
             if is_state_changing_url(u):
                 continue
-            norm = u.split("#", 1)[0].rstrip("/")
-            if norm and norm not in visited:
-                visited.add(norm)
-                candidates.append(u)
+            key = crawl_dedup_key(u)
+            if not key:
+                continue
+            existing = by_key.get(key)
+            if existing is None:
+                by_key[key] = u
+                continue
+            duplicates_collapsed += 1
+            if u < existing:
+                by_key[key] = u
+        candidates: list[str] = list(by_key.values())
 
         # WHICH urls the budget covers is decided by relevance, not by the order
         # the crawler happened to emit them. A concurrent crawler's output order
@@ -1272,6 +1294,23 @@ class ScanAgent(BaseAgent):
                 max_visits,
                 prioritised[max_visits],
             )
+        # ...and the same fact into the DELIVERABLE. A bound that decides
+        # coverage reaching only the run log is the defect `plan_alarms.py` was
+        # built for one layer up: 132 of 212 candidates went unopened on the
+        # first non-benchmark run and `report.json` said nothing about it.
+        # Recorded on a clean run too, so "the crawl fit inside its budget" is a
+        # claim the report makes rather than a section nobody wrote.
+        record_crawl_budget(
+            CrawlBudgetTruncation(
+                budget=max_visits,
+                candidates=len(prioritised),
+                opened=len(ordered_urls),
+                duplicates_collapsed=duplicates_collapsed,
+                first_omitted=(prioritised[max_visits] if len(prioritised) > max_visits else ""),
+                opened_by_host=_host_counts(ordered_urls),
+                dropped_by_host=_host_counts(prioritised[max_visits:]),
+            )
+        )
 
         enriched: list[Endpoint] = []
         seen_keys: set[tuple[str, str, tuple[str, ...]]] = set()
@@ -1998,3 +2037,17 @@ class ScanAgent(BaseAgent):
                         )
                     except Exception as exc:
                         self._logger.warning("Failed to persist directory %s: %s", directory, exc)
+
+
+def _host_counts(urls: list[str]) -> dict[str, int]:
+    """How many of *urls* sit on each host.
+
+    Per host rather than as one total, because "this host was covered thinly"
+    and "this host was never opened at all" are different facts about coverage
+    and a sum cannot tell them apart.
+    """
+    counts: dict[str, int] = {}
+    for url in urls:
+        host = urlparse(url).netloc or "(unknown)"
+        counts[host] = counts.get(host, 0) + 1
+    return counts
