@@ -580,7 +580,16 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   `UNCLASSIFIED FINDING` when one does. That matters beyond the re-grade — an
   unresolvable title exits every class-keyed rule, *including*
   `control_required`, so it leaves the never-sent-control gate rather than
-  failing it.
+  failing it. **And the description is a FALLBACK, which `for_finding` said and
+  did not do**: it searched `title + description` as one string, so the longest
+  token anywhere won — and a description is
+  `Technique: <id>. Parameter: <name>.`, where the parameter name is a value the
+  methodology or the target chose, not a class name. `client-side` (11) in
+  `Parameter: (client-side fragment)` outranked `dom-based` (9) in the title, so
+  P7's flagship browser-witnessed DOM-XSS was filed as
+  `_test_javascript_attacks` at all three exploitable ladder levels — wrong
+  remediation, wrong declared yield, wrong class in the re-grade. A title that
+  resolves is authoritative.
 - `python -m clinkz corpus-replay [--rebuild]` — **offline** parser regression gate:
   re-parses every recorded `tool_invocations/` stdout and diffs against
   `tests/fixtures/corpus_replay_baseline.json`; exits non-zero on drift. Sends

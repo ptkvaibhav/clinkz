@@ -886,14 +886,37 @@ def for_finding(title: str, description: str = "") -> VulnClass | None:
     matches nothing returns ``None`` and is rendered without guidance — a
     missing remediation is honest; a confidently wrong one is not.
 
+    **The description is a FALLBACK, which it says here and did not do.** The
+    implementation searched ``f"{title} {description}"`` as one string, so the
+    longest token anywhere won — and a description is
+    ``"Technique: <id>. Parameter: <name>."``, where the *parameter name* is a
+    value the methodology or the target chose, not a class name.
+
+    On the 2026-08-21 ladder that misfiled P7's flagship at all three
+    exploitable levels: ``"DOM-based XSS — script execution witnessed in a
+    browser"`` carries the description ``Parameter: (client-side fragment)``, and
+    ``client-side`` (11 chars, ``_test_javascript_attacks``) outranks
+    ``dom-based`` (9 chars, ``_test_xss_dom``). Every class-keyed consumer then
+    read the wrong class: the report attached the JavaScript-attacks
+    remediation, the chain layer read the wrong declared yield, and the control
+    re-grade filed a browser-witnessed DOM-XSS under a class that never ran.
+
+    A title that resolves is authoritative; the description is consulted only
+    when it does not.
+
     Args:
-        title: The finding's title.
-        description: The finding's description, searched as a fallback.
+        title: The finding's title. Searched first, and alone when it matches.
+        description: The finding's description, searched only as a fallback.
 
     Returns:
         The matching :class:`VulnClass`, or ``None``.
     """
-    haystack = f"{title} {description}".lower()
+    return _longest_token_match(title) or _longest_token_match(description)
+
+
+def _longest_token_match(text: str) -> VulnClass | None:
+    """The class whose longest ``title_tokens`` entry occurs in *text*."""
+    haystack = (text or "").lower()
     best: VulnClass | None = None
     best_len = 0
     for vc in _ALL:

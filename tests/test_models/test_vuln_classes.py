@@ -117,3 +117,32 @@ def test_a_specific_token_beats_a_generic_one() -> None:
 def test_an_unrecognised_title_resolves_to_nothing() -> None:
     """A missing remediation is honest; a confidently wrong one is not."""
     assert for_finding("Something the registry has never heard of") is None
+
+
+def test_the_description_is_a_fallback_not_a_co_equal_haystack() -> None:
+    """A parameter NAME must never outrank the title's own class token.
+
+    `for_finding` searched `f"{title} {description}"` as one string, so the
+    longest token anywhere won. A description is
+    `"Technique: <id>. Parameter: <name>."`, and the parameter name is a value
+    the methodology or the target chose — not a class name.
+
+    On the 2026-08-21 DVWA ladder that misfiled P7's flagship at all three
+    exploitable levels: `client-side` (11 chars, `_test_javascript_attacks`)
+    beat `dom-based` (9 chars, `_test_xss_dom`) on a DOM-XSS finding whose
+    parameter is literally `(client-side fragment)`. Remediation, the chaining
+    yield vocabulary and the control re-grade all then read the wrong class.
+    """
+    title = "DOM-based XSS — script execution witnessed in a browser"
+    description = "Technique: WSTG-CLNT-01. Parameter: (client-side fragment)."
+
+    assert for_finding(title, description).test_method == "_test_xss_dom"
+    # And the title alone already resolved — the description changed the answer.
+    assert for_finding(title).test_method == "_test_xss_dom"
+
+
+def test_the_description_still_resolves_a_title_that_cannot() -> None:
+    """Fallback, not removal: a title matching nothing still gets its class."""
+    resolved = for_finding("Finding on /api/v2/orders", "Technique: SQL Injection in id.")
+    assert resolved is not None
+    assert resolved.key == "sql_injection"

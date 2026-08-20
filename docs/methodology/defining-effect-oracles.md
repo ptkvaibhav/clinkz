@@ -279,3 +279,51 @@ says the class could not **prove** the vulnerability rather than that the target
 is clean.
 
 Those are different claims and only one of them is true.
+
+
+---
+
+## Measured — the 2026-08-21 ladder
+
+Full pass with the rebuilt oracles and the disclosure seam, same benchmark
+profile as the 2026-08-20 run (`data_reset`, `deletion`, `unsafe_method`) so the
+oracles are the only variable.
+
+| level | exploitation | total confirmed | arms dispatched | arms KILLED | gate suppressions | SURVIVES / NO_ARM / REFUSED |
+|---|---|---|---|---|---|---|
+| low        | **15** | 22 | 14 | 0 | 0 | 22 / 0 / 0 |
+| medium     | **12** | 19 |  8 | 0 | 0 | 19 / 0 / 0 |
+| high       |  **9** | 16 |  8 | 0 | 0 | 16 / 0 / 0 |
+| impossible |  **0** |  7 |  0 | 0 | 0 |  7 / 0 / 0 |
+
+**15 / 12 / 9 / 0 — the target, and this time every finding is control-backed:
+64 of 64 SURVIVES, zero `NO_ARM`, zero `REFUSED`, zero `UNKNOWN_CLASS`.**
+
+What came back that the previous ladder lost in silence:
+
+* `Command Injection in ip parameter` at low, medium **and** high — three levels
+  that reported nothing at all before, on pages that were vulnerable throughout;
+* `Unrestricted File Upload` at low and medium;
+* `SQL Injection in id session value` and `SQL Injection in id cookie` at high —
+  the two whose arms had refused correctly and were suppressed for want of one.
+
+Secondary gates, all held: header findings **identical across all four levels**
+(the primary gate — the origin-root header set is byte-identical, so a
+divergence could only be an engine defect); admin password hash unchanged at
+every level; `auth_bypass=0` everywhere; `impossible` emits zero exploitation
+findings, which is the honesty control group.
+
+The `RANKING` violations and the `chain_planner` SILENT ledger alarm the run
+reports are pre-existing and disclosed rather than summarised away — they are
+what those gates exist to say.
+
+### One more defect the run surfaced
+
+`_test_xss_dom`'s findings were being filed as `_test_javascript_attacks` at all
+three exploitable levels. `for_finding` searched `title + description` as one
+string while its own docstring called the description a fallback, and a
+description is `Technique: <id>. Parameter: <name>.` — so `client-side` (11
+chars) in `Parameter: (client-side fragment)` outranked `dom-based` (9 chars) in
+the title. Remediation, the chaining yield vocabulary and this re-grade all read
+the wrong class for P7's flagship. The description is now consulted only when
+the title resolves to nothing.
