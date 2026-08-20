@@ -43,22 +43,40 @@ So, in **every** mode:
   the way it already degrades when a model is unreachable, and nothing is
   emitted or demoted on an answer from a provider the engagement did not choose.
 
-The refusal raises :class:`~clinkz.llm.base.DecisionPathFallbackError`, an
-ordinary :class:`~clinkz.llm.base.LLMError`, and that is deliberate. It is the
-sibling of baseline mode's :class:`~clinkz.llm.base.ProviderPolicyError`, which
-is a ``BaseException`` precisely so no broad handler can degrade past it —
-because baseline mode wants the **run** to fail. This one wants only the
-**call** to fail: the engagement should still complete, which is the whole point
-of client mode. Making it uncatchable too would mean refusing one suppression
-took the engagement down with it.
+The refusal raises :class:`~clinkz.llm.base.DecisionPathFallbackError`, the
+sibling of baseline mode's :class:`~clinkz.llm.base.ProviderPolicyError`. Both
+are ``BaseException``, and they differ in **who catches them** rather than in
+whether anyone can. ``ProviderPolicyError`` is caught by nobody: a baseline run
+wants the **run** to fail. This one wants only the **call** to fail — the
+engagement should still complete, which is the whole point of client mode — so
+it is caught **explicitly, by name**, at the two sites where degrading is
+correct, and nowhere else.
+
+It used to be an ordinary ``LLMError``, on the reasoning that those two callers
+already degrade correctly under their broad ``except Exception``. They do. What
+they did not do is degrade *visibly*: on engagement ``d67835f5`` this refusal
+was raised in place of a failed false-positive cross-check, the broad handler
+turned it into an empty suspect list, and an empty suspect list is precisely
+what that check returns when it reviewed every finding and cleared them all.
+Fourteen phantoms shipped under a signal that said they had been checked. One
+sibling had been hardened against exactly that handler shape and the other had
+not, and the asymmetry was the incident.
+
+An explicit handler is a place to log the loss, record it on the contribution
+ledger, and put it in the deliverable; a broad one reaches none of those. A new
+EMIT/SUPPRESS call site that forgets to write one now fails loudly rather than
+returning the conservative-looking empty answer — the same reason
+``ProviderPolicyError`` is uncatchable, since the conservative-looking answer
+and the real one are indistinguishable downstream.
 
 Failing the call is the conservative direction on both paths and that is not a
 coincidence. A refused suppression leaves the finding standing, which is the
 same direction the FP cross-check already fails in when the model is
-unreachable (``_llm_analyze_results`` catches, logs, and returns an empty
-analysis — no suspects, nothing demoted). A refused emission checkpoint leaves
-the methodology on its deterministic build, which is where the invariant says
-the verdict lives anyway.
+unreachable (``_llm_analyze_results`` catches by name, logs at ERROR, records a
+FAILED contribution, and returns an analysis stamped ``cross_check_ran=False`` —
+no suspects, nothing demoted, and no pretence that a review happened). A
+refused emission checkpoint leaves the methodology on its deterministic build,
+which is where the invariant says the verdict lives anyway.
 
 Declaring a call site
 ---------------------

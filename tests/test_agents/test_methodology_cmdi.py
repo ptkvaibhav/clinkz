@@ -648,10 +648,16 @@ class TestCMDIMethodologyIntegration:
             # OS detection: `;uname` produces `Linux` in the body.
             if value.endswith(";uname"):
                 return _HTTPResponse(status=200, body="ip=test\nLinux\n")
-            # Echo the canary back.
+            # Echo the canary back — but only when a SEPARATOR actually starts a
+            # second command, which is what a shell does. Without this the fake
+            # executes ``testecho <canary>`` as if it were ``test; echo <canary>``,
+            # and the never-sent control (the same payload with its separator
+            # removed) would come back looking like execution on a target where
+            # nothing was injected.
             import re
 
-            m = re.search(r"echo (\w+)", value)
+            sep = r"(?:;|&&|\|\||\||&|\n|%0a|\$\{IFS\}|`|\$\()"
+            m = re.search(sep + r"\s*echo (\w+)", value)
             if m:
                 return _HTTPResponse(status=200, body=f"out: {m.group(1)}")
             # Status flips on separators (so phase 1 marks candidate).

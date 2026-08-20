@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class ConfirmationCapability(StrEnum):
@@ -45,6 +45,49 @@ class ConfirmationCapability(StrEnum):
     NOT_IMPLEMENTED = "not_implemented"
 
 
+class ControlArm(BaseModel):
+    """What this class's oracle already does to rule out confirming on noise.
+
+    The never-sent control is declared at CLASS granularity
+    (:data:`~clinkz.agents._control_arm.MARKER_ORACLE_CLASSES`), because that is
+    the granularity at which "this oracle matches a string in a body" is true.
+    One class breaks that: :meth:`~clinkz.agents.exploit.ExploitAgent._test_sqli`
+    confirms on five different channels, four of which are marker matches and one
+    of which — ``auth_bypass`` — is a three-arm differential that DISPATCHES its
+    own control and requires it to refuse.
+
+    A consumer cannot infer that from the class name, and it must not infer it
+    from the indicator name either: ``_test_nosqli`` has an ``auth_bypass``
+    channel too, and that one compares the probe against a benign baseline with
+    no shape-matched contradiction — the same word, a different oracle. So the
+    producer declares which of ITS OWN channels carry their own dispatched arm,
+    and the consumers read the declaration.
+
+    Attributes:
+        self_controlled_indicators: ``indicator_type`` values this class confirms
+            on whose oracle dispatches its own control arm and refuses on it.
+            Empty means the class-level rule applies unchanged — the safe
+            direction, so a class that forgets to declare loses nothing.
+        reason: Why those channels need no separate never-sent arm. Required
+            whenever ``self_controlled_indicators`` is non-empty, and rendered
+            into the re-grade output so the exemption is auditable rather than
+            asserted.
+    """
+
+    self_controlled_indicators: tuple[str, ...] = ()
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def _reason_required(self) -> ControlArm:
+        """An exemption with no stated reason is an exemption nobody reviewed."""
+        if self.self_controlled_indicators and not self.reason.strip():
+            raise ValueError(
+                "ControlArm.self_controlled_indicators requires a reason — a channel "
+                "excused from the never-sent control states why it needs no separate arm"
+            )
+        return self
+
+
 class VulnClass(BaseModel):
     """One vulnerability class as a client sees it.
 
@@ -54,6 +97,9 @@ class VulnClass(BaseModel):
         test_method: The Exploit Agent method that implements it, or ``""``.
         label: Human name for the report.
         capability: What the engine can prove.
+        control_arm: Which of this class's own confirming channels dispatch their
+            own control arm, so a consumer never has to guess it from the class
+            name or the indicator name. See :class:`ControlArm`.
         limitation: Why the class is limited, when it is. Rendered verbatim in
             the report's "what was NOT tested" section — so it has to read as a
             sentence, not a code comment.
@@ -70,6 +116,7 @@ class VulnClass(BaseModel):
     test_method: str
     label: str
     capability: ConfirmationCapability
+    control_arm: ControlArm = ControlArm()
     limitation: str = ""
     title_tokens: tuple[str, ...] = ()
     remediation: str = ""
@@ -85,6 +132,18 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
         label="SQL Injection",
         capability=_C.SERVER_SIDE,
         title_tokens=("sql injection",),
+        control_arm=ControlArm(
+            self_controlled_indicators=("auth_bypass",),
+            reason=(
+                "the authentication-bypass channel is a three-arm differential: the "
+                "tautology must return an auth artifact, a shape-matched contradiction "
+                "one character apart must NOT, and an ordinary credential attempt must "
+                "not either. Both refusing arms are DISPATCHED, so the property the "
+                "never-sent control establishes — the same oracle says no to a probe "
+                "that exploits nothing — is established by the oracle itself. The other "
+                "four channels are marker matches and are bound by the rule"
+            ),
+        ),
         remediation=(
             "Use parameterised queries / prepared statements for every database call; never build "
             "SQL by concatenating request data. Where a dynamic identifier is genuinely required, "

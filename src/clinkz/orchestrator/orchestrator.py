@@ -273,6 +273,7 @@ class OrchestratorAgent:
         db_path: Path | str | None = None,
         provider: str | None = None,
         credentials: CredentialSet | None = None,
+        spend_ledger: SpendLedger | None = None,
     ) -> None:
         if llm is not None:
             self._llm = llm
@@ -321,12 +322,22 @@ class OrchestratorAgent:
         self._degradation: DegradationRegister | None = None
         self._provider_preflight: ProviderPreflight | None = None
         #: Set by the CLI before ``run()`` when the operator declared caps.
-        self._spend_ledger: SpendLedger | None = None
+        # The operator's LLM budget, assembled and validated by the CLI. Passed
+        # IN rather than rebuilt here, because the CLI built one, printed the
+        # bounds line from it, and then dropped it: ``run()`` fell back to
+        # ``SpendLedger()`` with ``token_cap=0``, so ``--token-cap`` and
+        # ``--spend-cap-usd`` were enforced on no call in any engagement. The
+        # report was the only honest party — it recorded ``token_cap: null``
+        # about the ledger that actually ran, which is exactly what happened.
+        self._spend_ledger: SpendLedger | None = spend_ledger
         self._scope_refusals: ScopeRefusalLog | None = None
         # The composition view of every CONFIRMED chain the exploit phase proved.
         # Carried to the report so it can render the links; the chains themselves
         # are ordinary findings and are counted there, never here.
         self._confirmed_chains: list[dict[str, Any]] = []
+        # What the P7 client-side oracle did this run. Empty until the exploit
+        # phase reports it, and empty on a direct invocation that never had one.
+        self._client_oracle: dict[str, Any] = {}
         # What happened to the gray-box source tree, when one was supplied.
         # Empty for a black-box engagement (nothing was asked for, so there is
         # nothing to report). Populated the moment ``--source`` is present, on
@@ -738,6 +749,12 @@ class OrchestratorAgent:
                         len(self._confirmed_chains),
                     )
 
+                # What the client-side execution oracle DID. Carried so the
+                # report can distinguish "this engine has no client-side oracle"
+                # from "the oracle ran and did not witness execution" — the
+                # second is the product working, and it was filed as the first.
+                self._client_oracle = dict(exploit_result.get("client_oracle") or {})
+
                 # =============================================================
                 # PHASE 3: REPORT (sequential)
                 # =============================================================
@@ -791,6 +808,9 @@ class OrchestratorAgent:
                         # through the same chokepoint — so this renders the
                         # composition and is never counted again.
                         "confirmed_chains": self._confirmed_chains,
+                        # Whether a client-side oracle was resolved, how often it
+                        # ran, and how often it witnessed execution.
+                        "client_oracle": self._client_oracle,
                     },
                     honor_halt=False,
                 )

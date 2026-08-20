@@ -211,13 +211,24 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   `PentestReport` that the Markdown renderer reads. Markdown used to render from
   the live report and be string-scrubbed afterwards, by which point the key is
   gone; that also let the shape matcher absorb the renderer's own punctuation,
-  so the two documents reported different fingerprints for one secret. Client-ready header (authorization record verbatim, window,
+  so the two documents reported different fingerprints for one secret.
+  Client-ready header (authorization record verbatim, window,
   in-scope AND out-of-scope, authentication proof, testing conduct), remediation
   attached per class from `models/vuln_classes.py`, and a generated **"What was
   NOT tested"** section (excluded hosts, unauthorized techniques, classes with no
   client-side oracle / no methodology, safety-rail refusals, any halt) — built
-  from the registry and the run's own action log so it cannot drift. Findings and
-  **research-leads are separate types in separate fields**: `CrossServiceResearchLead` (unproven A→B chains),
+  from the registry and the run's own action log so it cannot drift. **"No
+  oracle exists" and "the oracle ran and said no" are separate categories**
+  (`no_client_side_oracle` / `client_oracle_found_nothing`), chosen from what P7
+  actually did this run (`ExploitResult.client_oracle`): the first
+  non-benchmark run filed three classes as having no client-side oracle while
+  P7 executed 40 times and correctly refused every candidate — the product's
+  best behaviour, reported as a gap in the product. **The LLM budget is
+  enforced only because the CLI now HANDS its `SpendLedger` to the
+  orchestrator**; it used to build one, print the pre-dispatch bounds line from
+  it and drop it, so `--token-cap` bound nothing and `token_cap: null` was the
+  honest half of that pair.
+  Findings and **research-leads are separate types in separate fields**: `CrossServiceResearchLead` (unproven A→B chains),
   `UnprovenExploitLead` (single-service, effect not witnessed) and
   `ChainResearchLead` (a composition the decoy control did not discriminate)
   render in their own UNCONFIRMED sections and are never counted in the totals. A
@@ -452,6 +463,9 @@ src/clinkz/
 │                     #   with the evidence — offline-testable),
 │                     #   _auth_bypass (THE one vocabulary for "did this response log us
 │                     #   in?" — artifact reader + the three-arm differential),
+│                     #   _control_arm (the never-sent control + attribution + WHICH
+│                     #   arm produced a status: what an oracle must clear before it
+│                     #   may confirm — offline-testable),
 │                     #   _archive/ (built, registered, invoked zero times: critic)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
@@ -496,7 +510,9 @@ src/clinkz/
 │                     #   degradation gate), plan_alarms.py (what the task cap
 │                     #   DROPPED, and separately whether the ORDERING held)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
-                      #   vuln_classes, target, recon, scan, methodology, research,
+                      #   vuln_classes (+ ControlArm: which of a class's OWN channels
+                      #   dispatch their own control), target, recon, scan, methodology,
+                      #   research,
                       #   finding, report
 docker/  scripts/  tests/  docs/
 requirements-ci.lock  # the FULL resolved dependency set CI installs (85 packages),
@@ -537,6 +553,13 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
 - `python -m clinkz tool-invoke <engagement_id> <seq> [--replay]` — inspect/replay
   one tool invocation.
 - `python -m clinkz step-replay <engagement_id> <step_id>` — re-run one agent step.
+- `python scripts/regrade_stored_bundles.py` — **offline** re-grade of every
+  stored bundle's confirmed findings against the never-sent control and the
+  attribution check. Sends nothing. Reports SURVIVES / **NO_ARM** / REFUSED per
+  class, holding "the question was never asked" apart from both answers: a
+  stored bundle cannot dispatch a control, and a finding that was correct
+  because the target was genuinely vulnerable but would fail its own control is
+  a phantom that landed on a real bug.
 - `python -m clinkz corpus-replay [--rebuild]` — **offline** parser regression gate:
   re-parses every recorded `tool_invocations/` stdout and diffs against
   `tests/fixtures/corpus_replay_baseline.json`; exits non-zero on drift. Sends
@@ -686,6 +709,80 @@ LESSONS #17).
   never a finding. **A finding that confirms identically across every level of a
   security-graded control is a phantom by construction** — see
   `docs/methodology/dvwa-per-level-honesty.md`.
+- **No marker oracle confirms without a dispatched control arm that REFUSED**
+  (`agents/_control_arm.py`, **detail →
+  [`docs/methodology/never-sent-control.md`](docs/methodology/never-sent-control.md)**).
+  Ten classes confirm by finding a string in a body, which is proof only while
+  the string has one route in; the first non-benchmark run shipped 14 phantoms
+  from two second routes (a Next.js RSC payload echoing the query string
+  percent-encoded, and `<span>Linux</span>` matching the bare-word `uname`
+  regex). The control is the confirming request with the exploitation primitive
+  removed and the marker re-minted, graded by the SAME phase-5 oracle — and it
+  must **round-trip like the payload**, because a bare decoy is
+  encoding-invariant, refuses everywhere, and would have passed that run
+  cleanly. `MARKER_ORACLE_CLASSES` / `CONTROL_EXEMPT_CLASSES` partition every
+  dispatchable class with a stated reason; an unclassified one is a red build.
+  Enforced at `_persist_finding`, read only from fully-structured evidence so a
+  page echoing `never_sent_control=refused` cannot license itself.
+- **A control arm's outcome is the PROOF, so a consumer must know WHICH arm it
+  read.** "Marker-bound" is declared per class, and `_test_sqli` confirms on five
+  channels: four are marker matches and `auth_bypass` is a three-arm differential
+  whose contradiction and benign arms are DISPATCHED and must refuse. Neither
+  string carries that fact — `_test_nosqli` has an `auth_bypass` channel with no
+  shape-matched contradiction at all — so the PRODUCER declares it
+  (`VulnClass.control_arm`, an unreasoned exemption refused at construction) and
+  every consumer reads the declaration. Two read it wrong on the same finding,
+  the juice-shop authentication bypass: the offline re-grade filed a CRITICAL as
+  `NO_ARM`, and `_fp_ground_error_page` would have demoted it for the two
+  `status=401`s that ARE its control refusing — spared only because `re.search`
+  stopped at the tautology's `200` first, which is an ordering, not a rule.
+  Attributing each status to an arm fixed those two shapes and was the wrong
+  depth: the ground was reading the `Response:` entry, which is where the **host
+  under test's** bytes land, so a target serving `status=500`, `stack trace` or
+  `verified=False` suppressed the finding proving its own vulnerability — and
+  the arm-aware reader made that easier, scanning every match per entry where
+  `re.search` stopped at the first. **A guard reads only what the engine
+  declared** (`response_status`, `reflection_in_error_block`, `verified`),
+  through the fully-structured reader a response body cannot satisfy. Same rule,
+  same reason, as `_evidence_strength`. No producer declares those two fields
+  yet, so that ground fires on nothing today — measured as costing nothing: it
+  fired 0/90 on stored bundles and the 14 portfolio phantoms die on the control
+  arm and attribution instead. The **live gate does not relax**: the engine can
+  dispatch a never-sent arm for the `auth_bypass` channel and does, so
+  `_persist_finding` still demands one; a stored bundle can dispatch nothing,
+  which is the whole asymmetry.
+- **An observation must be attributable to the payload that produced it.** A
+  confirmation citing a command-output channel the payload never invoked
+  (`;echo <canary>` does not print `uname` output), or minting a marker and then
+  citing something else, refutes itself in its own evidence — which shipped
+  verbatim seven times.
+- **A deterministic guard whose value is that it needs no model is never gated by
+  one.** All **eight** grounds run unconditionally at `_persist_finding` over
+  every finding, from one declaration (`_deterministic_grounds` — probe plus the
+  lead reason it produces, read by the emission gate and the FP cross-check
+  alike). Four of them used to be reachable only *through* the cross-check, i.e.
+  only once a model had nominated the finding; on the portfolio run that check
+  returned **no opinion at all** and every ground behind it went unconsulted.
+  Two consequences are structural, not incidental: an LLM can no longer suppress
+  anything the code did not already suppress (a finding reaching the cross-check
+  carries no contradiction by construction, and one that does is logged as a
+  **bypassed gate**), and every ground's `why_unconfirmed` must be in
+  `UNPROVEN_WHY_UNCONFIRMED` — an unregistered reason is normalised to
+  `not_instrumentable` ("we lack the access"), which is not what happened and is
+  the only part of a lead an operator can act on.
+- **Silence from a detection path is not evidence of cleanliness.** The
+  cross-check and the emission gate are ledger components. A review that ANSWERED
+  and named nothing is `correctly_empty` — the fifth fact, not an alarm; a review
+  that never ran is `ok=False` ⇒ `ALL_FAILED`, and `ExploitAnalysis.cross_check_ran`
+  (default `False`) carries the distinction to every consumer. What hid it was an
+  asymmetry between two siblings: `ProviderPolicyError` was hardened against the
+  broad-`except` pattern and `DecisionPathFallbackError` was not, so the refusal
+  on the SUPPRESS path became an empty suspect list — the exact shape of a clean
+  review. **Both are now `BaseException`**; they differ in *who* catches them, not
+  in whether anyone can. The second is caught **explicitly, by name**, at the two
+  sites where degrading is correct — an explicit handler is somewhere to log,
+  record and disclose the loss; a broad one reaches none of those, and a new
+  EMIT/SUPPRESS call site that forgets one now fails loudly.
 - **Suppress, never annotate** — a finding the engagement itself believes is a
   false positive is **demoted** (removed from `findings`, deleted from the store,
   re-recorded as an `UnprovenExploitLead` with `why_unconfirmed`), never emitted

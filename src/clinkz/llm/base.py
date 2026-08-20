@@ -98,33 +98,52 @@ class ProviderPolicyError(BaseException):
     """
 
 
-class DecisionPathFallbackError(LLMError):
+class DecisionPathFallbackError(BaseException):
     """A call whose answer EMITS or SUPPRESSES a finding may not be served by
-    a fallback provider, and the caller should degrade rather than die.
+    a fallback provider, and only the CALL degrades — never the run.
 
     The sibling of :class:`ProviderPolicyError`, and the difference between them
     is the intended outcome rather than the severity.
 
     ``baseline`` mode wants the **run** to fail: a recorded baseline served
     partly by two models measures nothing, so there is no partial result worth
-    keeping and ``ProviderPolicyError`` is uncatchable on purpose.
+    keeping. ``client`` mode wants only the **call** to fail — the engagement
+    should still complete, which is the whole reason client mode degrades.
 
-    ``client`` mode wants only the **call** to fail. The engagement should still
-    complete — that is the whole reason client mode degrades — and the callers
-    on these two paths already have exactly the right handling for a model they
-    cannot reach:
+    **Both inherit BaseException, and that is what changed.** This class used to
+    be an :class:`LLMError`, on the reasoning that its two callers already
+    degrade correctly under an ordinary ``except Exception`` and therefore
+    *should* catch it. They do degrade correctly. What they did not do is
+    degrade **visibly**: on the portfolio engagement the false-positive
+    cross-check's Anthropic call failed, this refusal was raised in its place,
+    and ``except Exception`` turned it into an empty suspect list. An empty
+    suspect list is what the cross-check returns when it looked and found
+    nothing wrong. Fourteen phantom findings shipped under a signal that said
+    the reviewer had cleared them.
 
-    * ``ExploitAgent._llm_analyze_results`` catches, logs, and returns an empty
-      analysis: no false-positive suspects, so **nothing is demoted**.
-    * ``ExploitAgent._llm_analyze`` catches and returns ``""``, leaving the
-      methodology on its deterministic build — where the invariants put the
-      verdict anyway.
+    So the two siblings now share the mechanism and differ only in who catches
+    them. ``ProviderPolicyError`` is caught by nobody. This one is caught
+    **explicitly**, by name, at the two sites where degrading is correct — and
+    an explicit handler is a place to log it, record it on the contribution
+    ledger, and put it in the deliverable. A broad ``except Exception`` reaches
+    neither, which is the entire failure being fixed: the handler that hid this
+    was not wrong to degrade, it was wrong to be silent, and a handler nobody
+    wrote deliberately cannot be anything else.
 
-    Both are the conservative direction, and both are reached by an ordinary
-    ``except Exception``. So this one is an :class:`LLMError` and is meant to be
-    caught. It is raised from ``_assert_fallback_permitted``, i.e. *before* the
-    request leaves, so nothing is bought and nothing is stamped: a degradation
-    the run did not take must not appear in the register.
+    The asymmetry that produced the incident is gone: one sibling was hardened
+    against the broad-except pattern and the other was left inside it, so the
+    refusal that mattered most — the one on the SUPPRESS path — was the one that
+    vanished.
+
+    A new EMIT/SUPPRESS call site that forgets to handle this now fails loudly
+    instead of quietly returning the conservative-looking empty answer. That is
+    the safe direction for the same reason ``ProviderPolicyError`` is: the
+    conservative-looking answer and the real one are indistinguishable
+    downstream.
+
+    It is raised from ``_assert_fallback_permitted``, i.e. *before* the request
+    leaves, so nothing is bought and nothing is stamped: a degradation the run
+    did not take must not appear in the register.
 
     It does not rotate the chain further. Being raised outside the loop's
     ``try`` in ``_dispatch``, it propagates straight to the caller — every

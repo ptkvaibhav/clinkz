@@ -367,6 +367,7 @@ class ReportAgent(BaseAgent):
                 authentication=authentication,
                 graybox_source=dict(input_data.get("graybox_source") or {}),
                 resumed_from=str(input_data.get("resumed_from") or ""),
+                client_oracle=dict(input_data.get("client_oracle") or {}),
             ),
             safety_summary=safety,
             authentication=authentication,
@@ -457,6 +458,7 @@ class ReportAgent(BaseAgent):
         authentication: dict[str, Any],
         graybox_source: dict[str, Any] | None = None,
         resumed_from: str = "",
+        client_oracle: dict[str, Any] | None = None,
     ) -> list[NotTestedItem]:
         """Assemble the honest-limits section from the run's own artifacts.
 
@@ -476,6 +478,12 @@ class ReportAgent(BaseAgent):
                 supplied. Empty on a black-box engagement.
             resumed_from: The engagement this deliverable was regenerated from,
                 when ``clinkz scan --resume`` produced it.
+            client_oracle: What the P7 client-side execution oracle did — whether
+                one was resolved, how many times it ran, how many of those
+                witnessed execution. Empty when the exploit phase reported
+                nothing, which is read as "no oracle" (the conservative reading:
+                a run that cannot say what it did did not demonstrate it did
+                anything).
 
         Returns:
             One :class:`NotTestedItem` per limitation, most client-relevant first.
@@ -547,9 +555,41 @@ class ReportAgent(BaseAgent):
                         )
                     )
 
-        # Classes this engine cannot confirm, and classes it does not implement.
+        # Classes whose defining effect happens in a browser. WHICH limitation
+        # applies is a fact about this run, not about the class: an oracle that
+        # was never resolved is an absent capability, and an oracle that ran and
+        # witnessed nothing is an exercised one. Engagement ``d67835f5`` reported
+        # the second as the first — three classes filed under "no client-side
+        # oracle" while P7 executed 40 times, every run returning
+        # ``executed=False`` with its never-injected control silent, i.e. the
+        # oracle refusing seven DOM-XSS candidates exactly as designed. A client
+        # reading that section was told the engine could not look, when it had
+        # looked and found nothing.
+        oracle = client_oracle or {}
+        oracle_runs = int(oracle.get("runs") or 0)
+        oracle_ran = bool(oracle.get("resolved")) and oracle_runs > 0
+        witnessed = int(oracle.get("executions_witnessed") or 0)
         for vuln_class in VULN_CLASSES:
-            if vuln_class.capability is ConfirmationCapability.CLIENT_SIDE_ORACLE_REQUIRED:
+            if vuln_class.capability is not ConfirmationCapability.CLIENT_SIDE_ORACLE_REQUIRED:
+                continue
+            if oracle_ran:
+                items.append(
+                    NotTestedItem(
+                        item=vuln_class.label,
+                        category=NotTestedCategory.CLIENT_ORACLE_FOUND_NOTHING,
+                        reason=(
+                            f"The client-side execution oracle WAS available and ran "
+                            f"{oracle_runs} time(s) this engagement, witnessing execution "
+                            f"{witnessed} time(s). Where a candidate of this class is not "
+                            "among the confirmed findings, it is because the oracle "
+                            "loaded the page in a real browser and no attacker-supplied "
+                            "script ran — not because the engine was unable to look. "
+                            "Candidates that reached the oracle and were refused are "
+                            "recorded as unproven leads with the browser's own verdict."
+                        ),
+                    )
+                )
+            else:
                 items.append(
                     NotTestedItem(
                         item=vuln_class.label,
@@ -1328,7 +1368,9 @@ class ReportAgent(BaseAgent):
                 "reached. Everything this engagement did **not** examine is listed "
                 "here, with the reason. Items under *no client-side oracle* and "
                 "*no methodology* are limitations of this tool and are candidates "
-                "for manual review.",
+                "for manual review. *Examined in a real browser* is not one of "
+                "them: there the oracle ran and witnessed nothing, which is an "
+                "answer rather than a gap.",
                 "",
             ]
         )
@@ -1341,6 +1383,9 @@ class ReportAgent(BaseAgent):
             NotTestedCategory.OUT_OF_SCOPE: "Excluded by the client",
             NotTestedCategory.NOT_PERMITTED: "Techniques not authorized",
             NotTestedCategory.NO_CLIENT_SIDE_ORACLE: ("Not confirmable — no client-side oracle"),
+            NotTestedCategory.CLIENT_ORACLE_FOUND_NOTHING: (
+                "Examined in a real browser — no execution witnessed"
+            ),
             NotTestedCategory.NOT_IMPLEMENTED: "Not confirmable — no methodology",
             NotTestedCategory.DESTRUCTIVE_REFUSED: ("Refused by the production safety rails"),
             NotTestedCategory.ENGAGEMENT_HALTED: "Cut short when the engagement halted",
