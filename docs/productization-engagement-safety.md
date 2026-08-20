@@ -220,6 +220,52 @@ file, line and column, the length and a fingerprint, never the value, not even a
 prefix. A leak report that reproduces the leak is a new artifact with the same
 defect.
 
+#### Every file it does not read is named
+
+A severity table says what the gate does with what it *found*. It said nothing
+about what it never opened, and that is the half every guard here has been
+caught by: the verdict is true about the bytes it read and gets read as a
+statement about the directory.
+
+So the skip list is inverted. `_SKIP_ALLOWED` is an allow-list keyed by suffix,
+each entry carrying the reason that suffix is not read, and anything skipped
+without an entry — an unreadable file, an unparseable or encrypted PDF, a file
+over the size cap — is recorded as a `SkippedFile` with an empty reason and
+makes the report **not clean**. The counts sit in `summary_line` next to the
+scanned ones, because a coverage number that omits what it declined to open is
+the same defect one level down.
+
+The allow reasons are written as **disclosures, not absolutions**:
+
+| Suffix | Reason |
+|---|---|
+| `.png` `.jpg` `.jpeg` `.gif` `.ico` | raster image; carries no extractable text |
+| `.db` `.sqlite` | SQLite; no reader here, and its TEXT columns are NOT covered by this verdict |
+| `.zip` `.gz` `.tar` | archive; members are NOT covered by this verdict |
+
+The last two rows are real holes, stated rather than dismissed — a SQLite `TEXT`
+column and an archive member are both plaintext on disk. Run over a real bundle,
+the gate reports `20 skipped (allowed)` and names them: twenty state databases
+that had been sitting inside a CLEAN verdict without being read.
+
+#### A PDF is read through two channels
+
+`.pdf` used to be in the skip list, so every PDF in a bundle was certified
+without being opened. Removing it is not enough on its own, because a PDF holds
+text in two places and **each is blind to what the other catches**:
+
+* **page content streams** are Flate-compressed, so a byte scan of the file
+  finds nothing however carefully the token is written;
+* the **document information dictionary** (`/Info` — `/Title`, `/Author`,
+  `/Subject`, and any custom key) never appears in page text.
+
+Measured, not assumed: with a token planted in the page body it is absent from
+the file's raw bytes, and with one planted in `/Title` it is absent from every
+page's extracted text. Both channels are pulled through `pypdf` into a single
+blob with `[metadata]` and `[page N]` markers, so a reported line number still
+tells an operator which channel to look in. A PDF that cannot be parsed is an
+unexplained skip, not a clean file.
+
 The verdict is written to `outputs/<id>/artifact_scan.json` — the last file
 written, and excluded from its own scan so a re-run is idempotent. Re-run it by
 hand over any bundle, including an older one, with:

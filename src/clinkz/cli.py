@@ -1114,14 +1114,7 @@ def artifact_scan(
 
     report = scan_artifact_tree(root, engagement_id=engagement_id)
     if not bundle_only:
-        companions = scan_companion_artifacts(outputs_root, bundle_root=root)
-        report.companion_root = companions.root
-        report.companion_files_scanned = companions.files_scanned
-        report.bytes_scanned += companions.bytes_scanned
-        report.files_truncated.extend(companions.files_truncated)
-        report.findings.extend(companions.findings)
-        report.suspicions.extend(companions.suspicions)
-        report.errors.extend(companions.errors)
+        report.absorb_companion(scan_companion_artifacts(outputs_root, bundle_root=root))
 
     if raw:
         typer.echo(report.model_dump_json(indent=2))

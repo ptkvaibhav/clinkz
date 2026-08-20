@@ -205,7 +205,13 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   report — and an LLM reviewer after those could only overrule them, which the
   invariants forbid in that direction.
 - **Report** — zero LLM calls; emits JSON + a Markdown summary from the state
-  store in <30 s. Client-ready header (authorization record verbatim, window,
+  store in <30 s. **Both documents render from the SAME redacted structure** —
+  the dump goes through `redact_structure` (key-aware, so a `Set-Cookie` value
+  is removed on the strength of its key) and is validated back into a
+  `PentestReport` that the Markdown renderer reads. Markdown used to render from
+  the live report and be string-scrubbed afterwards, by which point the key is
+  gone; that also let the shape matcher absorb the renderer's own punctuation,
+  so the two documents reported different fingerprints for one secret. Client-ready header (authorization record verbatim, window,
   in-scope AND out-of-scope, authentication proof, testing conduct), remediation
   attached per class from `models/vuln_classes.py`, and a generated **"What was
   NOT tested"** section (excluded hosts, unauthorized techniques, classes with no
@@ -285,6 +291,26 @@ detail → `docs/productization-engagement-safety.md`.**
   is somebody else's bundle and is never swept in. Every `summary_line` states
   its coverage — a CLEAN that does not say what it looked at is how this
   survived.
+- **Every file the gate does not read is NAMED, and an unexplained one FAILS.**
+  A silently skipped file is the mechanism behind every guard here that
+  certified a region it never looked at. `_SKIP_ALLOWED` is an allow-list keyed
+  by suffix, each entry carrying *the reason that suffix is not read*, and
+  anything skipped without one — unreadable, unparseable, over the size cap — is
+  a `SkippedFile` with an empty reason that makes `clean` False. Counts sit in
+  `summary_line` beside the scanned ones. The reasons are **disclosures, not
+  absolutions**: `.db` is skipped because there is no SQLite reader here, not
+  because a SQLite file is safe — its TEXT columns are plaintext in page data,
+  and the reason string says so. Over a real bundle this surfaced 20 state
+  databases that had been inside a CLEAN verdict unread.
+- **A PDF is read through TWO channels, because each is blind to the other.**
+  Page text is in Flate-compressed content streams (a byte scan of the file
+  finds nothing); document metadata is in a separate `/Info` dictionary that
+  never appears in page text. Measured both ways, not assumed. Both are pulled
+  via `pypdf` — the only dependency declared here that anything imports — into
+  one blob with `[metadata]` / `[page N]` markers so a line number still names
+  the channel. `.pdf` used to sit in the skip list, so every PDF was certified
+  unopened; a PDF that cannot be parsed is now an unexplained skip, not a clean
+  file.
 - **The engine's redaction reaches only where the engine writes.** A `scripts/`
   driver tees the HTTP chokepoint and serialises the exchanges itself, so it
   wrote past every writer: a complete RS256 session JWT plus the lab password in

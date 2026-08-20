@@ -29,8 +29,26 @@ dependencies = [
     "rich==15.0.0",
     "aiohttp>=3.13.4",
     "aiosqlite>=0.20.0",
+    # Both of these are declared for a report renderer that does not exist. They
+    # are left in place deliberately: removing a dependency is a separate
+    # decision from noticing it is unused, and the audit that found them
+    # (docs/analysis/dependencies.md section 6) covers the whole set at once.
     "weasyprint>=62.0",
     "jinja2>=3.1.0",
+    # Read by the DISCLOSURE GATE, not by any renderer, and the only dependency
+    # here whose consumer is in this repository today
+    # (engagement/artifact_scan.py). A PDF's page text lives in Flate-compressed
+    # content streams and its metadata in a separate /Info dictionary, so a byte
+    # scan of the file sees NEITHER. Without a real extractor, letting .pdf into
+    # the scanned set would have created a region the gate reports CLEAN over by
+    # construction — which is the defect the gate exists to prevent, reintroduced
+    # by the fix for it.
+    #
+    # Floored at 6.9.1, not the 5.x that would satisfy the import: 6.8.0 carries
+    # the 7 advisories tabulated in docs/analysis/dependencies.md, and adding a
+    # known-vulnerable package in the same change that reports pillow's five is
+    # not a position worth defending.
+    "pypdf>=6.9.1",
     "python-dotenv>=1.0.0",
     # Upper-bounded deliberately: mcp 2.0.0 moved the server-side FastMCP out of
     # the package, so `mcp.server.fastmcp` (which tests/fixtures/mcp_server_script.py

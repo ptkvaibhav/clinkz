@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -11,7 +13,7 @@ import pytest
 from clinkz.agents.report import ReportAgent
 from clinkz.engagement.dryrun import build_dry_run_plan, render_dry_run
 from clinkz.models.engagement import CredentialSet, EngagementWindow, RoleCredential
-from clinkz.models.report import NotTestedCategory
+from clinkz.models.report import NotTestedCategory, PentestReport
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.safety.action_log import ActionLog
 from tests.authorization_fixtures import TEST_AUTHORIZATION
@@ -391,3 +393,106 @@ def test_an_unprobeable_client_oracle_reports_the_pessimistic_note(
         "clinkz.browser.oracle.PlaywrightExecutionOracle.native_availability", _boom
     )
     assert dryrun_module._client_oracle_present() is False
+
+
+# ---------------------------------------------------------------------------
+# Both documents render from the same redacted structure
+# ---------------------------------------------------------------------------
+
+
+def _fingerprint(text: str) -> str:
+    """The salted hash a redaction placeholder reports, or ``""``."""
+    match = re.search(r"sha256=([0-9a-f]+)", text)
+    return match.group(1) if match else ""
+
+
+async def test_the_two_documents_agree_on_the_same_secret(tmp_path: Path) -> None:
+    """A fingerprint that differs between report.json and report.md is broken.
+
+    The fingerprint exists so occurrences of one secret CORRELATE inside a
+    bundle while replaying nowhere. It failed at exactly that between the two
+    primary documents, and the cause is the thing this test pins: JSON was built
+    by redacting the STRUCTURE, Markdown by rendering the live report and
+    string-scrubbing the result. By then the renderer's own punctuation is
+    adjacent to the value, so the shape matcher took the trailing `)` of
+    ``**HALTED** (...)`` to be part of the cookie and hashed something the JSON
+    document never saw.
+
+    The swallowed bracket is cosmetic. The mechanism is not: the same adjacency
+    decides whether a shape matches AT ALL, and a redactor whose input is a
+    formatted document is reading a string its own renderer composed.
+    """
+    secret = "sid=9f3a7c21e4bb48d0a15c6e77f2013b8e"
+    report, markdown = await _render(
+        _scope(),
+        tmp_path,
+        safety={
+            "halted": True,
+            "halt_reason": f"set-cookie: {secret}",
+            "halt_detail": "operator aborted",
+        },
+    )
+
+    assert secret not in markdown, "the secret itself reached the client's document"
+    halt_line = next(line for line in markdown.splitlines() if "ENGAGEMENT HALTED" in line)
+    assert _fingerprint(halt_line), halt_line
+    assert _fingerprint(halt_line) == _fingerprint(report["safety_summary"]["halt_reason"]), (
+        "report.md and report.json report different fingerprints for one secret"
+    )
+    assert halt_line.rstrip().endswith("operator aborted"), (
+        "the renderer's own punctuation was absorbed into the redacted span"
+    )
+
+
+async def test_markdown_cannot_reach_a_value_the_json_path_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The structural guarantee, independent of what any renderer prints today.
+
+    ``redact_structure`` is KEY-AWARE: a ``Set-Cookie`` value is removed on the
+    strength of its key, which is the only thing identifying it — the target
+    chose the value, so no string rule can recognise it. A renderer that reads
+    from the live report can print such a value, and the string pass afterwards
+    has no key left to go on.
+
+    No renderer emits one TODAY, so this is not a leak that can be demonstrated
+    end to end; it is gated by the current shape of the renderer rather than by
+    anything structural. This asserts the structural half instead: whatever the
+    renderer is handed carries no value the JSON document dropped. A new section
+    printing a header dict cannot reopen it.
+    """
+    captured: list[PentestReport] = []
+    original = ReportAgent._render_markdown
+
+    def _capture(report: PentestReport, findings: list) -> str:
+        captured.append(report)
+        return original(report, findings)
+
+    monkeypatch.setattr(ReportAgent, "_render_markdown", staticmethod(_capture))
+
+    # A session cookie the TARGET minted: no vendor prefix, no JWT structure,
+    # nothing a shape rule can key on. Only the header it arrived under says
+    # what it is.
+    secret = "8f14e45fceea167a5a36dedd4bea2543"
+    await _render(
+        _scope(),
+        tmp_path,
+        authentication={
+            "authenticated": True,
+            "mechanism": "form login",
+            "roles": ["admin"],
+            "assertion": {
+                "discriminator": "session_marker",
+                "set-cookie": f"JSESSIONID={secret}; Path=/; HttpOnly",
+            },
+        },
+    )
+
+    assert captured, "the markdown renderer was never called"
+    rendered_from = json.dumps(captured[0].model_dump(mode="json"))
+    assert secret not in rendered_from, (
+        "the markdown renderer was handed a value key-aware redaction had removed"
+    )
+    # The NAME survives on purpose — a cookie name is evidence, its value is the
+    # session — so this is not passing because the whole field was dropped.
+    assert "JSESSIONID" in rendered_from
