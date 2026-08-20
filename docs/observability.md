@@ -284,3 +284,67 @@ directly invoked methodology, a replay or a driver installs no register, every
 hook no-ops, and the black-box floor is byte-identical. The per-class endpoint
 list is capped at 20; **the counts stay exact past the cap**, because a truncated
 record of a truncation is the failure the module exists to prevent.
+
+### Two bounds, one rule
+
+The plan cap is not the only bound that decides coverage, and it is not the
+first. The Scan agent's endpoint enrichment opens a fixed number of discovered
+URLs (`max_visits = 80`), and everything the plan cap can rank has already
+survived that budget — a URL never opened yields no endpoint, no parameter and no
+form, so it never becomes a candidate `(class, endpoint)` pair at all.
+
+That bound had the exact defect `plan_alarms.py` was built to fix. On the first
+non-benchmark engagement:
+
+| stage | count |
+| --- | ---: |
+| URLs emitted by the crawler | 3,070 |
+| after dedup + `is_state_changing_url` | 212 candidates |
+| opened by enrichment (`max_visits = 80`) | 80 |
+| **never enqueued** | **132 (62%)** |
+
+Loud at INFO in the run log; absent from `report.json`. `CrawlBudgetTruncation`
+records it on the same register and the Report agent renders a **Crawl
+coverage** section from it, on a clean run too.
+
+Three things are stated apart because they answer different questions:
+
+* **the total** — how much of the discovered surface was never examined;
+* **`opened_by_host` beside `dropped_by_host`** — a sum cannot distinguish "this
+  host was covered thinly" from "this host was never opened at all", and the
+  second is a materially different claim to put in front of a client;
+* **`first_omitted`** — the highest-priority URL the budget did not reach, so a
+  reader can check the ordering (`crawl_visit_priority`) rather than take it on
+  trust.
+
+It also qualifies a number elsewhere in the report. The scope-refusal log counts
+requests that were **refused**, and this budget decides which candidates ever
+become requests, so "75 refusals across 3 hosts" describes the opened slice of
+the out-of-scope surface rather than the surface. The *Crawl coverage* section
+says so explicitly rather than leaving the refusal tally to imply more than it
+knows.
+
+### One href is one candidate
+
+14 of those 212 candidates (6.6%) were the same links wearing an escape:
+
+```
+https://github.com/ptkvaibhav
+https://github.com/ptkvaibhav%5C
+https://github.com/ptkvaibhav%5C%5C%5C
+```
+
+`%5C` is a URL-encoded backslash. A React Server Component flight payload carries
+`"href":"/x"` JSON-escaped inside a `<script>`, so a harvester that never
+unescapes reads the escape as part of the path — and a nesting level adds
+another. Three spellings, three of eighty visits, one link.
+
+`_url_shape.crawl_dedup_key` strips the fragment, a trailing slash and any
+trailing escape artifact. It is a **dedup key, not a rewrite**: the caller keeps
+the smallest spelling in the group rather than fetching a URL the function
+invented. The clean URL is a strict prefix of every mangled one, so "smallest"
+picks it whenever it was discovered; when only the mangled spelling exists, that
+is what gets opened, unchanged. A path segment genuinely ending in an encoded
+backslash is rare but legal, and requesting one directory up from it would be a
+request the target never offered.
+

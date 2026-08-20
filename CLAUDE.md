@@ -632,6 +632,22 @@ LESSONS #17).
   `_test_javascript_attacks` — and a mis-guessed skill reports zero coverage,
   which reads exactly like a class that never ran.
   **Detail → [`docs/observability.md`](docs/observability.md).**
+- **The crawl's enrichment budget is that same bound, one layer earlier**
+  (`CrawlBudgetTruncation`). It decides which discovered URLs ever BECOME
+  endpoints, so everything the plan cap can see has already passed through it —
+  and on the first non-benchmark run 3,070 crawled URLs became 212 candidates of
+  which the budget opened **80**, leaving 132 (62%) never enqueued at INFO in the
+  run log and nowhere in `report.json`. Rendered as a *Crawl coverage* section
+  on a clean run too, `opened_by_host` beside `dropped_by_host` because a total
+  cannot say whether an entire host went unlooked-at. It also **qualifies the
+  refusal tally**: refusals count requests that were REFUSED, and a candidate the
+  budget never opened never became a request, so a refusal count describes the
+  opened slice of the out-of-scope surface. **One href is one candidate** —
+  `crawl_dedup_key` strips a trailing `%5C`, the escape artifact left by reading
+  a URL out of a JSON-escaped payload, which arrived as three spellings and spent
+  three visits. It is a dedup KEY, not a rewrite: the smallest spelling in the
+  group is kept, which is the clean URL when it was discovered and the mangled
+  one unchanged when it was not.
 - **Crawl-safety / session hygiene** — `is_state_changing_url` is the chokepoint
   guarding every crawl visit, endpoint emission, and exploit-plan entry; its
   submission counterpart `is_destructive_form_submission` guards every form
