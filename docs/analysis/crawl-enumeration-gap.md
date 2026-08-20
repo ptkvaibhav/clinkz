@@ -112,11 +112,22 @@ carrying the real risk, and it is untested against a flight payload.
 
 ## What a fix would have to do
 
-Recorded, not implemented:
-
-1. render the crawl budget's drop in `report.json` the way the plan cap is —
-   candidates, opened, dropped, first omitted, per host;
-2. unescape before harvesting, and normalise a trailing `%5C` in `_url_shape`, so
-   one link is one candidate;
+1. ~~render the crawl budget's drop in `report.json` the way the plan cap is —
+   candidates, opened, dropped, first omitted, per host;~~ **done** —
+   `CrawlBudgetTruncation` on the `plan_alarms` register, rendered as a *Crawl
+   coverage* section (on a clean run too), with `opened_by_host` beside
+   `dropped_by_host` so "covered thinly" and "never opened at all" stay
+   distinguishable, and the refusal tally qualified where it is stated.
+2. ~~unescape before harvesting, and normalise a trailing `%5C` in `_url_shape`,
+   so one link is one candidate;~~ **done** — `crawl_dedup_key`. Narrower than
+   this line proposed, and deliberately: it is a dedup KEY rather than an
+   unescape-and-rewrite, so the visit still goes to a URL the crawl actually
+   discovered. The clean spelling is a strict prefix of every mangled one, so
+   keeping the smallest member of a group picks it when it exists and opens the
+   mangled one unchanged when it does not.
 3. give `_extract_links` an RSC/JSON-string source alongside the attribute regex,
    and test it against a real flight payload rather than hand-written HTML.
+   **Still open**, and it is the one carrying the real risk: internal coverage
+   on this target was fine only because katana resolved. Fixing 2 at the dedup
+   layer does not reach it — a route that lives only in the flight payload is
+   invisible to the in-house fallback whether or not its spelling is normalised.

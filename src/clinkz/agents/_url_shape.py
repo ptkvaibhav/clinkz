@@ -166,3 +166,53 @@ def crawl_visit_priority(url: str) -> int:
     if is_api_path(path):
         return 1
     return 2
+
+
+#: Trailing artifacts left by reading a URL out of an ESCAPED payload. A React
+#: Server Component flight payload carries ``"href":"/x"`` JSON-escaped inside a
+#: ``<script>``, so a harvester that never unescapes it reads the escape itself
+#: as part of the path. ``%5C`` is a URL-encoded backslash; a nesting level adds
+#: another, which is why the same link arrives three times::
+#:
+#:     https://github.com/ptkvaibhav
+#:     https://github.com/ptkvaibhav%5C
+#:     https://github.com/ptkvaibhav%5C%5C%5C
+#:
+#: On the portfolio run 14 of 212 crawl candidates (6.6%) were these, and each
+#: one spent a slot of an 80-visit budget that 132 candidates never reached.
+_ESCAPE_ARTIFACT_SUFFIXES: tuple[str, ...] = ("%5c", "\\")
+
+
+def crawl_dedup_key(url: str) -> str:
+    """The identity of *url* as a crawl candidate — one link, one key.
+
+    Strips the fragment, a trailing slash, and any trailing escape artifact
+    (:data:`_ESCAPE_ARTIFACT_SUFFIXES`), so the three spellings above collapse to
+    one candidate instead of consuming three visits.
+
+    This is a **dedup key, not a rewrite**. The caller keeps one of the real
+    URLs it was given rather than fetching a URL this function invented — a path
+    segment genuinely ending in an encoded backslash is rare but legal, and
+    fetching one directory up from it would be a request the target never
+    offered us. When the clean spelling was discovered it is a strict prefix of
+    every mangled one, so keeping the lexicographically smallest member of a
+    group picks it; when only the mangled spelling exists, that is what gets
+    opened, unchanged.
+
+    Args:
+        url: Absolute URL as discovered by the crawl.
+
+    Returns:
+        The dedup key, or ``""`` when nothing is left of the URL.
+    """
+    key = (url or "").split("#", 1)[0].rstrip("/")
+    lowered = key.lower()
+    while True:
+        for suffix in _ESCAPE_ARTIFACT_SUFFIXES:
+            if lowered.endswith(suffix):
+                key = key[: -len(suffix)]
+                lowered = lowered[: -len(suffix)]
+                break
+        else:
+            break
+    return key.rstrip("/")

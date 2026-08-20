@@ -64,7 +64,7 @@ from clinkz.models.vuln_classes import (
     for_finding,
 )
 from clinkz.observability.ledger import get_active_ledger
-from clinkz.observability.plan_alarms import plan_alarm_summary
+from clinkz.observability.plan_alarms import crawl_budget_summary, plan_alarm_summary
 from clinkz.observability.trace import get_active_trace_writer
 from clinkz.safety.action_log import ActionLog, RefusalTally
 from clinkz.safety.scope_refusals import scope_refusal_summary
@@ -377,6 +377,7 @@ class ReportAgent(BaseAgent):
             scope_refusals=scope_refusal_summary(),
             llm_spend=spend_summary(),
             plan_coverage=plan_alarm_summary(),
+            crawl_coverage=crawl_budget_summary(),
             research_grounding=dict(input_data.get("research_grounding") or {}),
         )
 
@@ -724,6 +725,7 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_provider_degradation(lines, report)
             ReportAgent._render_scope_refusals(lines, report)
             ReportAgent._render_plan_coverage(lines, report)
+            ReportAgent._render_crawl_coverage(lines, report)
             ReportAgent._render_research_grounding(lines, report)
             ReportAgent._render_llm_spend(lines, report)
             return "\n".join(lines)
@@ -765,6 +767,7 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_provider_degradation(lines, report)
         ReportAgent._render_scope_refusals(lines, report)
         ReportAgent._render_plan_coverage(lines, report)
+        ReportAgent._render_crawl_coverage(lines, report)
         ReportAgent._render_research_grounding(lines, report)
         ReportAgent._render_llm_spend(lines, report)
         return "\n".join(lines)
@@ -818,6 +821,119 @@ class ReportAgent(BaseAgent):
                     "",
                 ]
             )
+
+    @staticmethod
+    def _render_crawl_coverage(lines: list[str], report: PentestReport) -> None:
+        """Render what the crawl's enrichment budget never opened.
+
+        The same rule as the plan cap above, one layer earlier: **a bound that
+        decides coverage is reported in the DELIVERABLE, not just the log.** The
+        plan cap decides which discovered endpoints get tested; this budget
+        decides which discovered URLs ever BECOME endpoints, so everything the
+        plan cap can see has already passed through it.
+
+        On the first non-benchmark engagement 3,070 crawled URLs reduced to 212
+        candidates and the budget opened 80 — 132 of them, 62% of the discovered
+        surface, were never enqueued. That number existed only at INFO in the run
+        log, so a reader of `report.json` had no way to know it.
+
+        Two things are stated apart because they have different fixes. Raising
+        the budget covers a truncated tail. **Hosts never opened at all** is a
+        different claim: a total says how much was missed, and only the per-host
+        split says whether an entire host went unlooked-at — the same reason
+        every other total in this report is broken into its parts.
+
+        And the refusal log is qualified here rather than left to imply more than
+        it knows: it counts requests that were REFUSED, and this budget decides
+        which candidates ever become requests, so a refusal tally describes the
+        opened slice of the out-of-scope surface rather than the surface.
+        """
+        stamp = report.crawl_coverage
+        if not stamp or not stamp.get("passes_recorded"):
+            return
+        lines.extend(["## Crawl coverage", ""])
+
+        candidates = int(stamp.get("candidates") or 0)
+        opened = int(stamp.get("opened") or 0)
+        dropped = int(stamp.get("dropped_total") or 0)
+        collapsed = int(stamp.get("duplicates_collapsed") or 0)
+
+        if not stamp.get("crawl_truncated"):
+            lines.extend(
+                [
+                    f"Every discovered URL worth opening was opened — {opened} of "
+                    f"{candidates} candidate(s), inside the enrichment budget. No part "
+                    "of the discovered surface was left unexamined by this bound.",
+                    "",
+                ]
+            )
+            return
+
+        pct = round(100 * dropped / candidates) if candidates else 0
+        lines.extend(
+            [
+                f"The enrichment budget opened **{opened} of {candidates} candidate "
+                f"URL(s)**; **{dropped} ({pct}%) were never opened**. Those URLs were "
+                "discovered and not examined, so no endpoint, parameter or form on them "
+                "reached the exploit plan — nothing in this report reflects on them "
+                "either way.",
+                "",
+                "| Host | Opened | Not opened |",
+                "| --- | ---: | ---: |",
+            ]
+        )
+        opened_by_host = stamp.get("opened_by_host") or {}
+        dropped_by_host = stamp.get("dropped_by_host") or {}
+        for host in sorted(set(opened_by_host) | set(dropped_by_host)):
+            lines.append(
+                f"| `{host}` | {int(opened_by_host.get(host) or 0)} "
+                f"| {int(dropped_by_host.get(host) or 0)} |"
+            )
+        lines.append("")
+
+        never = list(stamp.get("hosts_never_opened") or [])
+        if never:
+            lines.extend(
+                [
+                    f"**{len(never)} host(s) were discovered and never opened at all:** "
+                    + ", ".join(f"`{h}`" for h in never)
+                    + ". This is not a thin sample of them — it is none of them.",
+                    "",
+                ]
+            )
+
+        first_omitted = str(stamp.get("first_omitted") or "")
+        if first_omitted:
+            lines.extend(
+                [
+                    "Candidates are opened in priority order — parameterised routes and "
+                    "API paths first, static assets and doubled-path artifacts last — so "
+                    "what was dropped is the tail. The highest-priority URL the budget "
+                    f"did not reach was `{first_omitted}`; raising the budget is what "
+                    "covers it.",
+                    "",
+                ]
+            )
+
+        if collapsed:
+            lines.extend(
+                [
+                    f"{collapsed} duplicate spelling(s) of already-discovered URLs were "
+                    "collapsed before the budget applied, rather than each consuming a "
+                    "visit.",
+                    "",
+                ]
+            )
+
+        lines.extend(
+            [
+                "This bound also qualifies the scope-refusal tally elsewhere in this "
+                "report: refusals count requests that were REFUSED, and a candidate the "
+                "budget never opened never became a request. The refusal counts describe "
+                "the opened slice of the out-of-scope surface, not the whole of it.",
+                "",
+            ]
+        )
 
     @staticmethod
     def _render_plan_coverage(lines: list[str], report: PentestReport) -> None:
