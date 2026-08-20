@@ -211,7 +211,8 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   `PentestReport` that the Markdown renderer reads. Markdown used to render from
   the live report and be string-scrubbed afterwards, by which point the key is
   gone; that also let the shape matcher absorb the renderer's own punctuation,
-  so the two documents reported different fingerprints for one secret. Client-ready header (authorization record verbatim, window,
+  so the two documents reported different fingerprints for one secret.
+  Client-ready header (authorization record verbatim, window,
   in-scope AND out-of-scope, authentication proof, testing conduct), remediation
   attached per class from `models/vuln_classes.py`, and a generated **"What was
   NOT tested"** section (excluded hosts, unauthorized techniques, classes with no
@@ -226,8 +227,8 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   enforced only because the CLI now HANDS its `SpendLedger` to the
   orchestrator**; it used to build one, print the pre-dispatch bounds line from
   it and drop it, so `--token-cap` bound nothing and `token_cap: null` was the
-  honest half of that pair. Findings and
-  **research-leads are separate types in separate fields**: `CrossServiceResearchLead` (unproven A→B chains),
+  honest half of that pair.
+  Findings and **research-leads are separate types in separate fields**: `CrossServiceResearchLead` (unproven A→B chains),
   `UnprovenExploitLead` (single-service, effect not witnessed) and
   `ChainResearchLead` (a composition the decoy control did not discriminate)
   render in their own UNCONFIRMED sections and are never counted in the totals. A
