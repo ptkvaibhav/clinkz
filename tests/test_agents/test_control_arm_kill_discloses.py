@@ -123,6 +123,28 @@ class TestEveryKillDiscloses:
         assert agent._control_arm_kill_disclosures == agent._control_arm_kills
 
     @pytest.mark.asyncio
+    async def test_a_capped_lead_list_makes_the_counters_diverge(self) -> None:
+        """The bound is honest rather than invisible.
+
+        `_record_unproven_lead` is capped per engagement. A kill that lands
+        past the cap cannot be disclosed as a lead — the safe direction is to
+        keep the kill — so the counters must diverge and say so, rather than
+        `disclosures` quietly tracking `kills` on a claim nothing wrote.
+        """
+        from clinkz.agents.exploit import _MAX_UNPROVEN_EXPLOIT_LEADS
+
+        agent = _make_agent()
+        agent._unproven_exploit_leads = [  # type: ignore[assignment]
+            agent._unproven_exploit_leads for _ in range(_MAX_UNPROVEN_EXPLOIT_LEADS)
+        ]
+        verdict = await _run_arm(agent, control_confirms=True)
+
+        assert verdict.satisfied is False, "the kill stands regardless of the cap"
+        assert agent._control_arm_kills == 1
+        assert agent._control_arm_kill_disclosures == 0
+        assert len(agent._unproven_exploit_leads) == _MAX_UNPROVEN_EXPLOIT_LEADS
+
+    @pytest.mark.asyncio
     async def test_a_refusing_control_discloses_nothing(self) -> None:
         """The arm doing its job is not an event. Only a KILL discloses."""
         agent = _make_agent()
