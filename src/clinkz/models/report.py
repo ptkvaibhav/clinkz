@@ -277,6 +277,7 @@ class PentestReport(BaseModel):
     #: its own class's observed surface while lower-relevance tasks survived,
     #: which a larger cap does not fix. Rendered even when the plan fit.
     plan_coverage: dict[str, object] = Field(default_factory=dict)
+    crawl_coverage: dict[str, object] = Field(default_factory=dict)
 
     @property
     def finding_counts(self) -> dict[str, int]:
