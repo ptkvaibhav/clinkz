@@ -386,6 +386,27 @@ class ReportAgent(BaseAgent):
         # designed to be handed over did not.
         report_dict = redact_structure(report.model_dump(mode="json"))
 
+        # Both documents now render from the SAME redacted structure.
+        #
+        # They did not, and Markdown was the weaker path of the two. JSON was
+        # built from `report_dict` above — `redact_structure` is KEY-AWARE, so a
+        # `Set-Cookie` value is removed on the strength of its key, which is the
+        # only thing identifying it: the target chose the value, so it has no
+        # intrinsic shape for a string rule to match. Markdown was rendered from
+        # the UNREDACTED `report` and scrubbed afterwards with `redact()`, a
+        # pure string pass. By then the header dict has been flattened into
+        # prose and the key is gone, so exactly the material key-awareness
+        # exists to catch survived into the document a client actually reads.
+        #
+        # Round-tripping the redacted dict back through the model is what closes
+        # it: the renderer cannot reach a value the structure no longer holds.
+        # Deliberately not wrapped in a `try` — if redaction produced something
+        # this model rejects, that is a defect in redaction, and a fallback to
+        # the old path would silently restore the weaker document under the same
+        # filename. No field here is more constrained than `str`, so a
+        # `[REDACTED]` substitution cannot invalidate one.
+        redacted_report = PentestReport.model_validate(report_dict)
+
         # Reports live alongside the rest of the engagement artifacts under
         # ``outputs/<engagement_id>/`` (same convention as trace.jsonl and the
         # tool-invocation records). Writing to the cwd would litter the repo
@@ -401,7 +422,10 @@ class ReportAgent(BaseAgent):
         # Write Markdown output
         md_path = output_dir / f"report_{engagement_id}.md"
         md_path.write_text(
-            redact(self._render_markdown(report, finding_models)),
+            # `redact()` stays as a second pass over the rendered text: the
+            # structural pass cannot see a value the RENDERER composes out of
+            # two fields, and it costs nothing to keep both.
+            redact(self._render_markdown(redacted_report, redacted_report.findings)),
             encoding="utf-8",
         )
         self._logger.info("Markdown report written to %s", md_path)
