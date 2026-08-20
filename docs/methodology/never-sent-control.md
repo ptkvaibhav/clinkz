@@ -240,3 +240,46 @@ more prospectively is free, and demanding it retrospectively is impossible.
 The distinction it exists to draw: a finding that was correct **because the target
 was genuinely vulnerable**, but which would fail its own control, is a phantom
 that landed on a real bug — and by the report alone the two are indistinguishable.
+
+
+## Every kill discloses, and the arm's key is declared
+
+Two changes the 2026-08-20 ladder forced, both about what happens AFTER an arm
+fires.
+
+**1. A phase-5 kill writes the same lead a `_persist_finding` kill writes.**
+The rule had two enforcement sites and one disclosure between them: ground 8 at
+the emission chokepoint recorded an `UnprovenExploitLead`, while a phase-5 kill
+returned `continue` and wrote nothing at all. Ten arms fired on that ladder and
+produced **zero** records — so three DVWA levels carrying genuine command
+injection reported silence, which in a pentest report reads as a clean result.
+
+The disclosure now happens inside `_run_control_arm`, at the one seam every arm
+passes through, so a class cannot forget it because a class does not do it.
+`_control_arm_kills` and `_control_arm_kill_disclosures` make the invariant a
+count rather than a convention, and
+`tests/test_agents/test_control_arm_kill_discloses.py` asserts they stay equal.
+
+The lead says the class **could not prove** the vulnerability. It does not say
+the endpoint is clean, and the tests refuse that wording: an oracle whose control
+also confirmed produced no evidence in either direction, and a lead implying
+otherwise would be a worse artifact than the silence it replaces.
+
+**2. The arm's lookup key is declared by the emitting site, not re-derived.**
+`_run_control_arm` files the verdict under the parameter it DISPATCHED against.
+A class that renames its vector for the report then misses its own arm:
+
+* `_test_sqli` at DVWA `high` dispatches against ` session:id` and emits
+  `id (session)`. Both arms refused correctly, and both findings were suppressed
+  by ground 8 for carrying no arm.
+* `_test_file_upload` dispatches against the form's file-field name (`uploaded`)
+  and emitted `file`. Found by the mismatch detector below on its first live run.
+
+`_make_finding` takes `control_arm_parameter` so the site that did the renaming —
+the only code that knows both halves — declares it. Stripping a `(session)`
+suffix here would be the same guess written one layer lower.
+
+A lookup that misses while an arm exists for the same `(test_method, endpoint)`
+under a different parameter is logged and traced as `control_arm_key_mismatch`
+and still refuses the finding. It never silently promotes the sibling: an arm
+dispatched against a different parameter is evidence about that parameter.

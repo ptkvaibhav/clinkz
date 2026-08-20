@@ -833,6 +833,45 @@ def for_method(test_method: str) -> VulnClass | None:
     return _BY_METHOD.get(test_method)
 
 
+def finding_title(test_method: str, detail: str) -> str:
+    """A finding title that :func:`for_finding` is GUARANTEED to resolve.
+
+    Every class-keyed rule in the engine — the never-sent control, the chaining
+    yield vocabulary, the report's remediation attachment, the offline re-grade —
+    reaches its class by matching the finding's title against
+    :attr:`VulnClass.title_tokens`. So a title an emit site composed freely is a
+    consumer and a producer of the same name, drifting independently.
+
+    They did drift. ``_test_secrets_exposure`` emits *"Credential material served
+    to an unauthenticated requester (authorization)"*, which contains none of its
+    class's four tokens, so the juice-shop bundle carried a HIGH that resolved to
+    no class at all: no remediation, no yield declaration, and — because
+    ``control_required("")`` is ``False`` — no never-sent-control obligation
+    either. The offline re-grade reported it as SURVIVES on the strength of that
+    absence.
+
+    Composing the title from the class's own first token makes the match a
+    property of the registry rather than of each author's phrasing. The fix for a
+    drifted title is to route it through here, never to add the drifted phrasing
+    to ``title_tokens`` — that grows the lookup table by one entry per mistake
+    and leaves the next one free to happen.
+
+    Args:
+        test_method: The emitting ``_test_*`` method.
+        detail: The rest of the title — the specific, per-finding half.
+
+    Returns:
+        ``"<Canonical Token> — <detail>"``, or *detail* unchanged when
+        *test_method* names no registered class (which
+        ``tests/test_models/test_vuln_class_registry.py`` refuses).
+    """
+    vuln_class = _BY_METHOD.get(test_method)
+    if vuln_class is None or not vuln_class.title_tokens:
+        return detail
+    canonical = vuln_class.title_tokens[0]
+    return f"{canonical[:1].upper()}{canonical[1:]} — {detail}"
+
+
 def for_finding(title: str, description: str = "") -> VulnClass | None:
     """Resolve the class a finding belongs to, from its own text.
 
@@ -887,6 +926,7 @@ __all__ = [
     "ConfirmationCapability",
     "VulnClass",
     "classes_requiring_client_side_oracle",
+    "finding_title",
     "for_finding",
     "for_key",
     "for_method",

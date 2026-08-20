@@ -74,6 +74,7 @@ oracle set.
 |---|---|
 | Out-of-band confirmation (P6) | [out-of-band-p6.md](out-of-band-p6.md) |
 | The never-sent control arm (every marker oracle) | [never-sent-control.md](never-sent-control.md) |
+| Three oracles rebuilt on their defining effects (the arms that fired) | [defining-effect-oracles.md](defining-effect-oracles.md) |
 | Client-side execution confirmation (P7) | [client-side-execution-p7.md](client-side-execution-p7.md) |
 | Chaining (the decoy control) + business logic + the benchmark profile | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
 | Carriers / request builder / planning / dispatch / emission integrity | [exploit-engine.md](exploit-engine.md) |

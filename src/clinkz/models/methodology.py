@@ -1088,12 +1088,25 @@ class ShellPrimitives(BaseModel):
         working_time_payload: First time-based probe payload that actually
             produced a measurable delay during phase-2 confirmation. ``None``
             if the time channel hasn't been confirmed.
+        marker_separator: The separator token empirically proven to carry an
+            ``echo <marker>`` through to the response body — the marker appeared
+            ALONE, without the ``echo <marker>`` scaffold that a merely
+            reflective parameter returns. ``None`` when no separator did.
+
+            This is the strongest primitive the class has, and recording it is
+            what lets phase 4 build the confirming payload deterministically
+            instead of asking a model which channel to use. On the 2026-08-20
+            DVWA ladder phase 1 proved this separator at low, medium and high,
+            the model then ranked ``blind_time`` first at every level, and the
+            resulting ``sleep``-based confirmations all failed their own control
+            arm — because DVWA's ``ping -c 4`` takes ~4s whatever you send it.
     """
 
     separators: list[str] = Field(default_factory=list)
     quotes: list[str] = Field(default_factory=list)
     substitution: list[str] = Field(default_factory=list)
     working_time_payload: str | None = None
+    marker_separator: str | None = None
 
 
 class CMDIMethodologyResult(BaseModel):
