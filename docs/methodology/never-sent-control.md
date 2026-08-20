@@ -186,15 +186,36 @@ probe(tautology): status=200 body_token ... principal=admin@juice-sh.op
    finding carrying two dispatched refusals.
 2. **`_fp_ground_error_page`** reads evidence for `status=4xx` to catch the
    reflection-in-an-error-page phantom. Those two `401`s are the proof, not the
-   phantom. It survived only because `re.search` stopped at the tautology's `200`
-   before reaching either one — an ordering, not a rule, and one loop-widening
-   from suppressing the class. `confirming_statuses` now attributes a status to
-   an arm before reading it, using a declared *confirming*-label set: forgetting
-   to declare a new refusing label would suppress a genuine finding, while
-   forgetting a confirming one merely stops one ground reading it, and the
-   failure directions are not symmetric. The same reader excludes named arm
-   fields, so a confirmed chain's `decoy_status=403` — its decoy control doing
-   exactly what it was dispatched to do — is no longer read as a failed request.
+   phantom. It survived only because `re.search` stopped at the tautology's
+   `200` before reaching either one — an ordering, not a rule, and one
+   loop-widening from suppressing the class.
+
+The second diagnosis was right and **shallow**. Attributing each status to an arm
+fixed the two shapes that provoked it — this bypass, and a confirmed chain's
+`decoy_status=403` — and left the real defect standing: the ground was reading
+the `Response:` evidence entry, which is where the **host under test's** own
+bytes land (the SSRF signature match, the raw-auditable confirming excerpts, JWT
+claim names, an open-redirect `Location`). A target serving `status=500`, any of
+`_ERROR_BLOCK_MARKERS` (`warning:` and `stack trace` among them), or
+`verified=False` suppressed the finding proving its own vulnerability. Moving
+every ground to the emission chokepoint made that run on every candidate with no
+model in the loop, and the arm-aware reader made it *easier*: it scans every
+match per entry where `re.search` stopped at the first.
+
+So the fix went a level down. These grounds read only fields the **engine
+declared** — `response_status`, `reflection_in_error_block`, `verified` —
+through the fully-structured reader a response body can never satisfy. Same
+rule, and the same reason, as `_evidence_strength`: **a suppression primitive
+handed to the target is worse than the phantom the guard prevents.**
+
+No producer declares the first two yet, so that ground fires on nothing today.
+Measured rather than assumed: it fired **0 times across all 90 stored confirmed
+findings**, and the fourteen portfolio phantoms it was written for die on the
+never-sent control and the attribution ground instead. Absence of evidence never
+grounds a demotion — the rule the character map already follows — so a candidate
+whose emitter recorded no status is unknown, not failed. Restoring the coverage
+means a producer declaring the field; it does not mean handing the primitive
+back.
 
 **The live gate does not relax.** The engine *can* dispatch a never-sent arm for
 `auth_bypass` and does (`_sqli_control_confirms` sends the same value down both

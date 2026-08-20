@@ -709,9 +709,19 @@ LESSONS #17).
   `NO_ARM`, and `_fp_ground_error_page` would have demoted it for the two
   `status=401`s that ARE its control refusing — spared only because `re.search`
   stopped at the tautology's `200` first, which is an ordering, not a rule.
-  `confirming_statuses` attributes a status to an arm before reading it (a
-  chain's `decoy_status=403` likewise). The **live gate does not relax**: the
-  engine can dispatch a never-sent arm for that channel and does, so
+  Attributing each status to an arm fixed those two shapes and was the wrong
+  depth: the ground was reading the `Response:` entry, which is where the **host
+  under test's** bytes land, so a target serving `status=500`, `stack trace` or
+  `verified=False` suppressed the finding proving its own vulnerability — and
+  the arm-aware reader made that easier, scanning every match per entry where
+  `re.search` stopped at the first. **A guard reads only what the engine
+  declared** (`response_status`, `reflection_in_error_block`, `verified`),
+  through the fully-structured reader a response body cannot satisfy. Same rule,
+  same reason, as `_evidence_strength`. No producer declares those two fields
+  yet, so that ground fires on nothing today — measured as costing nothing: it
+  fired 0/90 on stored bundles and the 14 portfolio phantoms die on the control
+  arm and attribution instead. The **live gate does not relax**: the engine can
+  dispatch a never-sent arm for the `auth_bypass` channel and does, so
   `_persist_finding` still demands one; a stored bundle can dispatch nothing,
   which is the whole asymmetry.
 - **An observation must be attributable to the payload that produced it.** A

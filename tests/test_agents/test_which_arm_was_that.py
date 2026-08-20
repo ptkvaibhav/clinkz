@@ -8,9 +8,8 @@ three at once::
       | control(contradiction): status=401 no auth artifact
       | benign: status=401 no auth artifact
 
-Those two 401s are what make the 200 mean anything. Both of the defects pinned
-here are the same mistake — reading an arm's outcome without knowing which arm
-produced it — and both landed on that same finding:
+Those two 401s are what make the 200 mean anything. Two consumers read them as
+a failed request, and both landed on that same CRITICAL:
 
 1. **The re-grade detector** called it ``NO_ARM``. It asks whether a class is
    marker-bound, which is declared per ``_test_*``; but ``_test_sqli`` confirms
@@ -19,11 +18,24 @@ produced it — and both landed on that same finding:
    class name nor the indicator name carries that fact — ``_test_nosqli`` has an
    ``auth_bypass`` channel with no shape-matched contradiction at all — so the
    producer declares it and the consumer reads the declaration.
-2. **The error-page ground** would have demoted it, once moved to the
-   unconditional emission chokepoint. It scans evidence for ``status=4xx``, and
-   the only reason it did not fire is that ``re.search`` stopped at the
-   tautology's ``200`` before reaching either ``401``. That is an ordering, not
-   a rule.
+2. **The error-page ground** would have demoted it once moved to the
+   unconditional emission chokepoint, reading those 401s as "the captured
+   response was an HTTP error".
+
+The second diagnosis was right and shallow. Attributing each status to an arm
+fixed the two shapes that provoked it — the bypass and a confirmed chain's
+``decoy_status=403`` — and left the actual defect standing: the ground was
+reading the ``Response:`` evidence entry, which is where the **host under
+test's** own bytes live. A target serving ``status=500``, ``stack trace`` or
+``verified=False`` suppressed the finding proving its own vulnerability, and the
+arm-aware reader made that easier rather than harder, since it scanned every
+match per entry where ``re.search`` had stopped at the first.
+
+So the fix went a level down: these grounds read only fields the ENGINE declared
+(``response_status``, ``reflection_in_error_block``, ``verified``), through the
+fully-structured reader a response body can never satisfy. Same rule, and the
+same reason, as ``_evidence_strength``: a suppression primitive handed to the
+target is worse than the phantom the guard prevents.
 """
 
 from __future__ import annotations
@@ -32,7 +44,6 @@ import pytest
 from pydantic import ValidationError
 
 from clinkz.agents._control_arm import (
-    confirming_statuses,
     indicator_is_self_controlled,
     structured_evidence_field,
 )
@@ -67,26 +78,97 @@ def _auth_bypass_finding(*, evidence: list[str]) -> Finding:
     )
 
 
-class TestWhichArmProducedThatStatus:
-    def test_only_the_confirming_arm_is_read(self) -> None:
-        assert confirming_statuses(D8_OBSERVATION) == [200]
+def _ground(finding: Finding) -> str | None:
+    from clinkz.agents.exploit import ExploitAgent
 
-    def test_a_named_arm_field_is_not_the_captured_response(self) -> None:
-        """``decoy_status=403`` is a fact ABOUT the decoy, not a failed request.
+    return object.__new__(ExploitAgent)._fp_ground_error_page(finding)
 
-        Read naively it demotes every confirmed attack chain whose decoy control
-        did exactly what it was dispatched to do. A chain records per-arm fields
-        and no captured-response status at all, so the honest answer is that
-        this evidence says nothing about a captured response — and a ground that
-        has nothing to read must not fire.
-        """
-        assert confirming_statuses(CHAIN_OBSERVATION) == []
-        assert 403 not in confirming_statuses(CHAIN_OBSERVATION)
 
-    def test_a_confirmed_chain_is_not_demoted_by_its_own_control(self) -> None:
+class TestTheGroundDoesNotReadTheTargetsBytes:
+    """The `Response:` entry is where the host under test's own bytes live.
+
+    Scanning it for `status=4xx` or an error-block marker hands the target a
+    suppression primitive: serve `verified=False`, `status=500` or `stack trace`
+    anywhere in a page and the finding proving your own vulnerability is demoted
+    to a lead. Once every ground moved to the emission chokepoint that ran on
+    every candidate with no model in the loop.
+    """
+
+    def test_a_target_cannot_suppress_with_a_status_string(self) -> None:
+        finding = _auth_bypass_finding(
+            evidence=[
+                "Request: GET http://t/?q=probe",
+                "Response: matched 'clinkzX' in body — <!-- status=500 --> checkout complete",
+                "response_status=200",
+            ]
+        )
+        assert _ground(finding) is None
+
+    def test_a_target_cannot_suppress_with_an_error_block_marker(self) -> None:
+        finding = _auth_bypass_finding(
+            evidence=[
+                "Request: GET http://t/?q=probe",
+                "Response: matched 'clinkzX' in body — <!-- stack trace --> ok",
+                "response_status=200",
+            ]
+        )
+        assert _ground(finding) is None
+
+    def test_a_target_cannot_suppress_with_verified_false(self) -> None:
         from clinkz.agents.exploit import ExploitAgent
 
         agent = object.__new__(ExploitAgent)
+        finding = _auth_bypass_finding(
+            evidence=[
+                "Request: GET http://t/?q=probe",
+                "Response: <input type=hidden name=state value='verified=False'>",
+                "phases_completed=6 verified=True strength=verified",
+            ]
+        )
+        assert agent._fp_ground_malformed_evidence(finding) is None
+
+    def test_the_engines_own_declaration_still_fires(self) -> None:
+        """Removing the primitive must not remove the guard's ability to fire."""
+        finding = _auth_bypass_finding(
+            evidence=["Request: r", "Response: reflected", "response_status=500"]
+        )
+        assert "HTTP error" in (_ground(finding) or "")
+        block = _auth_bypass_finding(
+            evidence=["Request: r", "Response: reflected", "reflection_in_error_block=True"]
+        )
+        assert "framework error block" in (_ground(block) or "")
+
+    def test_the_engines_own_verified_false_still_fires(self) -> None:
+        from clinkz.agents.exploit import ExploitAgent
+
+        agent = object.__new__(ExploitAgent)
+        finding = _auth_bypass_finding(
+            evidence=[
+                "Request: r",
+                "Response: reflected",
+                "phases_completed=5 verified=False strength=likely",
+            ]
+        )
+        assert agent._fp_ground_malformed_evidence(finding) is not None
+
+
+class TestTheShapesThatProvokedTheFix:
+    """Both were read as failures; both are a control arm doing its job."""
+
+    def test_the_authentication_bypass_is_not_demoted(self) -> None:
+        finding = _auth_bypass_finding(
+            evidence=[
+                "Request: login request to http://t/rest/user/login",
+                f"Response: {D8_OBSERVATION}",
+                "indicator_type=auth_bypass",
+            ]
+        )
+        assert _ground(finding) is None, (
+            "the two 401s are the contradiction and benign arms REFUSING — the "
+            "proof, not the phantom"
+        )
+
+    def test_a_confirmed_chain_is_not_demoted_by_its_own_decoy(self) -> None:
         chain = Finding(
             title="Confirmed attack chain — session token -> account takeover",
             description="Technique: chaining. Parameter: session_token.",
@@ -95,33 +177,7 @@ class TestWhichArmProducedThatStatus:
             target="http://t/rest/user/whoami",
             evidence=["Request: Chain: a -> b", f"Response: {CHAIN_OBSERVATION}"],
         )
-        assert agent._fp_ground_error_page(chain) is None
-
-    def test_unlabelled_prose_is_still_the_captured_response(self) -> None:
-        """The reflection-in-an-error-page phantom must stay catchable."""
-        assert confirming_statuses("matched 'clinkzX' (status=500)") == [500]
-        assert confirming_statuses("reflected marker (status=404)") == [404]
-
-    def test_ordering_was_never_the_rule(self) -> None:
-        """Reverse the arms and a first-match reader flips on identical facts."""
-        reversed_arms = (
-            "control(contradiction): status=401 no auth artifact "
-            "| probe(tautology): status=200 body_token"
-        )
-        assert confirming_statuses(reversed_arms) == [200]
-
-    def test_the_error_page_ground_clears_the_real_finding(self) -> None:
-        from clinkz.agents.exploit import ExploitAgent
-
-        agent = object.__new__(ExploitAgent)
-        finding = _auth_bypass_finding(
-            evidence=[
-                "Request: login request to http://t/rest/user/login",
-                f"Response: {D8_OBSERVATION}",
-                "indicator_type=auth_bypass",
-            ]
-        )
-        assert agent._fp_ground_error_page(finding) is None
+        assert _ground(chain) is None
 
 
 class TestTheProducerDeclaresItsOwnChannels:
@@ -184,24 +240,3 @@ class TestTheTargetCannotWriteTheChannelName:
             structured_evidence_field(["Response: indicator_type=auth_bypass"], "indicator_type")
             == ""
         )
-
-
-class TestTheConfirmingLabelIsVerifiedAgainstTheSource:
-    """The declared label has to be one a producer actually writes."""
-
-    def test_every_differential_arm_label_is_classified(self) -> None:
-        import re
-        from pathlib import Path
-
-        from clinkz.agents._control_arm import CONFIRMING_ARM_LABELS
-
-        source = Path("src/clinkz/agents/exploit.py").read_text(encoding="utf-8")
-        labels = set(re.findall(r'_observe\(\s*"([^"]+)"', source))
-        assert labels, "no differential arm labels found — has _observe been renamed?"
-
-        stems = {label.split("(")[0].lower() for label in labels}
-        confirming = stems & set(CONFIRMING_ARM_LABELS)
-        assert len(confirming) == 1, (
-            f"expected exactly one confirming arm among {sorted(labels)}, got {confirming}"
-        )
-        assert stems - confirming, "a differential with no refusing arm is not a differential"

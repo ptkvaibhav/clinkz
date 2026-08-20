@@ -64,7 +64,8 @@ def _error_page_finding() -> Finding:
         target="http://t/vulnerabilities/exec/",
         evidence=[
             "Request: ip=;echo clinkzcmdi51696",
-            "Response: matched 'clinkzcmdi51696' (status=500)",
+            "Response: matched 'clinkzcmdi51696'",
+            "response_status=500",
         ],
     )
 
