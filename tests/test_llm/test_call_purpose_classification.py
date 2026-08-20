@@ -227,29 +227,58 @@ class TestTheRefusalFires:
         ):
             client._assert_fallback_permitted("gemini", primary="anthropic")
 
-    def test_the_client_mode_refusal_is_catchable_so_the_caller_degrades(
+    def test_the_client_mode_refusal_is_caught_by_name_not_by_a_broad_handler(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The two refusals want opposite catchability, and this is the half that
-        would silently kill an engagement if it were wrong.
+        """The two refusals differ in WHO catches them, not in catchability.
 
-        ``baseline`` mode wants the RUN to stop, so ``ProviderPolicyError`` is a
-        ``BaseException`` deliberately uncatchable by the agents' broad handlers.
-        ``client`` mode wants only the CALL to stop: the callers on these two
-        paths already do the conservative thing with an unreachable model
-        (``_llm_analyze_results`` returns an empty analysis and demotes nothing;
-        ``_llm_analyze`` returns "" and the methodology keeps its deterministic
-        build). If this refusal were a ``BaseException`` too, refusing a
-        suppression would take the whole engagement down with it.
+        Both are ``BaseException``. ``ProviderPolicyError`` is caught by nobody —
+        a baseline run must stop. This one is caught **explicitly, by name**, at
+        the two sites where degrading is correct, and nowhere else.
+
+        The version this replaces let a broad ``except Exception`` catch it, on
+        the reasoning that those handlers already degrade correctly. They do.
+        What they do not do is degrade *visibly*: on engagement ``d67835f5`` this
+        refusal was raised in place of a failed false-positive cross-check, the
+        broad handler turned it into an empty suspect list, and an empty suspect
+        list is what the cross-check returns when it reviewed everything and
+        found nothing wrong. Fourteen phantoms shipped under that signal.
+
+        An explicit handler is a place to log it, record it on the contribution
+        ledger, and put it in the deliverable. A broad one reaches none of those,
+        so the engagement still completes — and now says what it lost.
         """
         client = self._client(monkeypatch)
-        caught = False
+        broad_handler_reached = False
+        with pytest.raises(DecisionPathFallbackError):
+            try:
+                with llm_call_purpose(LLMCallPurpose.SUPPRESS, site="exploit._llm_analyze_results"):
+                    client._assert_fallback_permitted("gemini", primary="anthropic")
+            except Exception:  # exactly the handler that hid this
+                broad_handler_reached = True
+        assert not broad_handler_reached, (
+            "a broad `except Exception` reached the refusal — that is the handler "
+            "shape that turned a review which never ran into a review that found nothing"
+        )
+
+    def test_an_explicit_handler_still_degrades_the_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other half: client mode still must not lose the engagement.
+
+        Only the CALL fails. The two callers keep exactly the behaviour they had
+        — ``_llm_analyze_results`` demotes nothing, ``_llm_analyze`` leaves the
+        methodology on its deterministic build — they just name the exception
+        they are degrading on.
+        """
+        client = self._client(monkeypatch)
+        degraded = False
         try:
             with llm_call_purpose(LLMCallPurpose.SUPPRESS, site="exploit._llm_analyze_results"):
                 client._assert_fallback_permitted("gemini", primary="anthropic")
-        except Exception:  # exactly the handler every agent call site uses
-            caught = True
-        assert caught, "an emit/suppress refusal in client mode must be catchable"
+        except DecisionPathFallbackError:
+            degraded = True
+        assert degraded, "an emit/suppress refusal in client mode must remain recoverable"
 
     def test_the_baseline_refusal_is_not_catchable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The other half: a baseline run must not degrade past a broad handler."""

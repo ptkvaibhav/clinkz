@@ -156,17 +156,64 @@ target's raw response bytes at index 1, ahead of every verdict the engine append
 so a page echoing `never_sent_control=refused` in its own body would otherwise
 license its own phantom. Same rule, and the same reason, as the `strength=` reader.
 
+## Which arm produced that observation
+
+The rule above is declared per **class**, because "this oracle matches a string
+in a body" is a property of a class. One class breaks that: `_test_sqli` confirms
+on five channels, and `auth_bypass` is not a marker oracle at all — it is a
+three-arm differential in which the tautology must return an auth artifact, a
+*shape-matched contradiction one character apart* must NOT, and an ordinary
+credential attempt must not either. Both refusing arms are **dispatched**, so the
+property this whole rule exists to establish is established by the oracle itself.
+
+The indicator *name* does not carry the fact either. `_test_nosqli` has an
+`auth_bypass` channel that compares a probe against a benign baseline with no
+shape-matched contradiction at all. Key on the class and you get the SQLi one
+wrong; key on the indicator and you get the NoSQL one wrong. So the **producer
+declares** it — `VulnClass.control_arm.self_controlled_indicators`, with a reason
+the model refuses to construct without — and consumers read the declaration.
+
+Two consumers had it wrong, and both landed on the same finding: the juice-shop
+authentication bypass, a CRITICAL whose stored evidence reads
+
+```
+probe(tautology): status=200 body_token ... principal=admin@juice-sh.op
+  | control(contradiction): status=401 no auth artifact
+  | benign: status=401 no auth artifact
+```
+
+1. **The re-grade** filed it `NO_ARM` — "the question was never asked" — about a
+   finding carrying two dispatched refusals.
+2. **`_fp_ground_error_page`** reads evidence for `status=4xx` to catch the
+   reflection-in-an-error-page phantom. Those two `401`s are the proof, not the
+   phantom. It survived only because `re.search` stopped at the tautology's `200`
+   before reaching either one — an ordering, not a rule, and one loop-widening
+   from suppressing the class. `confirming_statuses` now attributes a status to
+   an arm before reading it, using a declared *confirming*-label set: forgetting
+   to declare a new refusing label would suppress a genuine finding, while
+   forgetting a confirming one merely stops one ground reading it, and the
+   failure directions are not symmetric. The same reader excludes named arm
+   fields, so a confirmed chain's `decoy_status=403` — its decoy control doing
+   exactly what it was dispatched to do — is no longer read as a failed request.
+
+**The live gate does not relax.** The engine *can* dispatch a never-sent arm for
+`auth_bypass` and does (`_sqli_control_confirms` sends the same value down both
+arms, so any surviving difference is noise), so `_persist_finding` still demands
+one. A stored bundle can dispatch nothing. That asymmetry is the point: demanding
+more prospectively is free, and demanding it retrospectively is impossible.
+
 ## Re-grading stored bundles
 
 `scripts/regrade_stored_bundles.py` runs both checks over every stored
 `report_<id>.json` offline and sends nothing. Three verdicts:
 
-* `SURVIVES` — attributable, and either the class is not marker-bound or a
-  refusing arm is recorded.
-* `NO_ARM` — marker-bound, no control was ever run. **The honest terminal verdict
-  for a stored bundle**: the arm needs a request that was never sent, and no
-  amount of re-reading the artifact can send it. Held apart from both answers,
-  because "we did not ask" is not a result in either direction.
+* `SURVIVES` — attributable, and either the class is not marker-bound, the
+  channel it confirmed on is declared self-controlled, or a refusing arm is
+  recorded.
+* `NO_ARM` — marker-bound, and **no control of any kind** was run. **The honest
+  terminal verdict for a stored bundle**: the arm needs a request that was never
+  sent, and no amount of re-reading the artifact can send it. Held apart from
+  both answers, because "we did not ask" is not a result in either direction.
 * `REFUSED` — self-refuting evidence; it would be rejected at emission today.
 
 The distinction it exists to draw: a finding that was correct **because the target

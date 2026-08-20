@@ -436,8 +436,9 @@ src/clinkz/
 │                     #   with the evidence — offline-testable),
 │                     #   _auth_bypass (THE one vocabulary for "did this response log us
 │                     #   in?" — artifact reader + the three-arm differential),
-│                     #   _control_arm (the never-sent control + attribution: what an
-│                     #   oracle must clear before it may confirm — offline-testable),
+│                     #   _control_arm (the never-sent control + attribution + WHICH
+│                     #   arm produced a status: what an oracle must clear before it
+│                     #   may confirm — offline-testable),
 │                     #   _archive/ (built, registered, invoked zero times: critic)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
@@ -482,7 +483,9 @@ src/clinkz/
 │                     #   degradation gate), plan_alarms.py (what the task cap
 │                     #   DROPPED, and separately whether the ORDERING held)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
-                      #   vuln_classes, target, recon, scan, methodology, research,
+                      #   vuln_classes (+ ControlArm: which of a class's OWN channels
+                      #   dispatch their own control), target, recon, scan, methodology,
+                      #   research,
                       #   finding, report
 docker/  scripts/  tests/  docs/
 requirements-ci.lock  # the FULL resolved dependency set CI installs (85 packages),
@@ -694,17 +697,55 @@ LESSONS #17).
   dispatchable class with a stated reason; an unclassified one is a red build.
   Enforced at `_persist_finding`, read only from fully-structured evidence so a
   page echoing `never_sent_control=refused` cannot license itself.
+- **A control arm's outcome is the PROOF, so a consumer must know WHICH arm it
+  read.** "Marker-bound" is declared per class, and `_test_sqli` confirms on five
+  channels: four are marker matches and `auth_bypass` is a three-arm differential
+  whose contradiction and benign arms are DISPATCHED and must refuse. Neither
+  string carries that fact — `_test_nosqli` has an `auth_bypass` channel with no
+  shape-matched contradiction at all — so the PRODUCER declares it
+  (`VulnClass.control_arm`, an unreasoned exemption refused at construction) and
+  every consumer reads the declaration. Two read it wrong on the same finding,
+  the juice-shop authentication bypass: the offline re-grade filed a CRITICAL as
+  `NO_ARM`, and `_fp_ground_error_page` would have demoted it for the two
+  `status=401`s that ARE its control refusing — spared only because `re.search`
+  stopped at the tautology's `200` first, which is an ordering, not a rule.
+  `confirming_statuses` attributes a status to an arm before reading it (a
+  chain's `decoy_status=403` likewise). The **live gate does not relax**: the
+  engine can dispatch a never-sent arm for that channel and does, so
+  `_persist_finding` still demands one; a stored bundle can dispatch nothing,
+  which is the whole asymmetry.
 - **An observation must be attributable to the payload that produced it.** A
   confirmation citing a command-output channel the payload never invoked
   (`;echo <canary>` does not print `uname` output), or minting a marker and then
   citing something else, refutes itself in its own evidence — which shipped
-  verbatim seven times. Held at the emission chokepoint, not only in the FP
-  cross-check: on that run the cross-check returned **no opinion at all** (its
-  Anthropic call failed, the Gemini fallback was correctly refused on the
-  SUPPRESS path, and a broad `except` turned the refusal into an empty suspect
-  list), so every deterministic ground behind it went unconsulted. A guard
-  reachable only when an LLM names the finding first is a guard that runs when a
-  provider happens to be up.
+  verbatim seven times.
+- **A deterministic guard whose value is that it needs no model is never gated by
+  one.** All **eight** grounds run unconditionally at `_persist_finding` over
+  every finding, from one declaration (`_deterministic_grounds` — probe plus the
+  lead reason it produces, read by the emission gate and the FP cross-check
+  alike). Four of them used to be reachable only *through* the cross-check, i.e.
+  only once a model had nominated the finding; on the portfolio run that check
+  returned **no opinion at all** and every ground behind it went unconsulted.
+  Two consequences are structural, not incidental: an LLM can no longer suppress
+  anything the code did not already suppress (a finding reaching the cross-check
+  carries no contradiction by construction, and one that does is logged as a
+  **bypassed gate**), and every ground's `why_unconfirmed` must be in
+  `UNPROVEN_WHY_UNCONFIRMED` — an unregistered reason is normalised to
+  `not_instrumentable` ("we lack the access"), which is not what happened and is
+  the only part of a lead an operator can act on.
+- **Silence from a detection path is not evidence of cleanliness.** The
+  cross-check and the emission gate are ledger components. A review that ANSWERED
+  and named nothing is `correctly_empty` — the fifth fact, not an alarm; a review
+  that never ran is `ok=False` ⇒ `ALL_FAILED`, and `ExploitAnalysis.cross_check_ran`
+  (default `False`) carries the distinction to every consumer. What hid it was an
+  asymmetry between two siblings: `ProviderPolicyError` was hardened against the
+  broad-`except` pattern and `DecisionPathFallbackError` was not, so the refusal
+  on the SUPPRESS path became an empty suspect list — the exact shape of a clean
+  review. **Both are now `BaseException`**; they differ in *who* catches them, not
+  in whether anyone can. The second is caught **explicitly, by name**, at the two
+  sites where degrading is correct — an explicit handler is somewhere to log,
+  record and disclose the loss; a broad one reaches none of those, and a new
+  EMIT/SUPPRESS call site that forgets one now fails loudly.
 - **Suppress, never annotate** — a finding the engagement itself believes is a
   false positive is **demoted** (removed from `findings`, deleted from the store,
   re-recorded as an `UnprovenExploitLead` with `why_unconfirmed`), never emitted

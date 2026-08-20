@@ -224,12 +224,19 @@ class ExploitAnalysis(BaseModel):
             ``finding_ids`` list — so values are typed ``Any`` rather than
             ``str`` (the LLM legitimately emits a list for ``finding_ids``).
         coverage_summary: Human-readable summary of test coverage.
+        cross_check_ran: Whether the reviewing call actually produced an answer.
+            An empty ``false_positive_suspects`` has two readings — the reviewer
+            looked and cleared everything, or the reviewer never answered — and
+            the portfolio engagement shipped fourteen phantoms under the second
+            one wearing the first one's clothes. Defaults to ``False`` so an
+            analysis nobody filled in cannot claim a review it did not get.
     """
 
     false_positive_suspects: list[dict[str, Any]] = Field(default_factory=list)
     retry_targets: list[ExploitTask] = Field(default_factory=list)
     chaining_opportunities: list[dict[str, Any]] = Field(default_factory=list)
     coverage_summary: str = ""
+    cross_check_ran: bool = False
 
     @field_validator("false_positive_suspects", mode="before")
     @classmethod
@@ -395,6 +402,41 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # evidence. Held at the emission chokepoint so the rule is a property of
         # the engine rather than something each class must remember.
         "verification_strength_below_confirmation",
+        # The remaining deterministic emission grounds. Every one of these is a
+        # pure function of the candidate's own evidence, and all eight now run
+        # unconditionally at ``_persist_finding`` — so each needs its own entry
+        # here or the lead lands under a reason that is not what happened.
+        #
+        # Two of them (attribution, the never-sent control) shipped without one
+        # and were silently normalised to ``not_instrumentable``, which tells a
+        # client "the confirming observation needs access we do not hold". The
+        # truth was the opposite: the observation was made, and it refuted
+        # itself. A lead's reason is the only thing an operator can act on, so a
+        # wrong one is worse than a vague one.
+        #
+        # The recorded character map proves a character the emitted payload
+        # needs did not survive the filter.
+        "character_map_blocks_the_payload",
+        # The evidence contradicts itself: the request line assigns the tested
+        # parameter twice, or carries ``verified=False`` under a confirmed status.
+        "evidence_internally_inconsistent",
+        # The execution claim is conditional on a downstream transform nobody
+        # observed ("if a later layer decodes this, it executes"), and phase 5
+        # did not witness the payload landing literally in an executable position.
+        "execution_claim_is_conditional",
+        # The confirming observation sits in a 4xx/5xx response or inside a
+        # framework error block: reflection into an error page is reachability,
+        # not an executable context.
+        "observation_landed_in_an_error_response",
+        # The observation names something the payload cannot have produced — a
+        # command channel it never invoked, or a marker other than the one minted
+        # for this attempt. The evidence refutes itself on its face.
+        "observation_not_attributable_to_the_payload",
+        # A marker-oracle class reached emission without a never-sent control arm
+        # that refused. An oracle that never tried to refuse has not
+        # distinguished the vulnerability from a page that merely contains the
+        # string.
+        "never_sent_control_did_not_refuse",
         # The upload store accepted the artifact and served it back, but no
         # restriction was observed to be BYPASSED: no script/interpreter
         # extension was accepted and no filename injection survived. Accepted

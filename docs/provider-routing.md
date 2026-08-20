@@ -137,16 +137,34 @@ direction `_llm_analyze_results` already fails in when a model is unreachable
 leaves the methodology on its deterministic build, which is where the invariants
 put the verdict anyway.
 
-**The two refusals want opposite catchability.** Baseline mode raises
-`ProviderPolicyError`, a `BaseException`, so that none of the agents' broad
-`except Exception` handlers can degrade past it — a baseline run wants the *run*
-to fail, and there is no partial result worth keeping. The call-purpose refusal
-raises `DecisionPathFallbackError`, an ordinary `LLMError`, because it wants only
-the *call* to fail: client mode exists so an engagement completes, and making
-this one uncatchable would mean refusing a single suppression took the whole
-engagement down with it. Both are raised before the request leaves, so nothing is
-bought and nothing is stamped — a degradation the run did not take must not
-appear in the register.
+**The two refusals differ in who catches them, not in whether anyone can.** Both
+are `BaseException`, so neither is reachable by the agents' broad
+`except Exception` handlers. Baseline mode's `ProviderPolicyError` is caught by
+nobody — a baseline run wants the *run* to fail and there is no partial result
+worth keeping. The call-purpose refusal, `DecisionPathFallbackError`, wants only
+the *call* to fail — client mode exists so an engagement completes — so it is
+caught **explicitly, by name**, at the two sites where degrading is correct
+(`_llm_analyze_results`, `_llm_analyze`) and nowhere else.
+
+It was an ordinary `LLMError` until engagement `d67835f5` showed what that costs.
+Its two callers do degrade correctly under a broad handler; what they did not do
+is degrade *visibly*. The refusal was raised in place of a failed false-positive
+cross-check, the broad handler turned it into an empty suspect list, and an empty
+suspect list is exactly what that check returns when it reviewed everything and
+found nothing wrong. Fourteen phantom findings shipped under a signal saying they
+had been checked. One sibling had been hardened against that handler shape and
+the other had not, and that asymmetry is the whole incident.
+
+An explicit handler is somewhere to log the loss, record a FAILED contribution on
+the ledger, and stamp `cross_check_ran=False` on the analysis so the deliverable
+can say a review did not happen. A broad handler reaches none of those. A new
+EMIT/SUPPRESS call site that forgets to write one now fails loudly instead of
+returning the conservative-looking empty answer — the same reasoning that makes
+`ProviderPolicyError` uncatchable, because the conservative-looking answer and
+the real one are indistinguishable downstream.
+
+Both are raised before the request leaves, so nothing is bought and nothing is
+stamped — a degradation the run did not take must not appear in the register.
 
 Absent a declaration the purpose is `PLANNING`, the permissive value, because
 that is what a driver or a direct methodology invocation is. An undeclared

@@ -49,7 +49,10 @@ import re
 from dataclasses import dataclass
 
 __all__ = [
+    "CONFIRMING_ARM_LABELS",
     "CONTROL_EXEMPT_CLASSES",
+    "confirming_statuses",
+    "indicator_is_self_controlled",
     "rebind_marker",
     "sqli_inert_control",
     "strip_shell_separators",
@@ -63,6 +66,7 @@ __all__ = [
     "is_minted_marker",
     "mint_decoy",
     "payload_invokes",
+    "structured_evidence_field",
 ]
 
 
@@ -458,6 +462,104 @@ class ControlVerdict:
         return "refused" if self.oracle_refused else "confirmed_on_control"
 
 
+#: How a producer labels the arm that CONFIRMED, inside one evidence entry.
+#: Everything else that carries an arm label is an arm that refused, and an arm
+#: that refused is the proof rather than the phantom — the D8 evidence renders
+#: ``probe(tautology): status=200 ... | control(contradiction): status=401 no auth
+#: artifact | benign: status=401 no auth artifact``, where the two 401s are what
+#: makes the 200 mean something.
+#:
+#: Declared as the CONFIRMING set rather than the refusing set on purpose. A new
+#: refusing label that nobody added to a deny-list would be read as the captured
+#: response and would SUPPRESS a genuine finding; a new confirming label that
+#: nobody added here is merely not read, and the eight-ground gate has seven
+#: other probes. The failure directions are not symmetric, so the enumeration
+#: goes on the side where forgetting costs coverage instead of honesty.
+#:
+#: One entry, because one label is what the producers actually write: the
+#: three-arm differential labels its arms ``probe(tautology)``,
+#: ``control(contradiction)`` and ``benign``. Pinned against the source by
+#: ``tests/test_agents/test_which_arm_was_that.py`` so this cannot drift into a
+#: list of labels nobody emits.
+CONFIRMING_ARM_LABELS: tuple[str, ...] = ("probe",)
+
+#: Segment separators a producer uses to put several arms in one entry.
+_ARM_SEGMENT_RE: re.Pattern[str] = re.compile(r"\s\|\s|\s::\s")
+
+#: A segment that opens with ``label:`` or ``label(detail):``. Ordinary prose
+#: does not match, so ``matched 'clinkzX' (status=500)`` is still read as the
+#: captured response.
+_ARM_LABEL_RE: re.Pattern[str] = re.compile(r"^([A-Za-z_]\w*)(?:\([^)]*\))?:\s")
+
+#: A bare ``status=NNN``. The lookbehind is the whole point: ``decoy_status=403``
+#: and ``real_status=200`` are named FIELDS about particular arms, and reading
+#: ``decoy_status=403`` as "the captured response was an HTTP error" would demote
+#: every confirmed attack chain whose decoy control did its job.
+_BARE_STATUS_RE: re.Pattern[str] = re.compile(r"(?<![\w])status=(\d{3})")
+
+
+def confirming_statuses(entry: str) -> list[int]:
+    """Every HTTP status in *entry* attributable to the arm that CONFIRMED.
+
+    An oracle that carries its own control renders the refusing arms beside the
+    confirming one, so "is there a 4xx in the evidence" is not the same question
+    as "did the confirming request fail". The juice-shop authentication bypass is
+    both cases at once: ``status=200`` for the tautology and two ``status=401``
+    for the contradiction and the benign attempt, in one string.
+
+    Args:
+        entry: One evidence entry, with any ``Request:``/``Response:`` prefix
+            already stripped by the caller.
+
+    Returns:
+        The statuses of the confirming arm and of unlabelled prose, in order.
+        Statuses belonging to a declared non-confirming arm, and named fields
+        such as ``decoy_status=``, are excluded.
+    """
+    out: list[int] = []
+    for segment in _ARM_SEGMENT_RE.split(entry or ""):
+        label = _ARM_LABEL_RE.match(segment.strip())
+        if label is not None and label.group(1).lower() not in CONFIRMING_ARM_LABELS:
+            continue
+        out.extend(int(m.group(1)) for m in _BARE_STATUS_RE.finditer(segment))
+    return out
+
+
+def indicator_is_self_controlled(test_method: str, indicator_type: str) -> str | None:
+    """Why *indicator_type* on *test_method* dispatches its own control arm.
+
+    Read from the PRODUCER's declaration
+    (:attr:`~clinkz.models.vuln_classes.VulnClass.control_arm`) rather than
+    inferred, because neither the class name nor the indicator name carries the
+    fact: ``_test_sqli``'s ``auth_bypass`` channel is a three-arm differential
+    whose contradiction and benign arms are dispatched and must refuse, while
+    ``_test_nosqli``'s channel of the same NAME compares a probe against a benign
+    baseline and has no shape-matched contradiction at all. A consumer keying on
+    either string alone gets one of them wrong.
+
+    Args:
+        test_method: The ``_test_*`` class.
+        indicator_type: The channel the finding says it confirmed on.
+
+    Returns:
+        The declared reason, or ``None`` when this channel is not declared
+        self-controlled — which is every channel of every class by default.
+    """
+    from clinkz.models.vuln_classes import VULN_CLASSES
+
+    indicator = (indicator_type or "").strip().lower()
+    if not indicator:
+        return None
+    for vuln_class in VULN_CLASSES:
+        if vuln_class.test_method != test_method:
+            continue
+        arm = vuln_class.control_arm
+        if indicator in tuple(i.lower() for i in arm.self_controlled_indicators):
+            return arm.reason
+        return None
+    return None
+
+
 def control_required(test_method: str) -> bool:
     """Whether *test_method*'s oracle is bound by the never-sent-control rule."""
     return test_method in MARKER_ORACLE_CLASSES
@@ -482,6 +584,33 @@ def control_evidence_lines(verdict: ControlVerdict | None) -> list[str]:
     if verdict.detail:
         lines.append(f"Control arm: {verdict.detail}")
     return lines
+
+
+def structured_evidence_field(evidence: list[str], key: str) -> str:
+    """The value of *key*, read only from entries the ENGINE wrote.
+
+    Same restriction, and the same reason, as
+    :func:`control_verdict_from_evidence`: a finding's evidence carries raw
+    response bytes at index 1, so a plain prefix scan reads the TARGET's bytes
+    first. Any value that decides how a finding is graded must come from an entry
+    made entirely of ``key=value`` tokens, or the host under test gets a vote.
+
+    Args:
+        evidence: The finding's evidence entries.
+        key: The field name, e.g. ``indicator_type``.
+
+    Returns:
+        The first value found, or ``""``.
+    """
+    for entry in evidence:
+        tokens = entry.split()
+        if not tokens or not all(_STRUCTURED_TOKEN_RE.match(t) for t in tokens):
+            continue
+        for token in tokens:
+            name, _, value = token.partition("=")
+            if name == key:
+                return value
+    return ""
 
 
 def control_verdict_from_evidence(evidence: list[str]) -> ControlVerdict | None:

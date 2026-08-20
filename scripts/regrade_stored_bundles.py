@@ -22,9 +22,19 @@ Two checks, both from `clinkz.agents._control_arm`, both pure:
   payload, which needs nothing but the evidence already on disk and can therefore
   be graded retroactively as hard fact.
 
-Verdicts: `SURVIVES` (attributable, and the class is not marker-bound),
-`NO_ARM` (marker-bound, no control was ever run), `REFUSED` (self-refuting
-evidence — it would be rejected at emission today).
+**Which control, though.** "Marker-bound" is declared per CLASS, and one class
+confirms on five different channels. `_test_sqli`'s `auth_bypass` channel is a
+three-arm differential whose contradiction and benign arms are DISPATCHED and
+must refuse — so the juice-shop authentication bypass carried a control all
+along and was graded `NO_ARM` for want of a never-sent one. Neither the class
+name nor the indicator name carries that fact (`_test_nosqli` has an
+`auth_bypass` channel with no shape-matched contradiction at all), so the
+producer declares it on `VulnClass.control_arm` and this reads the declaration.
+
+Verdicts: `SURVIVES` (attributable, and either the class is not marker-bound or
+the channel it confirmed on dispatched its own arm), `NO_ARM` (marker-bound, no
+control of any kind was run), `REFUSED` (self-refuting evidence — it would be
+rejected at emission today).
 """
 
 from __future__ import annotations
@@ -48,6 +58,8 @@ from clinkz.agents._control_arm import (  # noqa: E402
     attribution_contradiction,
     control_required,
     control_verdict_from_evidence,
+    indicator_is_self_controlled,
+    structured_evidence_field,
 )
 from clinkz.models.vuln_classes import for_finding  # noqa: E402
 
@@ -116,6 +128,40 @@ def grade(bundle: str, finding: dict[str, Any]) -> Graded:
 
     verdict = control_verdict_from_evidence(evidence)
     if verdict is None:
+        # Before calling it NO_ARM, ask the PRODUCER whether the channel this
+        # finding actually confirmed on carries its own dispatched arm. The
+        # class-level rule is keyed on ``_test_*``, which is the granularity at
+        # which "this oracle matches a string in a body" is true — and one class
+        # breaks it. ``_test_sqli`` confirms on five channels; four are marker
+        # matches and ``auth_bypass`` is a three-arm differential whose
+        # contradiction and benign arms are DISPATCHED and must refuse.
+        #
+        # Reading the class name alone graded the juice-shop authentication
+        # bypass — a CRITICAL whose evidence records ``control(contradiction):
+        # status=401 no auth artifact | benign: status=401 no auth artifact`` —
+        # as a finding whose control was never asked for. Reading the indicator
+        # name alone would be wrong the other way: ``_test_nosqli`` has an
+        # ``auth_bypass`` channel that compares against a benign baseline with no
+        # shape-matched contradiction at all. Neither string carries the fact, so
+        # the producer declares it and this reads the declaration.
+        #
+        # The asymmetry with the live gate is deliberate and stated: the engine
+        # CAN dispatch a never-sent arm for this channel and does, so
+        # ``_persist_finding`` still demands one. A stored bundle can dispatch
+        # nothing, so the only control available to it is the one its confirming
+        # oracle already ran.
+        self_controlled = indicator_is_self_controlled(
+            test_method, structured_evidence_field(evidence, "indicator_type")
+        )
+        if self_controlled:
+            return Graded(
+                bundle,
+                title,
+                str(finding.get("target") or ""),
+                test_method,
+                SURVIVES,
+                f"oracle dispatched its own control arm — {self_controlled}",
+            )
         return Graded(
             bundle,
             title,
