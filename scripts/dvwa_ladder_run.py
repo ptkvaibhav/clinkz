@@ -43,6 +43,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,7 @@ from d1_consistency_runner import (
     read_report,
     reset_and_set_level,
 )
+from regrade_stored_bundles import NO_ARM, REFUSED, SURVIVES, grade
 
 LEVELS = ("low", "medium", "high", "impossible")
 OUTPUTS = Path("outputs")
@@ -127,6 +129,61 @@ def auth_bypass_findings(report: dict[str, Any]) -> list[str]:
     )
 
 
+def control_survival(report: dict[str, Any], level: str) -> dict[str, Any]:
+    """Grade every confirmed finding against the control arm it actually carried.
+
+    This is the gate the ladder gained when the never-sent control shipped, and
+    it is the reason re-running the ladder is a MEASUREMENT rather than a
+    repetition. Every stored bundle predates the arm, so the offline re-grade
+    scores every marker-oracle finding ``NO_ARM`` — "the question was never
+    asked". That is a true statement about the record and a vacuous one about
+    the engine: it cannot distinguish a finding that would survive its control
+    from one the control would refuse.
+
+    A run made under the current gate dispatches real arms, so each finding here
+    comes back ``SURVIVES`` (the arm refused, as it must) or ``REFUSED`` (the arm
+    did not — a phantom that has been sitting in the record). ``NO_ARM``
+    surviving a fresh run is itself a defect: it means a marker-bound class
+    emitted without dispatching the control ``_persist_finding`` demands.
+
+    Graded per CLASS, because the class is the granularity at which "this oracle
+    matches a string in a body" is true, and per LEVEL, because DVWA's ladder is
+    the one place a phantom is cheap to spot: a finding that confirms identically
+    at every level of a security-graded control is a phantom by construction.
+    """
+    rows = [grade(level, f) for f in report.get("findings", []) if f.get("status") == "confirmed"]
+    per_class: dict[str, Counter[str]] = defaultdict(Counter)
+    for row in rows:
+        per_class[row.test_method or "(unrecognised)"][row.verdict] += 1
+    return {
+        "confirmed_graded": len(rows),
+        "survives": sum(1 for r in rows if r.verdict == SURVIVES),
+        "no_arm": sum(1 for r in rows if r.verdict == NO_ARM),
+        "refused": sum(1 for r in rows if r.verdict == REFUSED),
+        "per_class": {
+            cls: {
+                "n": sum(counts.values()),
+                SURVIVES: counts[SURVIVES],
+                NO_ARM: counts[NO_ARM],
+                REFUSED: counts[REFUSED],
+            }
+            for cls, counts in sorted(per_class.items())
+        },
+        # The two verdicts that need a human: a phantom, and a class that
+        # emitted without the arm the live gate is supposed to require.
+        "refused_detail": [
+            {"title": r.title, "target": r.target, "class": r.test_method, "why": r.detail}
+            for r in rows
+            if r.verdict == REFUSED
+        ],
+        "no_arm_detail": [
+            {"title": r.title, "target": r.target, "class": r.test_method, "why": r.detail}
+            for r in rows
+            if r.verdict == NO_ARM
+        ],
+    }
+
+
 def observed_headers(engagement: str) -> dict[str, Any]:
     """The ORIGIN ROOT's header set, as phase 2 captured it.
 
@@ -184,23 +241,45 @@ def observed_headers(engagement: str) -> dict[str, Any]:
     }
 
 
-def run_pipeline(level: str, authorization: Path, benchmark: Path) -> tuple[str | None, int, float]:
-    """Run the real end-to-end pipeline for one level; return (id, rc, seconds)."""
+def run_pipeline(
+    level: str,
+    authorization: Path,
+    benchmark: Path,
+    *,
+    scope: Path | None = None,
+    token_cap: int | None = None,
+) -> tuple[str | None, int, float]:
+    """Run the real end-to-end pipeline for one level; return (id, rc, seconds).
+
+    ``scope`` carries the :class:`EngagementWindow`. It is a scope-file field
+    rather than an authorization-record one, so a ladder that passes only
+    ``--authorization`` runs unbounded in time and the report says so — which is
+    the honest rendering of an undeclared window, not a substitute for one.
+
+    ``token_cap`` bounds the LLM spend and HALTS THE RUN CLEANLY at the cap with
+    its report still written, so a bound that bites is a shorter engagement
+    rather than a lost one.
+    """
     before = newest_engagement_dirs()
     started = time.time()
+    argv = [
+        sys.executable,
+        "-m",
+        "clinkz",
+        "scan",
+        "--target",
+        DVWA_BASE,
+        "--authorization",
+        str(authorization),
+        "--benchmark-profile",
+        str(benchmark),
+    ]
+    if scope is not None:
+        argv += ["--scope", str(scope)]
+    if token_cap:
+        argv += ["--token-cap", str(token_cap)]
     proc = subprocess.run(  # noqa: S603 — list-form, fixed argv
-        [
-            sys.executable,
-            "-m",
-            "clinkz",
-            "scan",
-            "--target",
-            DVWA_BASE,
-            "--authorization",
-            str(authorization),
-            "--benchmark-profile",
-            str(benchmark),
-        ],
+        argv,
         capture_output=True,
         text=True,
         timeout=7200,
@@ -231,6 +310,22 @@ def grade_engagement(level: str, engagement: str, **extra: Any) -> dict[str, Any
     record["header_set"] = header_set(report)
     record["exploitation"] = exploitation_findings(report)
     record["auth_bypass"] = auth_bypass_findings(report)
+    record["control"] = control_survival(report, level)
+    # A non-SURVIVES verdict on a FRESH bundle is a defect rather than a fact
+    # about the record's age: the live gate dispatches the arm, so REFUSED means
+    # a phantom reached a report and NO_ARM means a marker-bound class emitted
+    # without one. Recorded as violations here, where every other per-level fact
+    # is derived, so the secondary-gate counts are not stale by the time they
+    # print and the `--regrade` path gets them for free.
+    for row in record["control"]["refused_detail"]:
+        record.setdefault("violations", []).append(
+            f"CONTROL REFUSED (phantom): {row['title']} @ {row['target']} — {row['why']}"
+        )
+    for row in record["control"]["no_arm_detail"]:
+        record.setdefault("violations", []).append(
+            f"CONTROL MISSING: {row['title']} @ {row['target']} — marker-bound class "
+            f"({row['class']}) emitted without dispatching its arm"
+        )
     record["observed_headers"] = observed_headers(engagement)
     record["total_findings"] = len(report.get("findings", []))
     record["by_severity"] = {
@@ -244,6 +339,20 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--authorization", type=Path)
     parser.add_argument("--benchmark-profile", type=Path, dest="benchmark")
+    parser.add_argument(
+        "--scope",
+        type=Path,
+        help=(
+            "Scope file carrying the EngagementWindow. Without one the run is "
+            "unbounded in time and the report renders that fact."
+        ),
+    )
+    parser.add_argument(
+        "--token-cap",
+        type=int,
+        dest="token_cap",
+        help="Per-level LLM token ceiling. Halts cleanly at the cap; report still written.",
+    )
     parser.add_argument(
         "--levels",
         nargs="+",
@@ -284,7 +393,13 @@ def main() -> int:
         hash_before = admin_password_hash()
         print(f"  level pinned; admin hash baseline {hash_before[:10]}…", flush=True)
 
-        engagement, rc, elapsed = run_pipeline(level, args.authorization, args.benchmark)
+        engagement, rc, elapsed = run_pipeline(
+            level,
+            args.authorization,
+            args.benchmark,
+            scope=args.scope,
+            token_cap=args.token_cap,
+        )
         hash_after = admin_password_hash()
 
         record: dict[str, Any] = {
@@ -384,12 +499,54 @@ def report_gates(runs: list[dict[str, Any]], *, write: bool) -> int:
         for violation in record.get("violations", []):
             print(f"      VIOLATION: {violation}")
 
+    # --- control survival ----------------------------------------------------
+    # The gate the ladder gained with the never-sent control. On a stored bundle
+    # every marker-oracle finding grades NO_ARM because the arm did not exist
+    # when it ran; on a run made under the current gate the arm was dispatched,
+    # so each finding resolves to SURVIVES or REFUSED and the table finally says
+    # something. Both non-SURVIVES verdicts are defects HERE and are counted:
+    # REFUSED is a phantom that reached a report, and NO_ARM is a marker-bound
+    # class that emitted without the control `_persist_finding` demands.
+    print(f"\n{'=' * 78}")
+    print("CONTROL SURVIVAL — would each finding survive its own control?")
+    print("=" * 78)
+    header = f"  {'level':<11} {'class':<28} {'n':>3} {'SURVIVES':>9} {'NO_ARM':>7} {'REFUSED':>8}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for record in completed:
+        control = record.get("control") or {}
+        per_class = control.get("per_class") or {}
+        if not per_class:
+            print(f"  {record['level']:<11} (no confirmed findings to grade)")
+            continue
+        for cls, counts in per_class.items():
+            print(
+                f"  {record['level']:<11} {cls:<28} {counts['n']:>3} "
+                f"{counts[SURVIVES]:>9} {counts[NO_ARM]:>7} {counts[REFUSED]:>8}"
+            )
+        print(
+            f"  {record['level']:<11} {'— level total —':<28} "
+            f"{control['confirmed_graded']:>3} {control['survives']:>9} "
+            f"{control['no_arm']:>7} {control['refused']:>8}"
+        )
+
+    for record in completed:
+        control = record.get("control") or {}
+        for row in control.get("refused_detail", []):
+            print(f"\n  PHANTOM [{record['level']}] {row['title']} @ {row['target']}")
+            print(f"      class={row['class']}  {row['why']}")
+        for row in control.get("no_arm_detail", []):
+            print(f"\n  NO ARM  [{record['level']}] {row['title']} @ {row['target']}")
+            print(f"      class={row['class']}  {row['why']}")
+
     # --- class coverage ------------------------------------------------------
     # Every dispatchable class accounted for, per level. Ranking inversions
     # answer "was the order right among the tasks that existed"; this answers
     # the question that outlives them — did the class run at all, and if not,
     # was that correct or a hole.
-    print(f"\n{'=' * 78}\nCLASS COVERAGE — did every applicable class reach an endpoint?\n{'=' * 78}")
+    print(f"\n{'=' * 78}")
+    print("CLASS COVERAGE — did every applicable class reach an endpoint?")
+    print("=" * 78)
     for record in completed:
         coverage = record.get("class_coverage") or {}
         if not coverage:

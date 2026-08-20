@@ -39,6 +39,7 @@ rejected at emission today).
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from collections import Counter, defaultdict
@@ -197,10 +198,50 @@ def _load(engagement_id: str) -> list[dict[str, Any]]:
     return [f for f in (data.get("findings") or []) if isinstance(f, dict)]
 
 
-def main() -> int:
+def parse_bundles(pairs: list[str] | None) -> tuple[tuple[str, str], ...]:
+    """``LABEL=ENGAGEMENT`` pairs, or :data:`BUNDLES` when none are given.
+
+    The default list is the historical set — the bundles that predate the
+    control arm and therefore re-grade ``NO_ARM`` by construction. Naming
+    bundles explicitly is what makes the verdict a MEASUREMENT rather than a
+    restatement of that fact: a run made under the current gate dispatched real
+    control arms, so its findings can come back ``SURVIVES`` or ``REFUSED``, and
+    those are the only two answers that carry information.
+    """
+    if not pairs:
+        return BUNDLES
+    parsed: list[tuple[str, str]] = []
+    for pair in pairs:
+        label, _, engagement = pair.partition("=")
+        if not label.strip() or not engagement.strip():
+            raise SystemExit(f"FATAL: --bundle wants LABEL=ENGAGEMENT, got {pair!r}")
+        parsed.append((label.strip(), engagement.strip()))
+    return tuple(parsed)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--bundle",
+        action="append",
+        metavar="LABEL=ENGAGEMENT",
+        help=(
+            "Grade this bundle instead of the stored default set. Repeatable. "
+            "Sends nothing either way."
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=_ROOT / "outputs" / "_regrade" / "control_regrade.json",
+        help="Where to write the JSON verdict (default: outputs/_regrade/control_regrade.json).",
+    )
+    args = parser.parse_args(argv)
+    bundles = parse_bundles(args.bundle)
+
     graded: list[Graded] = []
     missing: list[str] = []
-    for label, engagement_id in BUNDLES:
+    for label, engagement_id in bundles:
         findings = _load(engagement_id)
         if not findings:
             missing.append(f"{label} ({engagement_id})")
@@ -227,7 +268,7 @@ def main() -> int:
     per_bundle: dict[str, Counter[str]] = defaultdict(Counter)
     for g in graded:
         per_bundle[g.bundle][g.verdict] += 1
-    for label, _ in BUNDLES:
+    for label, _ in bundles:
         counts = per_bundle.get(label)
         if counts is None:
             continue
@@ -249,13 +290,13 @@ def main() -> int:
         for m in missing:
             print(f"  - {m}")
 
-    out = _ROOT / "outputs" / "_regrade" / "control_regrade.json"
+    out = args.out
     write_redacted_json(
         out,
         {
             "bundles": [
                 {"label": lbl, "engagement": eid}
-                for lbl, eid in BUNDLES
+                for lbl, eid in bundles
                 if lbl in per_bundle or f"{lbl} ({eid})" not in missing
             ],
             "missing": missing,

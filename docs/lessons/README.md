@@ -526,3 +526,72 @@ cross-engagement KB, so the caveat must outlive the run), and the report renders
 a section either way — including, explicitly, that the limitation does not reach
 the findings.
 
+
+<a id="lesson-57"></a>
+
+## Lesson 57 — A benchmark profile is a control variable
+
+The DVWA ladder was re-run to turn 21 stored `NO_ARM` rows into a measurement:
+every one of those findings predates the never-sent control, so the offline
+re-grade can only report that the question was never asked. A run under the
+current gate dispatches real arms and each finding resolves to `SURVIVES` or
+`REFUSED`. That is the whole point of running it again.
+
+The authorization record and the benchmark profile were written fresh, and the
+profile named all nine permittable destructive categories — on the reasoning
+that a disposable container recreated per level tolerates anything, and that a
+wider profile can only increase coverage.
+
+The prior ladder had permitted exactly three: `data_reset`, `deletion`,
+`unsafe_method`. Its own `notes` field said why — *"Categories match the
+2026-08-17 ladder exactly so the only variable between the two ladders is the
+engine."* That sentence was in the stored bundle, one `json.load` away, and was
+not read before the run started.
+
+`credential_change` authorises DVWA's own `/vulnerabilities/captcha/` module,
+which is a password-change flow (`step=1&Change=Change&password_new=…`). The
+engine sent it, admin's stored hash changed, and the ladder's
+`admin_hash_unchanged` secondary gate failed at `low`.
+
+Nothing was broken. The rails classified the request, asked the profile, and the
+profile said yes; the action log records it as `category: mutating_method,
+reason: POST mutates target state` with the body captured. The gate reported the
+truth: this run damaged the target.
+
+The real cost was not the damaged container — it is recreated per level anyway.
+It was that **two variables had moved at once**. The engine's control-arm gate
+was new *and* the destructive surface was three times wider, so any difference
+in the survival table could be attributed to either, and the comparison against
+the 21-row baseline was worthless. The run was stopped at 40 minutes and
+restarted with the matched three-category profile.
+
+Then the widening turned out to buy nothing. At `low` the nine-category run sent
+**521** state-changing requests against the prior run's 310, and produced the
+**identical** 7 header findings and 15 exploitation findings. On this target the
+extra authorisation reached no new surface at all; it only changed the admin
+password.
+
+Three rules follow.
+
+**Read the prior bundle's profile rather than composing one.** It is at
+`report_<id>.json` → `authorization.benchmark_profile`, and it carries the
+declaring party's own reasoning in `notes`. A profile is an input to the
+experiment, recorded with the run precisely so the next run can reproduce it.
+
+**Change one variable per run.** A benchmark exists to attribute a difference to
+a cause. Two simultaneous changes forfeit that, and the forfeit is silent — the
+numbers still print, and they still look like a measurement.
+
+**A secondary gate that suddenly fails is a question about your configuration
+before it is a question about the engine.** `admin_hash_unchanged=False` reads
+like target damage by a runaway methodology. It was an authorised request
+against a module whose entire purpose is changing a password, and the five
+minutes spent reading the action log and diffing the two profiles were the
+difference between a corrected run and a filed bug that did not exist.
+
+The profiles are not the same for every target, and that is the point rather
+than an inconsistency: Juice Shop's prior run permitted all nine, because its
+chaining and business-logic classes need state-changing requests to reach their
+surface and it has no per-level invariance gate to protect. Matching *each* run
+to *its own* prior is the rule; a single global profile would have broken one of
+the two.
