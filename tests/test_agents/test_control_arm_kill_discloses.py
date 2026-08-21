@@ -31,6 +31,7 @@ from clinkz.agents.exploit import ExploitAgent
 from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.models.finding import UNPROVEN_WHY_UNCONFIRMED
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
+from clinkz.observability.ledger import ContributionLedger, set_active_ledger
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
 
@@ -272,3 +273,97 @@ class TestDisclosureIsStructural:
                         dispatched.add(str(kw.value.value))
         missing = sorted(MARKER_ORACLE_CLASSES - dispatched)
         assert not missing, f"marker-oracle classes that never dispatch an arm: {missing}"
+
+
+class TestEveryDispatchedArmIsALedgerRow:
+    """The mechanism that proves our findings honest must prove it ran.
+
+    ``exploit.control_arm`` registered from inside ``_disclose_control_arm_kill``,
+    which sits inside ``if not verdict.satisfied`` — so a KILL was the
+    registration trigger. The 2026-08-20 ladder's re-measured result was 64/64
+    SURVIVES, and it left **no ledger row at all**: the component that dispatched
+    64 arms and correctly refused on every one is indistinguishable, in the
+    ledger, from a component that never ran. That is precisely the confusion the
+    contribution ledger exists to remove, and it had it about itself.
+    """
+
+    @staticmethod
+    async def _ledger_for(*, control_confirms: bool) -> ContributionLedger:
+        agent = _make_agent()
+        ledger = ContributionLedger(engagement_id="control-arm-ledger-test")
+        set_active_ledger(ledger)
+        try:
+            await _run_arm(agent, control_confirms=control_confirms)
+        finally:
+            set_active_ledger(None)
+        return ledger
+
+    @staticmethod
+    def _row(ledger: ContributionLedger) -> Any:
+        rows = [r for r in ledger.records() if r.name == "exploit.control_arm"]
+        assert rows, (
+            "a dispatched control arm produced no ledger row — the component "
+            f"ledger only knows about {sorted(r.name for r in ledger.records())}"
+        )
+        return rows[0]
+
+    @pytest.mark.asyncio
+    async def test_a_surviving_arm_registers(self) -> None:
+        """The 64/64 case. The arm refused, the finding stands, and the row is
+        there to say the check happened."""
+        row = self._row(await self._ledger_for(control_confirms=False))
+        assert row.invocations == 1
+        assert row.items_contributed == 1
+        assert row.successes == 1
+
+    @pytest.mark.asyncio
+    async def test_a_killed_arm_registers_exactly_once(self) -> None:
+        """A kill is one OUTCOME, not the registration trigger — and moving the
+        call must not leave the old one behind and double-count it."""
+        row = self._row(await self._ledger_for(control_confirms=True))
+        assert row.invocations == 1
+        assert row.items_contributed == 1
+
+    @pytest.mark.asyncio
+    async def test_an_undispatchable_arm_registers_as_a_failure(self) -> None:
+        """``ok`` is whether the arm was SENT, not whether it refused.
+
+        An arm that could not be dispatched is this component failing; an arm
+        that was dispatched and confirmed is this component working — it caught a
+        phantom. Recording the second as a failure would make the ledger fire
+        every time the engine did its job.
+        """
+        agent = _make_agent()
+
+        async def exploding_oracle(_decoy: str) -> bool:
+            raise RuntimeError("probe transport died")
+
+        ledger = ContributionLedger(engagement_id="control-arm-ledger-test")
+        set_active_ledger(ledger)
+        try:
+            verdict = await agent._run_control_arm(
+                skill="lfi",
+                test_method="_test_lfi",
+                technique="WSTG-INPV-11",
+                endpoint="http://example.com/vulnerabilities/fi/",
+                parameter="page",
+                confirming_payload="../../etc/passwd",
+                confirming_observation="matched /etc/passwd signature",
+                control_label="a benign non-traversal filename",
+                oracle_confirms=exploding_oracle,
+            )
+        finally:
+            set_active_ledger(None)
+
+        assert verdict.dispatched is False
+        row = self._row(ledger)
+        assert row.invocations == 1
+        assert row.successes == 0
+
+    def test_registration_is_not_inside_the_kill_branch(self) -> None:
+        """Structural: the call must live in ``_run_control_arm``, on the path
+        every arm takes, and nowhere inside the disclosure helper."""
+        assert "exploit.control_arm" in inspect.getsource(ExploitAgent._run_control_arm)
+        assert "exploit.control_arm" not in inspect.getsource(
+            ExploitAgent._disclose_control_arm_kill
+        )
