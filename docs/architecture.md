@@ -158,9 +158,22 @@ injects a payload into the correct place — query string, JSON request body
 carrier (`_cookie_send_probe` overrides one ambient cookie; `_session_send_probe`
 POSTs a session-setter then GETs the trigger, for setter→session→trigger sinks) —
 and the form-shaped
-methodologies (stored-XSS / CSRF / brute-force) iterate `_injectable_forms`,
-which synthesizes a JSON pseudo-form for body-only endpoints that have no HTML
-`<form>`. JSON requests carry the same cookie + JWT-bearer session as form posts.
+methodologies (stored-XSS / CSRF / brute-force / file-upload / weak-session)
+iterate `_injectable_forms`, which returns the parsed HTML forms first and
+unchanged, then appends the pseudo-forms this agent synthesizes for body-bearing
+endpoints that have no HTML `<form>`: a **JSON** pseudo-form from the endpoint's
+`json_body` params, and a **multipart** one when the endpoint's declared request
+content type is `multipart/*` and one of the mined `FormData` field names is
+upload-shaped. `_submit_form_fields` serializes each by its declared `encoding`,
+so a methodology never branches on it. JSON requests carry the same cookie +
+JWT-bearer session as form posts.
+
+Both accessors exist because the raw layer beneath them is silently wrong on a
+framework target: `page.forms` is `[]` when the form is rendered in JavaScript,
+and a hand-rolled `_http_get(page.url, {param: value})` puts the probe in the
+query string whatever `ParamLocation` the parameter was discovered at. A class
+that reads the raw layer reports nothing on such a target, which is
+indistinguishable from a clean result.
 
 Inside a structured body a field is a **path**, not a name
 (`agents/_json_body.py`): `config.app.name`, `items[0].sku`. `_build_json_body`

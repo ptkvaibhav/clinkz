@@ -322,6 +322,30 @@ detail → `docs/productization-engagement-safety.md`.**
   `tests/test_engagement/test_driver_artifact_writes.py`, which reads every
   `scripts/*.py` and refuses a raw `write_text`/`write_bytes` unless allow-listed
   with a reason: drivers are exactly what a `src/`-and-`tests/` grep misses.
+- **The credential the client gave us goes first.** The default-credential
+  sweep ran unconditionally ahead of the supplied credential: 52 requests of
+  `admin/admin`, `root/root`, `admin/password`, `test/test` across six routes,
+  landing in the client's authentication logs as credential stuffing — from an
+  authorized test, before that test did the thing it was authorized to do.
+  Guessing is what you do when you have not been handed a key, so
+  `_should_sweep_default_credentials()` is `not credentials.authenticating` and
+  nothing else. There is deliberately no "…or the supplied credential failed"
+  branch: that path ABORTS (below), so the sweep is not merely deferred past a
+  failure but unreachable after one — falling back to guessing passwords the
+  moment the client's own credential is rejected is the same log entry this
+  removes.
+- **A login URL is proven by response SHAPE, never by a status code.** A
+  single-page application serves its shell for every path it does not recognise,
+  so `/login.php` answers **200 with 9903 bytes of Angular** on a Node target
+  that has never had a PHP file — and a `status < 400` HEAD probe accepted it,
+  which is how six credential POSTs landed on `/login.php` at a Node app.
+  `_serves_a_login_form` GETs the body (a HEAD cannot see this) and requires the
+  marker no catch-all produces by accident: an `<input type="password">` beside
+  an identity-shaped field. Nothing proven ⇒ **`None`**, not the root URL: the
+  "fall back to the root as the login page" strategy is deleted, because a root
+  URL is not a login page, it is where a credential POST goes when nobody proved
+  anything. A JSON login API serves no form and is found by
+  `detect_auth_mechanism`, which is the component that knows how to ask.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`).
   The same URL is fetched with the session and deliberately without it
   (`HTTPClientTool`'s `no_session` — the shared cookie jar would otherwise make
@@ -660,8 +684,15 @@ LESSONS #17).
   **And `kept` is a total, so it is not evidence about its parts**:
   `kept_by_class` + `classes_with_candidates` separate "the cap took every
   candidate this class had" (a bigger cap) from "tasks survived and the class
-  still never ran" (the dispatcher) — indistinguishable before, and the second
-  is the ffuf shape at class granularity. The **class-coverage account**
+  still never ran" — indistinguishable before, and the second is the ffuf
+  shape at class granularity. That second verdict is
+  `no_phase_event_tasks_survived_the_cap`, and it deliberately does **not** name
+  the dispatcher: it used to read "the plan reached it and the dispatcher did
+  not", which sent maintenance to the wrong file. A class that returns `[]` at
+  its own entry gate, before its first phase trace, produces a byte-identical
+  shape — and every observed instance was that (a form gate reading `page.forms`
+  on a framework target). The alarm names what was observed, and points at the
+  class's applicability gate first. The **class-coverage account**
   (`scripts/d1_consistency_runner.py::class_coverage`) gives every dispatchable
   class exactly one verdict on **how far its own pipeline got**, never on what
   it says about itself; "the plan held nothing for it" is the fifth fact and is
@@ -695,6 +726,33 @@ LESSONS #17).
   methodology did not intend to set is omitted — never sent empty-but-present.
 - **A new injection *shape* gets a DEDICATED carrier**; leave the shared
   string-only `_send_probe` untouched.
+- **How a class READS the target is not the class's business** — there are two
+  accessors and a class uses them, never the raw layer beneath. `page.forms` is
+  `_http_get` + `_FormParser().feed(body)`, so it is `[]` on any
+  React/Angular/Vue target: the form exists, it is just rendered after the bytes
+  we parsed. `_http_get(page.url, {param: value})` puts the probe in the query
+  string whatever the parameter's declared location is. So a form-shaped class
+  reads **`_injectable_forms`** (HTML forms first and unchanged, plus the JSON
+  and multipart pseudo-forms this agent synthesizes for body-bearing API
+  endpoints) and a probing class carries through **`_send_probe`**. Eight of the
+  eleven classes read the raw layer and were therefore invisible on a framework
+  target while reporting nothing — which reads exactly like a clean result.
+  Enforced structurally: `tests/test_agents/test_tier1_migrations.py` AST-walks
+  the agent for `self._http_get(url, {k: v})` and fails on any site not
+  allow-listed with a reason (the domain is the source, per the guard-domain
+  law). **`_test_javascript_attacks` is the one that does NOT migrate** and says
+  why: its phase-1 hypothesis is a conjunction of a form AND an inline
+  `<script>` block, and its only confirming path needs a hidden field of that
+  form written by that script — a pseudo-form has no hidden field by
+  construction and a JSON response has no script. Reaching a framework's
+  client-side security logic means reading its bundle, which is a new oracle.
+- **An upload point is declared by a protocol artifact, never by a URL that
+  sounds like one.** The upload pseudo-form is synthesized only when the
+  endpoint's DECLARED request content type is `multipart/*` — read off the
+  frontend's own `new FormData()` builder by `_js_api_mining`, not guessed — AND
+  one of the field names that builder appended is upload-shaped. A multipart
+  endpoint with no file part gets no pseudo-form, because there is nothing for an
+  upload test to submit and a fabricated one would be a target detector.
 - **A body field is a PATH, not a name** (`agents/_json_body.py`) —
   `config.app.name`, `items[0].sku`. Written into place with `set_json_path`, so
   the body that goes out has the shape the target declared; only **leaves** are
