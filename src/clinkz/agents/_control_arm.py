@@ -140,6 +140,24 @@ CONTROL_EXEMPT_CLASSES: dict[str, str] = {
         "business logic: graded on a read-back against a boundary control"
     ),
     "_test_repeatability": "business logic: graded on two identical creates read back",
+    "_test_log4shell": (
+        "confirms out-of-band on a single-use nonce that exists only in the one probe "
+        "that carried it, with a second nonce minted alongside and sent nowhere — the "
+        "never-sent control, dispatched by P6 itself. There is no response body here "
+        "for a decoy to collide with: the channel is an inbound callback"
+    ),
+    "_test_tier2_technique": (
+        "constructs no Finding — the technique applier sends no request and returns an "
+        "empty list from all three of its exits, so there is no confirming observation "
+        "for a control to discriminate. Registered NOT_IMPLEMENTED in the vuln-class "
+        "registry, which is where the report states it"
+    ),
+    "_test_tier3_technique": (
+        "constructs no Finding — the technique applier sends no request and returns an "
+        "empty list from all three of its exits, so there is no confirming observation "
+        "for a control to discriminate. Registered NOT_IMPLEMENTED in the vuln-class "
+        "registry, which is where the report states it"
+    ),
 }
 
 
