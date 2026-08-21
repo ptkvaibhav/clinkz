@@ -371,7 +371,16 @@ detail → `docs/productization-engagement-safety.md`.**
   BOTH invisible in the report and ungated by authorization. `DISCOVERY_CLASSES`
   and `COMPOSITION_CLASSES` (`attack_chain`) emit findings without a dispatch
   entry — they are never *planned against an endpoint* — so they are held apart
-  from that sync assertion and gated by registry KEY instead.
+  from that sync assertion and gated by registry KEY instead. **That sync
+  assertion's domain is `DISPATCHABLE_TEST_METHODS`**, the table the dispatcher
+  itself reads; it used to be `_CLASS_PATH_TOKENS` — a *ranking signal* map
+  holding 27 of the 30 — so the two classes with no registry entry at all were
+  outside the check that exists to find them. **A dispatch-table entry that can
+  never emit is a capability claim**, so `_test_tier2_technique` /
+  `_test_tier3_technique` are registered `NOT_IMPLEMENTED`
+  (`_apply_technique` has three exits, all `return []`: it sends no request and
+  constructs no `Finding`), which is what puts them in *What was NOT tested* and
+  makes every dispatched technique task a ledger row instead of silence.
 
 ## Gray-box Discovery Engine (`src/clinkz/discovery/`)
 
@@ -1002,7 +1011,14 @@ LESSONS #17).
 - **A CVE match on a version string is a LEAD, never a finding**
   (`knowledge/component_cves.py`). The dependency→CVE path runs
   fingerprint → component+version inventory (`ReconResult.components`) → known
-  CVE → **our own oracle on the live target**. A match either becomes an
+  CVE → **our own oracle on the live target**. It reached the reader only after
+  the Exploit handoff was unwrapped: the orchestrator passed the recon phase
+  ENVELOPE (`{"result": …}`) where Scan and Research are both handed their inner
+  result, so every top-level lookup Exploit makes against recon —
+  `components`, `tech_stack`, `web_info` — resolved against three envelope keys
+  and returned nothing on every engagement ever run. Fixed at the handoff, not
+  in the reader: a reader that tolerates both shapes cannot tell you the next
+  producer changed. A match either becomes an
   `ExploitTask` for the class whose oracle can witness that CVE's effect — and
   the CVE is then CONTEXT on a normally-proven finding — or an
   `UnprovenExploitLead` saying we have no oracle. A third outcome does not
@@ -1046,6 +1062,23 @@ LESSONS #17).
   are the deliberately-broken producers that ARE the dead-seam alarm's negative
   control. A test that can only pass against a fiction is worse than no test,
   because it is counted as coverage.
+- **A guard's DOMAIN is computed from the same source of truth as the thing it
+  guards; only the CLASSIFICATION is hand-maintained** (**detail →
+  [`.claude/skills/clinkz-dev/SKILL.md`](.claude/skills/clinkz-dev/SKILL.md),
+  "The guard-domain law"**). A partition asserted over a domain that excludes
+  the unclassified members is a partition of whatever is left — and the members
+  a hand-maintained domain forgets are exactly the ones that most need the
+  guard, because one omission produced both. `test_control_arm_registry`'s
+  `_dispatchable()` was `_CLASS_TRACE_SKILL | _BUSINESS_LOGIC_CLASSES`, 27 of
+  the dispatch table's 30, so `_test_log4shell` — the engine's one CVE oracle —
+  EXITED the never-sent-control completeness check rather than failing it, and
+  the guard was green throughout. Both directions are asserted (`computed -
+  declared` catches the new member; `declared - computed` catches the entry that
+  outlived what it described), and an exemption is an allow-list entry with a
+  substantive reason, never a silent skip. The pattern to copy is
+  `test_tool_wiring_decisions.py` (domain = `TOOL_CHAINS`) and
+  `test_parser_input_assumptions.py` (domain = an AST walk over the real
+  modules).
 
 - **Two confirmed findings do not imply the chain between them, and neither does
   a successful second request.** A carriage is proven against a control: the real

@@ -96,6 +96,58 @@ A finding is a claim that we exploited something. **Emit only when your own evid
 - **Stack-conditioned branches** (`_is_php_stack`, engine fingerprints, dialect) are backed by a **deterministic protocol artifact** (a `PHPSESSID` cookie, a `.php` path, a header) — never the flaky LLM tech list alone.
 - Record every technique result (hit or miss) to the persistent KB.
 
+**The guard-domain law (a guard's domain is COMPUTED, never hand-maintained).**
+
+A guard — a test that asserts completeness, a partition, or "everything of kind X
+is classified" — has two halves: the **domain** it iterates over and the
+**classification** it checks each member against. The classification is what a
+human must declare, entry by entry, with a reason. **The domain is not.** It must
+be computed from the same source of truth as the thing being guarded.
+
+> A partition asserted over a domain that excludes the unclassified members is a
+> partition of whatever is left. The members that most need the guard are exactly
+> the ones a hand-maintained domain forgets, because the same omission that put
+> them outside the tables put them outside the domain.
+
+This has now shipped **six times in six weeks**. The most recent:
+`test_control_arm_registry.py::_dispatchable()` returned
+`set(_CLASS_TRACE_SKILL) | set(_BUSINESS_LOGIC_CLASSES)` — 27 of the 30 names in
+`DISPATCHABLE_TEST_METHODS`. The three missing were the three the dispatcher can
+run and no table had classified: `_test_log4shell` (the engine's one CVE oracle),
+`_test_tier2_technique`, `_test_tier3_technique`. They **exited** the
+never-sent-control completeness assertion instead of failing it, and the guard
+was green throughout. Same shape:
+`test_vuln_classes.py::test_every_dispatched_class_has_a_client_label` used
+`_CLASS_PATH_TOKENS` — a *ranking signal* table — as its domain, so the two
+dispatchable classes with no registry entry at all were invisible to the check
+whose entire purpose is finding them.
+
+**How to tell the two apart.** Ask: *if somebody adds a new member and forgets
+everything else, does this test go red?* If the answer depends on them also
+remembering to edit a list inside the test, the domain is wrong.
+
+| | Domain (the set iterated) | Classification (per member) |
+|---|---|---|
+| Where it comes from | **Computed** — the dispatch table, `TOOL_CHAINS`, a glob, an AST walk over the real modules | **Declared** by a human, with a reason |
+| Hand-editing it | a defect | the point |
+| A new member | fails the build until classified | is what the build is telling you to write |
+
+**The pattern to copy** — both of these are already right, use them as the model:
+- `tests/test_tools/test_tool_wiring_decisions.py`: domain is `set(TOOL_CHAINS)`,
+  tables are `WIRED` / `DELIBERATELY_UNWIRED`, each with a substantive reason.
+- `tests/test_tools/test_parser_input_assumptions.py`: domain is an AST walk for
+  every `parse_output` under `tools/`; the table declares each parser's input
+  assumption, and it asserts **both** directions (undeclared *and* stale).
+
+**Assert both directions.** `computed - declared` catches the new member;
+`declared - computed` catches the entry that outlived the thing it described.
+A guard with only the first half rots into documentation of a wish.
+
+**And an exemption is an allow-list entry with a reason, never a silent skip** —
+the same rule as `artifact_scan._SKIP_ALLOWED` and
+`test_mock_shape_audit._DELIBERATE_FICTIONS`. `len(reason.split()) < 6` is a
+red build in the control-arm registry for exactly this reason.
+
 **Git protocol (every push):**
 - Commit **per logical unit**; imperative `prefix(scope): summary` with **no trailing period**; end each commit message with the `Co-Authored-By` trailer. Push to origin after each commit once gates pass. **No `--force`, no `--no-verify`.**
 - On Windows, multi-line commit/PR bodies go **via a file**: `git commit -F <file>` / `gh pr create --body-file <file>` — a `-m "$var"` with embedded `"` breaks PowerShell's arg parser.
