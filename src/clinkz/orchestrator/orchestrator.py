@@ -30,6 +30,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -162,6 +163,18 @@ _POLL_INTERVAL = 1.0
 # researching "http" yields no useful CVEs or writeups.
 _GENERIC_SERVICE_NAMES: frozenset[str] = frozenset(
     {"", "tcp", "udp", "unknown", "http", "https", "ssh", "ftp", "smtp", "dns", "telnet"}
+)
+
+#: The shape that proves a served page is a login surface. A password-typed
+#: input is the marker a single-page application's catch-all shell cannot
+#: produce by accident, and the identity field beside it is what separates a
+#: login from a password-change or a search box.
+_LOGIN_PASSWORD_INPUT_RE: re.Pattern[str] = re.compile(
+    r"""<input[^>]*\btype\s*=\s*["']?password\b""", re.IGNORECASE
+)
+_LOGIN_IDENTITY_FIELD_RE: re.Pattern[str] = re.compile(
+    r"""\bname\s*=\s*["']?(?:username|user|userid|user_id|email|login|account)\b""",
+    re.IGNORECASE,
 )
 
 
@@ -307,6 +320,7 @@ class OrchestratorAgent:
 
         # Cache for _probe_url results to avoid repeated slow HTTP HEAD requests
         self._probe_cache: dict[str, int | None] = {}
+        self._login_shape_cache: dict[str, bool] = {}
 
         # ---- Productization P1 --------------------------------------------
         # Operator-supplied credentials, one entry per role. Held here and NEVER
@@ -661,20 +675,46 @@ class OrchestratorAgent:
                             fallback[hint_key] = recon_result[hint_key]
                     recon_result = fallback
 
-                # Try default credentials for discovered technologies
-                await self._try_default_credentials(recon_result)
+                # Extract technologies for the Research Agent
+                technologies = self._extract_technologies(recon_result)
+
+                # Query persistent KB for playbook entries matching tech stack
+                await self._log_playbook_matches(persistent_kb, technologies)
+
+                # THE CREDENTIAL THE CLIENT GAVE US GOES FIRST.
+                #
+                # The default-credential sweep ran here unconditionally, ahead of
+                # the supplied credential: 52 requests of admin/admin, root/root,
+                # admin/password and test/test across six routes, landing in the
+                # client's authentication logs as credential stuffing — from an
+                # authorized test, before that test did the thing it was
+                # authorized to do. Guessing is what you do when you have not
+                # been given a key, so it now runs only when we have not.
+                #
+                # There is deliberately no "…or the supplied credential failed"
+                # branch. Supplied-and-failed ABORTS the engagement
+                # (``AuthStateError``, raised inside
+                # ``_establish_authenticated_state``): scanning an authenticated
+                # application anonymously produces an empty report that reads
+                # like a clean bill of health. So the sweep is not merely
+                # deferred past a failure — it is unreachable after one, which is
+                # the stricter and the correct reading. Falling back to guessing
+                # passwords the moment the operator's own credential is rejected
+                # is the same log entry this change exists to remove.
+                if self._should_sweep_default_credentials():
+                    await self._try_default_credentials(recon_result)
+                else:
+                    self._logger.info(
+                        "Operator supplied %d credential(s) — authenticating with those; "
+                        "the default-credential sweep is SKIPPED",
+                        len(self._credentials.authenticating),
+                    )
 
                 # Gather credentials and sessions for handoff
                 valid_creds = await cred_store.get_all_valid(engagement_id)
                 sessions = await state.get_sessions(engagement_id)
                 cred_data = [c.model_dump() for c in valid_creds]
                 session_data = sessions
-
-                # Extract technologies for the Research Agent
-                technologies = self._extract_technologies(recon_result)
-
-                # Query persistent KB for playbook entries matching tech stack
-                await self._log_playbook_matches(persistent_kb, technologies)
 
                 # Authenticate every supplied role and PROVE the session is
                 # authenticated before scanning. Silent anonymous scanning of an
@@ -1973,6 +2013,15 @@ class OrchestratorAgent:
     # Default credential testing
     # ------------------------------------------------------------------
 
+    def _should_sweep_default_credentials(self) -> bool:
+        """Whether to guess credentials — true only when we were given none.
+
+        Guessing is what you do when you have not been handed a key. See the
+        call site in :meth:`run` for why there is no "…or the supplied
+        credential failed" case: that path aborts the engagement.
+        """
+        return not self._credentials.authenticating
+
     async def _try_default_credentials(
         self,
         recon_result: dict[str, Any],
@@ -2063,8 +2112,6 @@ class OrchestratorAgent:
         Returns:
             Deduplicated list of technology name strings.
         """
-        import re
-
         techs: set[str] = set()
 
         # v2 ReconResult format: result.tech_stack.technologies is list of dicts
@@ -2237,8 +2284,12 @@ class OrchestratorAgent:
         2. Structured URL fields in recon/scan results containing login paths.
         3. Free-text search of recon ``summary`` for URLs with login keywords.
         4. Discovered targets/endpoints in the state store with login in path.
-        5. Probe common login paths on each scope target with HEAD requests.
-        6. Fall back to the root URL as the login page.
+        5. Probe common login paths on each scope target and keep only one whose
+           RESPONSE SHAPE is a login form (:meth:`_serves_a_login_form`).
+
+        There is no sixth strategy. Returning the root URL "as the login page"
+        was one, and a root URL is not a login page — it is where a credential
+        POST goes when nobody proved anything.
 
         Args:
             recon_result: Recon phase result dict.
@@ -2248,8 +2299,6 @@ class OrchestratorAgent:
         Returns:
             Login URL string, or None if not found.
         """
-        import re as _re
-
         login_path_hints = ("/login", "/admin", "/wp-login", "/manager", "/signin", "/auth")
 
         # --- Strategy 1: explicit login_urls dict ---
@@ -2284,7 +2333,7 @@ class OrchestratorAgent:
             summary = source.get("summary", "")
             if isinstance(summary, str) and summary:
                 # Find URLs in free text
-                url_matches = _re.findall(r'https?://[^\s<>"\']+', summary)
+                url_matches = re.findall(r'https?://[^\s<>"\']+', summary)
                 for candidate in url_matches:
                     if any(p in candidate.lower() for p in login_path_hints):
                         return candidate
@@ -2317,22 +2366,86 @@ class OrchestratorAgent:
                 if candidate.rstrip("/") not in [b.rstrip("/") for b in probe_bases]:
                     probe_bases.append(candidate)
 
-        probe_paths = ["/login.php", "/login", "/signin", "/admin", "/auth", "/wp-login.php"]
+        # Stack-neutral paths first; the two extension-bearing ones are a
+        # PHP guess and are tried last rather than first.
+        probe_paths = ["/login", "/signin", "/auth", "/admin", "/login.php", "/wp-login.php"]
         for base in probe_bases:
             for path in probe_paths:
                 probe_url = f"{base.rstrip('/')}{path}"
-                status = await self._probe_url(probe_url)
-                if status and status < 400:
-                    self._logger.info("Probed login URL found: %s (status %d)", probe_url, status)
+                if await self._serves_a_login_form(probe_url):
+                    self._logger.info("Probed login URL CONFIRMED by shape: %s", probe_url)
                     return probe_url
 
-        # --- Strategy 6: fall back to root URL ---
-        if probe_bases:
-            root_url = probe_bases[0]
-            self._logger.info("Falling back to root URL as login page: %s", root_url)
-            return root_url
-
+        # No sixth strategy. Nothing here proved a login surface, and inventing
+        # one is how a credential sweep ends up POSTing at a route the target
+        # has never had.
+        self._logger.info(
+            "No login surface proven under %s — returning none rather than guessing one",
+            ", ".join(probe_bases) or "(no base url)",
+        )
         return None
+
+    async def _serves_a_login_form(self, url: str) -> bool:
+        """Whether *url* serves a response whose SHAPE is a login form.
+
+        A status code is not evidence about a route. A single-page application
+        serves its shell for every path it does not recognise, so ``/login.php``
+        answers **200 with 9903 bytes of Angular** on a Node target that has
+        never had a PHP file — and the ``status < 400`` test this replaced
+        accepted exactly that, which is how six credential POSTs landed on
+        ``/login.php`` at a Node app during an authorized engagement.
+
+        The marker is the one no catch-all produces by accident: an
+        ``<input type="password">`` in the served body, next to an
+        identity-shaped field. Reading the body is the whole point — a HEAD
+        request cannot see it, which is why this does not reuse
+        :meth:`_probe_url`.
+
+        Scope is limited on purpose. This answers "is there an HTML login form
+        HERE", not "how does this application authenticate" — a JSON login API
+        serves no form and is found by
+        :func:`~clinkz.engagement.auth_state.detect_auth_mechanism`, which is
+        the component that knows how to ask.
+        """
+        if url in self._login_shape_cache:
+            return self._login_shape_cache[url]
+
+        result = False
+        try:
+            from clinkz.tools.http_client import HTTPClientTool
+
+            http = HTTPClientTool(
+                scope=self._scope,
+                timeout=10,
+                engagement_id=self._engagement_id or "",
+            )
+            validated = http.validate_input({"url": url, "method": "GET"})
+            raw = await asyncio.wait_for(http.execute(validated), timeout=10)
+            parsed = http.parse_output(raw)
+            if parsed.status_code and parsed.status_code < 400:
+                result = self._login_shape_of(parsed.response_body or "")
+        except Exception:
+            result = False
+
+        self._login_shape_cache[url] = result
+        return result
+
+    @staticmethod
+    def _login_shape_of(body: str) -> bool:
+        """Whether *body* is a served login form.
+
+        Both halves are required. A password input on its own is a
+        password-CHANGE form as often as a login, and the identity field beside
+        it is what makes the pair — which is the same reason
+        ``_auth_bypass``'s applicability gate wants an identity field beside a
+        password-shaped one before it will claim the class applies.
+        """
+        if not body:
+            return False
+        return (
+            _LOGIN_PASSWORD_INPUT_RE.search(body) is not None
+            and _LOGIN_IDENTITY_FIELD_RE.search(body) is not None
+        )
 
     async def _attempt_login(
         self,
