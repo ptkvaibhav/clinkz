@@ -491,7 +491,7 @@ CORRECT_COVERAGE_VERDICTS: frozenset[str] = frozenset(
 ALARM_COVERAGE_VERDICTS: frozenset[str] = frozenset(
     {
         "never_dispatched_all_candidates_dropped",
-        "never_dispatched_tasks_survived_the_cap",
+        "no_phase_event_tasks_survived_the_cap",
         "never_dispatched_kept_breakdown_absent",
     }
 )
@@ -630,11 +630,14 @@ def class_coverage(engagement: str) -> dict[str, Any]:
             row["verdict"] = "never_dispatched_no_candidates"
             row["reason"] = "the plan held no candidate endpoint for this class"
         elif kept_breakdown_present and kept_counts.get(klass):
-            row["verdict"] = "never_dispatched_tasks_survived_the_cap"
+            row["verdict"] = "no_phase_event_tasks_survived_the_cap"
             row["reason"] = (
                 f"{kept_counts[klass]} task(s) survived the cap and the class wrote no "
-                f"phase event under {skill!r} — the plan reached it and the dispatcher "
-                "did not"
+                f"phase event under {skill!r}. This does NOT say the dispatcher failed: a "
+                f"class that returns [] at its own entry gate — before its first phase "
+                f"trace — produces exactly this shape, and that is what the observed "
+                f"cases were. Read {klass}'s applicability gate first, the dispatcher "
+                "second."
             )
         elif kept_breakdown_present:
             row["verdict"] = "never_dispatched_all_candidates_dropped"

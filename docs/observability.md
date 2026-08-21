@@ -253,7 +253,13 @@ because "there was nothing to find" is what a broken class reports too:
 * `never_dispatched_no_candidates` — the plan held nothing for it. Correct, and
   **not an alarm** — the same fifth fact the ledger records as NOT APPLICABLE.
 * `never_dispatched_all_candidates_dropped` — ALARM: the cap.
-* `never_dispatched_tasks_survived_the_cap` — ALARM: the dispatcher.
+* `no_phase_event_tasks_survived_the_cap` — ALARM: tasks survived the cap
+  and the class produced no phase event. It does **not** name the
+  dispatcher: a class that returns `[]` at its own entry gate, before its
+  first phase trace, is indistinguishable from a class the dispatcher never
+  called — and every observed instance so far was the former (a form gate
+  reading `page.forms` on a framework target). Read the class's
+  applicability gate first.
 * `never_dispatched_kept_breakdown_absent` — ALARM: a trace older than
   `kept_by_class` cannot separate the last two, and an indeterminate answer is
   reported rather than rounded to the benign side.
