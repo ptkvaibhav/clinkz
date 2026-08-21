@@ -1017,7 +1017,12 @@ class OrchestratorAgent:
 
         Args:
             targets_str: Human-readable target list.
-            recon_result: Recon phase result dict.
+            recon_result: Recon phase ENVELOPE — ``{"result": <ReconResult
+                dump>, ...}``. ``run()`` guarantees the ``result`` key is
+                present (a failed phase is replaced by
+                :meth:`_build_fallback_recon`, which supplies one), which is
+                what lets the Exploit handoff below unwrap it rather than
+                tolerate two shapes.
             technologies: Technologies extracted from recon.
             cred_data: Serialized valid credentials.
             session_data: Session dicts from state store.
@@ -1122,11 +1127,28 @@ class OrchestratorAgent:
             )
 
         # --- Run Exploit with v2 models directly ---
+        #
+        # ``recon_result`` here is the PHASE ENVELOPE — ``{"result": <ReconResult
+        # dump>, "summary": ..., "status": ...}`` — and Exploit reads the
+        # ReconResult's own fields off whatever it is handed. Scan is given the
+        # envelope and unwraps it itself (``_parse_recon_result``); Research and
+        # Scan are handed their INNER result a few lines below. Exploit was the
+        # one handoff passing the envelope to a reader that does not unwrap, so
+        # every top-level lookup Exploit makes — ``components``, ``tech_stack``,
+        # ``web_info`` — resolved against the envelope's three keys and returned
+        # nothing, on every engagement ever run. The dependency -> known-CVE plan
+        # source reads ``components``, so it has never seen an inventory.
+        #
+        # Unwrapped HERE rather than tolerated in the reader: a reader that
+        # accepts both shapes is a reader that cannot tell you the next producer
+        # changed shape. ``run()`` guarantees the key exists before this point —
+        # a recon phase without ``result`` is replaced by ``_build_fallback_recon``,
+        # which supplies one — so this is an unwrap, not a fallback.
         exploit_content: dict[str, Any] = {
             "task": f"Exploit all identified vulnerabilities on {targets_str}. "
             f"Check the runbook for techniques. Test all discovered endpoints. "
             f"Validate findings and chain exploits for maximum impact.",
-            "recon_result": recon_result,
+            "recon_result": recon_result["result"],
             "credentials": cred_data,
             "sessions": session_data,
         }
