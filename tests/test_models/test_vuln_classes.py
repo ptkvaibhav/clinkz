@@ -9,7 +9,7 @@ which is why they are asserted here.
 
 from __future__ import annotations
 
-from clinkz.agents.exploit import _CLASS_PATH_TOKENS
+from clinkz.agents.exploit import DISPATCHABLE_TEST_METHODS
 from clinkz.models.vuln_classes import (
     DISCOVERY_CLASSES,
     UNIMPLEMENTED_CLASSES,
@@ -24,8 +24,23 @@ from clinkz.models.vuln_classes import (
 
 
 def test_every_dispatched_class_has_a_client_label() -> None:
-    registered = {vc.test_method for vc in (*VULN_CLASSES, *DISCOVERY_CLASSES)}
-    missing = sorted(set(_CLASS_PATH_TOKENS) - registered)
+    """The domain is the dispatch table itself, not a ranking table beside it.
+
+    This asserted over ``_CLASS_PATH_TOKENS`` — one of the ranking signal maps,
+    which happens to hold 27 of the dispatch table's 30 names. The three it does
+    not hold are the three the dispatcher can run and the registry had never
+    described: ``_test_log4shell`` (covered, by luck, through
+    ``DISCOVERY_CLASSES``) and ``_test_tier2_technique`` /
+    ``_test_tier3_technique``, which were in no registry table at all. They were
+    outside the assertion's domain, so it passed while the exact failure it
+    exists to prevent was live.
+    """
+    registered = {
+        vc.test_method
+        for vc in (*VULN_CLASSES, *DISCOVERY_CLASSES, *UNIMPLEMENTED_CLASSES)
+        if vc.test_method
+    }
+    missing = sorted(set(DISPATCHABLE_TEST_METHODS) - registered)
     assert not missing, (
         f"the Exploit Agent dispatches {missing} but the registry does not describe "
         "them; they would be invisible in the report and ungated by authorization"

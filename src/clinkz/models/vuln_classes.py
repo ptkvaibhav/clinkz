@@ -813,6 +813,42 @@ UNIMPLEMENTED_CLASSES: tuple[VulnClass, ...] = (
             "to send. Not tested."
         ),
     ),
+    # The two dispatch-table entries that can never emit. They are named here —
+    # rather than left out of the registry, which is where they were — because a
+    # method the dispatcher will run is a capability claim, and the only place a
+    # client learns a claim is empty is this section of the report. Both carry a
+    # ``test_method`` so the dispatch-table sync assertion can see them; neither
+    # is in ``_BY_METHOD``, so the authorization gate is unchanged and they are
+    # not double-reported under "techniques not authorized".
+    VulnClass(
+        key="kb_matched_technique",
+        test_method="_test_tier2_technique",
+        label="Technology-matched techniques (knowledge-base Tier 2)",
+        capability=_C.NOT_IMPLEMENTED,
+        limitation=(
+            "Planned, not executed. The engine matches techniques recorded in its "
+            "cross-engagement knowledge base against the technologies it "
+            "fingerprinted and queues one task per matching technique and endpoint, "
+            "but the applier those tasks dispatch to sends no request and constructs "
+            "no finding. Any technique that reached this path was therefore not "
+            "tested, and nothing in this report should be read as evidence the target "
+            "is unaffected by it."
+        ),
+    ),
+    VulnClass(
+        key="research_runbook_technique",
+        test_method="_test_tier3_technique",
+        label="Research-runbook techniques (Tier 3)",
+        capability=_C.NOT_IMPLEMENTED,
+        limitation=(
+            "Planned, not executed. The Research phase produces a runbook of "
+            "candidate techniques for the observed stack and the planner queues one "
+            "task per technique and endpoint, but the applier those tasks dispatch "
+            "to sends no request and constructs no finding. A technique named in the "
+            "runbook was researched, never attempted: including any CVE the "
+            "runbook cites."
+        ),
+    ),
 )
 
 _ALL: tuple[VulnClass, ...] = (
