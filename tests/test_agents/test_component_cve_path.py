@@ -37,6 +37,11 @@ from clinkz.models.finding import (
 from clinkz.models.recon import DetectedComponent, ReconResult, dedupe_components
 from clinkz.models.scan import Endpoint, HTTPScanResult, ScanResult, ServiceScanResult
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
+from clinkz.observability.ledger import (
+    ContributionLedger,
+    LedgerAlarm,
+    set_active_ledger,
+)
 from clinkz.tools.nmap import NmapOutput
 from clinkz.tools.whatweb import WhatWebOutput, WhatWebScanResult
 
@@ -420,3 +425,79 @@ def test_a_malformed_catalogue_entry_cannot_break_a_run() -> None:
 
 def _unused(*_: Any) -> None:  # pragma: no cover - keeps ``Any`` import honest
     return None
+
+
+# ---------------------------------------------------------------------------
+# The alarm blind spot: registration must not be gated by what it observes
+# ---------------------------------------------------------------------------
+
+
+class TestTheSeamIsObservableWhenItContributesNothing:
+    """``record_contribution`` sat BELOW ``if not components: return plan``.
+
+    An empty inventory took the early return, so the ledger was never told this
+    component exists and the starved seam reached none of the four alarm
+    classes: not SILENT (that needs a recorded invocation), not DEAD_SEAM, not
+    ALL_FAILED, and not declared-but-never-invoked — nothing declares it, and
+    ``declare_component`` is called in exactly one place in the whole engine,
+    for LLM providers.
+
+    The inventory was empty on every engagement ever run, because the
+    orchestrator handed Exploit the recon phase envelope. So the alarm built to
+    catch a component contributing nothing was, for this component, structurally
+    incapable of reporting the one thing that was wrong with it.
+    """
+
+    @staticmethod
+    def _record(recon: Any) -> ContributionLedger:
+        agent = _agent()
+        agent._logger = logging.getLogger("test.cve.ledger")
+        ledger = ContributionLedger(engagement_id="ledger-test")
+        set_active_ledger(ledger)
+        try:
+            agent._merge_component_cve_tasks(_plan(), recon, None)
+        finally:
+            set_active_ledger(None)
+        return ledger
+
+    def test_an_empty_inventory_still_registers_the_component(self) -> None:
+        ledger = self._record(None)
+        names = {rec.name for rec in ledger.records()}
+        assert "exploit.component_cve_match" in names, (
+            "a starved seam that never registers is unobservable by construction — "
+            f"the ledger only knows about {sorted(names)}"
+        )
+
+    def test_an_empty_inventory_is_correctly_empty_with_a_stated_reason(self) -> None:
+        """Recon named nothing, so there was nothing of this component's kind to read.
+
+        That is the NOT-APPLICABLE fact, not an alarm: reported as a defect it
+        would fire on every target with no fingerprintable banner, and a
+        permanent false alarm trains an operator to skim the section a real one
+        appears in.
+        """
+        ledger = self._record(None)
+        rec = next(r for r in ledger.records() if r.name == "exploit.component_cve_match")
+        assert rec.invocations == 1
+        assert rec.items_contributed == 0
+        assert rec.not_applicable == 1, "the zero must carry the reason it is a zero"
+        assert rec.correctly_empty
+        assert rec.alarms == []
+
+    def test_an_inventory_that_matched_nothing_stays_an_ordinary_zero(self) -> None:
+        """Components were READ. That is a different sentence, and it stays loud.
+
+        A fully-patched stack and a component-name parser that mangles every
+        name both produce zero matches here, and only one of them is fine. No
+        reason string can tell them apart, so this zero is not talked away — it
+        is the ffuf shape at the granularity of this seam.
+        """
+        ledger = self._record(
+            {"components": [DetectedComponent(name="nginx", version="1.99.0").model_dump()]}
+        )
+        rec = next(r for r in ledger.records() if r.name == "exploit.component_cve_match")
+        assert rec.invocations == 1
+        assert rec.items_contributed == 0
+        assert rec.not_applicable == 0
+        assert rec.alarms == [LedgerAlarm.SILENT]
+        assert any("1 component(s) inventoried" in n for n in rec.notes)

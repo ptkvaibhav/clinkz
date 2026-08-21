@@ -9,7 +9,7 @@ which is why they are asserted here.
 
 from __future__ import annotations
 
-from clinkz.agents.exploit import _CLASS_PATH_TOKENS
+from clinkz.agents.exploit import DISPATCHABLE_TEST_METHODS
 from clinkz.models.vuln_classes import (
     DISCOVERY_CLASSES,
     UNIMPLEMENTED_CLASSES,
@@ -24,8 +24,23 @@ from clinkz.models.vuln_classes import (
 
 
 def test_every_dispatched_class_has_a_client_label() -> None:
-    registered = {vc.test_method for vc in (*VULN_CLASSES, *DISCOVERY_CLASSES)}
-    missing = sorted(set(_CLASS_PATH_TOKENS) - registered)
+    """The domain is the dispatch table itself, not a ranking table beside it.
+
+    This asserted over ``_CLASS_PATH_TOKENS`` — one of the ranking signal maps,
+    which happens to hold 27 of the dispatch table's 30 names. The three it does
+    not hold are the three the dispatcher can run and the registry had never
+    described: ``_test_log4shell`` (covered, by luck, through
+    ``DISCOVERY_CLASSES``) and ``_test_tier2_technique`` /
+    ``_test_tier3_technique``, which were in no registry table at all. They were
+    outside the assertion's domain, so it passed while the exact failure it
+    exists to prevent was live.
+    """
+    registered = {
+        vc.test_method
+        for vc in (*VULN_CLASSES, *DISCOVERY_CLASSES, *UNIMPLEMENTED_CLASSES)
+        if vc.test_method
+    }
+    missing = sorted(set(DISPATCHABLE_TEST_METHODS) - registered)
     assert not missing, (
         f"the Exploit Agent dispatches {missing} but the registry does not describe "
         "them; they would be invisible in the report and ungated by authorization"
@@ -117,3 +132,32 @@ def test_a_specific_token_beats_a_generic_one() -> None:
 def test_an_unrecognised_title_resolves_to_nothing() -> None:
     """A missing remediation is honest; a confidently wrong one is not."""
     assert for_finding("Something the registry has never heard of") is None
+
+
+def test_the_description_is_a_fallback_not_a_co_equal_haystack() -> None:
+    """A parameter NAME must never outrank the title's own class token.
+
+    `for_finding` searched `f"{title} {description}"` as one string, so the
+    longest token anywhere won. A description is
+    `"Technique: <id>. Parameter: <name>."`, and the parameter name is a value
+    the methodology or the target chose — not a class name.
+
+    On the 2026-08-21 DVWA ladder that misfiled P7's flagship at all three
+    exploitable levels: `client-side` (11 chars, `_test_javascript_attacks`)
+    beat `dom-based` (9 chars, `_test_xss_dom`) on a DOM-XSS finding whose
+    parameter is literally `(client-side fragment)`. Remediation, the chaining
+    yield vocabulary and the control re-grade all then read the wrong class.
+    """
+    title = "DOM-based XSS — script execution witnessed in a browser"
+    description = "Technique: WSTG-CLNT-01. Parameter: (client-side fragment)."
+
+    assert for_finding(title, description).test_method == "_test_xss_dom"
+    # And the title alone already resolved — the description changed the answer.
+    assert for_finding(title).test_method == "_test_xss_dom"
+
+
+def test_the_description_still_resolves_a_title_that_cannot() -> None:
+    """Fallback, not removal: a title matching nothing still gets its class."""
+    resolved = for_finding("Finding on /api/v2/orders", "Technique: SQL Injection in id.")
+    assert resolved is not None
+    assert resolved.key == "sql_injection"

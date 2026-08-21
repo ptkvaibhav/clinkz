@@ -29,10 +29,18 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from clinkz.agents.exploit import ExploitAgent
 from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.llm.base import LLMClient
+from clinkz.models.recon import (
+    DetectedComponent,
+    PortScanResult,
+    ReconResult,
+    ServiceScanResult,
+    TechStack,
+)
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.orchestrator.orchestrator import MAX_CROSS_PHASE_RESPINS, OrchestratorAgent
 from tests.authorization_fixtures import TEST_AUTHORIZATION
@@ -562,3 +570,93 @@ async def test_exploit_starts_without_waiting_for_slow_research() -> None:
     assert research_running_when_exploit_started.get("v") is True
     # Research is still collected for the report after Exploit.
     assert result["phases"]["research"]["status"] == "complete"
+
+
+# ---------------------------------------------------------------------------
+# The recon handoff: Exploit is given the ReconResult, not the phase envelope
+# ---------------------------------------------------------------------------
+
+
+def _recon_envelope_with_components() -> dict[str, Any]:
+    """A recon phase result in the shape ``ReconAgent.execute`` really returns.
+
+    ``{"result": <ReconResult dump>, "summary": ..., "status": ...}`` — the
+    envelope, with the inventory one level down where the agent put it.
+    """
+    recon = ReconResult(
+        target="http://10.10.10.1",
+        ports=PortScanResult(open_ports=[80], tool_used="nmap"),
+        services=ServiceScanResult(tool_used="nmap"),
+        tech_stack=TechStack(),
+        components=[
+            DetectedComponent(name="Apache", version="2.4.49", port=80, source="nmap"),
+            DetectedComponent(name="PHP", version="8.5.6", port=80, source="whatweb"),
+        ],
+    )
+    return {
+        "result": recon.model_dump(mode="json"),
+        "summary": "two components fingerprinted",
+        "status": "complete",
+    }
+
+
+async def test_exploit_is_handed_the_recon_result_not_the_phase_envelope() -> None:
+    """The seam, asserted where the shape is chosen rather than where it is read.
+
+    Every other handoff out of the concurrent phase passes the INNER result:
+    Scan gets ``results["scan"]["result"]`` and Research gets
+    ``research_data["result"]``. Exploit was handed the envelope, so every
+    top-level lookup the Exploit Agent makes against recon — ``components``,
+    ``tech_stack``, ``web_info`` — resolved against ``{"result", "summary",
+    "status"}`` and returned nothing, on every engagement ever run.
+
+    Asserted at the handoff and not in ``_harvest_components``, deliberately: a
+    reader taught to accept either shape passes this test and tells you nothing
+    the next time a producer's shape changes.
+    """
+    _, mock_lifecycle = await _run_orchestrator(
+        phase_results={"recon": _recon_envelope_with_components()}
+    )
+    spin_calls = {call[0][0]: call[0][1] for call in mock_lifecycle.spin_up.call_args_list}
+    handed = spin_calls["exploit"].content["recon_result"]
+
+    assert "components" in handed, (
+        "Exploit was handed the phase envelope, not the ReconResult — its keys are "
+        f"{sorted(handed)}"
+    )
+    assert "result" not in handed, "the envelope was passed through un-unwrapped"
+
+
+async def test_the_component_inventory_survives_the_handoff_into_the_cve_path() -> None:
+    """End to end across the seam: what the orchestrator hands over, the reader reads.
+
+    ``_harvest_components`` is the first statement of the dependency -> known-CVE
+    plan source. It is driven here with the bytes the orchestrator actually
+    produced, not with a hand-built ReconResult, because the defect was never in
+    the reader.
+    """
+    _, mock_lifecycle = await _run_orchestrator(
+        phase_results={"recon": _recon_envelope_with_components()}
+    )
+    spin_calls = {call[0][0]: call[0][1] for call in mock_lifecycle.spin_up.call_args_list}
+    handed = spin_calls["exploit"].content["recon_result"]
+
+    inventory = ExploitAgent._harvest_components(handed)
+    assert [(c.name, c.version) for c in inventory] == [
+        ("Apache", "2.4.49"),
+        ("PHP", "8.5.6"),
+    ]
+
+
+def test_the_envelope_shape_is_what_starved_the_cve_path() -> None:
+    """The negative control for the two tests above.
+
+    Without this, a handoff that regressed to passing the envelope would be
+    caught only by an assertion that could equally be satisfied by a tolerant
+    reader. This pins WHY the envelope is the wrong thing to pass: the reader
+    finds nothing in it, and finding nothing is indistinguishable from a target
+    with no fingerprintable banner.
+    """
+    envelope = _recon_envelope_with_components()
+    assert ExploitAgent._harvest_components(envelope) == []
+    assert ExploitAgent._harvest_components(envelope["result"]) != []

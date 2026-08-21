@@ -40,21 +40,29 @@ from clinkz.agents._control_arm import (
     strip_shell_separators,
     strip_template_delimiters,
 )
-from clinkz.agents.exploit import _CLASS_TRACE_SKILL, ExploitAgent
+from clinkz.agents.exploit import DISPATCHABLE_TEST_METHODS, ExploitAgent
 from clinkz.models.finding import Finding, FindingStatus, Severity
-
-# Business-logic classes are dispatchable but carry no trace-skill entry (their
-# skills are named per-intent), so they are named here to keep the accounting
-# over the real dispatch surface rather than over one table's coverage of it.
-_BUSINESS_LOGIC_CLASSES = (
-    "_test_state_sequence",
-    "_test_constraint_violation",
-    "_test_repeatability",
-)
 
 
 def _dispatchable() -> set[str]:
-    return set(_CLASS_TRACE_SKILL) | set(_BUSINESS_LOGIC_CLASSES)
+    """The domain, COMPUTED from the same table the dispatcher reads.
+
+    This used to be ``set(_CLASS_TRACE_SKILL) | set(_BUSINESS_LOGIC_CLASSES)`` —
+    a trace-skill map plus a hand-maintained tuple naming the classes that map
+    was known to be missing. It came to 27 of the 30 names in
+    :data:`~clinkz.agents.exploit.DISPATCHABLE_TEST_METHODS`, so the three the
+    dispatcher can run and neither table had heard of — ``_test_log4shell``,
+    ``_test_tier2_technique``, ``_test_tier3_technique`` — EXITED the
+    completeness assertion instead of failing it. A partition asserted over a
+    domain that excludes the unclassified members is a partition of whatever is
+    left, and ``_test_log4shell`` is the engine's one CVE oracle.
+
+    A guard's domain must be computed from the same source of truth as the
+    thing it guards. When a class is added to the dispatch table this set grows
+    with it, and the class is a red build until somebody classifies it — which
+    is the whole point of the assertion below.
+    """
+    return set(DISPATCHABLE_TEST_METHODS)
 
 
 class TestEveryClassIsClassified:

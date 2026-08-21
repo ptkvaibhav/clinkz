@@ -34,7 +34,9 @@ producer declares it on `VulnClass.control_arm` and this reads the declaration.
 Verdicts: `SURVIVES` (attributable, and either the class is not marker-bound or
 the channel it confirmed on dispatched its own arm), `NO_ARM` (marker-bound, no
 control of any kind was run), `REFUSED` (self-refuting evidence — it would be
-rejected at emission today).
+rejected at emission today), `UNKNOWN_CLASS` (the title resolves to no
+`VulnClass`, so there is no producer declaration to read and the finding is
+ungraded — which is not the same as a pass, and used to be reported as one).
 """
 
 from __future__ import annotations
@@ -78,6 +80,7 @@ BUNDLES: tuple[tuple[str, str], ...] = (
 SURVIVES = "SURVIVES"
 NO_ARM = "NO_ARM"
 REFUSED = "REFUSED"
+UNKNOWN_CLASS = "UNKNOWN_CLASS"
 
 
 @dataclass(frozen=True)
@@ -117,12 +120,37 @@ def grade(bundle: str, finding: dict[str, Any]) -> Graded:
     if reason is not None:
         return Graded(bundle, title, str(finding.get("target") or ""), test_method, REFUSED, reason)
 
+    if not test_method:
+        # Every verdict below this line is read off the PRODUCER's declaration —
+        # ``MARKER_ORACLE_CLASSES`` / ``CONTROL_EXEMPT_CLASSES`` and
+        # ``VulnClass.control_arm``, all keyed by ``_test_*``. A finding whose
+        # title resolves to no class reaches none of them, so there is no
+        # declaration to read and no verdict to give.
+        #
+        # It used to fall through to SURVIVES, because ``control_required("")``
+        # is False and "not marker-bound" was the branch that answered. That is
+        # the consumer supplying an answer the producer never gave: the juice
+        # shop bundle's "Credential material served to an unauthenticated
+        # requester (authorization)" was graded SURVIVES on the strength of its
+        # title matching nothing. The fix is not another title token in a lookup
+        # table here — it is to say so, and to make the emit side resolvable
+        # (``_make_finding`` now logs an UNCLASSIFIED FINDING for exactly this).
+        return Graded(
+            bundle,
+            title,
+            str(finding.get("target") or ""),
+            "(unrecognised class)",
+            UNKNOWN_CLASS,
+            "title resolves to no VulnClass, so the producer's control_arm declaration "
+            "cannot be read — this is ungraded, NOT a pass",
+        )
+
     if not control_required(test_method):
         return Graded(
             bundle,
             title,
             str(finding.get("target") or ""),
-            test_method or "(unrecognised class)",
+            test_method,
             SURVIVES,
             "not a marker oracle — confirms on a protocol observation or a control it already ran",
         )
@@ -254,14 +282,18 @@ def main(argv: list[str] | None = None) -> int:
         per_class[(g.bundle, g.test_method or "(unrecognised)")][g.verdict] += 1
 
     print("PER-CLASS SURVIVAL — stored bundles under the control rules\n")
-    header = f"{'bundle':<18} {'class':<26} {'n':>3} {'SURVIVES':>9} {'NO_ARM':>7} {'REFUSED':>8}"
+    header = (
+        f"{'bundle':<18} {'class':<26} {'n':>3} {'SURVIVES':>9} {'NO_ARM':>7} "
+        f"{'REFUSED':>8} {'UNKNOWN':>8}"
+    )
     print(header)
     print("-" * len(header))
     for (bundle, cls), counts in sorted(per_class.items()):
         total = sum(counts.values())
         print(
             f"{bundle:<18} {cls:<26} {total:>3} "
-            f"{counts[SURVIVES]:>9} {counts[NO_ARM]:>7} {counts[REFUSED]:>8}"
+            f"{counts[SURVIVES]:>9} {counts[NO_ARM]:>7} {counts[REFUSED]:>8} "
+            f"{counts[UNKNOWN_CLASS]:>8}"
         )
 
     print("\nPER-BUNDLE TOTALS\n")
@@ -275,8 +307,16 @@ def main(argv: list[str] | None = None) -> int:
         total = sum(counts.values())
         print(
             f"  {label:<18} confirmed={total:<3} survives={counts[SURVIVES]:<3} "
-            f"no_arm={counts[NO_ARM]:<3} refused={counts[REFUSED]}"
+            f"no_arm={counts[NO_ARM]:<3} refused={counts[REFUSED]:<3} "
+            f"unknown_class={counts[UNKNOWN_CLASS]}"
         )
+
+    ungraded = [g for g in graded if g.verdict == UNKNOWN_CLASS]
+    if ungraded:
+        print("\nUNGRADED — title resolves to no VulnClass (NOT a pass)\n")
+        for g in ungraded:
+            print(f"  [{g.bundle}] {g.title} @ {g.target}")
+            print(f"      {g.detail}")
 
     refused = [g for g in graded if g.verdict == REFUSED]
     if refused:
@@ -308,8 +348,18 @@ def main(argv: list[str] | None = None) -> int:
                     "survives": counts[SURVIVES],
                     "no_arm": counts[NO_ARM],
                     "refused": counts[REFUSED],
+                    "unknown_class": counts[UNKNOWN_CLASS],
                 }
                 for (bundle, cls), counts in sorted(per_class.items())
+            ],
+            "ungraded": [
+                {
+                    "bundle": g.bundle,
+                    "title": g.title,
+                    "target": g.target,
+                    "detail": g.detail,
+                }
+                for g in ungraded
             ],
             "refused": [
                 {

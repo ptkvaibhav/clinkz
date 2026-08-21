@@ -14,7 +14,6 @@ Plus an end-to-end run that drives all six phases through one ``page``.
 from __future__ import annotations
 
 import re
-import time
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -114,11 +113,14 @@ class TestPhase1InjectionPointMapping:
             return_value=_HTTPResponse(status=200, body=body)
         )
         page = _make_page()
-        is_candidate, baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        is_candidate, baselines, _separator = await agent._cmdi_phase1_injection_point(page, "cmd")
         assert is_candidate is False
-        # 6 separator baselines + 4 echo-canary confirmation probes (run only
-        # because no bare separator diverged, and none reflect the canary here).
-        assert len(baselines) == 10
+        # 6 separator baselines + 5 echo-canary confirmation probes. The canary
+        # sweep now runs UNCONDITIONALLY (it used to be skipped whenever a bare
+        # separator diverged — i.e. on every DVWA level, which is where the
+        # strongest primitive this class has went unrecorded), and it covers the
+        # five separators measured to survive a tightening filter.
+        assert len(baselines) == 11
 
     @pytest.mark.asyncio
     async def test_canary_echo_marks_candidate_when_base_is_inert(self) -> None:
@@ -136,7 +138,7 @@ class TestPhase1InjectionPointMapping:
 
         agent._send_probe = fake_probe  # type: ignore[method-assign]
         page = _make_page()
-        is_candidate, _baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        is_candidate, _baselines, _separator = await agent._cmdi_phase1_injection_point(page, "cmd")
         assert is_candidate is True
 
     @pytest.mark.asyncio
@@ -155,7 +157,7 @@ class TestPhase1InjectionPointMapping:
 
         agent._send_probe = fake_probe  # type: ignore[method-assign]
         page = _make_page()
-        is_candidate, _baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        is_candidate, _baselines, _separator = await agent._cmdi_phase1_injection_point(page, "cmd")
         assert is_candidate is False
 
     @pytest.mark.asyncio
@@ -169,7 +171,7 @@ class TestPhase1InjectionPointMapping:
 
         agent._send_probe = fake_probe  # type: ignore[method-assign]
         page = _make_page()
-        is_candidate, _baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        is_candidate, _baselines, _separator = await agent._cmdi_phase1_injection_point(page, "cmd")
         assert is_candidate is True
 
     @pytest.mark.asyncio
@@ -179,7 +181,7 @@ class TestPhase1InjectionPointMapping:
             return_value=_HTTPResponse(status=200, body="content")
         )
         page = _make_page()
-        _is_candidate, baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        _is_candidate, baselines, _separator = await agent._cmdi_phase1_injection_point(page, "cmd")
         for b in baselines:
             assert isinstance(b.status, int)
             assert isinstance(b.length, int)
@@ -240,7 +242,7 @@ class TestPhase2PrimitiveExtraction:
         agent._send_probe = fake_probe  # type: ignore[method-assign]
         page = _make_page()
         # Build phase-1 baselines first.
-        _candidate, baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        _candidate, baselines, _separator = await agent._cmdi_phase1_injection_point(page, "cmd")
         shell, primitives, _evidence = await agent._cmdi_phase2_fingerprint(page, "cmd", baselines)
         # All separators with `echo` payloads should land in `separators`.
         assert ";" in primitives.separators or "&&" in primitives.separators
@@ -259,7 +261,7 @@ class TestPhase2PrimitiveExtraction:
             return_value=_HTTPResponse(status=200, body="content")
         )
         page = _make_page()
-        _candidate, baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+        _candidate, baselines, _separator = await agent._cmdi_phase1_injection_point(page, "cmd")
         _shell, primitives, _evidence = await agent._cmdi_phase2_fingerprint(page, "cmd", baselines)
         assert primitives.separators == []
         assert primitives.substitution == []
@@ -292,7 +294,9 @@ class TestPhase2PrimitiveExtraction:
         exploit_mod.time.monotonic = fake_monotonic  # type: ignore[assignment]
         try:
             page = _make_page()
-            _candidate, baselines = await agent._cmdi_phase1_injection_point(page, "cmd")
+            _candidate, baselines, _separator = await agent._cmdi_phase1_injection_point(
+                page, "cmd"
+            )
             _shell, primitives, evidence = await agent._cmdi_phase2_fingerprint(
                 page, "cmd", baselines
             )
@@ -539,24 +543,41 @@ class TestPhase5Verification:
         assert "id" in observed.lower() or "uid=" in observed
 
     @pytest.mark.asyncio
-    async def test_time_delta_above_threshold_verified(self) -> None:
+    async def test_time_delta_verifies_on_a_delta_over_the_endpoints_own_baseline(
+        self,
+    ) -> None:
+        """The time channel is a PAIRED differential, not an absolute threshold.
+
+        This test used to pin one 5.00s reading against a 4.0s constant. That
+        contract is the defect: DVWA's exec page runs ``ping -c 4`` and measures
+        4.04s on the untouched baseline, so the oracle confirmed command
+        injection on a request carrying no payload, and six ladder findings died
+        on their own control arm. The clock is scripted here as interleaved
+        pairs — baseline, payload, repeated — because that is what the oracle
+        now sends.
+        """
         agent = _make_agent()
 
-        async def slow_probe(_page: PageAnalysis, _param: str, _value: str) -> _HTTPResponse:
-            time.sleep(0)
+        async def probe(_page: PageAnalysis, _param: str, _value: str) -> _HTTPResponse:
             return _HTTPResponse(status=200, body="")
 
-        agent._send_probe = slow_probe  # type: ignore[method-assign]
+        agent._send_probe = probe  # type: ignore[method-assign]
         from clinkz.agents import exploit as exploit_mod
 
         original_monotonic = exploit_mod.time.monotonic
-        clock = iter([0.0, 5.0])
+        # Per repeat: baseline start/end (4.0s — the slow page), then payload
+        # start/end (9.0s — the slow page plus our sleep). Delta 5.0s each time.
+        ticks: list[float] = []
+        for repeat in range(exploit_mod._CMDI_TIME_REPEATS):
+            offset = repeat * 100.0
+            ticks += [offset, offset + 4.0, offset + 10.0, offset + 19.0]
+        clock = iter(ticks)
         exploit_mod.time.monotonic = lambda: next(clock)  # type: ignore[assignment]
         try:
             synth = {
                 "payload": "test;sleep 5",
                 "indicator_type": "time_delta",
-                "expected_indicator": "elapsed >= 4s",
+                "expected_indicator": "elapsed exceeds this endpoint's own baseline by ~5s",
             }
             from clinkz.agents._methodology_helpers import BaselineProbe
 
@@ -574,7 +595,53 @@ class TestPhase5Verification:
         finally:
             exploit_mod.time.monotonic = original_monotonic  # type: ignore[assignment]
         assert verified is True
-        assert "5.00s" in observed
+        assert "delta=+5.00s" in observed
+        # Both arms of every pair are rendered, so a reader can re-derive it.
+        assert observed.count("base=4.00s") == exploit_mod._CMDI_TIME_REPEATS
+
+    @pytest.mark.asyncio
+    async def test_a_slow_page_with_no_delta_does_not_verify(self) -> None:
+        """The DVWA ``ping -c 4`` shape: 4s+ every time, payload or not."""
+        agent = _make_agent()
+
+        async def probe(_page: PageAnalysis, _param: str, _value: str) -> _HTTPResponse:
+            return _HTTPResponse(status=200, body="")
+
+        agent._send_probe = probe  # type: ignore[method-assign]
+        from clinkz.agents import exploit as exploit_mod
+
+        original_monotonic = exploit_mod.time.monotonic
+        ticks: list[float] = []
+        for repeat in range(exploit_mod._CMDI_TIME_REPEATS):
+            offset = repeat * 100.0
+            # Both arms take 4.04s — well over the old absolute threshold.
+            ticks += [offset, offset + 4.04, offset + 10.0, offset + 14.04]
+        clock = iter(ticks)
+        exploit_mod.time.monotonic = lambda: next(clock)  # type: ignore[assignment]
+        try:
+            from clinkz.agents._methodology_helpers import BaselineProbe
+
+            verified, observed = await agent._cmdi_phase5_verify(
+                _make_page(),
+                "cmd",
+                {
+                    "payload": "test;sleep 5",
+                    "indicator_type": "time_delta",
+                    "expected_indicator": "delay",
+                },
+                BaselineProbe(
+                    variant="original",
+                    value="test",
+                    status=200,
+                    length=100,
+                    body_hash="aaaaaaaaaaaaaaaa",
+                    time_ms=10.0,
+                ),
+            )
+        finally:
+            exploit_mod.time.monotonic = original_monotonic  # type: ignore[assignment]
+        assert verified is False
+        assert "not reproduced" in observed
 
     @pytest.mark.asyncio
     async def test_error_string_indicator_matched(self) -> None:

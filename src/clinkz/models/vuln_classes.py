@@ -813,6 +813,42 @@ UNIMPLEMENTED_CLASSES: tuple[VulnClass, ...] = (
             "to send. Not tested."
         ),
     ),
+    # The two dispatch-table entries that can never emit. They are named here —
+    # rather than left out of the registry, which is where they were — because a
+    # method the dispatcher will run is a capability claim, and the only place a
+    # client learns a claim is empty is this section of the report. Both carry a
+    # ``test_method`` so the dispatch-table sync assertion can see them; neither
+    # is in ``_BY_METHOD``, so the authorization gate is unchanged and they are
+    # not double-reported under "techniques not authorized".
+    VulnClass(
+        key="kb_matched_technique",
+        test_method="_test_tier2_technique",
+        label="Technology-matched techniques (knowledge-base Tier 2)",
+        capability=_C.NOT_IMPLEMENTED,
+        limitation=(
+            "Planned, not executed. The engine matches techniques recorded in its "
+            "cross-engagement knowledge base against the technologies it "
+            "fingerprinted and queues one task per matching technique and endpoint, "
+            "but the applier those tasks dispatch to sends no request and constructs "
+            "no finding. Any technique that reached this path was therefore not "
+            "tested, and nothing in this report should be read as evidence the target "
+            "is unaffected by it."
+        ),
+    ),
+    VulnClass(
+        key="research_runbook_technique",
+        test_method="_test_tier3_technique",
+        label="Research-runbook techniques (Tier 3)",
+        capability=_C.NOT_IMPLEMENTED,
+        limitation=(
+            "Planned, not executed. The Research phase produces a runbook of "
+            "candidate techniques for the observed stack and the planner queues one "
+            "task per technique and endpoint, but the applier those tasks dispatch "
+            "to sends no request and constructs no finding. A technique named in the "
+            "runbook was researched, never attempted: including any CVE the "
+            "runbook cites."
+        ),
+    ),
 )
 
 _ALL: tuple[VulnClass, ...] = (
@@ -833,6 +869,45 @@ def for_method(test_method: str) -> VulnClass | None:
     return _BY_METHOD.get(test_method)
 
 
+def finding_title(test_method: str, detail: str) -> str:
+    """A finding title that :func:`for_finding` is GUARANTEED to resolve.
+
+    Every class-keyed rule in the engine — the never-sent control, the chaining
+    yield vocabulary, the report's remediation attachment, the offline re-grade —
+    reaches its class by matching the finding's title against
+    :attr:`VulnClass.title_tokens`. So a title an emit site composed freely is a
+    consumer and a producer of the same name, drifting independently.
+
+    They did drift. ``_test_secrets_exposure`` emits *"Credential material served
+    to an unauthenticated requester (authorization)"*, which contains none of its
+    class's four tokens, so the juice-shop bundle carried a HIGH that resolved to
+    no class at all: no remediation, no yield declaration, and — because
+    ``control_required("")`` is ``False`` — no never-sent-control obligation
+    either. The offline re-grade reported it as SURVIVES on the strength of that
+    absence.
+
+    Composing the title from the class's own first token makes the match a
+    property of the registry rather than of each author's phrasing. The fix for a
+    drifted title is to route it through here, never to add the drifted phrasing
+    to ``title_tokens`` — that grows the lookup table by one entry per mistake
+    and leaves the next one free to happen.
+
+    Args:
+        test_method: The emitting ``_test_*`` method.
+        detail: The rest of the title — the specific, per-finding half.
+
+    Returns:
+        ``"<Canonical Token> — <detail>"``, or *detail* unchanged when
+        *test_method* names no registered class (which
+        ``tests/test_models/test_vuln_class_registry.py`` refuses).
+    """
+    vuln_class = _BY_METHOD.get(test_method)
+    if vuln_class is None or not vuln_class.title_tokens:
+        return detail
+    canonical = vuln_class.title_tokens[0]
+    return f"{canonical[:1].upper()}{canonical[1:]} — {detail}"
+
+
 def for_finding(title: str, description: str = "") -> VulnClass | None:
     """Resolve the class a finding belongs to, from its own text.
 
@@ -847,14 +922,37 @@ def for_finding(title: str, description: str = "") -> VulnClass | None:
     matches nothing returns ``None`` and is rendered without guidance — a
     missing remediation is honest; a confidently wrong one is not.
 
+    **The description is a FALLBACK, which it says here and did not do.** The
+    implementation searched ``f"{title} {description}"`` as one string, so the
+    longest token anywhere won — and a description is
+    ``"Technique: <id>. Parameter: <name>."``, where the *parameter name* is a
+    value the methodology or the target chose, not a class name.
+
+    On the 2026-08-21 ladder that misfiled P7's flagship at all three
+    exploitable levels: ``"DOM-based XSS — script execution witnessed in a
+    browser"`` carries the description ``Parameter: (client-side fragment)``, and
+    ``client-side`` (11 chars, ``_test_javascript_attacks``) outranks
+    ``dom-based`` (9 chars, ``_test_xss_dom``). Every class-keyed consumer then
+    read the wrong class: the report attached the JavaScript-attacks
+    remediation, the chain layer read the wrong declared yield, and the control
+    re-grade filed a browser-witnessed DOM-XSS under a class that never ran.
+
+    A title that resolves is authoritative; the description is consulted only
+    when it does not.
+
     Args:
-        title: The finding's title.
-        description: The finding's description, searched as a fallback.
+        title: The finding's title. Searched first, and alone when it matches.
+        description: The finding's description, searched only as a fallback.
 
     Returns:
         The matching :class:`VulnClass`, or ``None``.
     """
-    haystack = f"{title} {description}".lower()
+    return _longest_token_match(title) or _longest_token_match(description)
+
+
+def _longest_token_match(text: str) -> VulnClass | None:
+    """The class whose longest ``title_tokens`` entry occurs in *text*."""
+    haystack = (text or "").lower()
     best: VulnClass | None = None
     best_len = 0
     for vc in _ALL:
@@ -887,6 +985,7 @@ __all__ = [
     "ConfirmationCapability",
     "VulnClass",
     "classes_requiring_client_side_oracle",
+    "finding_title",
     "for_finding",
     "for_key",
     "for_method",

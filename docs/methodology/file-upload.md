@@ -203,3 +203,41 @@ it. And `interpreter_misconfig` used to render `high` while `direct_execution`
 rendered `critical` for byte-identical proof; both now grade on the effect they
 proved, because which extension carried the execution is a detail of the route,
 not of the impact.
+
+
+## The indicator is COMPUTED, never written (phase 5)
+
+The confirming observation is a value the interpreter had to produce, and which
+appears nowhere in the bytes we uploaded. Two random 3-digit factors go into the
+file; their PRODUCT is what the oracle looks for:
+
+```php
+<?php echo 'clinkz'.'exec'.(554*242); ?>     -> clinkzexec134068
+```
+
+The control is the same upload with the same tokens carried as **inert text**
+(`clinkz exec 554*242`). PHP emits it verbatim, the product never appears, and
+the arm refuses.
+
+### Why the previous oracle could not be controlled
+
+It appended `<?php echo '<canary>'; ?>` and confirmed on `canary in fetched_body`.
+The control uploaded the decoy as plain text — and **a `.php` file containing bare
+text is emitted verbatim by the PHP interpreter**, so the decoy came back, the
+`<?php`-in-body check passed (the control had no tag), and the control CONFIRMED.
+Four ladder findings died there, at `low` and `medium`, where DVWA really does
+allow a webshell.
+
+There is no fix on the control side: a decoy that does not round-trip refuses
+everywhere and proves nothing — the mistake `sqli_inert_control` already
+documents for the SQL arm. "The nonce came back" simply cannot tell execution
+from static serving, and the arm reported that correctly.
+
+The parentheses around the product are load-bearing: `'exec'.554*242` makes PHP
+read `.554` as a float literal and raise a parse error (measured, first attempt).
+The assembled indicator still satisfies `is_minted_marker`, so the attribution
+ground grades it unchanged.
+
+Measured on the ladder — confirms at `low` and `medium`, upload rejected at
+`high` and `impossible`. Full numbers:
+[defining-effect-oracles.md](defining-effect-oracles.md).

@@ -109,3 +109,4 @@ nul
 sqlmap_*/
 *sqlmap_*/
 
+.tmpwork/

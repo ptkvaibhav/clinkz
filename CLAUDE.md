@@ -371,7 +371,16 @@ detail → `docs/productization-engagement-safety.md`.**
   BOTH invisible in the report and ungated by authorization. `DISCOVERY_CLASSES`
   and `COMPOSITION_CLASSES` (`attack_chain`) emit findings without a dispatch
   entry — they are never *planned against an endpoint* — so they are held apart
-  from that sync assertion and gated by registry KEY instead.
+  from that sync assertion and gated by registry KEY instead. **That sync
+  assertion's domain is `DISPATCHABLE_TEST_METHODS`**, the table the dispatcher
+  itself reads; it used to be `_CLASS_PATH_TOKENS` — a *ranking signal* map
+  holding 27 of the 30 — so the two classes with no registry entry at all were
+  outside the check that exists to find them. **A dispatch-table entry that can
+  never emit is a capability claim**, so `_test_tier2_technique` /
+  `_test_tier3_technique` are registered `NOT_IMPLEMENTED`
+  (`_apply_technique` has three exits, all `return []`: it sends no request and
+  constructs no `Finding`), which is what puts them in *What was NOT tested* and
+  makes every dispatched technique task a ledger row instead of silence.
 
 ## Gray-box Discovery Engine (`src/clinkz/discovery/`)
 
@@ -530,7 +539,17 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   only end-to-end command. **Refuses to start without an authorization record**
   (`--auth-*` flags refuse with EVERY missing field named — the record has no
   partial shape); `--dry-run` enumerates what it WOULD do, including whether the
-  `--source` tree is ingestable, and sends nothing. `--out` redirects the whole
+  `--source` tree is ingestable, and sends nothing. **It previews the benchmark
+  profile that will ACTUALLY execute**, splitting the destructive categories into
+  WILL BE REFUSED / WILL BE PERMITTED via the same `permits_category` predicate
+  `benchmark_override` consults at dispatch, and rendering the sample classifier
+  verdicts through it too. It used to build the refusal list from a module
+  constant and never read the attached profile — so a run permitting `deletion`,
+  `data_reset` and `unsafe_method` previewed as though all three were refused,
+  and *the dry run is what a client authorizes against*: an under-reporting
+  preview obtains consent for a different engagement than the one that runs.
+  `unsafe_method` was absent from the list entirely and so appeared in neither
+  column, on the very runs that permit it. `--out` redirects the whole
   bundle by setting `settings.outputs_root`, which every writer resolves at CALL
   time — a default argument would be bound at import and silently ignore it.
   `--resume` rebuilds an interrupted engagement's report from its persisted
@@ -555,11 +574,31 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
 - `python -m clinkz step-replay <engagement_id> <step_id>` — re-run one agent step.
 - `python scripts/regrade_stored_bundles.py` — **offline** re-grade of every
   stored bundle's confirmed findings against the never-sent control and the
-  attribution check. Sends nothing. Reports SURVIVES / **NO_ARM** / REFUSED per
-  class, holding "the question was never asked" apart from both answers: a
-  stored bundle cannot dispatch a control, and a finding that was correct
-  because the target was genuinely vulnerable but would fail its own control is
-  a phantom that landed on a real bug.
+  attribution check. Sends nothing. Reports SURVIVES / **NO_ARM** / REFUSED /
+  **UNKNOWN_CLASS** per class, holding "the question was never asked" apart from
+  both answers: a stored bundle cannot dispatch a control, and a finding that
+  was correct because the target was genuinely vulnerable but would fail its own
+  control is a phantom that landed on a real bug. **A title that resolves to no
+  `VulnClass` is UNGRADED, not a pass** — every verdict is read off the
+  producer's declaration (`MARKER_ORACLE_CLASSES` / `VulnClass.control_arm`, all
+  keyed by `_test_*`), and an unresolvable finding reaches none of them, so
+  `control_required("") is False` was the consumer supplying an answer the
+  producer never gave. The emit side is fixed at the same time:
+  `vuln_classes.finding_title()` composes a title from the class's OWN first
+  token so `for_finding` cannot fail to resolve it, and `_make_finding` logs an
+  `UNCLASSIFIED FINDING` when one does. That matters beyond the re-grade — an
+  unresolvable title exits every class-keyed rule, *including*
+  `control_required`, so it leaves the never-sent-control gate rather than
+  failing it. **And the description is a FALLBACK, which `for_finding` said and
+  did not do**: it searched `title + description` as one string, so the longest
+  token anywhere won — and a description is
+  `Technique: <id>. Parameter: <name>.`, where the parameter name is a value the
+  methodology or the target chose, not a class name. `client-side` (11) in
+  `Parameter: (client-side fragment)` outranked `dom-based` (9) in the title, so
+  P7's flagship browser-witnessed DOM-XSS was filed as
+  `_test_javascript_attacks` at all three exploitable ladder levels — wrong
+  remediation, wrong declared yield, wrong class in the re-grade. A title that
+  resolves is authoritative.
 - `python -m clinkz corpus-replay [--rebuild]` — **offline** parser regression gate:
   re-parses every recorded `tool_invocations/` stdout and diffs against
   `tests/fixtures/corpus_replay_baseline.json`; exits non-zero on drift. Sends
@@ -740,6 +779,46 @@ LESSONS #17).
   dispatchable class with a stated reason; an unclassified one is a red build.
   Enforced at `_persist_finding`, read only from fully-structured evidence so a
   page echoing `never_sent_control=refused` cannot license itself.
+- **Every kill discloses, wherever it happens.** The rule had two enforcement
+  sites and one disclosure between them: ground 8 at `_persist_finding` wrote an
+  `UnprovenExploitLead`, a phase-5 kill returned `continue` and wrote nothing —
+  so the 2026-08-20 ladder fired ten arms, recorded **zero** disclosure records,
+  and three DVWA levels carrying genuine command injection reported silence that
+  reads exactly like a clean target. The lead is now written inside
+  `_run_control_arm`, the one seam every arm passes, so a class cannot forget
+  because a class does not do it; `_control_arm_kills` /
+  `_control_arm_kill_disclosures` make it a count rather than a convention. The
+  lead says the class **could not PROVE** the vulnerability — never that the
+  endpoint is clean, which the tests refuse in so many words: an oracle whose
+  control also confirmed produced no evidence in either direction.
+- **The arm's lookup key is DECLARED by the emitting site, never re-derived.**
+  `_run_control_arm` files a verdict under the parameter it DISPATCHED against,
+  so a class that renames its vector for the report misses its own arm and is
+  then refused for not having one. `_test_sqli` at DVWA `high` dispatches
+  `\x00session:id` and emits `id (session)`: both arms refused correctly and both
+  findings were suppressed as un-armed — low and medium survived only because
+  their parameter has one name. `_test_file_upload` had the same shape
+  (`uploaded` vs `file`). `_make_finding` takes `control_arm_parameter` from the
+  site that did the renaming; a miss while a sibling arm exists on the same
+  `(test_method, endpoint)` is a traced `control_arm_key_mismatch` that still
+  refuses — an arm dispatched against a different parameter is evidence about
+  that parameter.
+- **An oracle confirms on its class's DEFINING effect, and the arm is what
+  proves it does** (**detail →
+  [`docs/methodology/defining-effect-oracles.md`](docs/methodology/defining-effect-oracles.md)**).
+  Two oracles were measuring something the endpoint does regardless of the
+  payload, and their own control arms said so on targets that really are
+  vulnerable. `_test_cmdi`'s `time_delta` compared one reading to an **absolute**
+  4.0s constant and never read the baseline it was handed — DVWA's `ping -c 4`
+  baseline is 4.04s, so it confirmed on an untouched request; it is now an
+  interleaved, repeated differential against that endpoint's own baseline, and
+  phase 4 prefers the marker channel phase 1 already PROVED (recorded as
+  `ShellPrimitives.marker_separator`) over whatever the model ranks first.
+  `_test_file_upload` confirmed on "a nonce we wrote came back", which a PHP
+  interpreter reproduces for any `.php` file of bare text — the indicator is now
+  a value the interpreter must COMPUTE (`'clinkz'.'exec'.(A*B)`) and that appears
+  nowhere in the uploaded bytes. Neither is reachable by weakening the control:
+  a decoy that does not round-trip refuses everywhere and proves nothing.
 - **A control arm's outcome is the PROOF, so a consumer must know WHICH arm it
   read.** "Marker-bound" is declared per class, and `_test_sqli` confirms on five
   channels: four are marker matches and `auth_bypass` is a three-arm differential
@@ -932,7 +1011,14 @@ LESSONS #17).
 - **A CVE match on a version string is a LEAD, never a finding**
   (`knowledge/component_cves.py`). The dependency→CVE path runs
   fingerprint → component+version inventory (`ReconResult.components`) → known
-  CVE → **our own oracle on the live target**. A match either becomes an
+  CVE → **our own oracle on the live target**. It reached the reader only after
+  the Exploit handoff was unwrapped: the orchestrator passed the recon phase
+  ENVELOPE (`{"result": …}`) where Scan and Research are both handed their inner
+  result, so every top-level lookup Exploit makes against recon —
+  `components`, `tech_stack`, `web_info` — resolved against three envelope keys
+  and returned nothing on every engagement ever run. Fixed at the handoff, not
+  in the reader: a reader that tolerates both shapes cannot tell you the next
+  producer changed. A match either becomes an
   `ExploitTask` for the class whose oracle can witness that CVE's effect — and
   the CVE is then CONTEXT on a normally-proven finding — or an
   `UnprovenExploitLead` saying we have no oracle. A third outcome does not
@@ -976,6 +1062,23 @@ LESSONS #17).
   are the deliberately-broken producers that ARE the dead-seam alarm's negative
   control. A test that can only pass against a fiction is worse than no test,
   because it is counted as coverage.
+- **A guard's DOMAIN is computed from the same source of truth as the thing it
+  guards; only the CLASSIFICATION is hand-maintained** (**detail →
+  [`.claude/skills/clinkz-dev/SKILL.md`](.claude/skills/clinkz-dev/SKILL.md),
+  "The guard-domain law"**). A partition asserted over a domain that excludes
+  the unclassified members is a partition of whatever is left — and the members
+  a hand-maintained domain forgets are exactly the ones that most need the
+  guard, because one omission produced both. `test_control_arm_registry`'s
+  `_dispatchable()` was `_CLASS_TRACE_SKILL | _BUSINESS_LOGIC_CLASSES`, 27 of
+  the dispatch table's 30, so `_test_log4shell` — the engine's one CVE oracle —
+  EXITED the never-sent-control completeness check rather than failing it, and
+  the guard was green throughout. Both directions are asserted (`computed -
+  declared` catches the new member; `declared - computed` catches the entry that
+  outlived what it described), and an exemption is an allow-list entry with a
+  substantive reason, never a silent skip. The pattern to copy is
+  `test_tool_wiring_decisions.py` (domain = `TOOL_CHAINS`) and
+  `test_parser_input_assumptions.py` (domain = an AST walk over the real
+  modules).
 
 - **Two confirmed findings do not imply the chain between them, and neither does
   a successful second request.** A carriage is proven against a control: the real
