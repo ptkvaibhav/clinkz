@@ -226,3 +226,48 @@ def test_a_broken_ledger_never_propagates_into_the_data_path() -> None:
         record_contribution(name="ffuf", kind=ComponentKind.TOOL, items=1)
     finally:
         set_active_ledger(None)
+
+
+# ---------------------------------------------------------------------------
+# The serialized shape: which keys are populations and which are views
+# ---------------------------------------------------------------------------
+
+
+def test_alarms_are_a_subset_view_not_a_second_population(
+    ledger: ContributionLedger,
+) -> None:
+    """An alarming component appears in BOTH keys, and that is containment.
+
+    ``exploit.component_cve_match`` was reported as a duplicate registration on
+    the first non-benchmark run: it appears twice in ``component_ledger`` with
+    byte-identical content. It has exactly one ``record_contribution`` site. The
+    duplication is ``alarms`` being a re-serialized view of the alarming subset
+    of ``components``, kept in full because four consumers render a row straight
+    from it.
+
+    Pinned because the containment is what decides whether a consumer may sum.
+    Nothing unions the two today, and every alarming component has contributed
+    zero items by definition, so a union would be invisible until the moment a
+    component alarms while carrying real items -- which is exactly what a
+    populated CVE inventory would produce.
+    """
+    record_contribution(name="silent.tool", kind=ComponentKind.TOOL, items=0, ok=True)
+    record_contribution(name="healthy.tool", kind=ComponentKind.TOOL, items=3, ok=True)
+
+    payload = ledger.to_dict()
+    population = {c["component"] for c in payload["components"]}
+    alarming = {a["component"] for a in payload["alarms"]}
+
+    # A view, never a second population: every alarm names a tracked component.
+    assert alarming <= population
+    assert alarming == {"silent.tool"}
+    # And it is the SAME record, not a parallel one that could drift.
+    assert next(a for a in payload["alarms"] if a["component"] == "silent.tool") == next(
+        c for c in payload["components"] if c["component"] == "silent.tool"
+    )
+    # The count a reader trusts comes from the population, so it is unaffected
+    # by the alarming subset being rendered a second time.
+    assert payload["summary"]["components_tracked"] == len(payload["components"]) == 2
+    # The sibling views are references by name, and stay that way.
+    assert all(isinstance(n, str) for n in payload["never_invoked"])
+    assert all(set(c) == {"component", "reasons"} for c in payload["correctly_empty"])

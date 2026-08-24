@@ -574,6 +574,39 @@ class ReconAgent(BaseAgent):
                         )
                 except Exception as exc:
                     self._logger.warning("Fingerprinting %s failed: %s", url, exc)
+                    # A failed fingerprint is a LEDGER row, not just a log line.
+                    # This is the component source for the whole published-CVE
+                    # path: fingerprint -> component+version -> known CVE -> our
+                    # own oracle. When it raises, the inventory is empty — and an
+                    # empty inventory has two causes that look identical from
+                    # every downstream position. A genuinely patched or
+                    # unfingerprintable stack yields no components; a parser that
+                    # raised on the tool's real bytes also yields no components.
+                    # ``whatweb --log-json=-`` interleaves its human log with the
+                    # JSON array, so whole-blob ``json.loads`` raised here on
+                    # every run for years, discarding a complete Apache/PHP
+                    # fingerprint, and nothing anywhere recorded that it had
+                    # happened. Only the fingerprinter's OWN failure record
+                    # separates the two readings, which is why it is made here
+                    # rather than inferred downstream from a zero.
+                    #
+                    # ``ok=False`` and not ``not_applicable``: the precondition
+                    # was present (an HTTP service was there to fingerprint) and
+                    # the component failed to read it. The exception's TYPE plus
+                    # a bounded slice of its text — a tool error can carry the
+                    # argv that produced it, and ``add_note`` redacts, but this
+                    # bounds what reaches the redactor.
+                    record_contribution(
+                        name=fp_match.name,
+                        kind=ComponentKind.TOOL,
+                        items=0,
+                        ok=False,
+                        note=(
+                            f"fingerprinting {url} raised {type(exc).__name__}: "
+                            f"{str(exc)[:200]} — no component or version reached the "
+                            "CVE path from this service"
+                        ),
+                    )
 
             # 2. WAF detection
             waf_match = self._resolver.find_tool("waf_detection")

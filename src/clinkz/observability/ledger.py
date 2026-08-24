@@ -418,7 +418,36 @@ class ContributionLedger:
         return [r for r in self.records() if r.correctly_empty and not r.dead_seam]
 
     def to_dict(self) -> dict[str, Any]:
-        """The ledger as it appears in ``report.json``."""
+        """The ledger as it appears in ``report.json``.
+
+        ``components`` is the POPULATION — one entry per tracked component, and
+        the only place a component's numbers live. Every other key is a VIEW
+        onto it, never a second population:
+
+        * ``alarms`` — the alarming subset, re-serialized in full and re-ordered
+          most-severe-first, because four consumers render a row straight from
+          it (the Markdown table, ``d1_consistency_runner``, two benchmark
+          drivers) and a name-only reference would push a join into each of
+          them. A join that silently misses a key drops an alarm, which is a
+          worse failure than a duplicated payload.
+        * ``never_invoked`` / ``correctly_empty`` — references by name.
+
+        So an alarming component appears TWICE in this dict, with identical
+        content, and that is containment rather than double registration. It
+        reads exactly like a duplicate: ``exploit.component_cve_match`` was
+        reported as one on the first non-benchmark run, and both readings
+        offered — a second ``record_contribution`` call, or a serialization bug
+        — were wrong. The component has exactly one registration site.
+
+        The distinction matters because it decides whether a consumer may sum.
+        Nothing in the engine does: ``summary`` is computed from
+        ``self._records``, not from these lists, and all four consumers iterate
+        ``alarms`` for display. A consumer that ever unions ``components`` with
+        ``alarms`` WOULD double-count every alarming component — invisible today
+        only because every alarming component has contributed zero items by
+        definition. ``test_alarms_are_a_subset_view_not_a_second_population``
+        pins the containment so this stays a projection.
+        """
         alarming = self.alarming()
         inapplicable = self.correctly_empty()
         return {
