@@ -277,3 +277,98 @@ def test_output_with_no_recoverable_object_still_reports_the_parse_error() -> No
     out = make_tool().parse_output("http://x/ [200 OK] Apache[2.4.67], PHP[8.5.6]\n")
     assert out.success is False
     assert "JSON parse error" in out.error
+
+
+# ---------------------------------------------------------------------------
+# Not every plugin hit is a software component
+# ---------------------------------------------------------------------------
+
+
+def test_metadata_plugins_are_not_reported_as_components() -> None:
+    """``Country`` is not a component, and a client inventory must not say it is.
+
+    ``detected_components`` emitted every plugin hit, so a DVWA run inventoried
+    14 "components" of which 11 were observations about the response --
+    ``Country``, ``IP``, ``Title``, ``HttpOnly``, ``PasswordField``.
+    ``DetectedComponent`` is documented as "one **software** component", so the
+    wrapper was breaking its own model's contract, and the result reached the
+    client-facing inventory and the CVE lookup alike.
+
+    The raw observation is untouched: every plugin hit is still in
+    ``results[].technologies``.
+    """
+    raw = (
+        '{"target":"http://t/","http_status":200,"plugins":{'
+        '"Apache":{"version":["2.4.67"]},'
+        '"Country":{"string":["RESERVED"],"module":["ZZ"]},'
+        '"IP":{"string":["172.20.0.2"]},'
+        '"Title":{"string":["Login"]},'
+        '"HttpOnly":{"string":["PHPSESSID"]},'
+        '"PasswordField":{"string":["password"]},'
+        '"DVWA":{}}}\n'
+    )
+    out = make_tool().parse_output(raw)
+    assert out.success is True
+
+    names = {c.name for c in out.detected_components()}
+    assert names == {"Apache", "DVWA"}
+    # Unversioned but real: a product whose version we could not observe is
+    # still a component. Filtering on "has a version" would drop it.
+    assert next(c for c in out.detected_components() if c.name == "DVWA").version == ""
+    # The observation itself is not discarded, only its promotion to a product.
+    assert "Country" in out.results[0].technologies
+
+
+def test_a_header_echo_contributes_the_software_not_the_header_name() -> None:
+    """``X-Powered-By: PHP/8.5.6`` is PHP 8.5.6, never a product called X-Powered-By.
+
+    These two plugins name a header and carry the software in the value, so
+    emitting the plugin name gave the inventory ``HTTPServer`` and
+    ``X-Powered-By`` as versionless products. Resolved rather than dropped, so
+    the software survives on a target where only the header fired -- and dedup
+    collapses it against the dedicated product plugin when both did.
+    """
+    raw = (
+        '{"target":"http://t/","http_status":200,"plugins":{'
+        '"HTTPServer":{"os":["Debian Linux"],"string":["Apache/2.4.67 (Debian)"]},'
+        '"X-Powered-By":{"string":["PHP/8.5.6"]}}}\n'
+    )
+    out = make_tool().parse_output(raw)
+    components = {(c.name, c.version) for c in out.detected_components()}
+
+    # The packager parenthetical is stripped before the split, or the whole
+    # string stays a name and the version is lost.
+    assert components == {("Apache", "2.4.67"), ("PHP", "8.5.6")}
+    assert not any(c.name in {"HTTPServer", "X-Powered-By"} for c in out.detected_components())
+
+
+def test_a_header_echo_dedups_against_its_own_product_plugin() -> None:
+    """Both fired on the real DVWA run; the inventory must carry one of each."""
+    raw = (
+        '{"target":"http://t/","http_status":200,"plugins":{'
+        '"Apache":{"version":["2.4.67"]},'
+        '"PHP":{"version":["8.5.6"]},'
+        '"HTTPServer":{"string":["Apache/2.4.67 (Debian)"]},'
+        '"X-Powered-By":{"string":["PHP/8.5.6"]}}}\n'
+    )
+    out = make_tool().parse_output(raw)
+    components = [(c.name, c.version) for c in out.detected_components()]
+
+    assert sorted(components) == [("Apache", "2.4.67"), ("PHP", "8.5.6")]
+
+
+def test_an_unrecognised_plugin_is_still_a_component() -> None:
+    """Default-allow: whatweb ships ~1,800 plugins and keeps adding them.
+
+    An allow-list would drop a real product the day it gained a plugin. The two
+    failure directions are not symmetric -- a spurious metadata row is noise in
+    a report, a dropped product is a CVE lookup that never happens.
+    """
+    raw = (
+        '{"target":"http://t/","http_status":200,"plugins":{'
+        '"SomeBrandNewFramework":{"version":["3.1.4"]}}}\n'
+    )
+    out = make_tool().parse_output(raw)
+    assert [(c.name, c.version) for c in out.detected_components()] == [
+        ("SomeBrandNewFramework", "3.1.4")
+    ]

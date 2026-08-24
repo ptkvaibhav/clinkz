@@ -12,6 +12,59 @@ from typing import Any
 from pydantic import BaseModel
 
 from clinkz.tools.base import DetectedComponent, ToolBase, ToolOutput
+from clinkz.tools.component_names import split_name_version
+
+#: WhatWeb plugin names that describe the OBSERVATION rather than name a piece
+#: of software, mapped to why. Every plugin hit used to become a
+#: ``DetectedComponent``, so a DVWA run inventoried 14 "components" of which 11
+#: were these: ``Country``, ``IP``, ``Title``, ``HttpOnly``, ``PasswordField``.
+#: ``DetectedComponent`` is documented as "one **software** component", so the
+#: wrapper was breaking its own model's contract, and the result reached the
+#: client-facing inventory — a report that calls ``Country`` a component is
+#: wrong in a way a reader notices immediately.
+#:
+#: Default-**allow**: a plugin absent from this table is treated as software.
+#: WhatWeb ships ~1,800 plugins and adds more, so an allow-list would silently
+#: drop a real product the day it gained a plugin — and the two failure
+#: directions are not symmetric. A spurious metadata row is noise in a report; a
+#: dropped product is a missing CVE lookup, which is the whole reason the
+#: fingerprint feeds ``knowledge/component_cves.py``.
+_NON_COMPONENT_PLUGINS: dict[str, str] = {
+    "country": "geolocation of the target's address, a property of the IP",
+    "ip": "the resolved address itself",
+    "title": "the page's <title> text",
+    "cookies": "the NAMES of cookies the response set",
+    "httponly": "a flag on a cookie",
+    "passwordfield": "an <input type=password> was present on the page",
+    "redirectlocation": "the value of the Location header",
+    "email": "an address scraped out of the page body",
+    "script": "a <script> element was present",
+    "frame": "a frame or iframe was present",
+    "html5": "a doctype declaration, not a shipped component",
+    "meta-author": "the author meta tag's text",
+    "meta-refresh-redirect": "a refresh meta tag was present",
+    "uncommonheaders": "the names of headers whatweb did not recognise",
+    "x-frame-options": "a security header's presence",
+    "x-content-type-options": "a security header's presence",
+    "x-xss-protection": "a security header's presence",
+    "strict-transport-security": "a security header's presence",
+    "content-security-policy": "a security header's presence",
+    "access-control-allow-origin": "a CORS header's presence",
+}
+
+#: Plugins whose hit is a HEADER ECHO: the plugin name is the header, and the
+#: software is inside the value. Emitting the plugin name gave the inventory
+#: ``HTTPServer`` and ``X-Powered-By`` as products with no version, while
+#: whatweb's own ``Apache`` and ``PHP`` plugins reported the same software
+#: correctly alongside. Resolved through the shared name/version split instead
+#: of dropped, so the software survives even on a target where only the header
+#: fired — dedup then collapses it against the product plugin's entry.
+_HEADER_ECHO_PLUGINS: frozenset[str] = frozenset({"httpserver", "x-powered-by"})
+
+#: A trailing packager parenthetical — ``Apache/2.4.67 (Debian)``. The shared
+#: splitter reads the last whitespace-separated token, so ``(Debian)`` defeats
+#: it and the whole string stays a name. Stripped before splitting, never after.
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 
 class WhatWebScanResult(BaseModel):
@@ -22,6 +75,10 @@ class WhatWebScanResult(BaseModel):
     technologies: list[str] = []  # plugin names detected
     versions: dict[str, str] = {}  # plugin name -> first version string
     server: str = ""  # value of the HTTPServer plugin
+    #: Header-echo plugin name -> the raw string it carried, retained so the
+    #: software inside the value can be resolved rather than the header name
+    #: being reported as a product. Keyed as whatweb spelled it.
+    header_software: dict[str, str] = {}
 
 
 class WhatWebOutput(ToolOutput):
@@ -31,13 +88,33 @@ class WhatWebOutput(ToolOutput):
     technologies: dict[str, list[str]] = {}  # url -> list of tech names
 
     def detected_components(self) -> list[DetectedComponent]:
-        """Every plugin hit, carrying its version where WhatWeb reported one.
+        """Every SOFTWARE plugin hit, carrying its version where WhatWeb has one.
 
         ``versions`` has been parsed since this wrapper was written and consumed
         by nothing: the recon seam read technology NAMES only, so a version
         WhatWeb had already told us sat in the model unread and no engagement
         could test a dependency against a known CVE. The version is part of the
         observation, so it is part of what the producer declares.
+
+        Not every plugin hit is a component, and this used to emit all of them.
+        WhatWeb's plugin set mixes product identification with observations
+        about the response — ``Country``, ``IP``, ``Title``, ``HttpOnly``,
+        ``PasswordField`` — and 11 of the 14 "components" a DVWA run inventoried
+        were of that second kind. Two filters, both keyed on WhatWeb's own
+        vocabulary, which is this wrapper's business to know:
+
+        * :data:`_NON_COMPONENT_PLUGINS` drops the observations, each with a
+          stated reason. Default-allow, so an unrecognised plugin is still a
+          component and no product is lost silently.
+        * :data:`_HEADER_ECHO_PLUGINS` resolves the software out of the header
+          VALUE, so ``X-Powered-By: PHP/8.5.6`` contributes ``PHP 8.5.6``
+          rather than a product called ``X-Powered-By`` with no version.
+
+        Dedup is unchanged and does the rest: a resolved header echo collapses
+        against the dedicated product plugin's entry when both fired.
+
+        Nothing is dropped from ``results`` — ``technologies`` still lists every
+        plugin hit, so the raw observation stays auditable.
         """
         seen: set[tuple[str, str]] = set()
         components: list[DetectedComponent] = []
@@ -46,8 +123,27 @@ class WhatWebOutput(ToolOutput):
                 name = (tech or "").strip()
                 if not name:
                     continue
+                key_name = name.lower()
+                if key_name in _NON_COMPONENT_PLUGINS:
+                    continue
                 version = (result.versions.get(name) or "").strip()
-                key = (name.lower(), version)
+                if key_name in _HEADER_ECHO_PLUGINS:
+                    echoed = (result.header_software.get(name) or "").strip()
+                    if not echoed:
+                        # The header fired with no value we retained. Reporting
+                        # the header NAME as a product is what this branch
+                        # exists to stop, so contribute nothing rather than a
+                        # component called "X-Powered-By".
+                        continue
+                    name, echoed_version = split_name_version(
+                        _TRAILING_PAREN_RE.sub("", echoed).strip()
+                    )
+                    name = name.strip()
+                    if not name:
+                        continue
+                    version = version or echoed_version
+                    key_name = name.lower()
+                key = (key_name, version)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -261,6 +357,7 @@ class WhatWebTool(ToolBase):
 
             tech_names: list[str] = []
             versions: dict[str, str] = {}
+            header_software: dict[str, str] = {}
             server = ""
 
             for plugin_name, plugin_data in plugins.items():
@@ -269,6 +366,12 @@ class WhatWebTool(ToolBase):
                     version_list = plugin_data.get("version", [])
                     if version_list:
                         versions[plugin_name] = version_list[0]
+                    if plugin_name.lower() in _HEADER_ECHO_PLUGINS:
+                        # The header's VALUE, retained so ``detected_components``
+                        # can name the software inside it rather than the header.
+                        strings = plugin_data.get("string", [])
+                        if strings:
+                            header_software[plugin_name] = str(strings[0])
                     if plugin_name == "HTTPServer":
                         strings = plugin_data.get("string", [])
                         if strings:
@@ -281,6 +384,7 @@ class WhatWebTool(ToolBase):
                     technologies=tech_names,
                     versions=versions,
                     server=server,
+                    header_software=header_software,
                 )
             )
             technologies_map[target] = tech_names

@@ -117025,6 +117025,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117044,6 +117048,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117096,6 +117104,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117115,6 +117127,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117167,6 +117183,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117186,6 +117206,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117238,6 +117262,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117254,6 +117281,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117299,6 +117329,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117337,6 +117371,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117356,6 +117394,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117408,6 +117450,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117427,6 +117473,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117479,6 +117529,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117498,6 +117552,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117550,6 +117608,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117569,6 +117631,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117621,6 +117687,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117640,6 +117710,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117692,6 +117766,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117712,6 +117790,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117765,6 +117847,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117784,6 +117870,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117836,6 +117926,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117855,6 +117949,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117907,6 +118005,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117926,6 +118028,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -117978,6 +118084,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -117997,6 +118107,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118049,6 +118163,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://172.20.0.2:80",
@@ -118068,6 +118186,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://172.20.0.2/login.php",
@@ -118120,6 +118242,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118139,6 +118265,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118191,6 +118321,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118210,6 +118344,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118262,6 +118400,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118281,6 +118423,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118333,6 +118479,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118353,6 +118503,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118406,6 +118560,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118425,6 +118583,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118477,6 +118639,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118496,6 +118662,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118548,6 +118718,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118567,6 +118741,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118619,6 +118797,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118635,6 +118816,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118680,6 +118864,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118699,6 +118887,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118751,6 +118943,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118770,6 +118966,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118822,6 +119022,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118841,6 +119045,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118893,6 +119101,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118912,6 +119124,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -118964,6 +119180,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -118983,6 +119203,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119035,6 +119259,7 @@
    "error": "",
    "results": [
     {
+     "header_software": {},
      "http_status": 200,
      "server": "",
      "target": "http://clinkz-juiceshop:3000/",
@@ -119072,6 +119297,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119091,6 +119320,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119143,6 +119376,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119162,6 +119399,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119214,6 +119455,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119234,6 +119479,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119287,6 +119536,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119306,6 +119559,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119358,6 +119615,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119374,6 +119634,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119419,6 +119682,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119438,6 +119705,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119490,6 +119761,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119509,6 +119784,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119561,6 +119840,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://172.20.0.2:80",
@@ -119580,6 +119863,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://172.20.0.2/login.php",
@@ -119632,6 +119919,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119651,6 +119942,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119703,6 +119998,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119723,6 +120022,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119776,6 +120079,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119795,6 +120102,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119847,6 +120158,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119866,6 +120181,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119918,6 +120237,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -119937,6 +120260,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -119989,6 +120316,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120005,6 +120335,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120050,6 +120383,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120066,6 +120402,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120111,6 +120450,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120130,6 +120473,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120182,6 +120529,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120201,6 +120552,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120253,6 +120608,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120272,6 +120631,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120324,6 +120687,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120340,6 +120706,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120385,6 +120754,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120404,6 +120777,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120456,6 +120833,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120475,6 +120856,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120527,6 +120912,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120546,6 +120935,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120598,6 +120991,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120617,6 +121014,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120669,6 +121070,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120688,6 +121093,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120740,6 +121149,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120760,6 +121173,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120813,6 +121230,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120833,6 +121254,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120886,6 +121311,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120902,6 +121330,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -120947,6 +121378,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -120966,6 +121401,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121018,6 +121457,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121037,6 +121480,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121089,6 +121536,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121108,6 +121559,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121160,6 +121615,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121179,6 +121638,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121231,6 +121694,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121250,6 +121717,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121302,6 +121773,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121321,6 +121796,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121373,6 +121852,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121392,6 +121875,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121444,6 +121931,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121463,6 +121954,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121515,6 +122010,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121535,6 +122034,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121588,6 +122091,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121607,6 +122114,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121659,6 +122170,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121675,6 +122189,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121720,6 +122237,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121739,6 +122260,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121791,6 +122316,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121810,6 +122339,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121862,6 +122395,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121881,6 +122418,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121933,6 +122474,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -121949,6 +122493,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -121994,6 +122541,7 @@
    "error": "",
    "results": [
     {
+     "header_software": {},
      "http_status": 200,
      "server": "",
      "target": "http://clinkz-juiceshop:3000/",
@@ -122031,6 +122579,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122050,6 +122602,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122102,6 +122658,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122140,6 +122700,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122159,6 +122723,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122211,6 +122779,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122231,6 +122803,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122284,6 +122860,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122303,6 +122883,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122355,6 +122939,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122388,6 +122975,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122408,6 +122999,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122461,6 +123056,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122480,6 +123079,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122532,6 +123135,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122551,6 +123158,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122603,6 +123214,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122623,6 +123238,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122676,6 +123295,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122695,6 +123318,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122747,6 +123374,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122766,6 +123397,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122818,6 +123453,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122838,6 +123477,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122891,6 +123534,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122911,6 +123558,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -122964,6 +123615,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -122983,6 +123638,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123035,6 +123694,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123054,6 +123717,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123106,6 +123773,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123122,6 +123792,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123167,6 +123840,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123186,6 +123863,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123238,6 +123919,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123257,6 +123942,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123309,6 +123998,7 @@
    "error": "",
    "results": [
     {
+     "header_software": {},
      "http_status": 200,
      "server": "",
      "target": "http://clinkz-juiceshop:3000/",
@@ -123346,6 +124036,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123365,6 +124059,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123417,6 +124115,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123433,6 +124134,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123478,6 +124182,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123497,6 +124205,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123549,6 +124261,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123569,6 +124285,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123622,6 +124342,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123641,6 +124365,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123693,6 +124421,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123712,6 +124444,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123764,6 +124500,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123783,6 +124523,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123835,6 +124579,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123854,6 +124602,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123906,6 +124658,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123925,6 +124681,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -123977,6 +124737,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -123996,6 +124760,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124048,6 +124816,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124067,6 +124839,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124119,6 +124895,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124135,6 +124914,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124180,6 +124962,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124199,6 +124985,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124251,6 +125041,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124270,6 +125064,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124322,6 +125120,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124342,6 +125144,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124395,6 +125201,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124414,6 +125224,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124466,6 +125280,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124485,6 +125303,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124537,6 +125359,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124556,6 +125382,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124608,6 +125438,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124627,6 +125461,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124679,6 +125517,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124698,6 +125540,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124750,6 +125596,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124769,6 +125619,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124821,6 +125675,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124841,6 +125699,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124894,6 +125756,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -124913,6 +125779,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -124965,6 +125835,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -125003,6 +125877,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -125022,6 +125900,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -125074,6 +125956,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -125093,6 +125979,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -125145,6 +126035,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -125164,6 +126058,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -125216,6 +126114,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -125235,6 +126137,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -125287,6 +126193,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -125306,6 +126216,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -125358,6 +126272,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -125374,6 +126291,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -125419,6 +126339,7 @@
    "error": "",
    "results": [
     {
+     "header_software": {},
      "http_status": 200,
      "server": "",
      "target": "http://clinkz-juiceshop:3000/",
@@ -125452,6 +126373,9 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 302,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -125468,6 +126392,9 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.25 (Debian)"
+     },
      "http_status": 200,
      "server": "Apache/2.4.25 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
@@ -125513,6 +126440,10 @@
    "error": "",
    "results": [
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 302,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/",
@@ -125532,6 +126463,10 @@
      }
     },
     {
+     "header_software": {
+      "HTTPServer": "Apache/2.4.67 (Debian)",
+      "X-Powered-By": "PHP/8.5.6"
+     },
      "http_status": 200,
      "server": "Apache/2.4.67 (Debian)",
      "target": "http://clinkz-dvwa/login.php",
