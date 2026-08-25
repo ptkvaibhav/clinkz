@@ -221,6 +221,24 @@ facts, kept apart because they have different fixes:
 Summing them would hide the ordering defect inside the budget, the same reason
 the contribution ledger keeps `DEAD_SEAM` apart from `SILENT`.
 
+### A reservation is a third fact, and it is not truncation either
+
+`PlanTruncation.cap` is the cap **this pass** was allowed to spend, which is the
+configured cap minus whatever another plan source reserved. `reserved`,
+`reserved_for` and `configured_cap` ride beside it so the two are never confused.
+
+They are different fixes again. "The cap dropped your tail" is answered by a
+larger cap. "A reservation shrank the cap first" is answered by asking whether
+the reservation was worth it — and the reader cannot ask that question if the
+only number in the report is a cap they cannot reconcile with
+`EXPLOIT_MAX_PLAN_TASKS`.
+
+Today the only reserver is the dependency→CVE plan source
+(`reserved_for: "component_cve_match"`), sized at
+`min(_MAX_COMPONENT_CVE_MATCHES, dispatchable)` before planning and returning
+whatever it does not spend. On a run that matched no CVE it is `0` and the
+section renders exactly as it did before.
+
 ### `kept` is a total, and a total is not evidence about its parts
 
 `PlanTruncation` also carries **`kept_by_class`** — per class, how many of its
@@ -354,3 +372,98 @@ is what gets opened, unchanged. A path segment genuinely ending in an encoded
 backslash is rare but legal, and requesting one directory up from it would be a
 request the target never offered.
 
+
+
+## What the engine HAS, versus what this engagement could reach
+
+`observability/component_registry.py`.
+
+The contribution ledger measures what each component contributed. It cannot
+measure a component that never registers — and until the registry existed,
+exactly one call site in the engine declared anything (LLM providers). A vuln
+class that never dispatched, a route discoverer that never ran and a tool the
+resolver never found all produced the same artifact: **nothing at all**,
+indistinguishable from never having been built.
+
+### Declaring: three computed domains and one declared one
+
+`declare_all()` runs at engagement start, immediately after `set_active_ledger`,
+and declares:
+
+| Source | Domain | Prefix |
+|--------|--------|--------|
+| Vuln classes | `DISPATCHABLE_TEST_METHODS` — the table the dispatcher itself reads | `methodology:` |
+| Route discoverers | `default_discoverers()`, asked for their own `name` | `discoverer:` |
+| Tools | every name in `TOOL_CHAINS`, fallbacks included | *(bare binary name)* |
+| Static exploit seams | `STATIC_EXPLOIT_COMPONENTS` | *(literal)* |
+
+The first three are **computed**: adding a vuln class, a discoverer or a chain
+entry declares it with no edit here. The fourth is the declared half, and it
+earns that by a **bidirectional AST assertion** over every string-literal
+`name=` at a ledger call site in `src/`:
+
+* `computed − declared` — a new statically-named component nobody declared, which
+  the ledger would then only learn about if it happened to run;
+* `declared − computed` — an entry that outlived the call site it described,
+  which is how a guard rots into documentation of a wish.
+
+A guard with only the first half is what this repo has shipped six times.
+
+### Reachability: a predicate, and a different clock
+
+"Declared and never invoked" has two opposite readings. The component was
+reachable and did not run — a defect. Or its precondition was absent — a GraphQL
+discoverer on an app with no GraphQL, a SQL class on a target with no
+parameterised surface — which is the component working perfectly. Reporting the
+second as a defect is how an alarm section stops being read.
+
+So each declaration carries a **predicate key** from a closed vocabulary, and
+`reachable_because` is deliberately **not** a string: a free-text reason per
+entry is a hand-maintained excuse list. A sentence attached to a predicate
+*function* cannot drift the same way, because there is one sentence per
+predicate rather than one per component.
+
+The timing is split because it has to be. Existence is knowable at engagement
+start — the dispatch table, the discoverer set and the tool chains are static.
+Reachability is not: whether the target has a SQL surface is something only Scan
+can answer, and the exploit plan does not exist yet. So
+`ContributionLedger.resolve_reachability(state)` runs at **report time**, against
+an `EngagementReachability` the orchestrator assembles from completed phase
+results.
+
+Three states then fall out of one boolean:
+
+| Predicate | Invoked | Rendering |
+|-----------|---------|-----------|
+| `True` | no | **`BUILT_BUT_NOT_RUN`** — an alarm. Built, reachable this engagement, never ran. |
+| `False` | no | NOT APPLICABLE. `component_ledger.unreachable`, carrying the predicate's own sentence. |
+| *(any)* | yes | The ledger's ordinary accounting. A predicate would add a second, weaker answer. |
+
+`reachable is None` — never evaluated, which is a direct methodology invocation,
+a replay, or a run that stopped before the report — is **not** `False`. It makes
+no claim in either direction and never alarms; an observability layer must not
+manufacture a defect out of its own absence.
+
+The Markdown renders the unreachable set as a **count with a kind breakdown**,
+not a list: every dispatchable class, discoverer and chained tool is declared on
+every run, so enumerating the ones a given target had no use for would add dozens
+of lines saying nothing happened — and a section a reader learns to skip is where
+the one line that matters hides. `report.json` carries the full list with reasons.
+
+### The tool predicate has three different "no"s
+
+A tool that never ran is three distinct situations with three distinct fixes,
+and collapsing them is what would make this a permanent false alarm:
+
+* **Nobody asked for its capability.** `nuclei`, `nikto`, `subfinder` are
+  deliberately unwired (see `tests/test_tools/test_tool_wiring_decisions.py`), so
+  no phase ever reaches for `vulnerability_scanning` or `subdomain_discovery`.
+* **It is a declared fallback and the preferred tool answered.** `gobuster`
+  behind `ffuf`.
+* **It is not available in this execution mode.**
+
+The first needs `ToolResolver.requested_capabilities`, recorded at
+`find_tool` / `find_tools` / `find_tools_ranked`. The chain map the predicate
+reads is built through `ToolResolver.available_chain()`, which deliberately does
+**not** record: a question asked *about* a run must never become part of what the
+run did.

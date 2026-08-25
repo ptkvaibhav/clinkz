@@ -523,7 +523,8 @@ src/clinkz/
 │                     #   topology(+recall), recall, relations, versions
 ├── knowledge/        # KnowledgeBase, persistent_kb, seeders, MITRE/OWASP datasets, payloads,
 │                     #   component_cves (published CVE ↔ observed version — a LEAD, never
-│                     #   a finding; see the dependency→CVE rule below)
+│                     #   a finding; ordered by VERSION PROVENANCE, see the
+│                     #   dependency→CVE rule below)
 ├── llm/              # base (+ ResearchGrounding: does research() see the live web?),
 │                     #   call_purpose (does this call's answer EMIT, SUPPRESS, or
 │                     #   only PLAN? -> whether a fallback is refused), degradation,
@@ -540,11 +541,15 @@ src/clinkz/
 │                     #   ZERO clinkz imports, so it runs in the tools container)
 ├── observability/    # trace.py (JSONL), replay.py, corpus_replay.py (offline gate),
 │                     #   ledger.py (what each component CONTRIBUTED — the silent-
-│                     #   degradation gate), plan_alarms.py (what the task cap
+│                     #   degradation gate), component_registry.py (what the engine HAS,
+│                     #   declared at start + a COMPUTED reachability predicate settled
+│                     #   at report time), plan_alarms.py (what the task cap
 │                     #   DROPPED, and separately whether the ORDERING held)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes (+ ControlArm: which of a class's OWN channels
-                      #   dispatch their own control), target, recon, scan, methodology,
+                      #   dispatch their own control), target,
+                      #   recon (+ VersionProvenance: how a version was OBSERVED),
+                      #   scan, methodology,
                       #   research,
                       #   finding, report
 docker/  scripts/  tests/  docs/
@@ -1086,6 +1091,55 @@ LESSONS #17).
   unconditionally — an unbounded `*` over an alternation of generic servers — is
   refused by a gate, because a lead equally true of every host says nothing
   about this one.
+- **The fourth plan source RESERVES its slots, and spends them by version
+  provenance.** Being a plan source it could never win a slot in is the same as
+  not being one: the Tier-1 interleave fills the plan to
+  `exploit_max_plan_tasks`, so by the time the CVE union ran `len(merged) >= cap`
+  was already true and every confirmable match took a "the plan cap was reached"
+  branch — on every engagement ever run. `_resolve_component_cve_reservation`
+  now runs BEFORE planning, sizes the reservation at
+  `min(_MAX_COMPONENT_CVE_MATCHES, dispatchable)` — the 16 is a ceiling, never
+  the size — and the Tier-1 passes spend `cap - reserved`. Unused reservation
+  returns to the Tier-1 fill, so a match deduped away against another source's
+  task costs coverage nothing; **a run that matched no CVE reserves zero and
+  plans byte-identically**, which is pinned as a test because that is nearly
+  every engagement. The reservation is a bound that decides coverage, so it is
+  in `report.json` (`plan_coverage.passes[].reserved` / `configured_cap`), not
+  only the log.
+  **Which matches get the reserved slots is decided by how the VERSION was
+  observed** (`models/recon.py::VersionProvenance`, declared by the PRODUCER —
+  a consumer parsing `nmap:service` back out to guess the evidence kind is the
+  `getattr`-with-a-default pattern again). A `Server:` banner is a string the
+  target chose and a back-ported fix defeats it; a lockfile entry or an artifact
+  hash is one it cannot easily lie about. `match_components` orders confirmable
+  first, then by provenance, THEN by published severity — ahead of severity
+  deliberately, because the ordering decides what is TESTED and ranking a
+  banner-backed CRITICAL over a lockfile-backed MEDIUM spends the scarce slots
+  on the weakest evidence in the system and calls it prioritisation.
+  `undeclared` ranks last, like `undeclared` research grounding. Every producer
+  in the tree declares `BANNER` today and says why in its own docstring; an
+  AST guard (`tests/test_tools/test_component_provenance_declared.py`) fails a
+  construction site that declares nothing, so a future lockfile reader cannot be
+  silently demoted to the weakest rank.
+  **The provenance rides the task into the finding** (`ComponentCVEContext` on
+  `ExploitTask`, stamped onto findings at the `_execute_task` seam). The CVE is
+  still context and nothing here can create, promote or rescue a finding — but
+  the deliverable now says *which* observation the oracle was pointed at and how
+  strong it was, which is the difference between this and a template scanner.
+  The evidence line is prose by construction so the structured-evidence readers
+  (`_evidence_strength`, the deterministic grounds) cannot mistake a
+  target-chosen product name for an engine verdict.
+- **A plan source that gets no slots must still say so.** The tier-2/3 research
+  source sat behind `if len(tasks) < cap`, which the interleave makes false on
+  any saturating target — so `_build_tier23_tasks` was never even CALLED and a
+  starved research source looked identical to a research phase that produced no
+  techniques. It is now always computed and its candidates join the truncation
+  buckets, so the cap refusing them shows up in the report's per-class dropped
+  counts. It is deliberately given no reservation of its own: both names it
+  produces are registered `NOT_IMPLEMENTED` and construct no `Finding`, while
+  the dispatcher fetches the endpoint before calling them — so a reserved slot
+  would cost the client's target a real request and a confirming class a real
+  task. The fill itself is unchanged.
 - **The PRODUCER declares what it fingerprinted, too.** `detected_components()` /
   `declares_components()` is the discovery contract's twin, for the seam that
   used to read `hasattr(r, "technologies")` then `hasattr(r, "tech")` — two
@@ -1207,6 +1261,49 @@ LESSONS #17).
   emitted is the ffuf shape and stays SILENT**, and no reason string may talk
   it away. A discoverer that does not declare `contribution_report()` is a
   loud `DEAD_SEAM`, never an assumed zero.
+- **A component the ledger never hears from is not measurable, so every
+  component is DECLARED at engagement start**
+  (`observability/component_registry.py`). The ledger can only measure what
+  registers, and exactly one call site in the engine declared anything (LLM
+  providers) — so a vuln class that never dispatched, a discoverer that never
+  ran and a tool the resolver never found all produced the same artifact:
+  nothing at all, indistinguishable from never having been built. `declare_all()`
+  runs immediately after `set_active_ledger` and declares every member of three
+  **computed** domains — `DISPATCHABLE_TEST_METHODS`, `default_discoverers()`,
+  `TOOL_CHAINS` — plus `STATIC_EXPLOIT_COMPONENTS`, the declared half, held to a
+  **bidirectional AST assertion** over every string-literal `record_contribution`
+  name in `src/` (guard-domain law: `computed − declared` catches a new call
+  site, `declared − computed` catches an entry that outlived one). Per-class
+  methodology components register at the ONE dispatch seam, keyed on the
+  `_test_*` name VERBATIM — never a derived skill, because `_test_x → "x"` is
+  right 23 times and wrong once — and their `items` counts DISPATCHES, not
+  findings: counting findings would trip SILENT for every clean class on every
+  clean run, which is the permanent false alarm this whole section exists to
+  prevent.
+- **"Declared and never invoked" has two opposite readings, so reachability is a
+  COMPUTED PREDICATE and its TIMING is split from the declaration's.** A
+  free-text `reachable_because` is a hand-maintained excuse list and would drift
+  the way every hand-maintained guard domain here has; a sentence attached to a
+  *predicate function* cannot, because there is one per predicate rather than
+  one per entry. Existence is knowable at engagement start; reachability is not
+  — whether the target has a SQL surface is something only Scan can answer, and
+  the plan does not exist yet. So `ContributionLedger.resolve_reachability` runs
+  at REPORT time against an `EngagementReachability` the orchestrator assembles
+  from completed phase state. Three states fall out mechanically: predicate true
+  + not invoked ⇒ **`BUILT_BUT_NOT_RUN`**, a new alarm class (built, reachable,
+  did not run); predicate false + not invoked ⇒ NOT APPLICABLE with the
+  predicate's own sentence as the reason (`component_ledger.unreachable`,
+  enumerated in `report.json` and summarised as a count in the Markdown so
+  thirty per-class lines cannot bury the alarm table); no predicate declarable ⇒
+  a build failure, not a runtime branch. `reachable is None` — never evaluated,
+  a direct invocation or a run that stopped early — is not `False` and never
+  alarms. The tool predicate has three distinct "no" answers because they have
+  three different fixes: nobody asked for the capability (nuclei, subfinder —
+  both deliberately unwired), the tool is a declared fallback and the preferred
+  one answered, or it is not available in this execution mode. That first answer
+  needs `ToolResolver.requested_capabilities`, and the chain map the predicate
+  reads is built through `available_chain()`, which does NOT record — a question
+  asked *about* a run must never become part of what the run did.
 - **The prompt cache is a ledger component like any other, because it degraded
   exactly like one.** It was invoked every run, succeeded every time, and
   contributed **zero**: the breakpoint sat after the engagement-scoped span —
