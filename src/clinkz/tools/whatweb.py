@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from clinkz.models.recon import VersionProvenance
 from clinkz.tools.base import DetectedComponent, ToolBase, ToolOutput
 from clinkz.tools.component_names import split_name_version
 
@@ -115,6 +116,10 @@ class WhatWebOutput(ToolOutput):
 
         Nothing is dropped from ``results`` — ``technologies`` still lists every
         plugin hit, so the raw observation stays auditable.
+
+        Provenance is ``BANNER``: every plugin version here is read out of a
+        response header or body the target served, including the resolved header
+        echoes.
         """
         seen: set[tuple[str, str]] = set()
         components: list[DetectedComponent] = []
@@ -148,7 +153,12 @@ class WhatWebOutput(ToolOutput):
                     continue
                 seen.add(key)
                 components.append(
-                    DetectedComponent(name=name, version=version, source="whatweb:plugin")
+                    DetectedComponent(
+                        name=name,
+                        version=version,
+                        source="whatweb:plugin",
+                        provenance=VersionProvenance.BANNER,
+                    )
                 )
         return components
 

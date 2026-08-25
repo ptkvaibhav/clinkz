@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from clinkz.models.recon import VersionProvenance
 from clinkz.tools.base import DetectedComponent, ToolBase, ToolOutput
 from clinkz.tools.component_names import split_name_version
 
@@ -41,6 +42,9 @@ class HttpxOutput(ToolOutput):
         it (``nginx:1.24.0``, ``Express 4.17.1``), so the name/version split is
         done here — at the wrapper that knows the tool's own format — rather than
         by every consumer guessing at it.
+
+        Provenance is ``BANNER``: both channels here — ``-tech-detect`` and the
+        ``Server`` header — are strings the target emitted.
         """
         seen: set[tuple[str, str]] = set()
         components: list[DetectedComponent] = []
@@ -54,7 +58,12 @@ class HttpxOutput(ToolOutput):
                     continue
                 seen.add(key)
                 components.append(
-                    DetectedComponent(name=name, version=version, source="httpx:tech")
+                    DetectedComponent(
+                        name=name,
+                        version=version,
+                        source="httpx:tech",
+                        provenance=VersionProvenance.BANNER,
+                    )
                 )
         return components
 

@@ -13,6 +13,7 @@ from xml.etree.ElementTree import Element  # noqa: S405 — type only, parsing u
 
 from defusedxml import ElementTree as ET  # noqa: N817 — ET is the canonical ElementTree alias
 
+from clinkz.models.recon import VersionProvenance
 from clinkz.models.target import Host, Service, ServiceProtocol
 from clinkz.tools.base import DetectedComponent, ToolBase, ToolOutput
 
@@ -31,6 +32,12 @@ class NmapOutput(ToolOutput):
         parsing. Carries the port, because a service-layer component is only
         meaningful with the port it answers on — two versions of the same
         product on two ports is a real and common shape.
+
+        Provenance is ``BANNER`` and not a stronger value despite ``-sV`` being
+        the best fingerprinter here: a signature match reads bytes the SERVICE
+        chose to emit, so a back-ported fix or an edited ``ServerTokens`` moves
+        the observation without moving the software. "Richest source we have" is
+        a statement about this engine, not about the evidence.
         """
         seen: set[tuple[str, str, int]] = set()
         components: list[DetectedComponent] = []
@@ -50,6 +57,7 @@ class NmapOutput(ToolOutput):
                         version=version,
                         source="nmap:service",
                         port=svc.port,
+                        provenance=VersionProvenance.BANNER,
                     )
                 )
         return components

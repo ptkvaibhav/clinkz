@@ -8,6 +8,7 @@ technology extraction, web reconnaissance, and the final synthesis.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field, computed_field
@@ -17,6 +18,62 @@ from pydantic import BaseModel, Field, computed_field
 # Kept deliberately tight to web-serving defaults so non-web services are not
 # probed as HTTP.
 _KNOWN_WEB_PORTS: frozenset[int] = frozenset({80, 443, 8080, 8443, 8000, 8888, 8008, 5000, 3000})
+
+
+class VersionProvenance(StrEnum):
+    """How a component's observed VERSION was obtained.
+
+    Not decoration: it is the strength of the evidence a dependency→CVE match
+    rests on, and the two ends of this enum are not close together.
+
+    A **banner** is a string the target chose to send. It is defeated by the
+    single most common real-world case — a distribution back-porting a security
+    fix without moving the version — and by any operator who edits
+    ``ServerTokens``. Every version this engine observes today is of that kind.
+
+    A **lockfile** entry or an **artifact hash** is a source the target cannot
+    easily lie about: a resolved dependency graph naming an exact point version,
+    or the digest of the bytes actually shipped. A match built on one of those
+    is a materially stronger claim than the same match built on a banner, and
+    the plan's scarce slots should reflect that rather than treating both as
+    "a version string".
+
+    ``UNDECLARED`` is the value a producer that says nothing gets, and it ranks
+    LAST — the same rule ``ResearchGrounding.undeclared`` follows, for the same
+    reason: an unstated provenance is not a strong one, and defaulting it
+    upwards would promote silence to evidence.
+    """
+
+    LOCKFILE = "lockfile"
+    ARTIFACT_HASH = "artifact_hash"
+    MANIFEST = "manifest"
+    BANNER = "banner"
+    UNDECLARED = "undeclared"
+
+
+#: Strength order, strongest first. Read by every consumer that has to choose
+#: between two observations of the same product, and by the known-CVE matcher
+#: when the reserved plan slots are oversubscribed. Declared once so "which is
+#: stronger" cannot be re-derived differently at each call site.
+_VERSION_PROVENANCE_RANK: dict[str, int] = {
+    VersionProvenance.LOCKFILE.value: 0,
+    VersionProvenance.ARTIFACT_HASH.value: 1,
+    VersionProvenance.MANIFEST.value: 2,
+    VersionProvenance.BANNER.value: 3,
+    VersionProvenance.UNDECLARED.value: 4,
+}
+
+
+def version_provenance_rank(provenance: str) -> int:
+    """Strength rank of *provenance* — lower is stronger.
+
+    An unrecognised value ranks with ``UNDECLARED`` rather than raising: this is
+    read on the planning path, and a new enum member nobody wired here must cost
+    priority, never a crash.
+    """
+    return _VERSION_PROVENANCE_RANK.get(
+        str(provenance), _VERSION_PROVENANCE_RANK[VersionProvenance.UNDECLARED.value]
+    )
 
 
 class DetectedComponent(BaseModel):
@@ -37,12 +94,19 @@ class DetectedComponent(BaseModel):
             built from this can name what saw it.
         port: TCP port the component was observed on, when the observation was
             port-scoped (a service banner). ``0`` for a web-layer observation.
+        provenance: How the VERSION was obtained — declared by the producer,
+            never inferred by a consumer from ``source``. Parsing the tool name
+            back out of a string to guess the evidence kind is exactly the
+            ``hasattr``-then-``getattr`` pattern that left three capabilities
+            silently dead here; the wrapper knows what it read, so the wrapper
+            says so. Defaults to ``UNDECLARED``, which ranks last.
     """
 
     name: str
     version: str = ""
     source: str = ""
     port: int = 0
+    provenance: VersionProvenance = VersionProvenance.UNDECLARED
 
     def identity(self) -> tuple[str, str]:
         """Case-normalised ``(name, version)``, for dedup across tools."""
@@ -127,6 +191,14 @@ def dedupe_components(components: list[DetectedComponent]) -> list[DetectedCompo
     useful; keeping both would make a downstream CVE lookup run twice and report
     the unversioned one as "version unknown" beside the answer.
 
+    When both observers supplied a version, the one with the **stronger
+    provenance** wins (:func:`version_provenance_rank`). A lockfile entry and a
+    ``Server:`` banner naming the same product are not equally good answers to
+    "what version is installed", and keeping whichever was collected first makes
+    the inventory a function of tool ordering. Equal provenance keeps the
+    incumbent, so today — where every producer declares ``BANNER`` — this is a
+    no-op and the collected order still decides.
+
     Order is preserved on first appearance, so the result is deterministic.
 
     Args:
@@ -134,7 +206,7 @@ def dedupe_components(components: list[DetectedComponent]) -> list[DetectedCompo
 
     Returns:
         One entry per ``(lowercased name, port)``, versioned where any observer
-        supplied a version.
+        supplied a version, from the strongest observer that had one.
     """
     by_key: dict[tuple[str, int], DetectedComponent] = {}
     order: list[tuple[str, int]] = []
@@ -148,6 +220,13 @@ def dedupe_components(components: list[DetectedComponent]) -> list[DetectedCompo
             by_key[key] = component
             order.append(key)
         elif not existing.version and component.version:
+            by_key[key] = component
+        elif (
+            existing.version
+            and component.version
+            and version_provenance_rank(component.provenance)
+            < version_provenance_rank(existing.provenance)
+        ):
             by_key[key] = component
     return [by_key[key] for key in order]
 
