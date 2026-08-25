@@ -122,6 +122,45 @@ class DiscoveryProvenance(BaseModel):
     gating_config: str | None = None
 
 
+class ComponentCVEContext(BaseModel):
+    """The known-CVE match a plan task was queued FOR — context, never proof.
+
+    Threaded hypothesis-style: ``ComponentCVEMatch`` → :class:`ExploitTask` →
+    the :class:`Finding` its own oracle emitted, so a reader of the deliverable
+    can see both what was observed and **how strong that observation was**.
+
+    ``version_provenance`` is the field that matters and the reason this model
+    exists rather than a bare ``cve_id`` string. A template scanner reports "the
+    banner says 2.4.49, CVE-2021-41773 affects 2.4.49" and stops; the difference
+    here is that the CVE never emits anything — an oracle does — and that the
+    strength of the version claim travels with the result instead of being
+    flattened into "a version matched". A finding backed by a lockfile entry and
+    one backed by a ``Server:`` header are different claims, and the report says
+    which one this is.
+
+    Attributes:
+        cve_id: The published identifier.
+        title: Human summary, as catalogued.
+        observed_component: Product name as the fingerprinter reported it.
+        observed_version: Version string exactly as observed.
+        version_provenance: :class:`~clinkz.models.recon.VersionProvenance`
+            value — how that version was obtained.
+        observation_source: The observing tool plus evidence kind
+            (``nmap:service``), so the provenance claim is checkable.
+        affected: The published affected-version predicate.
+        reference: Where the affected range came from.
+    """
+
+    cve_id: str
+    title: str = ""
+    observed_component: str = ""
+    observed_version: str = ""
+    version_provenance: str = ""
+    observation_source: str = ""
+    affected: str = ""
+    reference: str = ""
+
+
 class ExploitTask(BaseModel):
     """A single exploit task planned by the LLM.
 
@@ -189,6 +228,12 @@ class ExploitTask(BaseModel):
     # Ranking metadata only — never an emission gate (emission stays the proof, §5).
     prior_source: str = "cold_derivation"
     rank_score: float = 0.0
+    # The dependency→known-CVE match this task was queued FOR (the fourth plan
+    # source). ``None`` on every LLM-planned, deterministic-coverage, discovery
+    # and black-box task. Carried so the finding this task's own oracle emits can
+    # state the CVE as CONTEXT and — the part a template scanner has no answer to
+    # — say how strong the version observation behind it was.
+    component_cve: ComponentCVEContext | None = None
 
 
 class ExploitPlan(BaseModel):
@@ -626,4 +671,14 @@ class ExploitResult(BaseModel):
     # every candidate. That refusal is the product working, and it was reported
     # as a gap in the product.
     client_oracle: dict[str, Any] = Field(default_factory=dict)
+    # How far the emission and control-arm paths actually got. Carried so the
+    # component ledger can answer "this seam never registered" with the
+    # engagement condition rather than an alarm: a run where nothing reached the
+    # emission chokepoint and one where the chokepoint is broken are opposite
+    # facts that look identical from a zero. Counted at the seams themselves,
+    # never derived from finding/lead totals — a lead can be written by paths
+    # that never reach ``_persist_finding``, and deriving one from the other is
+    # how a healthy run manufactures a permanent false alarm.
+    emission_candidates: int = 0
+    control_arm_kills: int = 0
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
