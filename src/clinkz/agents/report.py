@@ -1222,13 +1222,15 @@ class ReportAgent(BaseAgent):
         alarms = ledger.get("alarms") or []
         summary = ledger.get("summary") or {}
         correctly_empty = [c for c in (ledger.get("correctly_empty") or []) if isinstance(c, dict)]
+        unreachable = [c for c in (ledger.get("unreachable") or []) if isinstance(c, dict)]
         lines.extend(["## Component contribution", ""])
         if not alarms:
             lines.extend(
                 [
                     f"All {summary.get('components_tracked', 0)} tracked component(s) "
-                    "contributed at least one item, or found nothing correctly. No "
-                    "fallback covered for a component that produced nothing.",
+                    "contributed at least one item, found nothing correctly, or were "
+                    "not reachable on this target. No fallback covered for a component "
+                    "that produced nothing.",
                     "",
                 ]
             )
@@ -1284,6 +1286,35 @@ class ReportAgent(BaseAgent):
                     f"- **{rec.get('component', '?')}** — {reasons or 'precondition absent'}"
                 )
             lines.append("")
+
+        if unreachable:
+            # Named as a COUNT here and enumerated in report.json. Every
+            # dispatchable class, route discoverer and chained tool is declared
+            # on every run, so listing each one this target had no use for would
+            # add dozens of lines saying nothing happened — and a section a
+            # reader learns to skip is where the one line that matters hides.
+            # The alarm table above is where a component that WAS reachable and
+            # did not run appears.
+            kinds: dict[str, int] = {}
+            for rec in unreachable:
+                kind = str(rec.get("kind") or "component")
+                kinds[kind] = kinds.get(kind, 0) + 1
+            breakdown = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+            lines.extend(
+                [
+                    "### Built, but not reachable on this target",
+                    "",
+                    f"{len(unreachable)} component(s) this engine has were never invoked "
+                    f"because the engagement did not meet the condition for reaching them "
+                    f"({breakdown}) — a vulnerability class whose surface this target does "
+                    "not expose, a discoverer with no input of its kind, a tool whose "
+                    "capability no phase asked for. Each is listed with the condition it "
+                    "failed in `report.json` under `component_ledger.unreachable`. A "
+                    "component that WAS reachable and still did not run is a defect and "
+                    "appears in the table above, not here.",
+                    "",
+                ]
+            )
 
     @staticmethod
     def _render_header(lines: list[str], report: PentestReport) -> None:

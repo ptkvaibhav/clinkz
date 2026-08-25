@@ -94,6 +94,10 @@ from clinkz.models.recon import (
     WebReconResult,
 )
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.component_registry import (
+    EngagementReachability,
+    declare_all,
+)
 from clinkz.observability.ledger import (
     ContributionLedger,
     set_active_ledger,
@@ -119,7 +123,7 @@ from clinkz.safety.scope_refusals import (
 )
 from clinkz.state import StateStore
 from clinkz.tools.docker_preflight import ensure_container_ready
-from clinkz.tools.resolver import ToolResolver
+from clinkz.tools.resolver import TOOL_CHAINS, ToolResolver
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +479,21 @@ class OrchestratorAgent:
             set_active_ledger(ledger)
             self._ledger = ledger
 
+            # Declare every component the engine HAS, before any of them runs.
+            # The ledger can only measure what registers, so a component that
+            # never ran left no trace at all and was indistinguishable from one
+            # that was never built — its own docstring said as much, and exactly
+            # one call site in the engine declared anything. Each declaration
+            # carries the PREDICATE that will later decide whether its zero is a
+            # defect or an absent precondition; the predicate is evaluated at
+            # report time, because engagement state does not exist yet here.
+            declared = declare_all()
+            self._logger.info(
+                "Component ledger: %d component(s) declared — every dispatchable class, "
+                "route discoverer, chained tool and static exploit seam",
+                declared,
+            )
+
             # Install the provider-degradation register. Routing v2 makes
             # Anthropic priority 1 for every call; this is what records the
             # cost when something else answered anyway. Absent by default for
@@ -794,6 +813,21 @@ class OrchestratorAgent:
                 # from "the oracle ran and did not witness execution" — the
                 # second is the product working, and it was filed as the first.
                 self._client_oracle = dict(exploit_result.get("client_oracle") or {})
+
+                # Evaluate the reachability predicates every component declared
+                # at engagement start. Deliberately HERE and not there: whether
+                # the target has a SQL surface, which tool a chain resolved to,
+                # whether anything reached the emission path — none of that is
+                # knowable before the phases run, so declaring EXISTENCE early
+                # and settling REACHABILITY late is what lets a never-invoked
+                # component say which of its two meanings applies.
+                ledger.resolve_reachability(
+                    self._engagement_reachability(
+                        concurrent_results.get("scan", {}),
+                        exploit_result,
+                        resolver,
+                    )
+                )
 
                 # =============================================================
                 # PHASE 3: REPORT (sequential)
@@ -2096,6 +2130,53 @@ class OrchestratorAgent:
                     )
                 else:
                     await self._cred_store.mark_invalid(cred.id)
+
+    @staticmethod
+    def _engagement_reachability(
+        scan_phase: dict[str, Any],
+        exploit_result: dict[str, Any],
+        resolver: ToolResolver,
+    ) -> EngagementReachability:
+        """Assemble the state every reachability predicate reads.
+
+        Called once, after the concurrent phase, when the answers exist. Every
+        read is defensive in the same direction: a phase that errored or was
+        halted yields the "nothing happened" value, so its components report as
+        NOT REACHABLE rather than as a wall of alarms about work a kill switch
+        stopped.
+
+        ``requested_capabilities`` is snapshotted BEFORE the chain map is built,
+        because ``find_tools_ranked`` records a request — the chain map is a
+        question *about* the run and must not become part of it. That is what
+        :meth:`~clinkz.tools.resolver.ToolResolver.available_chain` exists for.
+        """
+        requested = frozenset(resolver.requested_capabilities)
+        chains = {capability: resolver.available_chain(capability) for capability in TOOL_CHAINS}
+
+        scan_result = scan_phase.get("result") or {}
+        endpoints = 0
+        for service_scan in scan_result.get("service_scans") or []:
+            if isinstance(service_scan, dict):
+                result = service_scan.get("result") or {}
+                endpoints += len(result.get("endpoints") or [])
+
+        plan = exploit_result.get("plan") or {}
+        tasks = plan.get("tasks") or []
+        return EngagementReachability(
+            classes_with_plan_candidates=frozenset(
+                plan_alarm_summary().get("classes_with_candidates") or []
+            ),
+            http_endpoints_discovered=endpoints,
+            requested_capabilities=requested,
+            available_chain_by_capability=chains,
+            exploit_plan_tasks=len(tasks),
+            exploit_tasks_dispatched=int(exploit_result.get("total_tests_run") or 0),
+            exploit_candidate_findings=int(exploit_result.get("emission_candidates") or 0),
+            control_arm_kills=int(exploit_result.get("control_arm_kills") or 0),
+            tier23_tasks_planned=sum(
+                1 for t in tasks if isinstance(t, dict) and t.get("tier") in (2, 3)
+            ),
+        )
 
     def _extract_technologies(self, recon_result: dict[str, Any]) -> list[str]:
         """Extract technology names from recon results.
