@@ -198,6 +198,9 @@ clinkz actions <engagement_id>
 # engagement; exits non-zero on a hit.
 clinkz artifact-scan <engagement_id>
 
+# Re-render the client-facing PDF from the stored report. Offline; sends nothing.
+clinkz report-pdf <engagement_id>
+
 # Inspect the execution trace afterwards
 clinkz trace inspect <engagement_id>
 ```
@@ -404,7 +407,7 @@ Each engagement also produces `outputs/<engagement_id>/trace.jsonl` for
 post-mortem inspection and `outputs/<engagement_id>/actions.jsonl` — every
 state-changing request the run produced, sent or refused.
 
-Output formats today: **JSON**, **Markdown**. The HTML/PDF Jinja+WeasyPrint pipeline described in earlier plans is on the W3 horizon.
+Output formats today: **JSON**, **Markdown**, **PDF** — all three rendered from the SAME already-redacted `PentestReport` structure, never from the live findings. The PDF is written at the end of every engagement and regenerable offline with `clinkz report-pdf <engagement_id>`; it leads with the executive summary, then a **control-arm page for every confirmed finding** — the confirming request with its exploitation primitive removed and its marker re-minted, graded by the same oracle, which is the falsifiable half of "confirmed" — then the unproven leads with their `why_unconfirmed`, *What was NOT tested*, and every bound that decided coverage (provider routing, research grounding, plan and crawl truncation) whether or not anything went wrong. ReportLab rather than the Jinja+WeasyPrint pipeline earlier plans named: WeasyPrint resolves GTK/Pango at import and does not import on Windows, so the renderer could not have been executed — let alone verified — on the machine that produces the bundle.
 
 ## Testing
 

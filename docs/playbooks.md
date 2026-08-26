@@ -206,7 +206,7 @@ The Report Agent transforms validated findings into a professional pentest repor
 | RPT-09 | ATT&CK reference mapping | Map techniques to MITRE ATT&CK IDs (e.g., T1190) |
 | RPT-10 | CWE identifiers | Include CWE IDs where applicable |
 | RPT-11 | Severity prioritisation | Order findings Critical → High → Medium → Low → Info |
-| RPT-12 | Multi-format rendering | Output as PDF, HTML, JSON, and/or Markdown via Jinja2 + WeasyPrint |
+| RPT-12 | Multi-format rendering | JSON + Markdown + PDF, all three from the SAME already-redacted `PentestReport` (ReportLab; WeasyPrint does not import on Windows) |
 
 ### Knowledge base queries used
 

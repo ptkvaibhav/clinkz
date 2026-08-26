@@ -204,14 +204,30 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   `verification_strength` enforced at `_persist_finding`, CVSS computed in the
   report — and an LLM reviewer after those could only overrule them, which the
   invariants forbid in that direction.
-- **Report** — zero LLM calls; emits JSON + a Markdown summary from the state
-  store in <30 s. **Both documents render from the SAME redacted structure** —
-  the dump goes through `redact_structure` (key-aware, so a `Set-Cookie` value
+- **Report** — zero LLM calls; emits JSON + a Markdown summary + **the PDF
+  deliverable** (`agents/_report_pdf.py`, ReportLab) from the state store in
+  <30 s. **All three documents render from the SAME redacted structure** — the
+  dump goes through `redact_structure` (key-aware, so a `Set-Cookie` value
   is removed on the strength of its key) and is validated back into a
-  `PentestReport` that the Markdown renderer reads. Markdown used to render from
-  the live report and be string-scrubbed afterwards, by which point the key is
-  gone; that also let the shape matcher absorb the renderer's own punctuation,
-  so the two documents reported different fingerprints for one secret.
+  `PentestReport` that the Markdown and PDF renderers read. Markdown used to
+  render from the live report and be string-scrubbed afterwards, by which point
+  the key is gone; that also let the shape matcher absorb the renderer's own
+  punctuation, so the two documents reported different fingerprints for one
+  secret. ReportLab and **not WeasyPrint**: WeasyPrint resolves GTK/Pango at
+  import and does not import on Windows, so the renderer could not be executed —
+  let alone verified — on the machine that produces the bundle. The PDF's
+  differentiating section is **the control arm for every confirmed finding**,
+  top-level and immediately after the executive summary rather than an appendix:
+  "it confirmed" and "the control refused" are one claim, and a document showing
+  only the positive arm is asking to be believed. Read through
+  `_control_arm.control_verdict_from_evidence` — the producer's own reader, so a
+  response body cannot write its own verdict into the table. Unproven leads are
+  a first-class section with every `why_unconfirmed`, and every bound that
+  decided coverage renders on a clean run too. The `/Info` dictionary is
+  populated from the report's own fields and nothing else, because it is the
+  channel no page-text scan reads. Regenerable offline with
+  `clinkz report-pdf <id>`; a render failure inside a live engagement is logged
+  at ERROR and loses the PDF, never the findings.
   Client-ready header (authorization record verbatim, window,
   in-scope AND out-of-scope, authentication proof, testing conduct), remediation
   attached per class from `models/vuln_classes.py`, and a generated **"What was
@@ -470,6 +486,14 @@ reports the missing capability to the Orchestrator.
   otherwise. For `TOOL_EXEC_MODE=local` it is an optional host extra
   (`pip install -e '.[browser]' && playwright install chromium`). Optional on
   purpose: absent, the affected classes record unproven leads exactly as before.
+- **ReportLab** renders the PDF deliverable, and **pypdf** reads one back for the
+  disclosure gate. WeasyPrint was declared for years for a renderer that did not
+  exist and is now removed: it resolves GTK/Pango at IMPORT time and does not
+  import on Windows, so it could never have been run on the machine that
+  produces the bundle. ReportLab is pure Python with the base-14 fonts built in,
+  so the document carries no external asset. `jinja2` remains declared and unused
+  — stated rather than quietly dropped, since removing a dependency is a separate
+  decision from noticing it is unused.
 - MCP Python SDK for tool servers; Docker for sandboxed tool execution
   (`clinkz-tools`; `TOOL_EXEC_MODE=local` for the in-process HTTP path).
 - Typer CLI; `clinkz trace inspect <engagement>` renders execution traces.
@@ -478,13 +502,16 @@ reports the missing capability to the Orchestrator.
 
 ```
 src/clinkz/
-├── cli.py            # Typer CLI: scan / abort / actions / artifact-scan / trace inspect /
-│                     #   tool-invoke / step-replay / corpus-replay
+├── cli.py            # Typer CLI: scan / abort / actions / artifact-scan / report-pdf /
+│                     #   trace inspect / tool-invoke / step-replay / corpus-replay
 ├── config.py         # Settings (env vars, per-agent LLM overrides, outputs_root —
 │                     #   read via outputs_root() at CALL time, never as a default arg)
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
-├── agents/           # recon, scan, exploit, research, report, _route_discovery,
+├── agents/           # recon, scan, exploit, research, report, _report_pdf (the
+│                     #   PDF deliverable — THIRD renderer of the same redacted
+│                     #   structure; control arms are its top-level section),
+│                     #   _route_discovery,
 │                     #   _js_api_mining (what does the frontend CALL?), _api_schema
 │                     #   (what does the live target ACCEPT? — safe methods only),
 │                     #   _json_body (addressing a field INSIDE a structure),
@@ -527,7 +554,9 @@ src/clinkz/
 │                     #   dependency→CVE rule below)
 ├── llm/              # base (+ ResearchGrounding: does research() see the live web?),
 │                     #   call_purpose (does this call's answer EMIT, SUPPRESS, or
-│                     #   only PLAN? -> whether a fallback is refused), degradation,
+│                     #   only PLAN? -> whether a fallback is refused),
+│                     #   degradation (substitution AND absence: an exhausted chain
+│                     #   substitutes nothing, so it wrote nothing),
 │                     #   factory, fallback, providers, spend,
 │                     #   {anthropic,gemini,openai,ollama}_client
 ├── tools/            # ToolBase (discovery + fingerprint contracts), resolver, mcp_client,
@@ -597,6 +626,13 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   material? Covers the engagement directory AND the companion artifacts beside
   it; `--bundle-only` asks the narrower question. Exits non-zero if so. Runs
   automatically at the end of every engagement.
+- `python -m clinkz report-pdf <engagement_id> [--outputs-root <dir>] [--out <file>]`
+  — re-render the client-facing PDF from `report_<id>.json`. **Offline**: it
+  reads the stored, already-redacted structure and sends nothing, which is the
+  whole point — three renderers, one source. Every engagement writes this PDF
+  itself; the command exists for a re-render after a layout fix, or for a bundle
+  produced before the renderer did. Exits 2 on a missing bundle or unreadable
+  report, 1 when the renderer is absent or the document could not be built.
 - `python -m clinkz trace inspect <engagement_id>` — render an execution trace.
 - `python -m clinkz tool-invoke <engagement_id> <seq> [--replay]` — inspect/replay
   one tool invocation.
@@ -670,6 +706,34 @@ LESSONS #17).
   model decided it was not real". Six of the twelve recorded Gemini-served
   exploit calls were false-positive cross-checks. Every agent call site declares
   its purpose and an unclassified one is a red build, not a permissive default.
+- **A run where NOTHING answered is not a clean run** (`llm/degradation.py`).
+  `degraded` was `bool(self._events)` and an event was written only on a
+  **substitution**; a chain that runs out substitutes nothing, so the worst
+  outcome wrote nothing and the eligibility flag computed from that list said
+  the run was fit to be a baseline. Engagement `2e21a200` failed recon, scan AND
+  exploit with `All providers exhausted`, produced zero findings, and reported
+  `provider_degraded: false, baseline_eligible: true`. Three kinds degrade a run
+  now — `SUBSTITUTION`, `TERMINAL_EXCLUSION` (a provider lost for the rest of
+  the run, so every later call ran a shorter chain and was silent about it) and
+  `CHAIN_EXHAUSTED` — the last two carried as **absences**, which have no served
+  model and so could not be expressed as a `ProviderFallback` at all.
+  `baseline_eligible` now FOLLOWS `degraded` rather than re-deriving it: two
+  expressions of one fact drift, and this pair did.
+  **Two witnesses, because neither covers both instances.** The register catches
+  a raise the trace attributes to the last provider that worked (run `9317e813`,
+  one methodology call, `stop_reason=refusal`); `model_stamp` catches the outage
+  in a STORED bundle, where the process that knew ended long ago.
+  `reconcile_with_model_stamp` refuses a clean claim the run's own stamp
+  contradicts, only ever tightening, at **both** the build seam (so `report.json`
+  carries it) and the render seam (so an older bundle re-renders honestly).
+- **A report about a run that did not happen must say so.** The same engagement
+  rendered "0 findings identified. Risk rating: Informational." — the strongest
+  claim a pentest report contains, made out of no evidence at all.
+  `ExecutiveSummary.run_completed` / `incomplete_reason` are computed by
+  `_run_completion` from the orchestrator's `phase_outcomes` AND the model
+  stamp's exhausted stages; incomplete + zero findings rates **`Not assessed`**,
+  because "Informational" is a verdict about the target. The banner renders
+  ahead of the counts in all three documents.
 - **A capability lost to routing is STATED, never absorbed.** Research led with
   Gemini for native Search Grounding and the Anthropic path has none, so a
   research answer is bounded by a training cutoff with no signal in the text that
@@ -1247,6 +1311,45 @@ LESSONS #17).
   *declared but never invoked* is tracked separately, since a capability the run
   never reached for did not degrade. **Absent by default** like the governor,
   and it never raises from the data path.
+- **A benchmark number a client sees must be what TESTING earned.** Runs 2 and 3
+  of the Juice Shop variance envelope dispatched **zero** methodology tasks and
+  still had four challenges marked solved by the target — `errorHandling`,
+  `loginAdmin`, `securityPolicy`, `weakPassword` — from authenticating and
+  crawling alone. Those are in `solved_total` for every run including the ones
+  that tested, so run 1's "7 of 49" is roughly twice what exploitation achieved;
+  the honest figure is 3. `reconciliation.json` now carries `solved_by_testing`
+  BESIDE `solved_total` (both are true, only one is a claim about this engine),
+  plus `methodology_dispatches` and the floor's provenance. The floor is
+  **measured, never declared**: written by a run whose ledger shows
+  `methodology:*` contributing zero dispatches, carrying the engagement id that
+  produced it, and `record_floor` REFUSES any other kind of run — a floor taken
+  from a run that tested is this engine subtracting its own results from itself.
+  A union across zero-dispatch runs, one-way. **No floor measured ⇒
+  `solved_by_testing: null`**, not zero: defaulting to "subtract nothing"
+  silently restores the inflated number. `--record-floor` derives one offline
+  from a stored bundle and sends nothing.
+- **A recon component that RAISED must not look like a target with nothing to
+  find.** Recon is where the component inventory comes from, and an empty
+  inventory has two causes indistinguishable from every downstream position: a
+  target with no versioned component, or a parser that raised on the tool's real
+  bytes (`whatweb` discarded a complete Apache/PHP fingerprint on every run for
+  years, silently). The fingerprinter's handler was fixed alone; its two
+  siblings in the same file had the identical shape — including
+  `_step_service_scan`, the RICHER source, since `nmap -sV` resolves a banner to
+  a product AND a version through nmap's own signature database, which is why
+  its provenance outranks a `Server:` header. All three record now, and the
+  domain is COMPUTED (guard-domain law): every `except` inside a
+  component-bearing method must reach the ledger or carry an allow-list entry
+  with its reason (`tests/test_agents/test_recon_failures_reach_the_ledger.py`).
+- **A ledger VIEW is not a second population.** `exploit.component_cve_match`
+  appearing twice in `component_ledger` is `components` (the population) plus a
+  by-name reference from `correctly_empty` — one registration, `invocations: 1`.
+  Containment, not double registration and not a serialization bug. It was
+  pinned for `alarms` alone while three sibling views went unchecked, so the
+  domain is now every list key `to_dict()` emits, each classified as a VIEW (and
+  its containment asserted) or its own population (with the reason `fallbacks`
+  is one). The distinction decides whether a consumer may SUM, and a union would
+  stay invisible until a component alarms while carrying real items.
 - **"Correctly found nothing" is a fifth fact, and it is NOT an alarm.** A
   GraphQL discoverer on an app with no GraphQL contributes zero forever and is
   working perfectly; reported as a defect it becomes a permanent false alarm,

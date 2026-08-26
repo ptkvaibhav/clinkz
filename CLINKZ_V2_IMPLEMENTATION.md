@@ -164,9 +164,9 @@ EXPLOIT (LLM plans, deterministic skills execute)                [DONE]
 
 REPORT                                                           [partial]
   - Pulls findings from state store                              [DONE]
-  - Emits JSON + Markdown                                        [DONE]
+  - Emits JSON + Markdown + PDF from ONE redacted structure      [DONE]
+  - Control-arm section per confirmed finding (agents/_report_pdf) [DONE]
   - LLM-driven narrative + remediation pass                      [PENDING — W3]
-  - HTML/PDF rendering (Jinja + WeasyPrint)                      [PENDING — W3]
 ```
 
 ## Implementation phases — status
@@ -305,10 +305,14 @@ In rough priority order:
    intermediate results persisted to trace). Apply the same shape to
    command-injection escape contexts, LFI traversal payload synthesis, file-
    upload bypass selection, and weak-session entropy analysis.
-2. **LLM-driven reporting.** Today's report agent is zero-LLM: it dumps
-   findings to JSON + Markdown. The v2 plan calls for a multi-pass
-   generator (assemble → narrative → remediation → quality review) with
-   Jinja + WeasyPrint rendering. Models are already in `models/report.py`.
+2. **LLM-driven reporting.** Today's report agent is zero-LLM: it renders
+   JSON, Markdown and PDF from one already-redacted `PentestReport`. The
+   remaining v2 ambition is the multi-pass narrative generator
+   (assemble → narrative → remediation → quality review); the RENDERING half is
+   done, in ReportLab rather than the Jinja + WeasyPrint pipeline this plan
+   named — WeasyPrint resolves GTK/Pango at import and does not import on
+   Windows, so it could not be executed or verified on the machine that
+   produces the bundle.
 3. **Consistency drill.** Run 5 consecutive DVWA engagements end-to-end and
    measure category-level coverage variance. Lock in any remaining flaky
    skills.
