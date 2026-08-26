@@ -5,6 +5,7 @@ Commands:
     abort         - Kill switch: halt a running engagement immediately
     actions       - Show what a run actually did to the target
     artifact-scan - Re-run the disclosure gate over a finished bundle
+    report-pdf    - Offline: re-render the client-facing PDF from the stored report
     trace inspect - Render an engagement execution trace
     tool-invoke   - Inspect or replay one recorded tool invocation
     step-replay   - Re-run one recorded agent step in isolation
@@ -13,7 +14,9 @@ Commands:
 The pipeline runs end-to-end via ``scan``; there are no single-phase run
 commands (the Orchestrator owns phase sequencing). ``trace inspect`` /
 ``tool-invoke`` / ``step-replay`` / ``actions`` / ``artifact-scan`` are post-run
-inspectors over ``<outputs-root>/<id>/``.
+inspectors over ``<outputs-root>/<id>/``. ``report-pdf`` is one too: it reads
+``report_<id>.json`` -- the already-redacted structure the JSON and Markdown
+documents were both built from -- and sends nothing.
 
 ``scan`` refuses to start without an authorization record. That is deliberate
 and there is no flag to skip it - see ``clinkz.engagement.gate``.
@@ -1183,7 +1186,17 @@ def report_pdf(
         stored = json.loads(source.read_text(encoding="utf-8"))
         report = PentestReport.model_validate(stored)
     except Exception as exc:
-        typer.echo(f"Could not read {source}: {type(exc).__name__}: {exc}", err=True)
+        # The TYPE is our vocabulary; the MESSAGE is the document's. A
+        # JSONDecodeError quotes the bytes around the fault and a Pydantic
+        # ValidationError quotes the offending VALUES - so echoing str(exc)
+        # would copy a fragment of the bundle to stdout and into whatever
+        # captured it, which is the same rule pypdf's parser messages are held
+        # to in the disclosure gate.
+        typer.echo(
+            f"Could not read {source}: {type(exc).__name__} (message withheld: it can "
+            f"quote the report's own contents). Inspect the file directly.",
+            err=True,
+        )
         raise typer.Exit(code=EXIT_BAD_INPUT) from exc
 
     destination = out or (root / f"report_{cleaned}.pdf")

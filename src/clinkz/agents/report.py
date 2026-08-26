@@ -207,12 +207,20 @@ def write_report_pdf(report: PentestReport, path: Path) -> Path | None:
         logger.error("%s (%s)", PDF_UNAVAILABLE_HINT, exc)
         return None
     except Exception as exc:  # noqa: BLE001 — a layout error must not lose the findings
+        # The TYPE is logged and the MESSAGE is not, for the same reason the
+        # disclosure gate withholds pypdf's: ReportLab's paragraph parser quotes
+        # the offending markup back in its error text, and the markup here is
+        # built out of a finding's evidence — raw request and response bytes
+        # from the host under test. Logging is not a redaction chokepoint, so a
+        # layout error would copy exactly the material every writer in this
+        # repository redacts into the run log. An exception class name is our
+        # vocabulary; its message is the target's.
         logger.error(
-            "PDF deliverable NOT written (%s: %s). The JSON and Markdown reports are "
-            "unaffected; regenerate the PDF with `clinkz report-pdf <engagement-id>` once "
-            "the cause is fixed.",
+            "PDF deliverable NOT written (%s; message withheld: a layout error quotes the "
+            "evidence that caused it). The JSON and Markdown reports are unaffected; "
+            "regenerate the PDF with `clinkz report-pdf <engagement-id>` once the cause "
+            "is fixed.",
             type(exc).__name__,
-            exc,
         )
         return None
 

@@ -106,8 +106,10 @@ def read_floor() -> dict[str, Any]:
     try:
         stored = json.loads(FLOOR_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"WARNING: could not read {FLOOR_PATH}: {exc}")
-        return {"recorded": False, "keys": [], "sources": [], "error": str(exc)}
+        # Type only. A JSONDecodeError quotes the bytes around the fault, and
+        # this harness prints to a log an operator keeps.
+        print(f"WARNING: could not read {FLOOR_PATH}: {type(exc).__name__}")
+        return {"recorded": False, "keys": [], "sources": [], "error": type(exc).__name__}
     stored.setdefault("recorded", True)
     stored.setdefault("keys", [])
     stored.setdefault("sources", [])
