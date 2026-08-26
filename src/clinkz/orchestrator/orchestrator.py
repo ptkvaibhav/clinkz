@@ -1264,6 +1264,15 @@ class OrchestratorAgent:
             exploit_content["cookie_jar_path"] = f"/tmp/clinkz_{self._engagement_id}_cookies.txt"  # nosec B108
         if auth_headers:
             exploit_content["session_headers"] = auth_headers
+        # Every role whose session this engagement PROVED, not just the primary
+        # one whose cookies ride above. This is the wire that was missing: the
+        # roles were logged in, asserted, stored — and the log line saying the
+        # access-control classes could compare principals described a capability
+        # that stopped here. A class cannot attribute an object to a principal it
+        # was never handed.
+        role_sessions = self._role_session_handoff()
+        if role_sessions:
+            exploit_content["role_sessions"] = role_sessions
         if cookies or auth_headers:
             exploit_content["authenticated_as"] = authenticated_as
             credential_kind = "session cookies" if cookies else "Authorization bearer token"
@@ -2812,10 +2821,24 @@ class OrchestratorAgent:
             assertion.authenticated_status,
             assertion.anonymous_status,
         )
-        if len(self._role_sessions) >= 2:
+        proven = [role for role, s in self._role_sessions.items() if s.get("established")]
+        if len(proven) >= 2:
             self._logger.info(
-                "Multi-role engagement: %s — access-control classes can compare principals",
-                ", ".join(sorted(self._role_sessions)),
+                "Multi-role engagement: %d proven sessions (%s) handed to Exploit — the "
+                "access-control classes can attribute an object to a second principal",
+                len(proven),
+                ", ".join(sorted(proven)),
+            )
+        elif self._role_sessions:
+            # Stated, because the consequence is a whole tier of results. With
+            # one principal the IDOR class can establish that a reference nobody
+            # owns behaves differently and that an anonymous caller is refused —
+            # and still cannot say the object belongs to somebody else.
+            self._logger.info(
+                "Single-role engagement (%s): access-control classes can report candidates "
+                "but cannot attribute an object to another principal, so IDOR results will "
+                "be unproven leads rather than findings",
+                ", ".join(sorted(proven)) or "none proven",
             )
 
         return (
@@ -2823,6 +2846,42 @@ class OrchestratorAgent:
             primary_session["username"],
             primary_session["headers"],
         )
+
+    def _role_session_handoff(self) -> list[dict[str, Any]]:
+        """Every PROVEN role session, in the shape Exploit parses.
+
+        Only ``established`` sessions travel. A role whose login failed is kept
+        in :attr:`_role_sessions` so the abort message can name it, and handing
+        that forward as a usable identity would let an access-control oracle
+        "compare" against a session nobody proved — which is the failure
+        :mod:`clinkz.engagement.auth_state` exists to prevent, one layer along.
+
+        ``primary`` marks the role whose session the ambient cookie jar holds, so
+        the Exploit Agent knows which principal its ordinary probes already
+        carry and does not re-send them under an isolated carrier.
+
+        The session material here is the same material ``session_cookies`` and
+        ``session_headers`` already carry on this message, so this adds no new
+        disclosure class — and it leaves through the same redaction chokepoint
+        every artifact writer runs through.
+        """
+        primary = self._credentials.primary() if self._credentials else None
+        primary_role = primary.role if primary else ""
+        handoff: list[dict[str, Any]] = []
+        for role, session in self._role_sessions.items():
+            if not session.get("established"):
+                continue
+            handoff.append(
+                {
+                    "role": role,
+                    "username": session.get("username", ""),
+                    "cookies": dict(session.get("cookies") or {}),
+                    "headers": dict(session.get("headers") or {}),
+                    "established": True,
+                    "primary": role == primary_role,
+                }
+            )
+        return handoff
 
     async def _authenticate_role(self, cred: RoleCredential, default_login_url: str) -> None:
         """Log in as one role and assert the resulting session, recording both."""
@@ -3111,9 +3170,18 @@ class OrchestratorAgent:
         return assertion.established
 
     def _push_session_to_agents(self, cookies: dict[str, str], headers: dict[str, str]) -> int:
-        """Write a refreshed session onto every running agent that holds one."""
+        """Write a refreshed session onto every running agent that holds one.
+
+        The principal list is refreshed alongside it, from the same
+        ``_role_sessions`` a re-authentication has just rewritten. Pushing the
+        primary's new cookies while leaving an agent's principal list holding
+        the dead ones would give the access-control arms a stale identity — and
+        a stale identity does not fail loudly, it fails as "the owner could not
+        read its own object", which reads exactly like a target with no IDOR.
+        """
         if self._lifecycle is None:
             return 0
+        principals = self._role_session_handoff()
         pushed = 0
         for name in self._lifecycle.get_running_agents():
             agent = self._lifecycle.get_agent(name)
@@ -3124,6 +3192,10 @@ class OrchestratorAgent:
                 pushed += 1
             if hasattr(agent, "_session_headers") and headers:
                 agent._session_headers = dict(headers)
+            if hasattr(agent, "_principals") and principals:
+                from clinkz.agents._principal import parse_role_sessions
+
+                agent._principals = parse_role_sessions(principals)
         return pushed
 
     def _run_disclosure_gate(self, engagement_id: str) -> dict[str, Any]:

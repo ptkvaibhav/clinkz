@@ -1695,12 +1695,43 @@ class IDORMethodologyResult(BaseModel):
     indicator_observed: str | None = None
     candidate_param: str | None = None
     verified: bool = False
-    # ``verified`` = the response under the synthesized reference contained
-    # data plausibly belonging to a different resource (content fingerprint
-    # divergence, different identifier echo, response-diff above threshold).
-    # ``"likely"`` = response diverged but no clean different-resource
-    # signature surfaced.
+    # ``verified`` = every one of the four dispatched arms cleared AND the
+    # crossing response was positively attributed to a second authenticated
+    # principal's own authorized read. It used to mean "the response under the
+    # synthesized reference diverged from a captured baseline", which a public
+    # catalogue record, an error page and the next row of a shared table all
+    # satisfy.
+    #
+    # ``"likely"`` = the arms cleared and attribution was impossible (the
+    # single-role tier). It never reaches ``_persist_finding``: a
+    # non-confirming ``verification_strength`` is refused there, and the class
+    # records an ``UnprovenExploitLead`` instead.
     verification_strength: str = "verified"
+
+    #: ``multi_role`` or ``single_role`` — which tier the run was in, from
+    #: :class:`~clinkz.models.vuln_classes.MultiPrincipalRequirement`.
+    tier: str = ""
+    #: How the crossing response was attributed to the owning principal:
+    #: ``identical_rendering``, ``stable_fields``, or ``""`` for not attributed.
+    attribution: str = ""
+    #: The specific ``field=value`` pairs that attributed it, when the route was
+    #: ``stable_fields``. Empty for an identical rendering, which needs none.
+    attributing_values: tuple[str, ...] = ()
+    #: The never-issued reference the control arm carried.
+    absent_reference: str = ""
+    #: One line per dispatched arm — what it carried, as whom, and what came
+    #: back. Rendered into the finding so a reviewer can re-derive the verdict.
+    arms: tuple[str, ...] = ()
+    #: The never-sent control's structured evidence entries, already rendered by
+    #: :func:`~clinkz.agents._control_arm.control_evidence_lines`. Strings rather
+    #: than the ``ControlVerdict`` itself because this model is
+    #: ``model_dump()``-ed into the trace and a frozen dataclass would not
+    #: survive that.
+    control_evidence: tuple[str, ...] = ()
+    #: Set when the anonymous arm was served the same object: the target hands
+    #: it to everybody, so there is no authorization boundary to cross. Not a
+    #: failure to prove — a fact about the endpoint.
+    object_is_public: bool = False
 
 
 # ---------------------------------------------------------------------------

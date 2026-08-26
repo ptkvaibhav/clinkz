@@ -256,7 +256,7 @@ a key at the wrong level is refused by name rather than silently ignored.
 
 | Field | What it does | When you need it |
 |-------|--------------|------------------|
-| `role` | Labels the principal (`admin` / `user` / `anonymous` / anything meaningful). Required. | Always. Two labelled roles is what makes access-control testing possible — an IDOR/authz class needs two principals to compare. `anonymous` names the unauthenticated baseline. |
+| `role` | Labels the principal (`admin` / `user` / `anonymous` / anything meaningful). Required. | Always. **Two authenticating roles is what makes an access-control CONFIRMATION possible.** With one, the IDOR class can establish that a reference nobody owns behaves differently and that an anonymous caller is refused — and still cannot say the object belongs to somebody else, so it reports unproven leads rather than findings ([detail](docs/methodology/idor.md)). `anonymous` names the unauthenticated baseline. |
 | `username` / `password` | The credentials. `password` is a `SecretStr` and is registered for redaction on intake. | Any authenticating role. Omit both for `anonymous`. |
 | `login_url` | Where to authenticate **this role**. Overrides the login endpoint discovery found. | The app's login is not at a conventional path (`/login`, `/signin`, `/api/auth`, `/rest/user/login`), or it differs per role. Without it, an undiscoverable login means the engagement **aborts** rather than scanning blind — see below. |
 | `assert_url` | A URL known to behave differently authenticated vs anonymous. Tried **first** by the authenticated-state assertion. | The protected surface is named something unconventional, so the assertion's fallback guesses will not find it. |

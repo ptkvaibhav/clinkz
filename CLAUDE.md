@@ -528,6 +528,10 @@ src/clinkz/
 │                     #   with the evidence — offline-testable),
 │                     #   _auth_bypass (THE one vocabulary for "did this response log us
 │                     #   in?" — artifact reader + the three-arm differential),
+│                     #   _principal (a NAMED authenticated identity + the handoff
+│                     #   that carries one — the wire _role_sessions was missing),
+│                     #   _idor_oracle (the four-arm access-control oracle: whose
+│                     #   object is this? — pure, offline-testable),
 │                     #   _control_arm (the never-sent control + attribution + WHICH
 │                     #   arm produced a status: what an oracle must clear before it
 │                     #   may confirm — offline-testable),
@@ -581,7 +585,9 @@ src/clinkz/
 │                     #   DROPPED, and separately whether the ORDERING held)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes (+ ControlArm: which of a class's OWN channels
-                      #   dispatch their own control), target,
+                      #   dispatch their own control; + MultiPrincipalRequirement:
+                      #   how many identities a class needs before it may CONFIRM),
+                      #   target,
                       #   recon (+ VersionProvenance: how a version was OBSERVED),
                       #   scan, methodology,
                       #   research,
@@ -915,8 +921,17 @@ LESSONS #17).
   removed and the marker re-minted, graded by the SAME phase-5 oracle — and it
   must **round-trip like the payload**, because a bare decoy is
   encoding-invariant, refuses everywhere, and would have passed that run
-  cleanly. `MARKER_ORACLE_CLASSES` / `CONTROL_EXEMPT_CLASSES` partition every
-  dispatchable class with a stated reason; an unclassified one is a red build.
+  cleanly. `MARKER_ORACLE_CLASSES` / `DIFFERENTIAL_CONTROL_CLASSES` /
+  `CONTROL_EXEMPT_CLASSES` partition every dispatchable class with a stated
+  reason; an unclassified one is a red build. The middle table exists because
+  **what the decoy must BE differs by oracle kind**: a marker oracle's control
+  carries a minted token, because what it must not do is appear in a body; a
+  DIFFERENTIAL oracle's control carries a value of the class's own SHAPE, because
+  what it must do is round-trip through the same handler and differ only in the
+  primitive. Handing `_test_idor` a `clinkzdecoyidor48211` where the endpoint
+  expects an integer produces a control that takes the parse-error path, differs
+  from everything, and passes on a vulnerable target and a phantom alike.
+  `control_required()` is the union, so the RULE stays one rule.
   Enforced at `_persist_finding`, read only from fully-structured evidence so a
   page echoing `never_sent_control=refused` cannot license itself.
 - **Every kill discloses, wherever it happens.** The rule had two enforcement
@@ -959,6 +974,58 @@ LESSONS #17).
   a value the interpreter must COMPUTE (`'clinkz'.'exec'.(A*B)`) and that appears
   nowhere in the uploaded bytes. Neither is reachable by weakening the control:
   a decoy that does not round-trip refuses everywhere and proves nothing.
+- **Whose object is this? is a relation, not a property of a response — so the
+  access-control oracle needs a SECOND identity, and it now has one**
+  (`agents/_idor_oracle.py`, `agents/_principal.py`, **detail →
+  [`docs/methodology/idor.md`](docs/methodology/idor.md)**). Two defects, one
+  class. The **plumbing stopped one layer short**: the Orchestrator logged in
+  every supplied role, asserted each session, kept all of them and logged that
+  the access-control classes could compare principals — while handing Exploit
+  the primary role's cookies and nothing else. And the ORACLE had its control
+  inverted: phase 5 opened by requiring the target to have REFUSED an
+  out-of-allotment reference, which consumed **616 of 668 phase-5 refusals**
+  across 2,955 recorded engagements, because an application that 404s an id
+  nobody owns and 200s a neighbour's record discriminates perfectly and that
+  gate read the shape as "no boundary exists". `ref(∅)` is now the CONTROL, in
+  four dispatched arms — `self` (A, ref(A)), `crossing` (A, ref(B)),
+  `nonexistent` (A, ref(∅), must differ materially), `anonymous` (no session,
+  ref(B), must NOT return it) — plus B's own authorized read, which is what makes
+  ref(B) *attributable* and is the arm one principal cannot dispatch. The control
+  round-trips like the payload (numeric far outside the OBSERVED issued range, a
+  fresh v4, or the same length and character classes) because a minted marker is
+  encoding-invariant and would pass on a vulnerable target and a phantom alike.
+  **Reflection is deliberately NOT covered by it**: a sink echoes the control
+  too, so the control refuses correctly and the owner's read echoes the same
+  string back — three arms agreeing on one substitution — and it keeps its own
+  guard.
+- **A class that needs two identities declares it in the registry, and the code
+  READS the declaration.** `models/vuln_classes.py` has said "requires at least
+  two authenticated roles" since it was written, the report rendered that
+  verbatim, and the oracle emitted `high`/CONFIRMED on a single role 49 times. A
+  limitation only the report knows about is a disclaimer.
+  `MultiPrincipalRequirement` makes it a number the emission chokepoint compares
+  against the run's own principal list, with the lead reason declared beside it
+  (`single_role_cannot_attribute`, registered in `UNPROVEN_WHY_UNCONFIRMED`).
+  **Tier 1 multi-role MAY CONFIRM; Tier 2 single-role MAY ONLY LEAD** — "not A's"
+  is satisfied identically by a public catalogue record, so three negatives are
+  not a positive. Enforced at the methodology AND at `_persist_finding`
+  (deterministic ground 9), because a rule a class has to remember is a rule that
+  holds until the twenty-fifth class is written. A direct invocation holds no
+  principals and is in the single-role tier: that is the honest answer, not an
+  exemption.
+- **A request carries the ENGAGEMENT's session, a NAMED principal's, or none —
+  one field, three values** (`tools/http_client.py::session_mode`). `isolated`
+  did not exist and both alternatives are wrong for a cross-principal arm: under
+  `ambient` curl still passes `-c <jar>`, so role B's `Set-Cookie` overwrites the
+  engagement's own session and every later probe silently becomes B; under `none`
+  the explicit cookies are dropped and the request carries no principal at all.
+  `no_session` stays as shorthand for `none` and is now DERIVED from the mode
+  rather than supplied beside it — two booleans that must agree is how the
+  session-link leak happened. Only an `ambient` response is `session_bearing`, so
+  a role-B 401 is never read as our own session expiring. The agent-side carrier
+  (`_as_principal`) swaps the ambient material for the duration of one arm and is
+  **not re-entrant**: nesting raises, because concurrent use would send one
+  principal's session under another's label.
 - **A control arm's outcome is the PROOF, so a consumer must know WHICH arm it
   read.** "Marker-bound" is declared per class, and `_test_sqli` confirms on five
   channels: four are marker matches and `auth_bypass` is a three-arm differential
@@ -992,10 +1059,11 @@ LESSONS #17).
   citing something else, refutes itself in its own evidence — which shipped
   verbatim seven times.
 - **A deterministic guard whose value is that it needs no model is never gated by
-  one.** All **eight** grounds run unconditionally at `_persist_finding` over
+  one.** All **nine** grounds run unconditionally at `_persist_finding` over
   every finding, from one declaration (`_deterministic_grounds` — probe plus the
   lead reason it produces, read by the emission gate and the FP cross-check
-  alike). Four of them used to be reachable only *through* the cross-check, i.e.
+  alike). Ground 9 is the only one that reads no evidence at all: it compares a
+  registry DECLARATION against the run's own principal list, both engine facts. Four of them used to be reachable only *through* the cross-check, i.e.
   only once a model had nominated the finding; on the portfolio run that check
   returned **no opinion at all** and every ground behind it went unconsulted.
   Two consequences are structural, not incidental: an LLM can no longer suppress

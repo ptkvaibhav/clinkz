@@ -50,6 +50,7 @@ from dataclasses import dataclass
 
 __all__ = [
     "CONTROL_EXEMPT_CLASSES",
+    "DIFFERENTIAL_CONTROL_CLASSES",
     "indicator_is_self_controlled",
     "rebind_marker",
     "sqli_inert_control",
@@ -88,6 +89,42 @@ MARKER_ORACLE_CLASSES: frozenset[str] = frozenset(
 )
 
 
+#: Classes bound by the never-sent-control rule whose oracle is NOT a marker
+#: match — it is a differential between dispatched arms — and which therefore
+#: dispatch their own shape-matched control and must record its verdict.
+#:
+#: The distinction from :data:`MARKER_ORACLE_CLASSES` is what the decoy has to
+#: BE. A marker oracle's control carries a token minted by
+#: :func:`mint_decoy`, because what it must not do is appear in a body. A
+#: differential oracle's control carries a value of the CLASS'S OWN SHAPE,
+#: because what it must do is round-trip through the same handler, encoder and
+#: template as the confirming arm and differ only in the primitive. Handing
+#: ``_test_idor`` a ``clinkzdecoyidor48211`` where the endpoint expects an
+#: integer produces a control that takes the target's generic parse-error path,
+#: differs from everything, and passes on a vulnerable target and a phantom
+#: alike — the encoding-invariance failure ``sqli_inert_control`` was written to
+#: avoid, in a different costume.
+#:
+#: :func:`control_required` is the union, because the RULE is one rule: an oracle
+#: that never tried to refuse has not distinguished the vulnerability from the
+#: page. Only the decoy differs.
+DIFFERENTIAL_CONTROL_CLASSES: dict[str, str] = {
+    "_test_idor": (
+        "confirms on a four-arm differential and dispatches its own never-issued "
+        "reference: a value of the same shape, length and character classes as the real "
+        "one that nobody owns, sent through the same handler and required to answer "
+        "differently from the crossing arm. An anonymous arm rides beside it so an object "
+        "the target serves to everybody cannot be reported as a boundary crossing. "
+        "Formerly exempted here on the strength of a PRECONDITION — phase 2 required the "
+        "target to refuse an out-of-allotment reference before phase 5 would grade "
+        "anything — which is the same probe read backwards: over 2,955 recorded "
+        "engagements it consumed 616 of 668 phase-5 refusals, because an application that "
+        "404s an unowned id and 200s a neighbour's record is discriminating perfectly and "
+        "that gate read it as 'no boundary exists'"
+    ),
+}
+
+
 #: Every other dispatchable class, with the reason the rule does not bind it.
 #: Exemption is DECLARED, never inferred from absence: a class that appears in
 #: neither table is a red build, because "nobody classified it" and "it needs no
@@ -121,21 +158,11 @@ CONTROL_EXEMPT_CLASSES: dict[str, str] = {
         "a pure function of the observed header set; nothing is injected, so there "
         "is no arm to control"
     ),
-    # PROVISIONAL, and the only entry in this table that is. The exemption rests
-    # on the refusal boundary and the divergence gate being a dispatched control
-    # in all but name — but the class that reaches them is the one whose ranking
-    # withheld ``horizontal`` on an opaque identifier, so for 41 of the 49
-    # recorded IDOR confirmations the reasoning below described a path the class
-    # never took. The ranking is fixed (``agents/_plan_ranking.rank_idor``); the
-    # oracle is not, and until it dispatches its own never-sent control this
-    # entry stays here rather than in MARKER_ORACLE_CLASSES. Moving it is the
-    # deliberate next step, not an oversight.
-    "_test_idor": (
-        "gated on an authorization boundary proven to exist by an out-of-allotment "
-        "reference the target refused, then on divergence from a captured baseline "
-        "— provisional: see the note above, this class is expected to move to "
-        "MARKER_ORACLE_CLASSES once its oracle dispatches its own control arm"
-    ),
+    # ``_test_idor`` used to sit here, PROVISIONALLY, on the strength of "the
+    # refusal boundary and the divergence gate are a dispatched control in all
+    # but name". They were not: the refusal boundary was a PRECONDITION, which is
+    # the same probe read backwards. It has moved to
+    # :data:`DIFFERENTIAL_CONTROL_CLASSES` now that it dispatches a real one.
     "_test_brute_force": "counts attempts the target accepted; no marker is injected",
     "_test_csrf": "reads whether a token is present and bound; no marker is injected",
     "_test_weak_session": "measures issued session identifiers; no marker is injected",
@@ -525,8 +552,14 @@ def indicator_is_self_controlled(test_method: str, indicator_type: str) -> str |
 
 
 def control_required(test_method: str) -> bool:
-    """Whether *test_method*'s oracle is bound by the never-sent-control rule."""
-    return test_method in MARKER_ORACLE_CLASSES
+    """Whether *test_method*'s oracle is bound by the never-sent-control rule.
+
+    The union of :data:`MARKER_ORACLE_CLASSES` and
+    :data:`DIFFERENTIAL_CONTROL_CLASSES`, because the rule is one rule — an
+    oracle that never tried to refuse has distinguished nothing — and the two
+    tables differ only in what SHAPE the decoy has to have.
+    """
+    return test_method in MARKER_ORACLE_CLASSES or test_method in DIFFERENTIAL_CONTROL_CLASSES
 
 
 def control_evidence_lines(verdict: ControlVerdict | None) -> list[str]:

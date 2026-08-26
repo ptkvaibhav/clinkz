@@ -58,7 +58,7 @@ oracle set.
 | Command injection | [cmdi.md](cmdi.md) |
 | LFI | [lfi.md](lfi.md) |
 | XSS | [xss.md](xss.md) |
-| IDOR | [idor.md](idor.md) |
+| IDOR | [idor.md](idor.md) · [idor-crawl-coverage.md](idor-crawl-coverage.md) |
 | Open redirect | [open-redirect.md](open-redirect.md) |
 | CSRF | [csrf.md](csrf.md) |
 | Brute force | [brute-force.md](brute-force.md) |

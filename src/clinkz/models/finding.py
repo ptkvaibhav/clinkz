@@ -448,7 +448,7 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # the engine rather than something each class must remember.
         "verification_strength_below_confirmation",
         # The remaining deterministic emission grounds. Every one of these is a
-        # pure function of the candidate's own evidence, and all eight now run
+        # pure function of the candidate's own evidence, and all nine now run
         # unconditionally at ``_persist_finding`` — so each needs its own entry
         # here or the lead lands under a reason that is not what happened.
         #
@@ -511,6 +511,18 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # unreachable. The version match is real and worth an operator's time;
         # the exploitation claim is not made at all.
         "version_match_only_no_oracle_for_this_cve",
+        # An access-control class proved everything EXCEPT ownership. The
+        # response differs from the caller's own object, from a never-issued
+        # reference of the same shape, and from what an anonymous caller is
+        # served — three negatives that a shared record behind a login satisfies
+        # exactly as well as another principal's record does. Positive
+        # attribution needs a SECOND authenticated principal's own authorized
+        # read of the same object, and a single-role engagement cannot dispatch
+        # that arm. Declared by the producer
+        # (:class:`~clinkz.models.vuln_classes.MultiPrincipalRequirement`) and
+        # enforced at the emission chokepoint, so the class cannot confirm by
+        # forgetting to check.
+        "single_role_cannot_attribute",
         # Same version match, and this engine DOES have an oracle — which ran
         # against the live target and did not witness the effect. Recorded so
         # the difference between "we could not test this" and "we tested it and

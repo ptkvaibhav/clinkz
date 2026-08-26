@@ -88,6 +88,70 @@ class ControlArm(BaseModel):
         return self
 
 
+class MultiPrincipalRequirement(BaseModel):
+    """How many authenticated principals this class needs before it may CONFIRM.
+
+    The access-control classes have a limitation no other family has: their
+    defining effect is about WHOSE object was returned, and "whose" is not a
+    property of a response. It is a relation between a response and an identity,
+    and establishing it takes a second identity — one whose own authorized read
+    of the same object says "this record is mine".
+
+    That limitation was already written down. ``_test_idor``'s ``limitation``
+    field has said "Requires at least two authenticated roles to prove that an
+    authorization boundary was crossed. With a single role (or none) the class
+    can only report candidates" since the registry was written, and it was
+    rendered verbatim into every report — while the oracle confirmed at
+    ``high``/CONFIRMED on a single role for 49 recorded findings. A limitation
+    that only the report knows about is a disclaimer, not a rule.
+
+    So the requirement is a FIELD, in numbers the emission chokepoint can compare
+    against the run's own principal list, with the lead reason a shortfall
+    produces declared beside it. The prose stays: it is what the client reads.
+    This is what the code reads.
+
+    Attributes:
+        principals_required: Authenticated principals needed to CONFIRM. ``1``
+            (the default) means the ordinary rule — the engagement's own session
+            is enough — and every class except the access-control family is that.
+        why_unconfirmed: The :data:`~clinkz.models.finding.UNPROVEN_WHY_UNCONFIRMED`
+            member a shortfall demotes to. Required whenever more than one
+            principal is needed, because "it became a lead" is only actionable if
+            the lead says which observation was missing.
+        reason: Why one principal cannot prove this class's effect. Rendered
+            beside the lead so the operator can judge whether supplying a second
+            credential is worth another engagement.
+    """
+
+    principals_required: int = 1
+    why_unconfirmed: str = ""
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def _requirement_is_complete(self) -> MultiPrincipalRequirement:
+        """A requirement with no lead reason cannot be enforced, only asserted."""
+        if self.principals_required < 1:
+            raise ValueError("MultiPrincipalRequirement.principals_required must be at least 1")
+        if self.principals_required == 1:
+            return self
+        if not self.why_unconfirmed.strip() or not self.reason.strip():
+            raise ValueError(
+                "a class needing more than one authenticated principal must declare BOTH "
+                "why_unconfirmed (the lead reason a shortfall produces) and reason (why one "
+                "principal cannot prove it) — otherwise the shortfall demotes to a lead "
+                "nobody can act on"
+            )
+        from clinkz.models.finding import UNPROVEN_WHY_UNCONFIRMED
+
+        if self.why_unconfirmed not in UNPROVEN_WHY_UNCONFIRMED:
+            raise ValueError(
+                f"MultiPrincipalRequirement.why_unconfirmed={self.why_unconfirmed!r} is not in "
+                "UNPROVEN_WHY_UNCONFIRMED — an unregistered reason is normalised to "
+                "'not_instrumentable', which is not what happened"
+            )
+        return self
+
+
 class VulnClass(BaseModel):
     """One vulnerability class as a client sees it.
 
@@ -117,6 +181,7 @@ class VulnClass(BaseModel):
     label: str
     capability: ConfirmationCapability
     control_arm: ControlArm = ControlArm()
+    multi_principal: MultiPrincipalRequirement = MultiPrincipalRequirement()
     limitation: str = ""
     title_tokens: tuple[str, ...] = ()
     remediation: str = ""
@@ -366,11 +431,30 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
         test_method="_test_idor",
         label="Insecure Direct Object Reference / Broken Access Control",
         capability=_C.SERVER_SIDE,
+        multi_principal=MultiPrincipalRequirement(
+            principals_required=2,
+            why_unconfirmed="single_role_cannot_attribute",
+            reason=(
+                "the defining effect is that the caller was served an object belonging to "
+                "someone else, and 'belonging' is a relation between a response and an "
+                "identity rather than anything visible in the response. One principal "
+                "establishes three negatives — not the caller's own object, not a "
+                "never-issued reference, not what an anonymous caller is served — and a "
+                "shared record behind a login satisfies all three exactly as well as "
+                "another principal's record does. Positive attribution needs a second "
+                "principal's OWN authorized read of the same object"
+            ),
+        ),
         limitation=(
             "Requires at least two authenticated roles to prove that an "
             "authorization boundary was crossed. With a single role (or none) "
             "the class can only report candidates."
         ),
+        # No ``control_arm`` exemption. The four-arm oracle DISPATCHES a
+        # never-sent control (``ref(∅)``) through the shared ``_run_control_arm``
+        # seam and records its verdict in the evidence, so the class is bound by
+        # the rule rather than excused from it — see
+        # :data:`~clinkz.agents._control_arm.DIFFERENTIAL_CONTROL_CLASSES`.
         title_tokens=(
             "idor",
             "insecure direct object",
@@ -967,6 +1051,35 @@ def for_key(key: str) -> VulnClass | None:
     return _BY_KEY.get((key or "").strip().lower())
 
 
+def multi_principal_requirement(test_method: str) -> MultiPrincipalRequirement:
+    """How many authenticated principals *test_method* needs before it may confirm.
+
+    The one reader every consumer goes through — the methodology deciding
+    whether to confirm, the emission chokepoint enforcing it, and the report
+    explaining a lead. An unknown class gets the default (one principal), which
+    is the pre-existing behaviour of every class that is not in the
+    access-control family.
+
+    Args:
+        test_method: The ``_test_*`` name.
+
+    Returns:
+        The declared requirement, never ``None``.
+    """
+    vuln_class = _BY_METHOD.get(test_method)
+    return vuln_class.multi_principal if vuln_class else MultiPrincipalRequirement()
+
+
+def classes_requiring_multiple_principals() -> tuple[VulnClass, ...]:
+    """Every class that cannot confirm on the engagement's own session alone.
+
+    The domain of the emission-gate rule, COMPUTED from the registry rather than
+    listed beside it: a second class added to the family is covered by the guard
+    the day it is declared, not the day somebody remembers to widen a tuple.
+    """
+    return tuple(vc for vc in _ALL if vc.multi_principal.principals_required > 1)
+
+
 def classes_requiring_client_side_oracle() -> tuple[VulnClass, ...]:
     """Classes this engine cannot confirm without a browser-side oracle."""
     return tuple(vc for vc in VULN_CLASSES if vc.capability is _C.CLIENT_SIDE_ORACLE_REQUIRED)
@@ -983,11 +1096,14 @@ __all__ = [
     "UNIMPLEMENTED_CLASSES",
     "VULN_CLASSES",
     "ConfirmationCapability",
+    "MultiPrincipalRequirement",
     "VulnClass",
     "classes_requiring_client_side_oracle",
+    "classes_requiring_multiple_principals",
     "finding_title",
     "for_finding",
     "for_key",
     "for_method",
     "limited_classes",
+    "multi_principal_requirement",
 ]
