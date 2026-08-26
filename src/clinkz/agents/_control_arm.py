@@ -121,9 +121,20 @@ CONTROL_EXEMPT_CLASSES: dict[str, str] = {
         "a pure function of the observed header set; nothing is injected, so there "
         "is no arm to control"
     ),
+    # PROVISIONAL, and the only entry in this table that is. The exemption rests
+    # on the refusal boundary and the divergence gate being a dispatched control
+    # in all but name — but the class that reaches them is the one whose ranking
+    # withheld ``horizontal`` on an opaque identifier, so for 41 of the 49
+    # recorded IDOR confirmations the reasoning below described a path the class
+    # never took. The ranking is fixed (``agents/_plan_ranking.rank_idor``); the
+    # oracle is not, and until it dispatches its own never-sent control this
+    # entry stays here rather than in MARKER_ORACLE_CLASSES. Moving it is the
+    # deliberate next step, not an oversight.
     "_test_idor": (
         "gated on an authorization boundary proven to exist by an out-of-allotment "
-        "reference the target refused, then on divergence from a captured baseline"
+        "reference the target refused, then on divergence from a captured baseline "
+        "— provisional: see the note above, this class is expected to move to "
+        "MARKER_ORACLE_CLASSES once its oracle dispatches its own control arm"
     ),
     "_test_brute_force": "counts attempts the target accepted; no marker is injected",
     "_test_csrf": "reads whether a token is present and bound; no marker is injected",
