@@ -271,3 +271,130 @@ def test_alarms_are_a_subset_view_not_a_second_population(
     # The sibling views are references by name, and stay that way.
     assert all(isinstance(n, str) for n in payload["never_invoked"])
     assert all(set(c) == {"component", "reasons"} for c in payload["correctly_empty"])
+
+
+# ---------------------------------------------------------------------------
+# Every view, not just the one that was reported
+# ---------------------------------------------------------------------------
+
+#: Which ``to_dict`` keys are VIEWS of ``components`` and which are their own
+#: populations, with the reason. The DOMAIN is computed from ``to_dict``'s own
+#: keys (below), so a new key fails the build; only this classification is
+#: hand-maintained. That split is the guard-domain law, and it is here because
+#: the containment was pinned for ``alarms`` alone while three sibling views went
+#: unchecked — one of which, ``correctly_empty``, is the OTHER place
+#: ``exploit.component_cve_match`` appears. The duplication reported on the
+#: portfolio run was that pair: one registration, one population entry, one
+#: by-name reference. Not a second ``record_contribution``, and not a
+#: serialization bug.
+_LEDGER_VIEWS: dict[str, str] = {
+    "alarms": "the alarming subset of components, re-serialized in full",
+    "never_invoked": "components with zero invocations, by name",
+    "correctly_empty": "components that ran and were right to find nothing, by name",
+    "unreachable": "declared components the engagement could not reach, by name",
+}
+
+_LEDGER_NON_VIEWS: dict[str, str] = {
+    "components": "THE population - the only place a component's numbers live",
+    "fallbacks": (
+        "a different population entirely: fallback ACTIVATIONS, which name a covered "
+        "component and a covering one rather than being components themselves"
+    ),
+    "summary": "scalar counts, computed from self._records and never from these lists",
+}
+
+
+def test_every_view_key_is_classified(ledger: ContributionLedger) -> None:
+    """``computed - declared``: a new key nobody classified.
+
+    A view added later and left out of the classification would be unchecked by
+    the containment assertion below — which is exactly the state ``alarms`` alone
+    being pinned had left the other three in.
+    """
+    record_contribution(name="any.tool", kind=ComponentKind.TOOL, items=1, ok=True)
+    keys = set(ledger.to_dict())
+    classified = set(_LEDGER_VIEWS) | set(_LEDGER_NON_VIEWS)
+    assert keys - classified == set(), (
+        f"unclassified key(s) in ContributionLedger.to_dict: {sorted(keys - classified)}. "
+        "Say whether each is a VIEW of components (and pin the containment) or its own "
+        "population (and say why)."
+    )
+    assert classified - keys == set(), (
+        f"classified key(s) that to_dict no longer emits: {sorted(classified - keys)}"
+    )
+
+
+def test_no_view_is_a_second_population(ledger: ContributionLedger) -> None:
+    """Every view names components that are IN ``components``, and adds none.
+
+    The distinction decides whether a consumer may sum. Nothing in the engine
+    does today, and every alarming component has contributed zero items by
+    definition — so a union would stay invisible right up until a component
+    alarms while carrying real items, which is what a populated CVE inventory
+    would produce.
+    """
+    record_contribution(name="silent.tool", kind=ComponentKind.TOOL, items=0, ok=True)
+    record_contribution(name="healthy.tool", kind=ComponentKind.TOOL, items=3, ok=True)
+    record_contribution(
+        name="graphql.discoverer",
+        kind=ComponentKind.DISCOVERER,
+        items=0,
+        ok=True,
+        not_applicable="the target serves no GraphQL endpoint",
+    )
+    declare_component(name="never.asked", kind=ComponentKind.TOOL)
+
+    payload = ledger.to_dict()
+    population = {c["component"] for c in payload["components"]}
+    for key in _LEDGER_VIEWS:
+        named = {entry if isinstance(entry, str) else entry["component"] for entry in payload[key]}
+        assert named <= population, (
+            f"'{key}' names {sorted(named - population)}, which is not in the population. "
+            "A view that can introduce a name is a second population, and a consumer "
+            "that unions the two double-counts."
+        )
+    # The count a reader trusts comes from the population, so no amount of
+    # re-rendering in the views can move it.
+    assert payload["summary"]["components_tracked"] == len(payload["components"])
+
+
+def test_the_cve_component_has_exactly_one_registration(ledger: ContributionLedger) -> None:
+    """The portfolio-run report, reproduced: one call, two appearances.
+
+    ``exploit.component_cve_match`` is declared at engagement start and records
+    once at its own seam. On a target with no versioned component it lands in
+    ``components`` with ``invocations=1, items=0, correctly_empty=True`` and is
+    referenced by name from ``correctly_empty``. Two appearances, one
+    registration — containment, not double registration.
+    """
+    declare_component(name="exploit.component_cve_match", kind=ComponentKind.METHODOLOGY)
+    record_contribution(
+        name="exploit.component_cve_match",
+        kind=ComponentKind.METHODOLOGY,
+        items=0,
+        ok=True,
+        not_applicable=(
+            "recon inventoried no component with a name and version, so there was "
+            "nothing to match against a published CVE"
+        ),
+    )
+
+    payload = ledger.to_dict()
+    rows = [c for c in payload["components"] if c["component"] == "exploit.component_cve_match"]
+    assert len(rows) == 1, "the population must hold exactly one row per component"
+    assert rows[0]["invocations"] == 1, (
+        "two appearances in the rendered ledger, ONE registration - a second "
+        "record_contribution would show up here as invocations=2"
+    )
+    referenced_from = [
+        key
+        for key in _LEDGER_VIEWS
+        if any(
+            (entry if isinstance(entry, str) else entry["component"])
+            == "exploit.component_cve_match"
+            for entry in payload[key]
+        )
+    ]
+    assert referenced_from == ["correctly_empty"], (
+        f"expected the by-name reference in correctly_empty alone, got {referenced_from}"
+    )
