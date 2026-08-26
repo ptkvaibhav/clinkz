@@ -1,0 +1,291 @@
+{
+  "_what": "The observation that DEFINES the crawl-and-authenticate floor: a Juice Shop engagement that dispatched zero methodology tasks and still had four challenges marked solved by the target. Committed so the floor mechanism is asserted against a real zero-dispatch run rather than a constructed one - the live floor file itself lives under outputs/ and is never committed, because a committed floor set is the hardcoded claim this replaces.",
+  "zero_dispatch_run": {
+    "engagement": "2e21a200-39c1-45bd-bfbd-34986cc0e19f",
+    "_source": "outputs/2e21a200-39c1-45bd-bfbd-34986cc0e19f, 2026-08-25",
+    "methodology_ledger_rows": [
+      {
+        "component": "methodology:_test_brute_force",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_cmdi",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_constraint_violation",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_crypto",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_csp",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_csrf",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_file_upload",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_idor",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_input_validation",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_javascript_attacks",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_jwt",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_lfi",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_log4shell",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_mass_assignment",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_nosqli",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_open_redirect",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_repeatability",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_secrets_exposure",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_security_headers",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_sqli",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_ssrf",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_ssti",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_state_sequence",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_tier2_technique",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_tier3_technique",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_weak_session",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_xss_dom",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_xss_reflected",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_xss_stored",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_xxe",
+        "items_contributed": 0
+      }
+    ],
+    "scoreboard_after": {
+      "total_challenges": 113,
+      "solved": [
+        "errorHandlingChallenge",
+        "loginAdminChallenge",
+        "securityPolicyChallenge",
+        "weakPasswordChallenge"
+      ],
+      "newly_solved": [
+        {
+          "key": "errorHandlingChallenge",
+          "name": "Error Handling",
+          "category": "Security Misconfiguration",
+          "difficulty": 1
+        },
+        {
+          "key": "loginAdminChallenge",
+          "name": "Login Admin",
+          "category": "Injection",
+          "difficulty": 2
+        },
+        {
+          "key": "securityPolicyChallenge",
+          "name": "Security Policy",
+          "category": "Miscellaneous",
+          "difficulty": 2
+        },
+        {
+          "key": "weakPasswordChallenge",
+          "name": "Password Strength",
+          "category": "Broken Authentication",
+          "difficulty": 2
+        }
+      ]
+    }
+  },
+  "testing_run": {
+    "engagement": "9317e813-281e-4de6-8ff2-48f8ee46a6da",
+    "_source": "outputs/9317e813-281e-4de6-8ff2-48f8ee46a6da, 2026-08-25",
+    "_note": "The same envelope's first run, which DID dispatch. Its scoreboard snapshot was overwritten by the two later runs, so its solved set is not recoverable from disk; only the dispatch count is, and that is what the refusal rule here is asserted against.",
+    "methodology_ledger_rows": [
+      {
+        "component": "methodology:_test_brute_force",
+        "items_contributed": 4
+      },
+      {
+        "component": "methodology:_test_cmdi",
+        "items_contributed": 3
+      },
+      {
+        "component": "methodology:_test_constraint_violation",
+        "items_contributed": 4
+      },
+      {
+        "component": "methodology:_test_crypto",
+        "items_contributed": 3
+      },
+      {
+        "component": "methodology:_test_csp",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_csrf",
+        "items_contributed": 28
+      },
+      {
+        "component": "methodology:_test_file_upload",
+        "items_contributed": 3
+      },
+      {
+        "component": "methodology:_test_idor",
+        "items_contributed": 39
+      },
+      {
+        "component": "methodology:_test_input_validation",
+        "items_contributed": 3
+      },
+      {
+        "component": "methodology:_test_javascript_attacks",
+        "items_contributed": 3
+      },
+      {
+        "component": "methodology:_test_jwt",
+        "items_contributed": 2
+      },
+      {
+        "component": "methodology:_test_lfi",
+        "items_contributed": 4
+      },
+      {
+        "component": "methodology:_test_log4shell",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_mass_assignment",
+        "items_contributed": 15
+      },
+      {
+        "component": "methodology:_test_nosqli",
+        "items_contributed": 9
+      },
+      {
+        "component": "methodology:_test_open_redirect",
+        "items_contributed": 2
+      },
+      {
+        "component": "methodology:_test_repeatability",
+        "items_contributed": 5
+      },
+      {
+        "component": "methodology:_test_secrets_exposure",
+        "items_contributed": 5
+      },
+      {
+        "component": "methodology:_test_security_headers",
+        "items_contributed": 3
+      },
+      {
+        "component": "methodology:_test_sqli",
+        "items_contributed": 25
+      },
+      {
+        "component": "methodology:_test_ssrf",
+        "items_contributed": 2
+      },
+      {
+        "component": "methodology:_test_ssti",
+        "items_contributed": 4
+      },
+      {
+        "component": "methodology:_test_state_sequence",
+        "items_contributed": 2
+      },
+      {
+        "component": "methodology:_test_tier2_technique",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_tier3_technique",
+        "items_contributed": 0
+      },
+      {
+        "component": "methodology:_test_weak_session",
+        "items_contributed": 3
+      },
+      {
+        "component": "methodology:_test_xss_dom",
+        "items_contributed": 3
+      },
+      {
+        "component": "methodology:_test_xss_reflected",
+        "items_contributed": 3
+      },
+      {
+        "component": "methodology:_test_xss_stored",
+        "items_contributed": 9
+      },
+      {
+        "component": "methodology:_test_xxe",
+        "items_contributed": 2
+      }
+    ]
+  }
+}

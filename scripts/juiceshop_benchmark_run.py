@@ -60,6 +60,162 @@ BASE = "http://localhost:3000"
 COMPOSE = ["docker", "compose", "-f", "docker/docker-compose.yml"]
 RESULTS_DIR = Path("outputs/_juiceshop_benchmark")
 
+#: Where the measured floor lives. Not a constant in this file: a hardcoded
+#: floor set is a claim about the target that nobody re-measures, and it goes
+#: stale the moment Juice Shop changes which challenges an authenticated crawl
+#: trips. This file is WRITTEN by a run that dispatched zero methodology tasks
+#: and carries the engagement id that produced it.
+FLOOR_PATH = RESULTS_DIR / "benchmark_floor.json"
+
+
+def methodology_dispatches(report: dict[str, Any]) -> int:
+    """How many methodology tasks this engagement actually DISPATCHED.
+
+    Read from the component ledger's per-class methodology components, whose
+    ``items_contributed`` counts dispatches rather than findings — that is the
+    declared contract at the one dispatch seam, chosen precisely so a clean
+    class on a clean run does not read as a silent component.
+
+    Args:
+        report: A parsed ``report_<id>.json``.
+
+    Returns:
+        The total across every ``methodology:*`` component. Zero means no
+        ``_test_*`` method was invoked against any endpoint: whatever the target
+        recorded as solved, this engine did not exploit it.
+    """
+    ledger = report.get("component_ledger") or {}
+    return sum(
+        int(component.get("items_contributed") or 0)
+        for component in (ledger.get("components") or [])
+        if isinstance(component, dict)
+        and str(component.get("component") or "").startswith("methodology:")
+    )
+
+
+def read_floor() -> dict[str, Any]:
+    """The recorded floor, or the shape that says there isn't one.
+
+    "No floor has been measured" is a different fact from "the floor is empty",
+    and conflating them is exactly the error this whole section removes: it would
+    silently make ``solved_by_testing == solved_total`` again, which is the
+    number that was wrong.
+    """
+    if not FLOOR_PATH.is_file():
+        return {"recorded": False, "keys": [], "sources": []}
+    try:
+        stored = json.loads(FLOOR_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"WARNING: could not read {FLOOR_PATH}: {exc}")
+        return {"recorded": False, "keys": [], "sources": [], "error": str(exc)}
+    stored.setdefault("recorded", True)
+    stored.setdefault("keys", [])
+    stored.setdefault("sources", [])
+    return stored
+
+
+def record_floor(
+    *, engagement: str, solved_keys: list[str], dispatches: int, challenge_index: dict[str, Any]
+) -> dict[str, Any]:
+    """Fold a zero-dispatch run's solved set into the measured floor.
+
+    A run that dispatched **zero** methodology tasks and still solved challenges
+    solved them by authenticating and crawling. Those challenges are not
+    evidence about this engine's exploitation, and counting them is how a "7 of
+    49" becomes a number nobody should put in front of a client.
+
+    The union is deliberate and one-way: another zero-dispatch run that trips a
+    challenge the first did not has widened what crawling alone reaches, and the
+    floor has to widen with it. Nothing here removes a key — a run that fails to
+    reproduce a floor challenge is evidence about that run's crawl, not about
+    whether the challenge is reachable without testing.
+
+    Args:
+        engagement: The engagement id that produced this observation.
+        solved_keys: What the target confirmed it solved.
+        dispatches: This run's methodology dispatch count. Must be zero.
+        challenge_index: ``{key: challenge}`` for the names and categories.
+
+    Returns:
+        The written floor record.
+
+    Raises:
+        ValueError: *dispatches* is not zero. A floor derived from a run that
+            DID test is not a floor; it is a subtraction of this engine's own
+            results from itself.
+    """
+    if dispatches:
+        raise ValueError(
+            f"refusing to record a floor from engagement {engagement}: it dispatched "
+            f"{dispatches} methodology task(s), so its solved set is not the "
+            f"crawl-and-authenticate floor"
+        )
+    floor = read_floor()
+    keys = sorted(set(floor.get("keys") or []) | set(solved_keys))
+    sources = list(floor.get("sources") or [])
+    sources.append(
+        {
+            "engagement": engagement,
+            "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "methodology_dispatches": dispatches,
+            "solved": sorted(solved_keys),
+        }
+    )
+    record = {
+        "recorded": True,
+        "_what": (
+            "Challenges Juice Shop marks solved for a run that dispatched ZERO "
+            "methodology tasks - i.e. what authenticating and crawling trips on their "
+            "own. Subtracted from solved_total to give solved_by_testing."
+        ),
+        "keys": keys,
+        "challenges": [
+            {
+                "key": key,
+                "name": (challenge_index.get(key) or {}).get("name"),
+                "category": (challenge_index.get(key) or {}).get("category"),
+                "difficulty": (challenge_index.get(key) or {}).get("difficulty"),
+            }
+            for key in keys
+        ],
+        "sources": sources,
+    }
+    write_redacted_json(FLOOR_PATH, record)
+    return record
+
+
+def subtract_floor(solved_keys: list[str], floor: dict[str, Any]) -> dict[str, Any]:
+    """Split a solved set into what testing earned and what the floor supplies.
+
+    Returns ``solved_by_testing: None`` when no floor has been measured. That is
+    the honest answer and not a zero: without a zero-dispatch observation there
+    is nothing to subtract, and defaulting to "subtract nothing" reproduces the
+    inflated number the floor exists to remove.
+    """
+    if not floor.get("recorded"):
+        return {
+            "floor_recorded": False,
+            "floor_keys": [],
+            "solved_by_testing": None,
+            "solved_by_testing_count": None,
+            "note": (
+                "No zero-dispatch run has been recorded, so the crawl-and-authenticate "
+                "floor is unmeasured and solved_total cannot be split. Record one with "
+                "`--record-floor`, or run this harness once against a target the "
+                "engagement does not test."
+            ),
+        }
+    floor_keys = sorted(floor.get("keys") or [])
+    earned = [key for key in solved_keys if key not in set(floor_keys)]
+    return {
+        "floor_recorded": True,
+        "floor_keys": floor_keys,
+        "floor_sources": [s.get("engagement") for s in (floor.get("sources") or [])],
+        "solved_by_testing": earned,
+        "solved_by_testing_count": len(earned),
+        "solved_from_floor": [key for key in solved_keys if key in set(floor_keys)],
+    }
+
 #: Juice Shop's own category labels, mapped to whether this engine dispatches a
 #: class that could confirm that kind of flaw. Every category the target ships is
 #: listed: an unlisted one would silently drop out of the denominator, and a
@@ -333,8 +489,85 @@ def _finding_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def record_floor_offline(engagement: str = "") -> int:
+    """Derive the floor from a stored zero-dispatch run. Sends nothing.
+
+    Reads the scoreboard snapshot this harness already wrote beside the bundle
+    and the bundle's own component ledger. Offline on purpose: the observation
+    that defines a floor has already been made, and re-running the engagement to
+    re-make it would cost an hour and a live target for a number that is sitting
+    on disk.
+
+    Args:
+        engagement: The engagement id, or empty to use whichever one
+            ``scoreboard_after.json`` names.
+
+    Returns:
+        A process exit code.
+    """
+    snapshot_path = RESULTS_DIR / "scoreboard_after.json"
+    if not snapshot_path.is_file():
+        print(f"FATAL: no scoreboard snapshot at {snapshot_path}")
+        return 2
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    engagement = engagement or str(snapshot.get("engagement") or "")
+    if not engagement:
+        print(f"FATAL: {snapshot_path} names no engagement; pass --record-floor <id>")
+        return 2
+    if snapshot.get("engagement") and snapshot["engagement"] != engagement:
+        print(
+            f"FATAL: {snapshot_path} was captured for {snapshot['engagement']}, not "
+            f"{engagement}. A floor read off somebody else's scoreboard is not a "
+            f"measurement of anything."
+        )
+        return 2
+
+    report = read_report(engagement)
+    if not report:
+        print(f"FATAL: no stored report for engagement {engagement}")
+        return 2
+    dispatches = methodology_dispatches(report)
+    print(f"engagement {engagement}: {dispatches} methodology dispatch(es)")
+    solved = sorted(snapshot.get("solved") or [])
+    index = {
+        str(challenge.get("key")): challenge
+        for challenge in (snapshot.get("newly_solved") or [])
+        if isinstance(challenge, dict)
+    }
+    try:
+        record = record_floor(
+            engagement=engagement,
+            solved_keys=solved,
+            dispatches=dispatches,
+            challenge_index=index,
+        )
+    except ValueError as exc:
+        print(f"FATAL: {exc}")
+        return 2
+    print(f"floor recorded at {FLOOR_PATH}: {len(record['keys'])} challenge(s)")
+    for key in record["keys"]:
+        print(f"  - {key}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--record-floor",
+        nargs="?",
+        const="",
+        dest="record_floor",
+        metavar="ENGAGEMENT_ID",
+        help=(
+            "OFFLINE. Derive the crawl-and-authenticate floor from a stored "
+            "zero-dispatch run and exit. Refuses a run that dispatched anything."
+        ),
+    )
+    known, _ = parser.parse_known_args()
+    if known.record_floor is not None:
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        return record_floor_offline(known.record_floor)
+
     parser.add_argument("--authorization", required=True, type=Path)
     parser.add_argument("--benchmark-profile", required=True, type=Path, dest="benchmark")
     parser.add_argument("--creds", required=True, type=Path)
@@ -471,6 +704,34 @@ def main() -> int:
     solved_outside = [k for k in newly if k not in addressable_keys]
     missed_addressable = [c for c in target_set if c.get("key") not in after_by_key]
 
+    # --- 3b. the floor ------------------------------------------------------
+    # A challenge that a zero-dispatch run trips is not evidence about this
+    # engine's exploitation. Runs 2 and 3 of the variance envelope dispatched
+    # NOTHING and still solved four - errorHandling, loginAdmin, securityPolicy,
+    # weakPassword - purely by authenticating and crawling. Counting those makes
+    # the headline number roughly twice what testing earned.
+    dispatches = methodology_dispatches(report)
+    if dispatches == 0:
+        # This run IS a floor observation. Recording it here rather than in a
+        # separate pass is what keeps the floor measured instead of asserted:
+        # the condition that defines one is exactly the condition just observed.
+        print(
+            f"\nThis run dispatched ZERO methodology tasks; its {len(newly)} solved "
+            f"challenge(s) define the crawl-and-authenticate floor."
+        )
+        record_floor(
+            engagement=engagement,
+            solved_keys=newly,
+            dispatches=dispatches,
+            challenge_index=after_by_key,
+        )
+    floor = read_floor()
+    split = subtract_floor(newly, floor)
+    by_testing = split.get("solved_by_testing")
+    testing_in_addressable = (
+        [k for k in by_testing if k in addressable_keys] if by_testing is not None else None
+    )
+
     # --- 4. the reconciliation ---------------------------------------------
     print("\n" + "=" * 96)
     print("AUTHENTICATION PROOF")
@@ -503,6 +764,22 @@ def main() -> int:
     print(f"  challenges solved (target-confirmed) : {len(newly)}")
     print(f"    of which inside the addressable set: {len(solved_addressable)}/{len(target_set)}")
     print(f"    of which outside it                : {len(solved_outside)}")
+    print(f"  methodology tasks dispatched         : {dispatches}")
+    if by_testing is None:
+        print(f"  solved BY TESTING                    : unknown - {split['note']}")
+    else:
+        print(
+            f"  solved BY TESTING                    : {len(by_testing)} "
+            f"({len(testing_in_addressable or [])}/{len(target_set)} addressable)"
+        )
+        print(
+            f"    floor subtracted                   : {len(split['floor_keys'])} "
+            f"({', '.join(split['floor_keys']) or 'none'})"
+        )
+        print(
+            f"    floor measured from                : "
+            f"{', '.join(split.get('floor_sources') or []) or '(unknown)'}"
+        )
     print(f"  findings emitted (engagement-reported): {len(findings)}")
     print(f"  unproven leads                        : {len(report.get('unproven_leads') or [])}")
     print(f"  research leads                        : {len(report.get('research_leads') or [])}")
@@ -578,6 +855,16 @@ def main() -> int:
             "solved_keys": newly,
             "solved_in_addressable": solved_addressable,
             "solved_outside_addressable": solved_outside,
+            # The number that goes in front of a client. ``solved_total`` counts
+            # everything the target marked, including what authenticating and
+            # crawling trip on their own; this is what testing earned. Held
+            # apart rather than replacing it, because both are true and only one
+            # is a claim about this engine.
+            "methodology_dispatches": dispatches,
+            "solved_by_testing": split.get("solved_by_testing"),
+            "solved_by_testing_count": split.get("solved_by_testing_count"),
+            "solved_by_testing_in_addressable": testing_in_addressable,
+            "benchmark_floor": split,
             "missed_addressable": [
                 {
                     "key": c.get("key"),
