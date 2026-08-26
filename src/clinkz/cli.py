@@ -1130,6 +1130,79 @@ def artifact_scan(
         raise typer.Exit(code=1)
 
 
+@app.command("report-pdf")
+def report_pdf(
+    engagement_id: Annotated[
+        str,
+        typer.Argument(help="Engagement UUID. Reads outputs/<id>/report_<id>.json."),
+    ],
+    outputs_root: Annotated[
+        Path | None,
+        typer.Option("--outputs-root", help="Root dir containing engagement subdirs."),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Write the PDF here instead of beside the JSON report."),
+    ] = None,
+) -> None:
+    """Render the client-facing PDF from a stored engagement report.
+
+    Offline: it reads `report_<id>.json` and sends nothing. Every engagement
+    already writes this PDF at the end of its run; this command regenerates it
+    from the same bytes - after a layout fix, or for a bundle produced before
+    the renderer existed.
+
+    It renders from the STORED report, which is the already-redacted structure
+    the JSON and Markdown documents were both built from. That is the whole
+    point: three renderers, one source. A PDF built from raw findings would
+    reintroduce the defect that made Markdown the weakest of the three, with the
+    additional property that nobody can grep the result.
+
+    Exits 2 when the bundle or its report is missing, 1 when the renderer is
+    unavailable or the document could not be built.
+    """
+    import json
+
+    from clinkz.agents._report_pdf import PDF_UNAVAILABLE_HINT, render_report_pdf
+    from clinkz.models.report import PentestReport
+
+    outputs_root = outputs_root or _default_outputs_root()
+    cleaned = _validated_engagement_id(engagement_id, flag="report-pdf")
+
+    root = outputs_root / cleaned
+    source = root / f"report_{cleaned}.json"
+    if not source.is_file():
+        typer.echo(
+            f"No stored report at {source}. Run `clinkz scan` for this target, or "
+            f"`clinkz scan --resume {cleaned}` to rebuild one from persisted findings.",
+            err=True,
+        )
+        raise typer.Exit(code=EXIT_BAD_INPUT)
+
+    try:
+        stored = json.loads(source.read_text(encoding="utf-8"))
+        report = PentestReport.model_validate(stored)
+    except Exception as exc:
+        typer.echo(f"Could not read {source}: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=EXIT_BAD_INPUT) from exc
+
+    destination = out or (root / f"report_{cleaned}.pdf")
+    try:
+        written = render_report_pdf(report, destination)
+    except ImportError as exc:
+        typer.echo(f"{PDF_UNAVAILABLE_HINT} ({exc})", err=True)
+        raise typer.Exit(code=EXIT_RUN_FAILED) from exc
+    except Exception as exc:
+        typer.echo(f"PDF rendering failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=EXIT_RUN_FAILED) from exc
+
+    typer.echo(f"PDF written: {written} ({written.stat().st_size} bytes)")
+    typer.echo(
+        f"Run `clinkz artifact-scan {cleaned}` before sharing it - the disclosure gate "
+        "reads a PDF through both of its channels, page text and the /Info dictionary."
+    )
+
+
 # ---------------------------------------------------------------------------
 # trace inspect
 # ---------------------------------------------------------------------------

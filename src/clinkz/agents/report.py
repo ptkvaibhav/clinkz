@@ -170,6 +170,53 @@ def _run_completion(
     return False, " ".join(parts)
 
 
+def write_report_pdf(report: PentestReport, path: Path) -> Path | None:
+    """Write the PDF deliverable, or log loudly and return ``None``.
+
+    Tolerant HERE and nowhere else. ``clinkz report-pdf`` lets the exception out,
+    because an operator who asked for the document must be told the renderer is
+    missing rather than handed a zero-byte success. Inside a live engagement the
+    opposite is true: the findings are already on disk in two other formats, and
+    losing them to a layout error in a third would be a worse trade than losing
+    the third.
+
+    It is not silent either way — a missing PDF is logged at ERROR with the
+    exception type, so "the deliverable did not appear" is never something an
+    operator has to infer from an empty directory.
+
+    Args:
+        report: The already-redacted report.
+        path: Destination.
+
+    Returns:
+        The path written, or ``None`` when the renderer was unavailable or
+        failed.
+    """
+    try:
+        from clinkz.agents._report_pdf import render_report_pdf
+    except ImportError as exc:  # pragma: no cover — reportlab is a declared dep
+        from clinkz.agents._report_pdf import PDF_UNAVAILABLE_HINT
+
+        logger.error("%s (%s)", PDF_UNAVAILABLE_HINT, exc)
+        return None
+    try:
+        return render_report_pdf(report, path)
+    except ImportError as exc:
+        from clinkz.agents._report_pdf import PDF_UNAVAILABLE_HINT
+
+        logger.error("%s (%s)", PDF_UNAVAILABLE_HINT, exc)
+        return None
+    except Exception as exc:  # noqa: BLE001 — a layout error must not lose the findings
+        logger.error(
+            "PDF deliverable NOT written (%s: %s). The JSON and Markdown reports are "
+            "unaffected; regenerate the PDF with `clinkz report-pdf <engagement-id>` once "
+            "the cause is fixed.",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 def _parse_authorization(raw: Any) -> AuthorizationRecord | None:
     """Rebuild the authorization record from the orchestrator's handoff dict."""
     if not isinstance(raw, dict):
@@ -531,6 +578,14 @@ class ReportAgent(BaseAgent):
         )
         self._logger.info("Markdown report written to %s", md_path)
 
+        # Write the PDF deliverable — the THIRD renderer of the same redacted
+        # structure, never of the live report. It is the document that actually
+        # reaches a client, so it must not be the one built from a different
+        # source than the two that are grep-able.
+        pdf_path = write_report_pdf(redacted_report, output_dir / f"report_{engagement_id}.pdf")
+        if pdf_path:
+            self._logger.info("PDF report written to %s", pdf_path)
+
         self._logger.info(
             "Report complete: %d findings, risk_rating=%s",
             len(report.findings),
@@ -541,6 +596,7 @@ class ReportAgent(BaseAgent):
             "report": report_dict,
             "json_path": str(json_path),
             "markdown_path": str(md_path),
+            "pdf_path": str(pdf_path) if pdf_path else "",
             "status": "complete",
         }
 
