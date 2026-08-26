@@ -51,7 +51,13 @@ from clinkz.llm.call_purpose import (
     current_call_purpose,
     current_call_site,
 )
-from clinkz.llm.degradation import ProviderFallback, record_provider_fallback
+from clinkz.llm.degradation import (
+    DegradationKind,
+    ProviderAbsence,
+    ProviderFallback,
+    record_provider_absence,
+    record_provider_fallback,
+)
 from clinkz.llm.factory import AGENT_PROVIDER_SETTINGS, get_llm_client
 from clinkz.llm.spend import HALT_SPEND_CAP, record_spend, spend_cap_exceeded
 from clinkz.observability.ledger import (
@@ -619,6 +625,22 @@ class ResilientLLMClient(LLMClient):
                     ok=False,
                     note=f"ProviderAccountError (provider disabled for this run): {exc}",
                 )
+                # An exclusion is a degradation with no substitution in it. Every
+                # LATER call in this engagement runs against a shorter chain than
+                # the configured one, and is silent about it at each of those
+                # sites — so the disqualification is recorded once, here, where
+                # the fact is known.
+                record_provider_absence(
+                    ProviderAbsence(
+                        agent_role=self.agent_role,
+                        method=method,
+                        kind=DegradationKind.TERMINAL_EXCLUSION,
+                        provider=provider,
+                        chain=tuple(self.fallback_chain),
+                        reason=type(exc).__name__,
+                        decision_bearing=self.agent_role in CLAUDE_ONLY_ROLES,
+                    )
+                )
                 continue
             except (RateLimitError, ServiceUnavailableError, LLMTimeoutError) as exc:
                 self._logger.warning(
@@ -652,6 +674,21 @@ class ResilientLLMClient(LLMClient):
                 )
                 continue
 
+        # The chain ran out. NOTHING answered, so there is no served provider to
+        # name and no ProviderFallback that could hold this — which is precisely
+        # why it went unrecorded and a run that failed every phase reported
+        # itself eligible as a baseline. An absence is the strictly worse
+        # degradation: a substituted answer is at least an answer.
+        record_provider_absence(
+            ProviderAbsence(
+                agent_role=self.agent_role,
+                method=method,
+                kind=DegradationKind.CHAIN_EXHAUSTED,
+                chain=tuple(self.fallback_chain),
+                reason=type(last_error).__name__ if last_error else "no provider available",
+                decision_bearing=self.agent_role in CLAUDE_ONLY_ROLES,
+            )
+        )
         raise LLMUnavailableError(
             f"All providers exhausted for profile '{self.profile}' "
             f"(chain={self.fallback_chain}): {last_error}"

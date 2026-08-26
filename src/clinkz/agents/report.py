@@ -38,7 +38,11 @@ if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
 from clinkz.engagement.secrets import redact, redact_structure
 from clinkz.llm.base import LLMClient
-from clinkz.llm.degradation import degradation_summary
+from clinkz.llm.degradation import (
+    degradation_summary,
+    exhausted_stages,
+    reconcile_with_model_stamp,
+)
 from clinkz.llm.spend import spend_summary
 from clinkz.models.engagement import AuthorizationRecord, EngagementWindow
 from clinkz.models.finding import (
@@ -109,6 +113,61 @@ def _active_model_stamp() -> list[dict[str, str | int]]:
     except Exception as exc:  # noqa: BLE001 — a report must never fail on its metadata
         logger.warning("Model stamp snapshot failed: %s", exc)
         return []
+
+
+#: Phase result statuses that mean the phase did not produce its output. The
+#: orchestrator writes ``{"status": "error", ...}`` on an ERROR message and on a
+#: force-kill; ``"stopped"`` is an agent that ended itself early.
+_FAILED_PHASE_STATUSES: frozenset[str] = frozenset({"error", "failed", "timeout"})
+
+
+def _run_completion(
+    *,
+    phase_outcomes: dict[str, Any],
+    model_stamp: list[dict[str, Any]],
+) -> tuple[bool, str]:
+    """Whether this run completed, and the sentence that says why not.
+
+    Two independent witnesses, because neither is available in both situations.
+    ``phase_outcomes`` is what the orchestrator observed and is authoritative
+    live; ``model_stamp`` is written from the run's own trace and is the only
+    one that survives into a stored bundle, where the process that knew the
+    phase statuses ended long ago.
+
+    A run that failed a phase and rendered "0 findings identified. Risk rating:
+    Informational." made the strongest claim a pentest report contains — this
+    target is clean — out of no evidence at all. Engagement ``2e21a200`` failed
+    recon, scan AND exploit and said exactly that.
+
+    Args:
+        phase_outcomes: ``{phase_name: result_dict}`` from the orchestrator.
+        model_stamp: The run's own ``model_stamp`` rows.
+
+    Returns:
+        ``(run_completed, incomplete_reason)``. The reason is empty when the run
+        completed.
+    """
+    failed = sorted(
+        name
+        for name, result in phase_outcomes.items()
+        if isinstance(result, dict)
+        and str(result.get("status", "")).lower() in _FAILED_PHASE_STATUSES
+    )
+    starved = exhausted_stages(model_stamp)
+    if not failed and not starved:
+        return True, ""
+    parts: list[str] = []
+    if failed:
+        parts.append(
+            f"The {', '.join(failed)} phase{'s' if len(failed) > 1 else ''} did not complete."
+        )
+    if starved:
+        parts.append(
+            f"No LLM provider served the {', '.join(starved)} "
+            f"stage{'s' if len(starved) > 1 else ''}: the whole chain was exhausted, so "
+            f"that reasoning step produced nothing and the phase continued without it."
+        )
+    return False, " ".join(parts)
 
 
 def _parse_authorization(raw: Any) -> AuthorizationRecord | None:
@@ -307,17 +366,50 @@ class ReportAgent(BaseAgent):
                 risk_rating = s.value.capitalize()
                 break
 
-        exec_summary = ExecutiveSummary(
-            overview=(
+        # Whether the run got to the end. Read BEFORE the summary is built,
+        # because it changes what the summary is allowed to claim: on an
+        # incomplete run "0 findings. Risk rating: Informational" states that
+        # the target is clean on the strength of testing that did not happen.
+        model_stamp = _active_model_stamp()
+        run_completed, incomplete_reason = _run_completion(
+            phase_outcomes=dict(input_data.get("phase_outcomes") or {}),
+            model_stamp=model_stamp,
+        )
+        if not run_completed:
+            self._logger.warning(
+                "Report: this run did NOT complete — %s The executive summary will say so "
+                "and the counts are rendered as a floor.",
+                incomplete_reason,
+            )
+            if not finding_models:
+                # "Informational" is a verdict about the target. With no
+                # findings AND no completed run there is nothing to have a
+                # verdict about, and the honest rating is that none was reached.
+                risk_rating = "Not assessed"
+
+        overview = (
+            f"Penetration test of {', '.join(scope_values)}. "
+            f"{len(finding_models)} findings identified."
+        )
+        if not run_completed:
+            overview = (
                 f"Penetration test of {', '.join(scope_values)}. "
-                f"{len(finding_models)} findings identified."
-            ),
+                f"THIS RUN DID NOT COMPLETE. {incomplete_reason} "
+                f"{len(finding_models)} finding(s) were identified by the part of the "
+                f"engagement that ran; that is a floor on what is present, not a "
+                f"measurement of the target."
+            )
+
+        exec_summary = ExecutiveSummary(
+            overview=overview,
             risk_rating=risk_rating,
             critical_count=severity_counts[Severity.CRITICAL],
             high_count=severity_counts[Severity.HIGH],
             medium_count=severity_counts[Severity.MEDIUM],
             low_count=severity_counts[Severity.LOW],
             info_count=severity_counts[Severity.INFO],
+            run_completed=run_completed,
+            incomplete_reason=incomplete_reason,
         )
 
         # Attach remediation to any finding the methodology emitted without it.
@@ -372,8 +464,15 @@ class ReportAgent(BaseAgent):
             safety_summary=safety,
             authentication=authentication,
             component_ledger=_active_ledger_snapshot(),
-            model_stamp=_active_model_stamp(),
-            provider_degradation=degradation_summary(),
+            model_stamp=model_stamp,
+            # Reconciled against the run's OWN model stamp, not taken from the
+            # register alone. The two witnessed one fact and disagreed: the
+            # stamp recorded ``provider: "exhausted"`` for three phases while
+            # the register — which only ever saw substitutions — reported
+            # ``provider_degraded: false``. Reconciling HERE puts the honest
+            # verdict in ``report.json``, so the JSON, Markdown and PDF cannot
+            # disagree about it either.
+            provider_degradation=reconcile_with_model_stamp(degradation_summary(), model_stamp),
             scope_refusals=scope_refusal_summary(),
             llm_spend=spend_summary(),
             plan_coverage=plan_alarm_summary(),
@@ -687,12 +786,26 @@ class ReportAgent(BaseAgent):
         unconfirmed = (
             len(report.unproven_leads) + len(report.research_leads) + len(report.chain_leads)
         )
+        summary = report.executive_summary
+        if summary is not None and not summary.run_completed:
+            # Ahead of the counts, not after them. A reader who takes the number
+            # and stops has to have hit this first: on an incomplete run the
+            # number bounds this engine's coverage, not the target's security.
+            lines.extend(
+                [
+                    "> **THIS RUN DID NOT COMPLETE.** "
+                    + (summary.incomplete_reason or "One or more phases failed.")
+                    + " Every count below is a FLOOR over the part of the engagement that "
+                    "ran. The absence of a finding here is not evidence that the target "
+                    "is sound.",
+                    "",
+                ]
+            )
         lines.extend(
             [
                 "## Summary",
                 "",
-                f"- **Risk rating:** "
-                f"{report.executive_summary.risk_rating if report.executive_summary else 'N/A'}",
+                f"- **Risk rating:** {summary.risk_rating if summary else 'N/A'}",
                 f"- **Confirmed findings:** {len(findings)}",
                 f"- **Confirmed attack chains:** {len(report.confirmed_chains)} "
                 "(each is also one of the findings above, never counted twice)",
@@ -1153,30 +1266,67 @@ class ReportAgent(BaseAgent):
         stamp = report.provider_degradation
         if not stamp:
             return
+        # Reconciled again at RENDER time, and not only at build time. A stored
+        # bundle written before the reconciliation existed still carries the
+        # register's half of the disagreement, and re-rendering it must not
+        # reproduce the claim its own model stamp contradicts. The rule lives in
+        # one function; this is its second call site, not a second copy.
+        stamp = reconcile_with_model_stamp(stamp, list(report.model_stamp))
         lines.extend(["## Provider routing", ""])
         if not stamp.get("provider_degraded"):
             lines.extend(
                 [
                     "Every LLM call was served by the provider this run asked for. "
-                    "No fallback activated, so the run is eligible for use as a "
-                    "baseline.",
+                    "No fallback activated, no provider was excluded mid-run, and no "
+                    "chain was exhausted, so the run is eligible for use as a baseline.",
                     "",
                 ]
             )
             return
 
         events = [e for e in (stamp.get("events") or []) if isinstance(e, dict)]
+        absences = [a for a in (stamp.get("absences") or []) if isinstance(a, dict)]
         decision_bearing = int(stamp.get("decision_bearing_fallback_count") or 0)
+        starved = list(stamp.get("exhausted_stages") or [])
         lines.extend(
             [
-                f"**This run is NOT eligible as a baseline.** {stamp.get('fallback_count', 0)} "
-                f"call(s) were served by a provider other than the one asked for. A "
-                f"number produced partly by one model and partly by another is not a "
-                f"measurement of the target, so nothing here should be compared against "
-                f"another run's figures.",
+                f"**This run is NOT eligible as a baseline.** "
+                f"{stamp.get('fallback_count', 0)} call(s) were served by a provider "
+                f"other than the one asked for, and {stamp.get('absence_count', 0)} "
+                f"call(s) were served by nobody at all. A number produced partly by one "
+                f"model and partly by another — or produced with a reasoning step "
+                f"missing — is not a measurement of the target, so nothing here should "
+                f"be compared against another run's figures.",
                 "",
             ]
         )
+        if starved:
+            lines.extend(
+                [
+                    f"The run's own model stamp records **no provider at all** for the "
+                    f"following stage(s): {', '.join(f'`{s}`' for s in starved)}. Whatever "
+                    f"those reasoning steps would have decided was decided by a default "
+                    f"instead, and the phase produced its artifacts anyway.",
+                    "",
+                ]
+            )
+        if absences:
+            lines.extend(
+                [
+                    "| Call site | Kind | Provider | Why | Decision-bearing |",
+                    "| --- | --- | --- | --- | --- |",
+                ]
+            )
+            for absence in absences:
+                lines.append(
+                    f"| {absence.get('call_site', '')} | {absence.get('kind', '')} | "
+                    f"{absence.get('provider', '') or '(whole chain)'} | "
+                    f"{absence.get('reason', '') or '-'} | "
+                    f"{'yes' if absence.get('decision_bearing') else 'no'} |"
+                )
+            lines.append("")
+        if not events:
+            return
         if decision_bearing:
             lines.extend(
                 [

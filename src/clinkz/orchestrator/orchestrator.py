@@ -885,6 +885,20 @@ class OrchestratorAgent:
                         # Whether a client-side oracle was resolved, how often it
                         # ran, and how often it witnessed execution.
                         "client_oracle": self._client_oracle,
+                        # What every earlier phase returned. The report needs it
+                        # to know whether "0 findings" describes the target or
+                        # only this engine's coverage: a run whose recon, scan
+                        # AND exploit phases failed rendered "0 findings
+                        # identified. Risk rating: Informational", which is the
+                        # strongest claim a pentest report contains made out of
+                        # no evidence at all. Handed over as the phase results
+                        # themselves rather than a pre-computed boolean, so the
+                        # report decides what counts as incomplete in one place.
+                        "phase_outcomes": {
+                            name: result
+                            for name, result in summary["phases"].items()
+                            if isinstance(result, dict)
+                        },
                     },
                     honor_halt=False,
                 )
