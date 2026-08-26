@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from clinkz.agents._plan_ranking import attempt_window
 from clinkz.agents.exploit import (
     _CONFIRMING_VERIFICATION_STRENGTHS,
     _FILE_UPLOAD_BRANCH_EFFECT,
@@ -269,31 +270,40 @@ class TestPhase3ExecutionTypeRanking:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._file_upload_phase3_rank_execution_types(
+        ranking = await agent._file_upload_phase3_rank_execution_types(
             FileUploadRestrictions(working_extensions=[".php"]), {}
         )
-        assert ranked[0] == FileUploadExecutionType.DIRECT_EXECUTION
-        assert ranked[1] == FileUploadExecutionType.INTERPRETER_MISCONFIG
+        # ``.php`` is a script extension, so direct execution is what the
+        # fingerprint backs and it leads; interpreter_misconfig is the model's
+        # unbacked second choice and survives into the attempt window through
+        # the confirmable-first sort the call site applies.
+        assert ranking.ranked[0] == FileUploadExecutionType.DIRECT_EXECUTION
+        assert ranking.supported == frozenset({FileUploadExecutionType.DIRECT_EXECUTION})
+        ordered = sorted(
+            ranking.ranked, key=lambda t: 0 if t in _FILE_UPLOAD_CONFIRMABLE_TYPES else 1
+        )
+        assert ordered[1] == FileUploadExecutionType.INTERPRETER_MISCONFIG
 
     @pytest.mark.asyncio
     async def test_fallback_php_ranks_direct(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._file_upload_phase3_rank_execution_types(
+        ranking = await agent._file_upload_phase3_rank_execution_types(
             FileUploadRestrictions(working_extensions=[".php"]), {}
         )
-        assert FileUploadExecutionType.DIRECT_EXECUTION in ranked
+        assert FileUploadExecutionType.DIRECT_EXECUTION in ranking.ranked
 
     @pytest.mark.asyncio
     async def test_fallback_nothing_accepted_ranks_client_side(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._file_upload_phase3_rank_execution_types(
+        ranking = await agent._file_upload_phase3_rank_execution_types(
             FileUploadRestrictions(working_extensions=[]), {}
         )
-        assert ranked == [FileUploadExecutionType.CLIENT_SIDE_ONLY]
+        assert list(ranking.ranked) == [FileUploadExecutionType.CLIENT_SIDE_ONLY]
+        assert ranking.supported == frozenset()
 
 
 # ===========================================================================
@@ -813,18 +823,20 @@ class TestG22BranchEffectContract:
             ]
         )
         agent = _make_agent(llm)
-        ranked = await agent._file_upload_phase3_rank_execution_types(
+        ranking = await agent._file_upload_phase3_rank_execution_types(
             FileUploadRestrictions(working_extensions=[".php"]), {}
         )
-        reordered = sorted(ranked, key=lambda t: 0 if t in _FILE_UPLOAD_CONFIRMABLE_TYPES else 1)
+        reordered = sorted(
+            ranking.ranked, key=lambda t: 0 if t in _FILE_UPLOAD_CONFIRMABLE_TYPES else 1
+        )
         assert reordered[:2] == [
-            FileUploadExecutionType.INTERPRETER_MISCONFIG,
             FileUploadExecutionType.DIRECT_EXECUTION,
-        ], "the model's order must be preserved within the confirmable half"
-        assert reordered[2:] == [
+            FileUploadExecutionType.INTERPRETER_MISCONFIG,
+        ], "the confirmable half leads, and within it what the fingerprint backs"
+        assert set(reordered[2:]) == {
             FileUploadExecutionType.INCLUSION_CHAIN,
             FileUploadExecutionType.CLIENT_SIDE_ONLY,
-        ]
+        }
 
     @pytest.mark.parametrize(
         ("llm_json", "note"),
@@ -847,16 +859,12 @@ class TestG22BranchEffectContract:
         attempted."""
         agent = _make_agent(_ScriptedLLM([llm_json]))
         restrictions = FileUploadRestrictions(working_extensions=[".php"])
-        llm_ranked = await agent._file_upload_phase3_rank_execution_types(restrictions, {})
-        floor = [
-            t
-            for t in agent._fallback_file_upload_ranking(restrictions)
-            if t in _FILE_UPLOAD_CONFIRMABLE_TYPES and t not in llm_ranked
-        ]
-        ranked = sorted(
-            llm_ranked + floor, key=lambda t: 0 if t in _FILE_UPLOAD_CONFIRMABLE_TYPES else 1
+        ranking = await agent._file_upload_phase3_rank_execution_types(restrictions, {})
+        ordered = sorted(
+            ranking.ranked, key=lambda t: 0 if t in _FILE_UPLOAD_CONFIRMABLE_TYPES else 1
         )
-        assert FileUploadExecutionType.DIRECT_EXECUTION in ranked[:3], note
+        ranked = attempt_window(ordered, ranking.supported & _FILE_UPLOAD_CONFIRMABLE_TYPES)
+        assert FileUploadExecutionType.DIRECT_EXECUTION in ranked, note
         assert ranked[0] in _FILE_UPLOAD_CONFIRMABLE_TYPES
 
     def test_the_lead_names_the_effect_and_the_missing_observation(self) -> None:

@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 import pytest
 
+from clinkz.agents._plan_ranking import rank_ssrf
 from clinkz.agents.exploit import (
     _SSRF_UNFETCHABLE_HOST,
     ExploitAgent,
@@ -336,16 +337,56 @@ def test_phase2_never_probes_file_scheme():
 def test_phase3_blind_when_no_reflection():
     agent = _make_agent()
     cap = SSRFCapability(fetch_confirmed=True, content_reflected=False)
-    ranked = _run(agent._ssrf_phase3_rank(cap))
-    assert ranked == [SSRFExploitationType.BLIND_DEFERRED]
+    ranking = _run(agent._ssrf_phase3_rank(cap))
+    assert list(ranking.ranked) == [SSRFExploitationType.BLIND_DEFERRED]
+    # A confirmed fetch with nothing reflected IS blind SSRF, which is what an
+    # out-of-band collaborator settles — so the fingerprint backs the deferral.
+    assert ranking.supported == frozenset({SSRFExploitationType.BLIND_DEFERRED})
+
+
+def test_phase3_blind_is_unsupported_without_a_confirmed_fetch():
+    agent = _make_agent()
+    cap = SSRFCapability(fetch_confirmed=False, content_reflected=False)
+    ranking = _run(agent._ssrf_phase3_rank(cap))
+    assert list(ranking.ranked) == [SSRFExploitationType.BLIND_DEFERRED]
+    assert ranking.supported == frozenset()
 
 
 def test_phase3_ranks_inband_with_reflection():
     agent = _make_agent()
     cap = SSRFCapability(fetch_confirmed=True, content_reflected=True, schemes_allowed=["http"])
-    ranked = _run(agent._ssrf_phase3_rank(cap))
-    assert SSRFExploitationType.CLOUD_METADATA in ranked
-    assert SSRFExploitationType.INTERNAL_SERVICE in ranked
+    ranking = _run(agent._ssrf_phase3_rank(cap))
+    assert SSRFExploitationType.CLOUD_METADATA in ranking.ranked
+    assert SSRFExploitationType.INTERNAL_SERVICE in ranking.ranked
+
+
+def test_phase3_order_stays_impact_first_while_support_tracks_evidence():
+    """The two halves answer different questions, and only one is the order.
+
+    All three in-band types share one precondition — content came back in-band —
+    so the fingerprint cannot discriminate between them and the window attempts
+    all three regardless. Reaching an address the fetcher was never given is the
+    extra claim, and ``fetch_confirmed`` is what backs it. The ORDER stays
+    impact-first because the phase-5 loop stops at the first confirmation, and
+    ranking a loopback reach ahead of an instance-metadata read would report the
+    smaller finding on a target where both hold.
+    """
+    # The ranking itself is impact-ordered whatever the capability says.
+    unfetched = rank_ssrf(SSRFCapability(content_reflected=True))
+    fetched = rank_ssrf(SSRFCapability(fetch_confirmed=True, content_reflected=True))
+    assert list(unfetched.ranked) == list(fetched.ranked)
+    assert unfetched.ranked[0] is SSRFExploitationType.CLOUD_METADATA
+    assert unfetched.supported == frozenset({SSRFExploitationType.REFLECTED_INTERNAL})
+    assert len(fetched.supported) == 3
+
+    # Phase 3 then floats what the fingerprint backs, which is the shared merge
+    # rule and is the fingerprint speaking only where it has something to say:
+    # with no confirmed fetch, an address the fetcher was never given is the
+    # longer shot, and reaching it is still attempted.
+    agent = _make_agent()
+    merged = _run(agent._ssrf_phase3_rank(SSRFCapability(content_reflected=True)))
+    assert merged.ranked[0] is SSRFExploitationType.REFLECTED_INTERNAL
+    assert set(merged.ranked) == set(unfetched.ranked)
 
 
 # ---------------------------------------------------------------------------

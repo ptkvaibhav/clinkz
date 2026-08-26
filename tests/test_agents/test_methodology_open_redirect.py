@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from clinkz.agents._plan_ranking import attempt_window
 from clinkz.agents.exploit import (
     ExploitAgent,
     PageAnalysis,
@@ -277,19 +278,19 @@ class TestPhase3BypassTypeRanking:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+        ranking = await agent._open_redirect_phase3_rank_bypass_types(
             RedirectPrimitives(working_bypass_primitives=["at_syntax", "appended_url"]),
             {},
         )
-        assert ranked[0] == RedirectBypassType.AT_SYNTAX
-        assert ranked[1] == RedirectBypassType.APPENDED_URL
+        assert ranking.ranked[0] == RedirectBypassType.AT_SYNTAX
+        assert ranking.ranked[1] == RedirectBypassType.APPENDED_URL
 
     @pytest.mark.asyncio
     async def test_fallback_no_validator_picks_direct(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+        ranking = await agent._open_redirect_phase3_rank_bypass_types(
             # Realistic phase-2 output: ``validator_type == "none"`` is set BECAUSE
             # the ``direct`` probe confirmed, so ``direct`` is in the working set.
             RedirectPrimitives(
@@ -298,7 +299,7 @@ class TestPhase3BypassTypeRanking:
             ),
             {},
         )
-        assert ranked[0] == RedirectBypassType.DIRECT_REDIRECT
+        assert ranking.ranked[0] == RedirectBypassType.DIRECT_REDIRECT
 
     @pytest.mark.asyncio
     async def test_llm_ranking_confirmed_types_float_ahead_of_nonworking(self) -> None:
@@ -319,40 +320,56 @@ class TestPhase3BypassTypeRanking:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+        ranking = await agent._open_redirect_phase3_rank_bypass_types(
             RedirectPrimitives(
                 validator_type="none",
                 working_bypass_primitives=["direct", "at_syntax", "protocol_relative"],
             ),
             {},
         )
+        ranked = list(ranking.ranked)
         # A confirmed primitive leads; appended_url (non-working) is NOT first and
-        # is pushed to the tail (kept, not dropped).
+        # is pushed behind every confirmed one (kept, not dropped).
         assert ranked[0] != RedirectBypassType.APPENDED_URL
         assert set(ranked[:3]) == {
             RedirectBypassType.AT_SYNTAX,
             RedirectBypassType.PROTOCOL_RELATIVE,
             RedirectBypassType.DIRECT_REDIRECT,
         }
-        assert ranked[-1] == RedirectBypassType.APPENDED_URL
+        assert ranked.index(RedirectBypassType.APPENDED_URL) > 2
         # Relative order within the confirmed group is the LLM's (advisory).
         assert ranked.index(RedirectBypassType.AT_SYNTAX) < ranked.index(
             RedirectBypassType.PROTOCOL_RELATIVE
         )
+        # And the window still reaches it: phase 2's probes are a sample, not an
+        # exhaustion, and the corpus holds three appended_url confirmations on
+        # parameters whose fingerprint said that primitive did not work.
+        assert RedirectBypassType.APPENDED_URL in attempt_window(ranking.ranked, ranking.supported)
 
     @pytest.mark.asyncio
-    async def test_nothing_confirmed_preserves_llm_order(self) -> None:
-        """With no working primitive, the ranking is untouched — the phase-4 LLM
-        advisory path (and the allowlist-bypass fallback) still gets to try.
+    async def test_nothing_confirmed_still_ranks_every_bypass_type(self) -> None:
+        """With no working primitive, the model orders nothing and the full
+        vocabulary is ranked.
+
+        Building the list only from confirmed primitives — which is what this
+        used to assert — left the class unable to probe a parameter its own
+        phase-2 probes had failed on, and the corpus holds three ``appended_url``
+        confirmations plus one ``unicode_lookalike`` on exactly those parameters.
+
+        ``allowlist_bypass`` stays out: it has its own dispatch branch, with its
+        own token harvest and its own payload builder.
         """
         llm = _ScriptedLLM(answers=['{"ranked": [{"type": "appended_url"},{"type": "at_syntax"}]}'])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+        ranking = await agent._open_redirect_phase3_rank_bypass_types(
             RedirectPrimitives(validator_type="strict_or_unknown", working_bypass_primitives=[]),
             {},
         )
-        assert ranked == [RedirectBypassType.APPENDED_URL, RedirectBypassType.AT_SYNTAX]
+        assert ranking.supported == frozenset()
+        assert set(ranking.ranked) == set(RedirectBypassType) - {
+            RedirectBypassType.ALLOWLIST_BYPASS
+        }
 
     @pytest.mark.asyncio
     async def test_confirmed_primitive_dropped_by_llm_is_readded(self) -> None:
@@ -366,12 +383,13 @@ class TestPhase3BypassTypeRanking:
         llm = _ScriptedLLM(answers=['{"ranked": [{"type": "appended_url"}]}'])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._open_redirect_phase3_rank_bypass_types(
+        ranking = await agent._open_redirect_phase3_rank_bypass_types(
             RedirectPrimitives(
                 validator_type="exact", working_bypass_primitives=["protocol_relative"]
             ),
             {},
         )
+        ranked = list(ranking.ranked)
         assert ranked[0] == RedirectBypassType.PROTOCOL_RELATIVE
         assert RedirectBypassType.APPENDED_URL in ranked
         assert ranked.index(RedirectBypassType.PROTOCOL_RELATIVE) < ranked.index(

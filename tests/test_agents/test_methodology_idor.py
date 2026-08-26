@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from clinkz.agents._plan_ranking import attempt_window
 from clinkz.agents.exploit import (
     ExploitAgent,
     PageAnalysis,
@@ -225,19 +226,22 @@ class TestPhase3ExploitationTypeRanking:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._idor_phase3_rank_exploitation_types(
+        ranking = await agent._idor_phase3_rank_exploitation_types(
             IDORPrimitives(id_format="numeric", predictability="sequential"),
             {},
         )
-        assert ranked[0] == IDORExploitationType.HORIZONTAL
-        assert ranked[1] == IDORExploitationType.VERTICAL
+        # The model orders the SUPPORTED block; the unsupported tail keeps the
+        # deterministic order, because there the model is ranking hypotheses
+        # against no observation at all.
+        assert ranking.ranked[0] == IDORExploitationType.HORIZONTAL
+        assert IDORExploitationType.VERTICAL in ranking.ranked
 
     @pytest.mark.asyncio
     async def test_fallback_sequential_ranks_horizontal_first(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._idor_phase3_rank_exploitation_types(
+        ranking = await agent._idor_phase3_rank_exploitation_types(
             IDORPrimitives(
                 id_format="numeric",
                 predictability="sequential",
@@ -245,14 +249,14 @@ class TestPhase3ExploitationTypeRanking:
             ),
             {},
         )
-        assert ranked[0] == IDORExploitationType.HORIZONTAL
+        assert ranking.ranked[0] == IDORExploitationType.HORIZONTAL
 
     @pytest.mark.asyncio
     async def test_fallback_authz_present_ranks_pollution(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._idor_phase3_rank_exploitation_types(
+        ranking = await agent._idor_phase3_rank_exploitation_types(
             IDORPrimitives(
                 id_format="numeric",
                 predictability="opaque",
@@ -260,7 +264,37 @@ class TestPhase3ExploitationTypeRanking:
             ),
             {},
         )
-        assert IDORExploitationType.PARAMETER_POLLUTION in ranked
+        assert IDORExploitationType.PARAMETER_POLLUTION in ranking.ranked
+        assert IDORExploitationType.PARAMETER_POLLUTION in ranking.supported
+
+    @pytest.mark.asyncio
+    async def test_an_opaque_identifier_never_withholds_horizontal(self) -> None:
+        """The single line that dropped 41 of the corpus's 49 IDOR confirmations.
+
+        ``predictability == "opaque"`` says you cannot GUESS the next identifier.
+        It says nothing about whether the object behind a known one is protected,
+        and 1,087 of the 1,186 gate-closed IDOR fingerprints in the corpus are
+        opaque while ``horizontal`` accounts for 48 of the 49 confirmations.
+        Phase 3 is reached only past the divergence gate, so a reference probe
+        has already answered differently from the baseline.
+        """
+        agent = _make_agent(_ScriptedLLM(answers=[""]))
+        ranking = await agent._idor_phase3_rank_exploitation_types(
+            IDORPrimitives(
+                id_format="numeric",
+                predictability="opaque",
+                increment_diverged=False,
+                unauth_status_observed=200,
+            ),
+            {},
+        )
+        window = attempt_window(ranking.ranked, ranking.supported)
+        assert window[0] == IDORExploitationType.HORIZONTAL
+        assert IDORExploitationType.HORIZONTAL in ranking.supported
+        # No authz check and an unauthenticated 200 is the function-level
+        # signal, and the corpus's one function_level confirmation has exactly
+        # this fingerprint — so it must be inside the window too.
+        assert IDORExploitationType.FUNCTION_LEVEL in window
 
 
 # ===========================================================================

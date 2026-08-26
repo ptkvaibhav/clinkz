@@ -207,8 +207,9 @@ async def test_phase3_na_guard_returns_empty() -> None:
     """No NoSQL signal at all → empty ranking (the N/A gate for a SQL stack)."""
     agent = _make_agent()
     primitives = NoSQLPrimitives(context=NoSQLContext.UNKNOWN)
-    ranked = await agent._nosql_phase3_rank_injection_types(NoSQLContext.UNKNOWN, primitives, {})
-    assert ranked == []
+    ranking = await agent._nosql_phase3_rank_injection_types(NoSQLContext.UNKNOWN, primitives, {})
+    assert ranking.ranked == ()
+    assert ranking.supported == frozenset()
 
 
 @pytest.mark.asyncio
@@ -216,23 +217,46 @@ async def test_phase3_fallback_json_operator() -> None:
     """JSON-operator context (silent LLM) → operator/auth/boolean ranking."""
     agent = _make_agent()
     primitives = NoSQLPrimitives(context=NoSQLContext.JSON_OPERATOR, operators=["$ne"])
-    ranked = await agent._nosql_phase3_rank_injection_types(
+    ranking = await agent._nosql_phase3_rank_injection_types(
         NoSQLContext.JSON_OPERATOR, primitives, {}
     )
-    assert ranked[0] is NoSQLInjectionType.OPERATOR_INJECTION
-    assert NoSQLInjectionType.AUTH_BYPASS in ranked
+    assert ranking.ranked[0] is NoSQLInjectionType.OPERATOR_INJECTION
+    assert NoSQLInjectionType.AUTH_BYPASS in ranking.ranked
 
 
 @pytest.mark.asyncio
-async def test_phase3_fallback_string_where() -> None:
-    """String-$where context (silent LLM) → DoS / JS-injection ranking."""
+async def test_phase3_string_where_leads_with_the_provable_effect() -> None:
+    """A confirmed ``$where`` channel ranks JS injection first, DoS last.
+
+    The predecessor ranked ``nosql_dos`` first, so the leading attempt against a
+    live client's JavaScript-evaluating handler was a denial-of-service payload.
+    Server-side JS execution is the provable effect and the one the fingerprint
+    supports; the DoS is ranked, never supported, and never leads.
+    """
     agent = _make_agent()
     primitives = NoSQLPrimitives(context=NoSQLContext.STRING_WHERE, where_string_injectable=True)
-    ranked = await agent._nosql_phase3_rank_injection_types(
+    ranking = await agent._nosql_phase3_rank_injection_types(
         NoSQLContext.STRING_WHERE, primitives, {}
     )
-    assert NoSQLInjectionType.NOSQL_DOS in ranked
-    assert NoSQLInjectionType.WHERE_JS_INJECTION in ranked
+    assert ranking.ranked[0] is NoSQLInjectionType.WHERE_JS_INJECTION
+    assert NoSQLInjectionType.NOSQL_DOS in ranking.ranked
+    assert NoSQLInjectionType.NOSQL_DOS not in ranking.supported
+
+
+@pytest.mark.asyncio
+async def test_phase3_unknown_context_still_reads_observed_operators() -> None:
+    """The hole in the old default branch: it discarded a real observation.
+
+    An operator that survived the round-trip with no context resolved is still a
+    NoSQL signal. The genuinely empty fingerprint keeps returning nothing — that
+    is 1,334 of the 1,351 rankings in the recorded corpus, and firing NoSQL
+    payloads at them would be a target detector, not a test.
+    """
+    agent = _make_agent()
+    primitives = NoSQLPrimitives(context=NoSQLContext.UNKNOWN, operators=["$ne"])
+    ranking = await agent._nosql_phase3_rank_injection_types(NoSQLContext.UNKNOWN, primitives, {})
+    assert ranking.ranked[0] is NoSQLInjectionType.OPERATOR_INJECTION
+    assert NoSQLInjectionType.OPERATOR_INJECTION in ranking.supported
 
 
 # ===========================================================================
