@@ -162,7 +162,9 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   line said Opus and no configuration ever selected it. LLM
   plans exploits from scan+research → deterministic `_test_*` methods by tier →
   LLM reasons through results → adaptive retry/bypass → records capability outcome
-  to the persistent KB. **P7** (`src/clinkz/browser/`) is the client-side
+  to the persistent KB. **Phase 3 — which exploitation types a parameter is worth
+  attempting — is `agents/_plan_ranking.py`, not the model's to answer alone**
+  (**detail → [`docs/methodology/plan-ranking.md`](docs/methodology/plan-ranking.md)**). **P7** (`src/clinkz/browser/`) is the client-side
   execution oracle the DOM-XSS, client-rendered XSS and CSP classes confirm
   through. It runs **where the target is reachable**: in docker tool-mode the
   browser is driven inside `clinkz-tools`, because
@@ -517,6 +519,9 @@ src/clinkz/
 │                     #   _json_body (addressing a field INSIDE a structure),
 │                     #   _url_safety (may we fetch it?), _url_shape (in what order?),
 │                     #   _origin (THE scheme+host fence — one helper, six call sites),
+│                     #   _plan_ranking (phase 3: which types is this parameter
+│                     #   worth attempting? — the fingerprint decides the SET,
+│                     #   the cap guards the unsupported tail; pure, replayable),
 │                     #   _secret_exposure / _input_validation / _mass_assignment /
 │                     #   _crypto_tokens (the four new classes' pure logic, offline-testable)
 │                     #   _business_logic (intent inferred from the app's OWN surface,
@@ -664,6 +669,14 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   `_test_javascript_attacks` at all three exploitable ladder levels — wrong
   remediation, wrong declared yield, wrong class in the re-grade. A title that
   resolves is authoritative.
+- `python scripts/plan_variance_corpus.py [--outputs-root <dir>] [--json]` —
+  **offline** replay of every recorded phase-3 ranking against the deterministic
+  ranking layer. Sends nothing; reads only `outputs/*/trace.jsonl`, which already
+  carries the phase-2 fingerprint, the order phase 3 produced and the type phase
+  5 confirmed. Reports per class what the recorded window kept, what the new one
+  keeps, the attempt cost, and how many fingerprints produced more than one
+  order. Exits non-zero if the new window loses a confirmation the engine is
+  known to have made.
 - `python -m clinkz corpus-replay [--rebuild]` — **offline** parser regression gate:
   re-parses every recorded `tool_invocations/` stdout and diffs against
   `tests/fixtures/corpus_replay_baseline.json`; exits non-zero on drift. Sends
@@ -1104,6 +1117,32 @@ LESSONS #17).
   class's **own** surface, while lower-relevance tasks survive, is logged
   separately as a **RANKING FAILURE**: an ordering defect reads nothing like
   tail truncation and must not hide inside it.
+- **A phase-3 ranking is a function of the phase-2 FINGERPRINT, and the bound
+  on it is the fingerprint too** (`agents/_plan_ranking.py`, **detail →
+  [`docs/methodology/plan-ranking.md`](docs/methodology/plan-ranking.md)**). Two
+  defects, one shape. The ORDER was a model's answer, so the same fingerprint
+  ranked 210 times produced 16 different orders and 48 of the 64 fingerprints
+  ranked more than once produced at least two — an engagement whose plan is drawn
+  from a distribution cannot be re-run or compared against its own baseline, so
+  this is a measurement defect before it is a coverage one. And the FINGERPRINT
+  WAS NOT READ: phase 2 counts the UNION columns and proves the breakout context
+  and the ranking discarded both, while `predictability == "opaque"` — *you
+  cannot guess the next identifier* — was read as *there is no horizontal
+  access*. Replayed over the recorded corpus the old fallback rankings keep
+  **770 of 833 confirmations** a current vocabulary can express, and 41 of the 63
+  they miss are IDOR `horizontal` from that one condition.
+  A ranking now returns the order AND `supported`, the subset some phase-2 probe
+  empirically backed; `attempt_window` never truncates a supported type and
+  applies the cap to the unsupported tail, which is hypothesis rather than
+  evidence. The tail is never empty, because "the fingerprint did not back it" is
+  not "the fingerprint refuted it" — three recorded `appended_url` confirmations
+  sit on parameters whose fingerprint said that primitive does not work, and a
+  ranking built only out of confirmed primitives could not probe them at all. `sqli` and `cmdi` make no
+  phase-3 LLM call; elsewhere the model orders the SUPPORTED block only — on the
+  tail it ranks hypotheses against no observation, and it ranked LFI
+  `error_based_path` ahead of the `wrapper_extraction` that confirmed. Held by a
+  reachability guard whose domain is COMPUTED from each enum, with both
+  directions asserted and every exemption reasoned.
 - **The plan order is a function of the endpoint SET, never of the crawl's
   order** — a concurrent crawler emits a different sequence each run, so any tie
   broken by traversal order makes the engagement non-reproducible. Ranking scores

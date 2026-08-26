@@ -233,13 +233,23 @@ REPORT                                                           [partial]
     `javascript:`/`data:` removed (that's XSS); body-level redirects demoted to a
     lower-severity DOM signal. **Phase 3 empirical-priority** — floats every
     phase-2-confirmed primitive ahead of the LLM's ranking and re-adds any the LLM
-    drops (`_prioritize_confirmed_bypass_types`), so a genuine redirect is never
-    mislabeled as a bypass type phase 2 disproved (the `e72ed60a` full-pipeline
-    `appended_url` mislabel — genuine off-site 302, wrong label; re-validated
-    `75ea835f` → `at_syntax`). Phase 4 prefers the deterministic build when the
-    primitive is confirmed. Allowlist bypass (`RedirectBypassType.ALLOWLIST_BYPASS`)
-    unchanged — harvest an allowlisted token, embed in an attacker URL, confirm
-    the off-site redirect despite a substring allowlist.
+    drops, so a genuine redirect is never mislabeled as a bypass type phase 2
+    disproved (the `e72ed60a` full-pipeline `appended_url` mislabel — genuine
+    off-site 302, wrong label; re-validated `75ea835f` → `at_syntax`). That float
+    is now the shared `merge_llm_ranking` rule over `rank_open_redirect`'s
+    supported set (`agents/_plan_ranking.py`), which can also do what the bespoke
+    reorder structurally could not: **rank a type the ranking never contained**.
+    Building the list only out of pre-confirmed primitives left
+    the class unable to probe a parameter its own phase-2 probes had failed on,
+    and the recorded corpus holds three `appended_url` confirmations plus one
+    `unicode_lookalike` on exactly those parameters. Phase 4 prefers the
+    deterministic build when the primitive is confirmed. Allowlist bypass is
+    unchanged and deliberately stays OUT of the phase-3 ranking — harvest an
+    allowlisted token, embed in an attacker URL, confirm the off-site redirect
+    despite a substring allowlist, all on its own branch. Ranking it as well
+    would give one label a second route whose phase 4 has no deterministic
+    build, so the payload would be a model's invention rather than a harvested
+    token.
 - Adaptive methodologies (W2.1):
   - XSS-reflected — done
   - SQLi — done

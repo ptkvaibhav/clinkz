@@ -27,6 +27,14 @@ deterministic signal decides emission. When phase-2 has empirically confirmed th
 primitive, phase-4 **prefers the deterministic build and skips the LLM** for that
 type.
 
+Phase 3 — *which exploitation types is this parameter worth attempting?* — is no
+longer the model's to answer alone either. `agents/_plan_ranking.py` derives the
+order and the fingerprint-supported subset from phase 2; `sqli` and `cmdi` make no
+phase-3 LLM call at all, and everywhere else the model orders the supported block
+while the fingerprint decides the vocabulary. The attempt bound moved off `[:3]`
+onto that split, so an evidenced type is never truncated. **Detail →
+[plan-ranking.md](plan-ranking.md).**
+
 Five of the behavioural family go further and **make no LLM call on the verdict
 path at all** — `security_headers`, `csrf`, `weak_session`, `brute_force`, and
 `js_attacks`'s classifier. Their inputs are fully observed and every rule is a
@@ -82,6 +90,7 @@ oracle set.
 | The SQLi context ladder, measured (110 rungs, 0 confirmations) | [dvwa-sqli-context-ladder.md](dvwa-sqli-context-ladder.md) |
 | D1 Phase-3 consistency + the honest per-level baseline | [d1-consistency-and-baseline.md](d1-consistency-and-baseline.md) |
 | Classes whose verdict asks no model (and the measurements that removed the call) | [deterministic-verdict-classes.md](deterministic-verdict-classes.md) |
+| Phase-3 plan ranking: the fingerprint decides the set, the cap guards the tail | [plan-ranking.md](plan-ranking.md) |
 
 The gray-box discovery engine (Δ-capability model, capability classes, capability
 learning, cross-language, cross-service) lives under `docs/discovery-engine-*.md`.
