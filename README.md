@@ -55,6 +55,7 @@ Phase agents follow **deterministic step sequences with LLM checkpoints** (no fr
 
 - **Concurrent multi-agent execution** — Scan, Research, and Exploit run in parallel through a central orchestrator, on a deterministic phase sequence
 - **Deterministic skills + LLM checkpoints** — Each `_test_*` is a contract: if the vuln is present it MUST be found; LLMs only step in at named planning/synthesis points
+- **The plan is a function of the observation** — phase 3 (*which exploitation types is this parameter worth attempting?*) derives its order and its fingerprint-supported subset from what phase 2 measured, so the same observation always plans the same way. It used to be a model's answer, and the same fingerprint ranked 210 times produced 16 different orders. SQLi and command injection make no phase-3 model call at all; elsewhere the model orders the evidenced alternatives while the fingerprint decides the vocabulary, and the attempt bound never truncates a type the target's own responses argued for. Replayable offline over every ranking ever recorded (`python scripts/plan_variance_corpus.py`)
 - **Adaptive methodologies** — every `_test_*` is a multi-phase methodology: the injection family (SQLi, NoSQL, SSTI, XSS, CMDi, LFI, …) maps → fingerprints (SQL dialect / NoSQL carrier / template engine / shell) → ranks → LLM-synthesizes → verifies; SSTI sends polyglot arithmetic probes and is read-back aware for second-order Pug; CMDi candidacy uses a reflection-guarded echo-canary probe so injection surfaces even when the base command writes only to stderr
 - **Gray-box discovery engine** — when an engagement supplies a source tree, `src/clinkz/discovery/` ingests it (bounded regex, no whole-program analysis) and derives *Δ-capability × untrusted-channel-reachability × provable-impact* hypotheses that union into the exploit plan alongside the LLM and deterministic plans. Ingestion is **cross-language** behind a `SourceIngestor` seam (`select_ingestor` picks per source tree): a Java ingestor (servlet / param-bag / typed path-param / log-sink idioms) and a JS/TS **Node/Express backend** ingestor (Express route entrypoints incl. cross-file factory-per-file handlers; `axios`/`fetch`/`fs` sink shapes; `package.json` manifest) — the JS path is **live-proven on OWASP Juice Shop**, surfacing its own-code SSRF (`fetch(req.body.imageUrl)`) and confirming it out-of-band (P6) on the running instance. A class-generic capability catalog holds three classes today — **SSRF** (`openConnection` / `axios.get` egress → `_test_ssrf`), **file read** (`new File(pathParam)` / `fs.readFile` → `_test_lfi`), and **Log4Shell** (`log4j-core` log-sink JNDI egress → `_test_log4shell`) — each learned from the target's own source with no target literal, N/A by construction on a patched/absent instance; the SSRF/file-read classes are language-agnostic (the same catalog entry fires on Java or Node)
 - **Out-of-band (P6) confirmation** — a blind capability is confirmed only when an inbound callback bearing a Clinkz-minted, single-use nonce reaches a Clinkz-owned receive-only DNS+HTTP collaborator (zero-FP by construction: the nonce rides only the one outbound probe). Payloads come from CLINKZ-OWNED nonce-only templates (structural exfil guardrail — target data cannot ride the channel). This is the confirmation oracle for blind SSRF and the **Log4Shell flagship** (CVE-2021-44228), live-validated end-to-end on Vulhub Solr 8.11.0 via a `${jndi:dns://…}` callback. Disabled by default (unchanged black-box floor)
@@ -198,6 +199,9 @@ clinkz actions <engagement_id>
 # engagement; exits non-zero on a hit.
 clinkz artifact-scan <engagement_id>
 
+# Re-render the client-facing PDF from the stored report. Offline; sends nothing.
+clinkz report-pdf <engagement_id>
+
 # Inspect the execution trace afterwards
 clinkz trace inspect <engagement_id>
 ```
@@ -252,7 +256,7 @@ a key at the wrong level is refused by name rather than silently ignored.
 
 | Field | What it does | When you need it |
 |-------|--------------|------------------|
-| `role` | Labels the principal (`admin` / `user` / `anonymous` / anything meaningful). Required. | Always. Two labelled roles is what makes access-control testing possible — an IDOR/authz class needs two principals to compare. `anonymous` names the unauthenticated baseline. |
+| `role` | Labels the principal (`admin` / `user` / `anonymous` / anything meaningful). Required. | Always. **Two authenticating roles is what makes an access-control CONFIRMATION possible.** With one, the IDOR class can establish that a reference nobody owns behaves differently and that an anonymous caller is refused — and still cannot say the object belongs to somebody else, so it reports unproven leads rather than findings ([detail](docs/methodology/idor.md)). `anonymous` names the unauthenticated baseline. |
 | `username` / `password` | The credentials. `password` is a `SecretStr` and is registered for redaction on intake. | Any authenticating role. Omit both for `anonymous`. |
 | `login_url` | Where to authenticate **this role**. Overrides the login endpoint discovery found. | The app's login is not at a conventional path (`/login`, `/signin`, `/api/auth`, `/rest/user/login`), or it differs per role. Without it, an undiscoverable login means the engagement **aborts** rather than scanning blind — see below. |
 | `assert_url` | A URL known to behave differently authenticated vs anonymous. Tried **first** by the authenticated-state assertion. | The protected surface is named something unconventional, so the assertion's fallback guesses will not find it. |
@@ -404,7 +408,7 @@ Each engagement also produces `outputs/<engagement_id>/trace.jsonl` for
 post-mortem inspection and `outputs/<engagement_id>/actions.jsonl` — every
 state-changing request the run produced, sent or refused.
 
-Output formats today: **JSON**, **Markdown**. The HTML/PDF Jinja+WeasyPrint pipeline described in earlier plans is on the W3 horizon.
+Output formats today: **JSON**, **Markdown**, **PDF** — all three rendered from the SAME already-redacted `PentestReport` structure, never from the live findings. The PDF is written at the end of every engagement and regenerable offline with `clinkz report-pdf <engagement_id>`; it leads with the executive summary, then a **control-arm page for every confirmed finding** — the confirming request with its exploitation primitive removed and its marker re-minted, graded by the same oracle, which is the falsifiable half of "confirmed" — then the unproven leads with their `why_unconfirmed`, *What was NOT tested*, and every bound that decided coverage (provider routing, research grounding, plan and crawl truncation) whether or not anything went wrong. ReportLab rather than the Jinja+WeasyPrint pipeline earlier plans named: WeasyPrint resolves GTK/Pango at import and does not import on Windows, so the renderer could not have been executed — let alone verified — on the machine that produces the bundle.
 
 ## Testing
 

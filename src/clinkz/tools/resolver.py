@@ -196,6 +196,15 @@ class ToolResolver:
         self._mcp_tools_cache: list[dict[str, Any]] = []
         self._mcp_clients: dict[str, MCPClient] = {}  # server_key → client
 
+        # Capabilities the run actually ASKED for. Recorded because "this tool
+        # never ran" has two readings that call for opposite follow-up: nothing
+        # in the engine reaches for its capability (nuclei, subfinder — both
+        # deliberately unwired), or a phase asked and the tool still contributed
+        # nothing (the ffuf shape). Without this the contribution ledger cannot
+        # tell them apart, and a permanent false alarm for the first kind is how
+        # an alarm section stops being read.
+        self.requested_capabilities: set[str] = set()
+
         self._discover()
 
     # ------------------------------------------------------------------
@@ -294,6 +303,8 @@ class ToolResolver:
         Returns:
             Best ToolMatch or None if unknown capability.
         """
+        self.requested_capabilities.add(capability)
+
         # MCP takes priority when available (populated by initialize())
         for entry in self._mcp_tools_cache:
             if capability in entry.get("capabilities", []):
@@ -406,6 +417,7 @@ class ToolResolver:
         Returns:
             List of ToolMatch objects, MCP entries first.  May be empty.
         """
+        self.requested_capabilities.add(capability)
         results: list[ToolMatch] = []
 
         for entry in self._mcp_tools_cache:
@@ -590,8 +602,20 @@ class ToolResolver:
             List of available tool names in ranked order. Empty list if the
             capability is unknown or no tools are available.
         """
-        chain = TOOL_CHAINS.get(capability, [])
-        return [name for name in chain if self.is_available(name)]
+        self.requested_capabilities.add(capability)
+        return list(self.available_chain(capability))
+
+    def available_chain(self, capability: str) -> tuple[str, ...]:
+        """The declared chain for *capability*, filtered to what is available.
+
+        Identical to :meth:`find_tools_ranked` except that it does NOT record
+        the capability as requested — the observability layer asks this at report
+        time to work out which tool a chain would have resolved to, and a
+        question asked *about* the run must never become part of what the run
+        did. Reading the request set through a method that also writes to it is
+        how a measurement starts measuring itself.
+        """
+        return tuple(name for name in TOOL_CHAINS.get(capability, []) if self.is_available(name))
 
     async def try_until_sufficient(
         self,

@@ -270,10 +270,10 @@ async def test_phase3_na_guard_returns_empty() -> None:
     """No engine and no evaluating syntax → empty ranking (the N/A gate)."""
     agent = _make_agent()
     primitives = SSTIPrimitives(engine=SSTITemplateEngine.UNKNOWN)
-    ranked = await agent._ssti_phase3_rank_exploitation_types(
+    ranking = await agent._ssti_phase3_rank_exploitation_types(
         SSTITemplateEngine.UNKNOWN, primitives, {}
     )
-    assert ranked == []
+    assert ranking.ranked == ()
 
 
 @pytest.mark.asyncio
@@ -283,22 +283,36 @@ async def test_phase3_fallback_rce_capable() -> None:
     primitives = SSTIPrimitives(
         engine=SSTITemplateEngine.PUG, evaluating_syntaxes=["#{}"], rce_gadget_supported=True
     )
-    ranked = await agent._ssti_phase3_rank_exploitation_types(
+    ranking = await agent._ssti_phase3_rank_exploitation_types(
         SSTITemplateEngine.PUG, primitives, {}
     )
-    assert ranked[0] is SSTIExploitationType.RCE
-    assert SSTIExploitationType.EXPRESSION_EVAL in ranked
+    assert ranking.ranked[0] is SSTIExploitationType.RCE
+    assert SSTIExploitationType.EXPRESSION_EVAL in ranking.ranked
+    assert ranking.supported == frozenset(
+        {SSTIExploitationType.RCE, SSTIExploitationType.EXPRESSION_EVAL}
+    )
 
 
 @pytest.mark.asyncio
-async def test_phase3_fallback_non_rce_engine() -> None:
-    """An engine with no gadget → expression_eval only (no phantom RCE rank)."""
+async def test_phase3_no_gadget_reaches_the_sandbox_escape() -> None:
+    """An engine with no gadget → expression_eval, then the escape.
+
+    ``sandbox_escape`` appeared in no branch of the predecessor and so could
+    never be attempted at all — which left the class with no answer for its most
+    common real shape: an engine that demonstrably evaluates while the direct
+    gadget is blocked. A bare ``rce`` is still not ranked there, because "reach
+    RCE despite the missing gadget" is precisely what the escape is.
+    """
     agent = _make_agent()
     primitives = SSTIPrimitives(engine=SSTITemplateEngine.HANDLEBARS, evaluating_syntaxes=["{{}}"])
-    ranked = await agent._ssti_phase3_rank_exploitation_types(
+    ranking = await agent._ssti_phase3_rank_exploitation_types(
         SSTITemplateEngine.HANDLEBARS, primitives, {}
     )
-    assert ranked == [SSTIExploitationType.EXPRESSION_EVAL]
+    assert list(ranking.ranked) == [
+        SSTIExploitationType.EXPRESSION_EVAL,
+        SSTIExploitationType.SANDBOX_ESCAPE,
+    ]
+    assert ranking.supported == frozenset({SSTIExploitationType.EXPRESSION_EVAL})
 
 
 # ===========================================================================

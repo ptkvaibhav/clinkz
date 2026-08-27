@@ -45,6 +45,10 @@ class ExecutiveSummary(BaseModel):
         info_count: Number of informational findings.
         key_findings: Bullet-point list of the most important discoveries.
         recommendations: Prioritised remediation recommendations.
+        run_completed: Whether every phase of the engagement finished. ``False``
+            makes every count below a FLOOR rather than a measurement.
+        incomplete_reason: What did not finish, as a sentence. Empty when
+            *run_completed* is true.
     """
 
     overview: str
@@ -56,6 +60,26 @@ class ExecutiveSummary(BaseModel):
     info_count: int = 0
     key_findings: list[str] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
+    #: Whether every phase finished. A run that failed a phase and reported
+    #: "0 findings identified. Risk rating: Informational." made the strongest
+    #: claim in the document — a clean target — out of the weakest evidence
+    #: there is, which is no evidence: engagement ``2e21a200`` failed recon,
+    #: scan AND exploit and rendered exactly that. Default ``True`` so a report
+    #: built by any other path is unchanged; a caller that knows a phase failed
+    #: says so explicitly.
+    run_completed: bool = True
+    #: Why not, as a sentence a client can read. Empty on a completed run.
+    incomplete_reason: str = ""
+
+    @property
+    def counts_are_a_floor(self) -> bool:
+        """Whether the severity counts bound the target or only what ran.
+
+        The distinction the overview text has to make: on an incomplete run
+        "0 findings" describes this engine's coverage, not the target's
+        security.
+        """
+        return not self.run_completed
 
     @classmethod
     def from_findings(cls, overview: str, findings: list[Finding]) -> ExecutiveSummary:

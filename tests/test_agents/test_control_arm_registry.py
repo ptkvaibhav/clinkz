@@ -27,6 +27,7 @@ import pytest
 
 from clinkz.agents._control_arm import (
     CONTROL_EXEMPT_CLASSES,
+    DIFFERENTIAL_CONTROL_CLASSES,
     MARKER_ORACLE_CLASSES,
     ControlVerdict,
     attribution_contradiction,
@@ -65,28 +66,59 @@ def _dispatchable() -> set[str]:
     return set(DISPATCHABLE_TEST_METHODS)
 
 
+def _classified() -> set[str]:
+    """Every class one of the three tables has an answer for.
+
+    THREE tables, not two, since the four-arm IDOR oracle: a class is bound by
+    the rule because its oracle matches a marker in a body
+    (:data:`MARKER_ORACLE_CLASSES`), bound because its oracle is a differential
+    whose control has to be shape-matched rather than minted
+    (:data:`DIFFERENTIAL_CONTROL_CLASSES`), or exempt with a reason. The
+    partition assertion below covers all three, because a class silently in none
+    of them is the failure this whole module exists to catch.
+    """
+    return MARKER_ORACLE_CLASSES | set(DIFFERENTIAL_CONTROL_CLASSES) | set(CONTROL_EXEMPT_CLASSES)
+
+
 class TestEveryClassIsClassified:
     def test_no_class_is_unclassified(self) -> None:
         """A new class must declare which side of the rule it is on."""
-        unclassified = sorted(_dispatchable() - MARKER_ORACLE_CLASSES - set(CONTROL_EXEMPT_CLASSES))
+        unclassified = sorted(_dispatchable() - _classified())
         assert unclassified == [], (
-            "these dispatchable classes are in neither the marker-oracle set nor the "
-            f"exemption table, so nothing decides whether they need a control: {unclassified}"
+            "these dispatchable classes are in none of the marker-oracle set, the "
+            "differential-control table or the exemption table, so nothing decides "
+            f"whether they need a control: {unclassified}"
         )
 
-    def test_the_two_tables_are_disjoint(self) -> None:
-        assert not (MARKER_ORACLE_CLASSES & set(CONTROL_EXEMPT_CLASSES))
+    def test_the_three_tables_are_disjoint(self) -> None:
+        """One class, one answer. Two would let a consumer read either."""
+        marker = MARKER_ORACLE_CLASSES
+        differential = set(DIFFERENTIAL_CONTROL_CLASSES)
+        exempt = set(CONTROL_EXEMPT_CLASSES)
+        assert not (marker & differential), sorted(marker & differential)
+        assert not (marker & exempt), sorted(marker & exempt)
+        assert not (differential & exempt), sorted(differential & exempt)
 
     def test_no_table_names_a_class_that_does_not_exist(self) -> None:
         """A rule about a class nobody dispatches protects nothing."""
         known = _dispatchable()
-        stale = sorted((MARKER_ORACLE_CLASSES | set(CONTROL_EXEMPT_CLASSES)) - known)
+        stale = sorted(_classified() - known)
         assert stale == [], f"tables name classes that are not dispatchable: {stale}"
 
     def test_every_exemption_states_a_substantive_reason(self) -> None:
         """ "Exempt" with no reason is how a rule quietly stops covering things."""
         thin = sorted(k for k, v in CONTROL_EXEMPT_CLASSES.items() if len(v.split()) < 6)
         assert thin == [], f"exemptions with no substantive reason: {thin}"
+
+    def test_every_differential_class_states_why_its_decoy_is_shape_matched(self) -> None:
+        """The whole point of the second table is the DECOY, so it has to say so."""
+        thin = sorted(k for k, v in DIFFERENTIAL_CONTROL_CLASSES.items() if len(v.split()) < 6)
+        assert thin == [], f"differential entries with no substantive reason: {thin}"
+
+    def test_a_differential_class_is_bound_by_the_rule(self) -> None:
+        """``control_required`` is the union — that is what makes the rule one rule."""
+        for test_method in DIFFERENTIAL_CONTROL_CLASSES:
+            assert control_required(test_method), test_method
 
     def test_every_marker_class_is_implemented_on_the_agent(self) -> None:
         for test_method in MARKER_ORACLE_CLASSES:

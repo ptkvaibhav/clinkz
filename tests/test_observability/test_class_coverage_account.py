@@ -156,7 +156,7 @@ def test_a_class_with_surviving_tasks_that_never_ran_is_an_alarm(
         kept={"_test_mass_assignment": 3},
     )
     row = _row(registry.class_coverage("eng"), "_test_mass_assignment")
-    assert row["verdict"] == "never_dispatched_tasks_survived_the_cap"
+    assert row["verdict"] == "no_phase_event_tasks_survived_the_cap"
     assert row["verdict"] in registry.ALARM_COVERAGE_VERDICTS
     assert "3 task(s) survived" in row["reason"]
 
@@ -240,7 +240,7 @@ def test_a_cross_cutting_skill_is_never_read_as_a_classs_own_dispatch(
     )
     coverage = registry.class_coverage("eng")
     assert coverage["reached_an_endpoint"] == 0
-    assert _row(coverage, "_test_sqli")["verdict"] == "never_dispatched_tasks_survived_the_cap"
+    assert _row(coverage, "_test_sqli")["verdict"] == "no_phase_event_tasks_survived_the_cap"
 
 
 def test_only_the_union_stage_counts_as_the_plan_that_dispatched(

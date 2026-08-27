@@ -44,7 +44,7 @@ import re
 from pydantic import BaseModel
 
 from clinkz.discovery.versions import version_satisfies
-from clinkz.models.recon import DetectedComponent
+from clinkz.models.recon import DetectedComponent, VersionProvenance, version_provenance_rank
 
 
 class KnownComponentCVE(BaseModel):
@@ -100,6 +100,11 @@ class ComponentCVEMatch(BaseModel):
     def is_confirmable(self) -> bool:
         """Whether an oracle in this engine can witness this CVE's effect."""
         return bool(self.cve.confirming_test_method)
+
+    @property
+    def provenance(self) -> VersionProvenance:
+        """How the version this match rests on was observed."""
+        return self.component.provenance
 
 
 #: The catalogue.
@@ -266,9 +271,20 @@ def match_components(
         catalog: Override for tests.
 
     Returns:
-        Matches ordered confirmable-first, then by published severity, then by
-        CVE id — deterministic, never inventory order, so two runs over the same
-        target produce the same worklist.
+        Matches ordered confirmable-first, then by **version provenance**, then
+        by published severity, then by CVE id — deterministic, never inventory
+        order, so two runs over the same target produce the same worklist.
+
+    Provenance sits ahead of severity deliberately. The list is sliced to a
+    per-engagement bound and the survivors claim reserved plan slots, so this
+    ordering decides which matches are TESTED. A CRITICAL resting on a
+    ``Server:`` banner and a MEDIUM resting on a lockfile entry are not the same
+    claim: the banner is a string the target chose and a back-ported fix defeats
+    it, while the lockfile names what was actually resolved. Ranking by
+    published severity first would spend the scarce slots on the weakest
+    evidence in the system and call it prioritisation. Confirmability still
+    outranks both, because a match with no oracle cannot become a task at all
+    and would otherwise displace one that can.
     """
     severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     matches: list[ComponentCVEMatch] = []
@@ -295,6 +311,7 @@ def match_components(
                     f"{name} {version} reported by "
                     f"{component.source or 'a fingerprinter'}"
                     + (f" on port {component.port}" if component.port else "")
+                    + f" (version provenance: {component.provenance.value})"
                     + f"; {entry.cve_id} affects {entry.affected}"
                 )
             matches.append(ComponentCVEMatch(component=component, cve=entry, matched_on=matched_on))
@@ -302,6 +319,7 @@ def match_components(
     matches.sort(
         key=lambda m: (
             0 if m.is_confirmable else 1,
+            version_provenance_rank(m.provenance),
             severity_rank.get(m.cve.severity.lower(), 5),
             m.cve.cve_id,
             m.component.name.lower(),

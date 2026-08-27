@@ -1,0 +1,130 @@
+{
+  "_source": "outputs/2e21a200-39c1-45bd-bfbd-34986cc0e19f \u2014 the third juiceshop-variance-envelope run, 2026-08-25",
+  "_why": "This run failed recon, scan AND exploit with 'All providers exhausted', produced zero findings, and its report claimed it was eligible for use as a baseline. Both halves are recorded verbatim so the fix is asserted against what actually shipped rather than against a hand-written approximation.",
+  "engagement_id": "2e21a200-39c1-45bd-bfbd-34986cc0e19f",
+  "findings_count": 0,
+  "model_stamp": [
+    {
+      "stage": "exploit",
+      "provider": "exhausted",
+      "model": "",
+      "calls": 1
+    },
+    {
+      "stage": "recon",
+      "provider": "exhausted",
+      "model": "",
+      "calls": 1
+    },
+    {
+      "stage": "scan",
+      "provider": "exhausted",
+      "model": "",
+      "calls": 1
+    }
+  ],
+  "provider_degradation_as_shipped": {
+    "provider_degraded": false,
+    "baseline_eligible": true,
+    "fallback_count": 0,
+    "decision_bearing_fallback_count": 0,
+    "call_sites": [],
+    "served_by": {},
+    "events": []
+  },
+  "executive_summary_as_shipped": {
+    "overview": "Penetration test of http://clinkz-juiceshop:3000. 0 findings identified.",
+    "risk_rating": "Informational",
+    "critical_count": 0,
+    "high_count": 0,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0,
+    "key_findings": [],
+    "recommendations": []
+  },
+  "llm_call_errors": [
+    {
+      "stage": "recon",
+      "provider": "exhausted",
+      "profile": "reasoning",
+      "chain": [
+        "anthropic",
+        "openai"
+      ],
+      "error_class": "LLMUnavailableError"
+    },
+    {
+      "stage": "scan",
+      "provider": "exhausted",
+      "profile": "reasoning",
+      "chain": [
+        "anthropic",
+        "openai"
+      ],
+      "error_class": "LLMUnavailableError"
+    },
+    {
+      "stage": "exploit",
+      "provider": "exhausted",
+      "profile": "reasoning",
+      "chain": [
+        "anthropic",
+        "openai"
+      ],
+      "error_class": "LLMUnavailableError"
+    }
+  ],
+  "run1_smaller_instance": {
+    "_source": "outputs/9317e813-281e-4de6-8ff2-48f8ee46a6da \u2014 the first run of the same envelope, 2026-08-25",
+    "_why": "The same defect at one call rather than three phases: a methodology call raised 'All providers exhausted' after Anthropic returned no text block (stop_reason=refusal), and the register recorded no degradation. The trace names anthropic rather than 'exhausted' here, because _last_used_provider was already set by an earlier successful call on the same client \u2014 so this instance is INVISIBLE to the model stamp and only the register can catch it. That is why both witnesses exist.",
+    "engagement_id": "9317e813-281e-4de6-8ff2-48f8ee46a6da",
+    "findings_count": 7,
+    "model_stamp": [
+      {
+        "stage": "exploit",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 192
+      },
+      {
+        "stage": "recon",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 3
+      },
+      {
+        "stage": "research",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 4
+      },
+      {
+        "stage": "scan",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 3
+      }
+    ],
+    "provider_degradation_as_shipped": {
+      "provider_degraded": false,
+      "baseline_eligible": true,
+      "fallback_count": 0,
+      "decision_bearing_fallback_count": 0,
+      "call_sites": [],
+      "served_by": {},
+      "events": []
+    },
+    "llm_call_errors": [
+      {
+        "stage": "exploit",
+        "provider_in_trace": "anthropic",
+        "chain": [
+          "anthropic"
+        ],
+        "error_class": "LLMUnavailableError",
+        "stop_reason": "refusal"
+      }
+    ]
+  }
+}

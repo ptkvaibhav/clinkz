@@ -4,7 +4,7 @@ Each phase is exercised in isolation with mocked ``_send_probe`` and LLM:
 
     Phase 1 (injection-point mapping)   — quote-variant probes vs baseline
     Phase 2 (dialect fingerprinting)    — error signatures + primitive map
-    Phase 3 (injection-type ranking)    — LLM JSON parsing + fallback table
+    Phase 3 (injection-type ranking)    — deterministic, on the four signals
     Phase 4 (payload synthesis)         — LLM JSON parsing + fallback table
     Phase 5 (verification)              — indicator-type matching logic
 
@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote
 
 import pytest
 
+from clinkz.agents._plan_ranking import attempt_window, rank_sqli
 from clinkz.agents.exploit import (
     _COOKIE_VECTOR_PREFIX,
     _SESSION_VECTOR_PREFIX,
@@ -407,85 +408,107 @@ class TestPhase2PrimitiveExtraction:
 
 
 class TestPhase3InjectionTypeRanking:
-    @pytest.mark.asyncio
-    async def test_llm_ranking_parsed(self) -> None:
-        llm = _ScriptedLLM(
-            answers=[
-                '{"ranked": ['
-                '{"type": "union_based", "rationale": "best yield"},'
-                '{"type": "error_based", "rationale": "fast"}'
-                "]}"
-            ]
-        )
-        agent = _make_agent(llm)
-        agent._methodology_llm = llm
-        ranked = await agent._sqli_phase3_rank_injection_types(
-            SQLDialect.MYSQL,
-            InjectionPrimitives(quote_chars=["'"], comment_syntax=["--"]),
-            {"error_match": "SQL syntax MySQL"},
-        )
-        assert ranked[0] == InjectionType.UNION_BASED
-        assert ranked[1] == InjectionType.ERROR_BASED
+    """Phase 3 is a pure function of the phase-2 fingerprint — no LLM at all.
 
-    @pytest.mark.asyncio
-    async def test_fallback_when_dialect_via_error_prefers_error_based(self) -> None:
-        """If dialect was classified via an error sig, error-based ranks first."""
-        llm = _ScriptedLLM(answers=[""])
-        agent = _make_agent(llm)
-        agent._methodology_llm = llm
-        ranked = await agent._sqli_phase3_rank_injection_types(
+    Each of the four in-band types has exactly one phase-2 observation that is
+    its precondition, and phase 2 records all four, so the model had nothing to
+    contribute here and one thing to cost: the same fingerprint ranked 210 times
+    across the recorded corpus produced 16 different orders.
+    """
+
+    def test_error_signature_supports_error_based(self) -> None:
+        ranking = rank_sqli(
             SQLDialect.MYSQL,
             InjectionPrimitives(quote_chars=["'"]),
             {"error_match": "SQL syntax MySQL"},
         )
-        assert ranked[0] == InjectionType.ERROR_BASED
+        assert ranking.ranked[0] == InjectionType.ERROR_BASED
+        assert ranking.supported == frozenset({InjectionType.ERROR_BASED})
 
-    @pytest.mark.asyncio
-    async def test_fallback_when_dialect_via_time_prefers_time_blind(self) -> None:
-        """Dialect discovered via time delay → time-blind ranks first."""
-        llm = _ScriptedLLM(answers=[""])
-        agent = _make_agent(llm)
-        agent._methodology_llm = llm
-        ranked = await agent._sqli_phase3_rank_injection_types(
+    def test_time_signature_supports_time_blind(self) -> None:
+        ranking = rank_sqli(
             SQLDialect.MYSQL,
             InjectionPrimitives(quote_chars=["'"]),
             {"time_match": {"guess": "mysql", "elapsed_seconds": 2.1}},
         )
-        assert ranked[0] == InjectionType.TIME_BLIND
+        assert ranking.ranked[0] == InjectionType.TIME_BLIND
+        assert ranking.supported == frozenset({InjectionType.TIME_BLIND})
 
-    @pytest.mark.asyncio
-    async def test_fallback_when_unknown_dialect_with_quote_prefers_boolean_blind(
-        self,
-    ) -> None:
-        """Unknown dialect but a quote primitive → boolean-blind ranks first."""
-        llm = _ScriptedLLM(answers=[""])
-        agent = _make_agent(llm)
-        agent._methodology_llm = llm
-        ranked = await agent._sqli_phase3_rank_injection_types(
-            SQLDialect.UNKNOWN,
-            InjectionPrimitives(quote_chars=["'"]),
+    def test_counted_union_columns_support_union_based(self) -> None:
+        """The measurement the predecessor discarded.
+
+        Phase 2 counts the front query's columns; the old ranking read only the
+        error and time signals and put UNION fourth anyway, which is where 12 of
+        the corpus's 42 union confirmations were being ranked out of reach.
+        """
+        ranking = rank_sqli(
+            SQLDialect.MYSQL,
+            InjectionPrimitives(quote_chars=["'"], break_prefix="'", union_columns=2),
             {},
         )
-        assert ranked[0] == InjectionType.BOOLEAN_BLIND
+        assert ranking.ranked[0] == InjectionType.BOOLEAN_BLIND
+        assert InjectionType.UNION_BASED in ranking.supported
+        assert set(attempt_window(ranking.ranked, ranking.supported)) >= {
+            InjectionType.UNION_BASED,
+            InjectionType.BOOLEAN_BLIND,
+        }
 
-    @pytest.mark.asyncio
-    async def test_fallback_appends_stacked_for_mssql(self) -> None:
-        """Stacked is appended only for MSSQL / PostgreSQL."""
-        llm = _ScriptedLLM(answers=[""])
-        agent = _make_agent(llm)
-        agent._methodology_llm = llm
-        ranked = await agent._sqli_phase3_rank_injection_types(
-            SQLDialect.MSSQL,
+    def test_statement_position_breakout_is_confirmed_not_absent(self) -> None:
+        """``break_prefix == ""`` is a CONFIRMED unquoted context, not a miss.
+
+        Reading it for truthiness rather than for ``is not None`` throws away the
+        proof exactly where exploitation is cheapest.
+        """
+        ranking = rank_sqli(SQLDialect.MYSQL, InjectionPrimitives(break_prefix=""), {})
+        assert InjectionType.BOOLEAN_BLIND in ranking.supported
+
+    def test_quote_char_alone_supports_nothing(self) -> None:
+        """A surviving quote character is not one of the four signals.
+
+        It says the character round-tripped, not that any channel was observed.
+        Every type is still ranked and the window is still three wide — the
+        ordering just carries no claim about this parameter.
+        """
+        ranking = rank_sqli(SQLDialect.UNKNOWN, InjectionPrimitives(quote_chars=["'"]), {})
+        assert ranking.supported == frozenset()
+        assert len(attempt_window(ranking.ranked, ranking.supported)) == 3
+
+    def test_boolean_blind_is_never_last_in_the_tail(self) -> None:
+        """Its signal is sufficient, never necessary.
+
+        Only 28 of the corpus's 79 boolean-blind confirmations carry a
+        ``break_prefix`` — phase 2 gives up on the breakout often and the channel
+        confirms anyway — so a tail that ranks it last drops 51 confirmations.
+        """
+        ranking = rank_sqli(
+            SQLDialect.MYSQL,
             InjectionPrimitives(quote_chars=["'"]),
-            {"error_match": "[SQL Server]"},
+            {"time_match": {"guess": "mysql", "elapsed_seconds": 2.1}},
         )
-        assert InjectionType.STACKED in ranked
-        ranked_sqlite = await agent._sqli_phase3_rank_injection_types(
-            SQLDialect.SQLITE,
-            InjectionPrimitives(quote_chars=["'"]),
-            {"error_match": "SQLITE_ERROR"},
+        assert InjectionType.BOOLEAN_BLIND in attempt_window(ranking.ranked, ranking.supported)
+
+    def test_stacked_is_appended_only_for_mssql_and_postgres(self) -> None:
+        for dialect in (SQLDialect.MSSQL, SQLDialect.POSTGRES):
+            ranking = rank_sqli(
+                dialect, InjectionPrimitives(quote_chars=["'"]), {"error_match": "[SQL Server]"}
+            )
+            assert InjectionType.STACKED in ranking.ranked
+            # Permitted by the dialect, observed by nothing.
+            assert InjectionType.STACKED not in ranking.supported
+        ranking = rank_sqli(
+            SQLDialect.SQLITE, InjectionPrimitives(quote_chars=["'"]), {"error_match": "SQLITE"}
         )
-        assert InjectionType.STACKED not in ranked_sqlite
+        assert InjectionType.STACKED not in ranking.ranked
+
+    def test_the_same_fingerprint_always_ranks_the_same_way(self) -> None:
+        """The property the whole checkpoint was changed for."""
+        args = (
+            SQLDialect.MYSQL,
+            InjectionPrimitives(quote_chars=["'"], break_prefix="')", union_columns=3),
+            {"error_match": "SQL syntax MySQL"},
+        )
+        first = rank_sqli(*args)
+        assert all(rank_sqli(*args) == first for _ in range(25))
 
 
 # ===========================================================================

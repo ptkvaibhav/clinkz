@@ -92,6 +92,54 @@ class ActionRecord(BaseModel):
     body_sha256: str = ""
 
 
+def request_window_from_log(path: Path | str) -> tuple[str, str] | None:
+    """The first and last timestamps a stored action log carries, or ``None``.
+
+    For a bundle written before :class:`~clinkz.safety.governor.EngagementGovernor`
+    stamped its own request window. The log is that governor's own writer and it
+    sits inside the bundle, so this recovers the run's record rather than
+    inventing one — but it is a NARROWER window than the governor's, because the
+    log records state-changing requests and browser navigations and not every
+    GET. Callers must render the provenance, never present this as the full
+    window.
+
+    Args:
+        path: Path to an ``actions.jsonl``.
+
+    Returns:
+        ``(first_iso, last_iso)``, or ``None`` when the log is absent, empty, or
+        carries no parseable timestamp. Every failure returns ``None`` rather
+        than a partial window: half a window is a wrong claim, and the renderer
+        already has an honest way to say nothing was recorded.
+    """
+    # Streamed as a running min/max rather than accumulated: a long engagement's
+    # log is hundreds of thousands of lines and this runs inside a render.
+    first = last = ""
+    seen = 0
+    try:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    stamp = json.loads(line).get("ts")
+                except (json.JSONDecodeError, ValueError, AttributeError):
+                    continue
+                if not isinstance(stamp, str) or not stamp:
+                    continue
+                seen += 1
+                if not first or stamp < first:
+                    first = stamp
+                if stamp > last:
+                    last = stamp
+    except OSError:
+        return None
+    if seen < 2 or last <= first:
+        return None
+    return first, last
+
+
 class ActionLog:
     """Append-only JSONL log of state-changing requests for one engagement.
 

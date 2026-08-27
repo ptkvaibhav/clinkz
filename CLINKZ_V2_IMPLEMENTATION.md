@@ -164,9 +164,9 @@ EXPLOIT (LLM plans, deterministic skills execute)                [DONE]
 
 REPORT                                                           [partial]
   - Pulls findings from state store                              [DONE]
-  - Emits JSON + Markdown                                        [DONE]
+  - Emits JSON + Markdown + PDF from ONE redacted structure      [DONE]
+  - Control-arm section per confirmed finding (agents/_report_pdf) [DONE]
   - LLM-driven narrative + remediation pass                      [PENDING — W3]
-  - HTML/PDF rendering (Jinja + WeasyPrint)                      [PENDING — W3]
 ```
 
 ## Implementation phases — status
@@ -233,13 +233,23 @@ REPORT                                                           [partial]
     `javascript:`/`data:` removed (that's XSS); body-level redirects demoted to a
     lower-severity DOM signal. **Phase 3 empirical-priority** — floats every
     phase-2-confirmed primitive ahead of the LLM's ranking and re-adds any the LLM
-    drops (`_prioritize_confirmed_bypass_types`), so a genuine redirect is never
-    mislabeled as a bypass type phase 2 disproved (the `e72ed60a` full-pipeline
-    `appended_url` mislabel — genuine off-site 302, wrong label; re-validated
-    `75ea835f` → `at_syntax`). Phase 4 prefers the deterministic build when the
-    primitive is confirmed. Allowlist bypass (`RedirectBypassType.ALLOWLIST_BYPASS`)
-    unchanged — harvest an allowlisted token, embed in an attacker URL, confirm
-    the off-site redirect despite a substring allowlist.
+    drops, so a genuine redirect is never mislabeled as a bypass type phase 2
+    disproved (the `e72ed60a` full-pipeline `appended_url` mislabel — genuine
+    off-site 302, wrong label; re-validated `75ea835f` → `at_syntax`). That float
+    is now the shared `merge_llm_ranking` rule over `rank_open_redirect`'s
+    supported set (`agents/_plan_ranking.py`), which can also do what the bespoke
+    reorder structurally could not: **rank a type the ranking never contained**.
+    Building the list only out of pre-confirmed primitives left
+    the class unable to probe a parameter its own phase-2 probes had failed on,
+    and the recorded corpus holds three `appended_url` confirmations plus one
+    `unicode_lookalike` on exactly those parameters. Phase 4 prefers the
+    deterministic build when the primitive is confirmed. Allowlist bypass is
+    unchanged and deliberately stays OUT of the phase-3 ranking — harvest an
+    allowlisted token, embed in an attacker URL, confirm the off-site redirect
+    despite a substring allowlist, all on its own branch. Ranking it as well
+    would give one label a second route whose phase 4 has no deterministic
+    build, so the payload would be a model's invention rather than a harvested
+    token.
 - Adaptive methodologies (W2.1):
   - XSS-reflected — done
   - SQLi — done
@@ -305,10 +315,14 @@ In rough priority order:
    intermediate results persisted to trace). Apply the same shape to
    command-injection escape contexts, LFI traversal payload synthesis, file-
    upload bypass selection, and weak-session entropy analysis.
-2. **LLM-driven reporting.** Today's report agent is zero-LLM: it dumps
-   findings to JSON + Markdown. The v2 plan calls for a multi-pass
-   generator (assemble → narrative → remediation → quality review) with
-   Jinja + WeasyPrint rendering. Models are already in `models/report.py`.
+2. **LLM-driven reporting.** Today's report agent is zero-LLM: it renders
+   JSON, Markdown and PDF from one already-redacted `PentestReport`. The
+   remaining v2 ambition is the multi-pass narrative generator
+   (assemble → narrative → remediation → quality review); the RENDERING half is
+   done, in ReportLab rather than the Jinja + WeasyPrint pipeline this plan
+   named — WeasyPrint resolves GTK/Pango at import and does not import on
+   Windows, so it could not be executed or verified on the machine that
+   produces the bundle.
 3. **Consistency drill.** Run 5 consecutive DVWA engagements end-to-end and
    measure category-level coverage variance. Lock in any remaining flaky
    skills.

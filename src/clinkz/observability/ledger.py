@@ -111,6 +111,14 @@ class LedgerAlarm(StrEnum):
     #: Invoked, and every invocation failed. Loud already, but recorded so the
     #: end-of-run summary is complete.
     ALL_FAILED = "all_failed"
+    #: Declared, never invoked, and its reachability predicate says the run
+    #: COULD have reached it. Distinct from SILENT — that component ran and
+    #: produced nothing; this one never ran at all, and the engine can state the
+    #: engagement condition that made it available. Held apart because the fixes
+    #: differ completely: a silent component has a broken seam or an empty
+    #: answer, an unreached one has a dispatcher, a gate or a plan that skipped
+    #: it. Never fires when reachability was not evaluated.
+    BUILT_BUT_NOT_RUN = "built_but_not_run"
     #: Something covered for this component. Not a defect on its own — a
     #: fallback that activates is doing its job — but it is the mechanism that
     #: hid all three defects, so it is never invisible again.
@@ -138,6 +146,21 @@ class ComponentRecord:
     #: distinct reason, bounded like ``notes``.
     not_applicable_reasons: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: The reachability predicate this component declared at engagement start
+    #: (a ``ReachabilityKey`` value), or ``""`` for a component that registered
+    #: by being invoked without ever being declared.
+    declared_reachability: str = ""
+    #: The predicate's verdict, or ``None`` when it was never evaluated — a
+    #: direct invocation, a run that stopped before the report. ``None`` is not
+    #: ``False``: an un-evaluated predicate makes no claim in either direction,
+    #: and must never produce an alarm.
+    reachable: bool | None = None
+    #: The predicate's own sentence for why the component was unreachable.
+    #: Written by the predicate, not by the component, so it cannot drift entry
+    #: by entry the way a per-component reason string does. Set through
+    #: :meth:`set_reachability`, never assigned directly — see that method for
+    #: why the redaction has to live at the property.
+    reachability_reason: str = ""
 
     def add_note(self, note: str) -> None:
         """Append a bounded, deduplicated, REDACTED note.
@@ -193,6 +216,39 @@ class ComponentRecord:
         if reason not in self.not_applicable_reasons:
             self.not_applicable_reasons.append(reason)
 
+    def set_reachability(self, reachable: bool, reason: str) -> None:
+        """Record a predicate's verdict and its REDACTED sentence.
+
+        Redacted here rather than at the predicate, for the third time in this
+        class and for the same reason ``add_note`` and
+        ``add_not_applicable_reason`` are: this string goes two ways and only one
+        of them is protected. ``report.json`` is written through
+        ``redact_structure``; :meth:`ContributionLedger.log_summary` writes the
+        same string straight to the run log, which is not.
+
+        Every predicate authors engine text today — component names, capability
+        keys, counts — so there is nothing to catch. That is the argument for
+        applying it here rather than against: LESSONS #47 is a credential that
+        reached an artifact because redaction sat at the writer someone
+        remembered instead of at the property, and the next predicate to be
+        written will interpolate whatever engagement state it needs.
+
+        A failed redaction drops the sentence rather than emitting it raw — the
+        component is still recorded as unreachable, which is the load-bearing
+        half, and an unredactable reason is exactly the one not to print.
+        """
+        self.reachable = reachable
+        if not reachable and reason:
+            try:
+                from clinkz.engagement.secrets import redact
+
+                self.reachability_reason = redact(reason)
+            except Exception as exc:  # noqa: BLE001 — never raise from the data path
+                logger.debug("Ledger reachability reason redaction failed: %s", exc)
+                self.reachability_reason = ""
+        else:
+            self.reachability_reason = ""
+
     @property
     def correctly_empty(self) -> bool:
         """Whether every successful invocation found nothing *correctly*.
@@ -220,6 +276,12 @@ class ComponentRecord:
         out: list[LedgerAlarm] = []
         if self.dead_seam:
             out.append(LedgerAlarm.DEAD_SEAM)
+        if self.invocations == 0 and self.reachable is True and not self.dead_seam:
+            # Built, reachable this engagement, and it did not run. ``is True``
+            # rather than a truthiness test: ``None`` means the predicate was
+            # never evaluated, and an un-evaluated predicate is not a claim that
+            # the component was unreachable — it is no claim at all.
+            out.append(LedgerAlarm.BUILT_BUT_NOT_RUN)
         if self.invocations > 0 and self.successes == 0:
             out.append(LedgerAlarm.ALL_FAILED)
         elif self.invocations > 0 and self.items_contributed == 0 and not self.correctly_empty:
@@ -244,6 +306,9 @@ class ComponentRecord:
             "not_applicable": self.not_applicable,
             "not_applicable_reasons": list(self.not_applicable_reasons),
             "correctly_empty": self.correctly_empty,
+            "declared_reachability": self.declared_reachability,
+            "reachable": self.reachable,
+            "reachability_reason": self.reachability_reason,
             "alarms": [a.value for a in self.alarms],
             "notes": list(self.notes),
         }
@@ -288,15 +353,69 @@ class ContributionLedger:
             self._records[key] = rec
         return rec
 
-    def declare(self, name: str, kind: ComponentKind) -> None:
+    def declare(self, name: str, kind: ComponentKind, reachability: str = "") -> None:
         """Register a component the run *could* use, before it is invoked.
 
         Makes "declared but never invoked" observable. Without it, a capability
         that never resolves leaves no trace at all — and a component absent from
         the ledger reads exactly like one that was never built.
+
+        Args:
+            name: Component identifier, matching the name its invocation sites
+                record under. A declaration under a different spelling produces
+                two half-populated records, which is worse than none.
+            kind: What kind of component it is.
+            reachability: The ``ReachabilityKey`` value deciding whether this
+                component's never-invoked state is a defect or a precondition
+                that was absent. Evaluated later, at report time, by
+                :meth:`resolve_reachability` — engagement state does not exist
+                yet when this is called.
         """
         with self._lock:
-            self._get(name, kind)
+            rec = self._get(name, kind)
+            if reachability:
+                rec.declared_reachability = reachability
+
+    def resolve_reachability(self, state: Any) -> int:
+        """Evaluate every declared predicate against completed engagement state.
+
+        Called once, at REPORT time. Existence is knowable at engagement start;
+        reachability is not — whether the target has a SQL surface is a question
+        only Scan can answer, and the exploit plan does not exist when the
+        declarations are made. Splitting the two is what lets a never-invoked
+        component say which of the two things it is.
+
+        Only components that were never invoked are evaluated: for one that ran,
+        the ledger's ordinary accounting is the answer and a predicate would add
+        nothing. A predicate that raises leaves the record un-evaluated
+        (``reachable is None``), which produces no alarm — an observability layer
+        must not manufacture a defect out of its own bug.
+
+        Args:
+            state: An
+                :class:`~clinkz.observability.component_registry.EngagementReachability`.
+
+        Returns:
+            How many records were evaluated.
+        """
+        from clinkz.observability.component_registry import PREDICATES, ReachabilityKey
+
+        evaluated = 0
+        with self._lock:
+            records = list(self._records.values())
+        for rec in records:
+            if rec.invocations or not rec.declared_reachability:
+                continue
+            try:
+                predicate = PREDICATES[ReachabilityKey(rec.declared_reachability)]
+                reachable = bool(predicate.holds(state, rec.name))
+                rec.set_reachability(
+                    reachable, "" if reachable else predicate.describe(state, rec.name)
+                )
+                evaluated += 1
+            except Exception as exc:  # noqa: BLE001 — never raise from the data path
+                logger.debug("Reachability predicate failed for %s: %s", rec.name, exc)
+        return evaluated
 
     def record(
         self,
@@ -394,7 +513,8 @@ class ContributionLedger:
             LedgerAlarm.DEAD_SEAM: 0,
             LedgerAlarm.ALL_FAILED: 1,
             LedgerAlarm.SILENT: 2,
-            LedgerAlarm.FALLBACK_ACTIVATED: 3,
+            LedgerAlarm.BUILT_BUT_NOT_RUN: 3,
+            LedgerAlarm.FALLBACK_ACTIVATED: 4,
         }
         alarming = [r for r in self.records() if r.alarms]
         return sorted(alarming, key=lambda r: (order[r.alarms[0]], r.kind.value, r.name))
@@ -405,8 +525,29 @@ class ContributionLedger:
         Quieter than a silent component — nothing ran, so nothing degraded — but
         a capability the run never reached for is still worth naming, because a
         resolver that silently found no tool looks identical to one that did.
+
+        Includes the ones whose predicate says they WERE reachable; those also
+        carry :attr:`LedgerAlarm.BUILT_BUT_NOT_RUN` and appear in
+        :meth:`alarming`, exactly as an alarming component appears in both
+        ``components`` and ``alarms``. Containment, not a second population.
         """
         return [r for r in self.records() if r.invocations == 0 and not r.dead_seam]
+
+    def unreachable(self) -> list[ComponentRecord]:
+        """Never-invoked components whose predicate says the run could not reach them.
+
+        The NOT-APPLICABLE half of a declared component's zero, and the reason it
+        is safe to declare thirty vuln classes on every engagement: a class whose
+        surface the target does not have is not a defect, and reporting it as one
+        would fill the alarm section with noise on every run until nobody read
+        it — the same argument ``correctly_empty`` already makes for components
+        that ran.
+        """
+        return [
+            r
+            for r in self.records()
+            if r.invocations == 0 and not r.dead_seam and r.reachable is False
+        ]
 
     def correctly_empty(self) -> list[ComponentRecord]:
         """Components that ran, found nothing, and were right to.
@@ -418,7 +559,36 @@ class ContributionLedger:
         return [r for r in self.records() if r.correctly_empty and not r.dead_seam]
 
     def to_dict(self) -> dict[str, Any]:
-        """The ledger as it appears in ``report.json``."""
+        """The ledger as it appears in ``report.json``.
+
+        ``components`` is the POPULATION — one entry per tracked component, and
+        the only place a component's numbers live. Every other key is a VIEW
+        onto it, never a second population:
+
+        * ``alarms`` — the alarming subset, re-serialized in full and re-ordered
+          most-severe-first, because four consumers render a row straight from
+          it (the Markdown table, ``d1_consistency_runner``, two benchmark
+          drivers) and a name-only reference would push a join into each of
+          them. A join that silently misses a key drops an alarm, which is a
+          worse failure than a duplicated payload.
+        * ``never_invoked`` / ``correctly_empty`` — references by name.
+
+        So an alarming component appears TWICE in this dict, with identical
+        content, and that is containment rather than double registration. It
+        reads exactly like a duplicate: ``exploit.component_cve_match`` was
+        reported as one on the first non-benchmark run, and both readings
+        offered — a second ``record_contribution`` call, or a serialization bug
+        — were wrong. The component has exactly one registration site.
+
+        The distinction matters because it decides whether a consumer may sum.
+        Nothing in the engine does: ``summary`` is computed from
+        ``self._records``, not from these lists, and all four consumers iterate
+        ``alarms`` for display. A consumer that ever unions ``components`` with
+        ``alarms`` WOULD double-count every alarming component — invisible today
+        only because every alarming component has contributed zero items by
+        definition. ``test_alarms_are_a_subset_view_not_a_second_population``
+        pins the containment so this stays a projection.
+        """
         alarming = self.alarming()
         inapplicable = self.correctly_empty()
         return {
@@ -426,6 +596,19 @@ class ContributionLedger:
             "alarms": [r.to_dict() for r in alarming],
             "fallbacks": [f.to_dict() for f in self._fallbacks],
             "never_invoked": [r.name for r in self.never_invoked()],
+            # The NOT-APPLICABLE third of the declaration's three states: built,
+            # never run, and the predicate says the engagement could not reach
+            # it. Carried with the predicate's own sentence, so "this class did
+            # not run" is never left as a bare name a reader has to interpret.
+            "unreachable": [
+                {
+                    "component": r.name,
+                    "kind": r.kind.value,
+                    "predicate": r.declared_reachability,
+                    "reason": r.reachability_reason,
+                }
+                for r in self.unreachable()
+            ],
             "correctly_empty": [
                 {"component": r.name, "reasons": list(r.not_applicable_reasons)}
                 for r in inapplicable
@@ -438,6 +621,10 @@ class ContributionLedger:
                 "all_failed_components": sum(
                     1 for r in alarming if LedgerAlarm.ALL_FAILED in r.alarms
                 ),
+                "built_but_not_run_components": sum(
+                    1 for r in alarming if LedgerAlarm.BUILT_BUT_NOT_RUN in r.alarms
+                ),
+                "unreachable_components": len(self.unreachable()),
                 "correctly_empty_components": len(inapplicable),
                 "fallback_activations": len(self._fallbacks),
             },
@@ -482,7 +669,16 @@ class ContributionLedger:
                     rec.invocations,
                     "; ".join(rec.not_applicable_reasons) or "precondition absent",
                 )
+            for rec in self.unreachable():
+                out.info(
+                    "  NOT REACHABLE  %s (%s) — %s",
+                    rec.name,
+                    rec.kind.value,
+                    rec.reachability_reason or rec.declared_reachability,
+                )
             for rec in self.never_invoked():
+                if rec.reachable is not None:
+                    continue  # already reported above, or alarming
                 out.info(
                     "  NEVER INVOKED  %s (%s) — declared but the run never asked for it",
                     rec.name,
@@ -509,6 +705,12 @@ def _alarm_line(rec: ComponentRecord, alarm: LedgerAlarm) -> str:
         return (
             f"CONTRIBUTED 0  {rec.name} ({rec.kind.value}) — {rec.invocations} invocation(s), "
             f"{rec.successes} succeeded, 0 items contributed{notes}"
+        )
+    if alarm is LedgerAlarm.BUILT_BUT_NOT_RUN:
+        return (
+            f"NEVER RAN     {rec.name} ({rec.kind.value}) — built, and this engagement "
+            f"met the condition for reaching it ({rec.declared_reachability}), but it was "
+            f"never invoked{notes}"
         )
     return (
         f"FALLBACK       {rec.name} ({rec.kind.value}) — covered for "
@@ -599,12 +801,12 @@ def record_fallback(*, component: str, covered_by: str, reason: str = "") -> Non
         logger.debug("Ledger fallback record failed for %s: %s", component, exc)
 
 
-def declare_component(*, name: str, kind: ComponentKind) -> None:
+def declare_component(*, name: str, kind: ComponentKind, reachability: str = "") -> None:
     """Register a component the run could use, before any invocation."""
     ledger = get_active_ledger()
     if ledger is None:
         return
     try:
-        ledger.declare(name, kind)
+        ledger.declare(name, kind, reachability=reachability)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Ledger declare failed for %s: %s", name, exc)

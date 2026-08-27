@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import pytest
 
+from clinkz.agents._principal import Principal
 from clinkz.llm.base import DecisionPathFallbackError, LLMError, ProviderPolicyError
 from clinkz.models.finding import (
     UNPROVEN_WHY_UNCONFIRMED,
@@ -71,6 +72,41 @@ def _error_page_finding() -> Finding:
 
 
 class TestEveryGroundRunsAtTheChokepoint:
+    def test_the_ninth_ground_reads_the_run_not_the_evidence(self) -> None:
+        """Ground 9 compares a registry DECLARATION against the run's principals.
+
+        Both halves are engine facts, so it needs no structured-evidence reader:
+        there is nothing here a response body could influence. It is the
+        chokepoint half of PART 3 — the methodology refuses first, and this is
+        what makes the refusal structural rather than something one class
+        remembers, exactly as ground 8 does for the never-sent control.
+        """
+        agent = _make_agent()
+        agent._principals = ()
+        idor = Finding(
+            title="Insecure Direct Object Reference via id parameter (horizontal)",
+            description="Technique: WSTG-ATHZ-04. Parameter: id.",
+            severity=Severity.HIGH,
+            status=FindingStatus.CONFIRMED,
+            target="http://t/account",
+            evidence=["Request: GET /account?id=2", "Response: bob's record"],
+        )
+        ground = agent._fp_ground_insufficient_principals(idor)
+        assert ground is not None
+        assert "2 authenticated principals" in ground
+
+        agent._principals = (
+            Principal(role="a", cookies={"s": "1"}, primary=True),
+            Principal(role="b", cookies={"s": "2"}),
+        )
+        assert agent._fp_ground_insufficient_principals(idor) is None
+
+    def test_the_ninth_ground_leaves_every_other_class_alone(self) -> None:
+        """A class needing one principal must be untouched by the new rule."""
+        agent = _make_agent()
+        agent._principals = ()
+        assert agent._fp_ground_insufficient_principals(_error_page_finding()) is None
+
     def test_both_consumers_read_one_declaration(self) -> None:
         """The gate and the cross-check must not carry separate ground lists.
 
@@ -78,7 +114,7 @@ class TestEveryGroundRunsAtTheChokepoint:
         """
         agent = _make_agent()
         declared = agent._deterministic_grounds()
-        assert len(declared) == 8, "a ground was added or dropped without updating the table"
+        assert len(declared) == 9, "a ground was added or dropped without updating the table"
         names = [probe.__name__ for probe, _ in declared]
         assert len(set(names)) == len(names), "a ground is declared twice"
         reasons = [why for _, why in declared]

@@ -119,6 +119,18 @@ class _ScriptedLLM(LLMClient):
         return self.answers.pop(0) if self.answers else ""
 
 
+def _query_page(url: str, param: str) -> PageAnalysis:
+    """The probe target for a phase-5 call that now takes the page, not a URL.
+
+    ``_xss_phase5_verify`` carries its probe through ``_send_probe`` so a
+    parameter discovered in a JSON body or a path segment reaches where it
+    actually lives. A plain query parameter with no parsed form — this shape —
+    falls through ``_send_probe`` to the same ``_http_get`` these tests mock, so
+    every assertion here is about the same oracle on the same bytes.
+    """
+    return PageAnalysis(url=url, body="", status=200, input_params=[param])
+
+
 def _make_agent(llm: LLMClient | None = None) -> ExploitAgent:
     state = AsyncMock(spec=StateStore)
     state.get_findings = AsyncMock(return_value=[])
@@ -199,7 +211,7 @@ class TestG9CharacterMapGatesEveryClass:
             return_value=_HTTPResponse(status=200, body=PHP_WARNING_BODY)
         )
         verified, why, _resp = await agent._xss_phase5_verify(
-            "http://example.com/vulnerabilities/fi/",
+            _query_page("http://example.com/vulnerabilities/fi/", "page"),
             "page",
             FULLWIDTH_PAYLOAD,
             context=ReflectionContext.HTML_BODY,
@@ -778,7 +790,7 @@ class TestG21ProseVetoNeverOverrulesAWitness:
             return_value=_HTTPResponse(status=200, body=body)
         )
         verified, why, _ = await agent._xss_phase5_verify(
-            "http://t/x", "name", self.PAYLOAD, char_map=RAW_MAP
+            _query_page("http://t/x", "name"), "name", self.PAYLOAD, char_map=RAW_MAP
         )
         assert verified is False
         assert f"<{tag}>" in why
@@ -794,7 +806,7 @@ class TestG21ProseVetoNeverOverrulesAWitness:
             return_value=_HTTPResponse(status=200, body=body)
         )
         verified, landing, _ = await agent._xss_phase5_verify(
-            "http://t/x", "name", breakout, char_map=RAW_MAP
+            _query_page("http://t/x", "name"), "name", breakout, char_map=RAW_MAP
         )
         assert verified is True, landing
 
@@ -805,7 +817,7 @@ class TestG21ProseVetoNeverOverrulesAWitness:
             return_value=_HTTPResponse(status=200, body=f"<div>Hello {self.PAYLOAD}</div>")
         )
         verified, landing, _ = await agent._xss_phase5_verify(
-            "http://t/x", "name", self.PAYLOAD, char_map=RAW_MAP
+            _query_page("http://t/x", "name"), "name", self.PAYLOAD, char_map=RAW_MAP
         )
         assert (verified, landing) == (True, "html_body")
 

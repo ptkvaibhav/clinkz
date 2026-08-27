@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from clinkz.agents._methodology_helpers import BaselineProbe
+from clinkz.agents._plan_ranking import attempt_window, rank_lfi
 from clinkz.agents.exploit import (
     ExploitAgent,
     PageAnalysis,
@@ -256,34 +257,59 @@ class TestPhase3RetrievalTypeRanking:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._lfi_phase3_rank_retrieval_types(
+        ranking = await agent._lfi_phase3_rank_retrieval_types(
             LFITraversalPrimitives(traversal_sequence="../", wrapper_support=["php://filter"]),
             {},
         )
-        assert ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
-        assert ranked[1] == LFIRetrievalType.DIRECT_READ
+        assert ranking.ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
+        assert ranking.ranked[1] == LFIRetrievalType.DIRECT_READ
 
     @pytest.mark.asyncio
     async def test_fallback_signature_match_prefers_direct_read(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._lfi_phase3_rank_retrieval_types(
+        ranking = await agent._lfi_phase3_rank_retrieval_types(
             LFITraversalPrimitives(traversal_sequence="../"),
             {"traversal_signature_match": "../"},
         )
-        assert ranked[0] == LFIRetrievalType.DIRECT_READ
+        assert ranking.ranked[0] == LFIRetrievalType.DIRECT_READ
 
     @pytest.mark.asyncio
     async def test_fallback_php_filter_prefers_wrapper(self) -> None:
         llm = _ScriptedLLM(answers=[""])
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._lfi_phase3_rank_retrieval_types(
+        ranking = await agent._lfi_phase3_rank_retrieval_types(
             LFITraversalPrimitives(wrapper_support=["php://filter"]),
             {},
         )
-        assert ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
+        assert ranking.ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
+
+    @pytest.mark.asyncio
+    async def test_source_disclosure_is_reachable_without_php_filter(self) -> None:
+        """It used to be reachable from exactly one branch, and that was the bug.
+
+        ``source_disclosure`` was ranked only when ``php://filter`` was among the
+        confirmed wrappers, so a target exposing ``php://input`` and appending an
+        extension to the parameter could not be ranked for it at all. Both of the
+        corpus's ``source_disclosure`` confirmations have precisely that
+        fingerprint. The signal is the PHP stream layer — any ``php://`` wrapper —
+        or a suffix the handler concatenates, since an appended ``.php`` is what
+        makes the parameter name a source file.
+        """
+        agent = _make_agent(_ScriptedLLM(answers=[""]))
+        ranking = await agent._lfi_phase3_rank_retrieval_types(
+            LFITraversalPrimitives(
+                wrapper_support=["php://input", "file://"],
+                suffix_handling="appends_extension",
+            ),
+            {},
+        )
+        assert LFIRetrievalType.SOURCE_DISCLOSURE in ranking.supported
+        assert LFIRetrievalType.SOURCE_DISCLOSURE in attempt_window(
+            ranking.ranked, ranking.supported
+        )
 
 
 # ===========================================================================
@@ -858,11 +884,8 @@ class TestFix2BypassAdaptive:
     def test_fallback_ranks_wrapper_first_with_file_scheme(self) -> None:
         """FIX 2b: a confirmed non-php-filter wrapper (file://) ranks wrapper
         extraction first even with no traversal signature."""
-        agent = _make_agent()
-        ranked = agent._fallback_retrieval_type_ranking(
-            LFITraversalPrimitives(wrapper_support=["file://"]), {}
-        )
-        assert ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
+        ranking = rank_lfi(LFITraversalPrimitives(wrapper_support=["file://"]), {})
+        assert ranking.ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
 
     @pytest.mark.asyncio
     async def test_direct_read_prefix_preserving_when_naive_blocked(self) -> None:
@@ -1034,12 +1057,14 @@ class TestFix3PrefersConfirmedBuild:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._lfi_phase3_rank_retrieval_types(
+        ranking = await agent._lfi_phase3_rank_retrieval_types(
             LFITraversalPrimitives(wrapper_support=["file://"]),
             {},
         )
-        assert ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
-        assert LFIRetrievalType.WRAPPER_EXTRACTION in ranked[:3]
+        assert ranking.ranked[0] == LFIRetrievalType.WRAPPER_EXTRACTION
+        assert LFIRetrievalType.WRAPPER_EXTRACTION in attempt_window(
+            ranking.ranked, ranking.supported
+        )
 
     @pytest.mark.asyncio
     async def test_phase3_llm_order_preserved_when_confirmed_present(self) -> None:
@@ -1050,12 +1075,12 @@ class TestFix3PrefersConfirmedBuild:
         )
         agent = _make_agent(llm)
         agent._methodology_llm = llm
-        ranked = await agent._lfi_phase3_rank_retrieval_types(
+        ranking = await agent._lfi_phase3_rank_retrieval_types(
             LFITraversalPrimitives(prefix_required=True),  # DIRECT_READ confirmed
             {"absolute_passwd_match": True},
         )
-        assert ranked[0] == LFIRetrievalType.DIRECT_READ
-        assert ranked[1] == LFIRetrievalType.WRAPPER_EXTRACTION
+        assert ranking.ranked[0] == LFIRetrievalType.DIRECT_READ
+        assert ranking.ranked[1] == LFIRetrievalType.WRAPPER_EXTRACTION
 
 
 class TestLFIRealPipelineReproduction:

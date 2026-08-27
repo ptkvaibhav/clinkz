@@ -148,6 +148,25 @@ than text (open redirect's 3xx `Location` host resolution, IDOR's boundary
 precondition), and those that inject no marker at all (security headers, brute
 force, CSRF, weak session).
 
+### An exemption is not an absence, and the row says which rule governs
+
+Being exempt from *this* rule does not mean a class has no control — it means its
+control is a **different rule**, and the deliverable has to name that one. The
+control-arm section header promises "the row says which rule applies instead" and
+19 of 29 rows across the two generated PDFs said only which rule does **not**
+govern them. Nineteen verbatim repetitions of an absence invite a client to read
+the strongest evidence in the document as unverified.
+
+So every member of `CONTROL_EXEMPT_CLASSES` declares
+`VulnClass.control_arm.governing_rule` — what its oracle DOES require before it
+may confirm — plus an optional `evidence_key` naming the field in the finding's
+own structured evidence that carries the observation the rule turned on.
+`control_arm_row` reads the declaration and raises `ControlArmRuleMissingError`
+on a row that names none, so the render fails rather than shipping the twentieth
+repetition. The domain is COMPUTED from `CONTROL_EXEMPT_CLASSES` and asserted in
+both directions (`tests/test_agents/test_report_integrity.py`). Detail →
+[`../report-integrity.md`](../report-integrity.md).
+
 ## The target cannot write the verdict
 
 The control entry is read only out of **fully-structured** evidence entries —

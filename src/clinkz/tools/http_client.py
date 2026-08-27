@@ -17,6 +17,29 @@ from urllib.parse import urlparse
 
 from clinkz.tools.base import ToolBase, ToolOutput
 
+#: The shared engagement cookie jar is read and written. The default, and what
+#: every ordinary methodology probe carries.
+SESSION_AMBIENT = "ambient"
+
+#: The jar is neither read nor written; the explicit ``cookies``/``headers`` on
+#: this request are the only session material it carries.
+#:
+#: This is the mode a request AS A NAMED PRINCIPAL needs, and it did not exist
+#: before the four-arm IDOR oracle. The two modes that did are both wrong for it:
+#: ``ambient`` sends role B's cookies but still passes ``-c jar``, so B's
+#: ``Set-Cookie`` overwrites the engagement's own session and every later probe
+#: silently becomes B; ``none`` drops the explicit cookies too, so the request
+#: carries no principal at all. An access-control oracle whose entire claim is
+#: "principal A read principal B's object" cannot afford either.
+SESSION_ISOLATED = "isolated"
+
+#: No session material at all — the anonymous control. What ``no_session`` meant
+#: and still means.
+SESSION_NONE = "none"
+
+#: Every mode, in the order they carry LESS of the engagement's session.
+SESSION_MODES: tuple[str, ...] = (SESSION_AMBIENT, SESSION_ISOLATED, SESSION_NONE)
+
 
 class HTTPClientOutput(ToolOutput):
     """Structured output from an HTTP request."""
@@ -167,9 +190,24 @@ class HTTPClientTool(ToolBase):
                             "Send with NO session material at all: the shared "
                             "engagement cookie jar is neither read nor written. "
                             "This is what makes an anonymous control genuinely "
-                            "anonymous."
+                            "anonymous. Shorthand for session_mode='none'."
                         ),
                         "default": False,
+                    },
+                    "session_mode": {
+                        "type": "string",
+                        "enum": list(SESSION_MODES),
+                        "description": (
+                            "Which session material this request carries. "
+                            "'ambient' (default): the shared engagement jar is "
+                            "read and written. 'isolated': the jar is neither "
+                            "read nor written and the explicit cookies/headers "
+                            "given here are the only session material — how a "
+                            "request is sent AS A NAMED PRINCIPAL without "
+                            "poisoning the engagement's own session. 'none': no "
+                            "session material at all."
+                        ),
+                        "default": SESSION_AMBIENT,
                     },
                 },
                 "required": ["url"],
@@ -192,6 +230,8 @@ class HTTPClientTool(ToolBase):
         if method not in valid_methods:
             raise ValueError(f"Invalid HTTP method: {method}")
 
+        session_mode = self._resolve_session_mode(args)
+
         return {
             "method": method,
             "url": url,
@@ -199,8 +239,46 @@ class HTTPClientTool(ToolBase):
             "body": args.get("body", ""),
             "cookies": args.get("cookies") or {},
             "follow_redirects": bool(args.get("follow_redirects", False)),
-            "no_session": bool(args.get("no_session", False)),
+            "session_mode": session_mode,
+            # DERIVED, never independently supplied past this point. Two booleans
+            # that must agree are how ``attribution.commit`` and
+            # ``attribution.sessionUrl`` disagreed and leaked; ``session_mode`` is
+            # the one field the backends branch on, and this is a view of it kept
+            # so the callers and witnesses that already read ``no_session`` — the
+            # auth-bypass carrier assertion among them — keep reading a true fact.
+            "no_session": session_mode == SESSION_NONE,
         }
+
+    @staticmethod
+    def _resolve_session_mode(args: dict[str, Any]) -> str:
+        """The single session mode this request runs under.
+
+        ``no_session=True`` is shorthand for :data:`SESSION_NONE` and stays
+        supported, because it is what every anonymous-control call site in the
+        engine says today and because "carries nothing" is the property those
+        call sites are asserting. An explicit ``session_mode`` wins over it, and
+        the two disagreeing (``session_mode='ambient'`` beside
+        ``no_session=True``) is a caller bug rather than a precedence question —
+        so it raises rather than picking one.
+
+        Raises:
+            ValueError: On an unknown mode, or on a contradictory pair.
+        """
+        declared = args.get("session_mode")
+        legacy = bool(args.get("no_session", False))
+        if declared is None:
+            return SESSION_NONE if legacy else SESSION_AMBIENT
+        mode = str(declared).strip().lower()
+        if mode not in SESSION_MODES:
+            raise ValueError(
+                f"Invalid session_mode: {declared!r} (expected one of {SESSION_MODES})"
+            )
+        if legacy and mode != SESSION_NONE:
+            raise ValueError(
+                f"contradictory session material: no_session=True with session_mode={mode!r}. "
+                "no_session is shorthand for session_mode='none'; pass one or the other."
+            )
+        return mode
 
     async def execute(self, args: dict[str, Any]) -> str:
         """Execute the HTTP request and return raw response info.
@@ -263,7 +341,11 @@ class HTTPClientTool(ToolBase):
         finally:
             governor.release()
 
-        self._observe(governor, raw, session_bearing=not args.get("no_session"))
+        self._observe(
+            governor,
+            raw,
+            session_bearing=args.get("session_mode", SESSION_AMBIENT) == SESSION_AMBIENT,
+        )
         return raw
 
     async def _dispatch(self, args: dict[str, Any]) -> str:
@@ -284,6 +366,12 @@ class HTTPClientTool(ToolBase):
         anonymous control by construction — its 401 is the intended result — and
         an observer forced to infer that from the response alone will read the
         proof that authentication works as proof that it broke.
+
+        An ``isolated`` request is the same case for the same reason: it carries
+        SOME principal's session, but not the engagement's, so what the target
+        says about it is not evidence about the session the sentinel guards. A
+        role-B probe that gets a 401 because role B lacks the object is not our
+        session expiring.
         """
         try:
             data = json.loads(raw)
@@ -348,21 +436,24 @@ class HTTPClientTool(ToolBase):
         if body:
             cmd.extend(["--data-binary", body])
 
-        # Session material. ``no_session`` skips the jar in BOTH directions,
-        # which is what makes an anonymous control genuinely anonymous: reading
-        # the jar would send the engagement's own session cookies, and writing it
-        # would let the target's Set-Cookie on an unauthenticated response
-        # overwrite the session every later request depends on.
-        if not args.get("no_session"):
-            # Cookie jar for persistence across redirect chain
+        # Session material, decided by the ONE mode field.
+        #
+        # ``-c`` is what WRITES the shared jar and ``-b <jar>`` is what READS it,
+        # and the two are separable — which is the whole reason ``isolated``
+        # exists. ``ambient`` does both, so a target's ``Set-Cookie`` keeps the
+        # engagement's session current. ``isolated`` does neither: the explicit
+        # cookies go out on the wire and whatever comes back stays out of the
+        # jar, so a probe sent as another principal cannot overwrite the session
+        # every later request depends on. ``none`` sends nothing and stores
+        # nothing, which is what makes an anonymous control genuinely anonymous.
+        mode = args.get("session_mode", SESSION_AMBIENT)
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        if mode == SESSION_AMBIENT:
             cmd.extend(["-c", cookie_jar])
-
             # Cookies — if dict provided, send as header; otherwise read from jar
-            if cookies:
-                cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-                cmd.extend(["-b", cookie_str])
-            else:
-                cmd.extend(["-b", cookie_jar])
+            cmd.extend(["-b", cookie_str or cookie_jar])
+        elif mode == SESSION_ISOLATED and cookie_str:
+            cmd.extend(["-b", cookie_str])
 
         cmd.append(url)
 
@@ -495,7 +586,14 @@ class HTTPClientTool(ToolBase):
         url = args["url"]
         headers = args.get("headers") or {}
         body = args.get("body", "")
-        cookies = {} if args.get("no_session") else (args.get("cookies") or {})
+        # aiohttp builds a fresh CookieJar per request below, so there is no
+        # shared jar for ``isolated`` to protect here — it differs from
+        # ``ambient`` only on the docker path. ``none`` still drops the cookies.
+        cookies = (
+            {}
+            if args.get("session_mode", SESSION_AMBIENT) == SESSION_NONE
+            else (args.get("cookies") or {})
+        )
         follow_redirects = args.get("follow_redirects", False)
 
         redirect_chain: list[str] = []

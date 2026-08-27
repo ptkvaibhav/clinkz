@@ -11,6 +11,8 @@ tools dynamically.
 > per class); gray-box discovery-engine detail → `docs/discovery-engine-*.md`;
 > engagement setup / authenticated scanning / safety rails →
 > [`docs/productization-engagement-safety.md`](docs/productization-engagement-safety.md);
+> what the deliverable may CLAIM (testing window, authentication state, control-arm
+> rows, IDOR evidence, cost) → [`docs/report-integrity.md`](docs/report-integrity.md);
 > recurring-mistake narratives → [`.claude/LESSONS.md`](.claude/LESSONS.md) (index)
 > → `docs/lessons/`. Fetch on demand — do not restate them here.
 
@@ -162,7 +164,9 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   line said Opus and no configuration ever selected it. LLM
   plans exploits from scan+research → deterministic `_test_*` methods by tier →
   LLM reasons through results → adaptive retry/bypass → records capability outcome
-  to the persistent KB. **P7** (`src/clinkz/browser/`) is the client-side
+  to the persistent KB. **Phase 3 — which exploitation types a parameter is worth
+  attempting — is `agents/_plan_ranking.py`, not the model's to answer alone**
+  (**detail → [`docs/methodology/plan-ranking.md`](docs/methodology/plan-ranking.md)**). **P7** (`src/clinkz/browser/`) is the client-side
   execution oracle the DOM-XSS, client-rendered XSS and CSP classes confirm
   through. It runs **where the target is reachable**: in docker tool-mode the
   browser is driven inside `clinkz-tools`, because
@@ -204,14 +208,30 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   `verification_strength` enforced at `_persist_finding`, CVSS computed in the
   report — and an LLM reviewer after those could only overrule them, which the
   invariants forbid in that direction.
-- **Report** — zero LLM calls; emits JSON + a Markdown summary from the state
-  store in <30 s. **Both documents render from the SAME redacted structure** —
-  the dump goes through `redact_structure` (key-aware, so a `Set-Cookie` value
+- **Report** — zero LLM calls; emits JSON + a Markdown summary + **the PDF
+  deliverable** (`agents/_report_pdf.py`, ReportLab) from the state store in
+  <30 s. **All three documents render from the SAME redacted structure** — the
+  dump goes through `redact_structure` (key-aware, so a `Set-Cookie` value
   is removed on the strength of its key) and is validated back into a
-  `PentestReport` that the Markdown renderer reads. Markdown used to render from
-  the live report and be string-scrubbed afterwards, by which point the key is
-  gone; that also let the shape matcher absorb the renderer's own punctuation,
-  so the two documents reported different fingerprints for one secret.
+  `PentestReport` that the Markdown and PDF renderers read. Markdown used to
+  render from the live report and be string-scrubbed afterwards, by which point
+  the key is gone; that also let the shape matcher absorb the renderer's own
+  punctuation, so the two documents reported different fingerprints for one
+  secret. ReportLab and **not WeasyPrint**: WeasyPrint resolves GTK/Pango at
+  import and does not import on Windows, so the renderer could not be executed —
+  let alone verified — on the machine that produces the bundle. The PDF's
+  differentiating section is **the control arm for every confirmed finding**,
+  top-level and immediately after the executive summary rather than an appendix:
+  "it confirmed" and "the control refused" are one claim, and a document showing
+  only the positive arm is asking to be believed. Read through
+  `_control_arm.control_verdict_from_evidence` — the producer's own reader, so a
+  response body cannot write its own verdict into the table. Unproven leads are
+  a first-class section with every `why_unconfirmed`, and every bound that
+  decided coverage renders on a clean run too. The `/Info` dictionary is
+  populated from the report's own fields and nothing else, because it is the
+  channel no page-text scan reads. Regenerable offline with
+  `clinkz report-pdf <id>`; a render failure inside a live engagement is logged
+  at ERROR and loses the PDF, never the findings.
   Client-ready header (authorization record verbatim, window,
   in-scope AND out-of-scope, authentication proof, testing conduct), remediation
   attached per class from `models/vuln_classes.py`, and a generated **"What was
@@ -322,6 +342,30 @@ detail → `docs/productization-engagement-safety.md`.**
   `tests/test_engagement/test_driver_artifact_writes.py`, which reads every
   `scripts/*.py` and refuses a raw `write_text`/`write_bytes` unless allow-listed
   with a reason: drivers are exactly what a `src/`-and-`tests/` grep misses.
+- **The credential the client gave us goes first.** The default-credential
+  sweep ran unconditionally ahead of the supplied credential: 52 requests of
+  `admin/admin`, `root/root`, `admin/password`, `test/test` across six routes,
+  landing in the client's authentication logs as credential stuffing — from an
+  authorized test, before that test did the thing it was authorized to do.
+  Guessing is what you do when you have not been handed a key, so
+  `_should_sweep_default_credentials()` is `not credentials.authenticating` and
+  nothing else. There is deliberately no "…or the supplied credential failed"
+  branch: that path ABORTS (below), so the sweep is not merely deferred past a
+  failure but unreachable after one — falling back to guessing passwords the
+  moment the client's own credential is rejected is the same log entry this
+  removes.
+- **A login URL is proven by response SHAPE, never by a status code.** A
+  single-page application serves its shell for every path it does not recognise,
+  so `/login.php` answers **200 with 9903 bytes of Angular** on a Node target
+  that has never had a PHP file — and a `status < 400` HEAD probe accepted it,
+  which is how six credential POSTs landed on `/login.php` at a Node app.
+  `_serves_a_login_form` GETs the body (a HEAD cannot see this) and requires the
+  marker no catch-all produces by accident: an `<input type="password">` beside
+  an identity-shaped field. Nothing proven ⇒ **`None`**, not the root URL: the
+  "fall back to the root as the login page" strategy is deleted, because a root
+  URL is not a login page, it is where a credential POST goes when nobody proved
+  anything. A JSON login API serves no form and is found by
+  `detect_auth_mechanism`, which is the component that knows how to ask.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`).
   The same URL is fetched with the session and deliberately without it
   (`HTTPClientTool`'s `no_session` — the shared cookie jar would otherwise make
@@ -446,6 +490,14 @@ reports the missing capability to the Orchestrator.
   otherwise. For `TOOL_EXEC_MODE=local` it is an optional host extra
   (`pip install -e '.[browser]' && playwright install chromium`). Optional on
   purpose: absent, the affected classes record unproven leads exactly as before.
+- **ReportLab** renders the PDF deliverable, and **pypdf** reads one back for the
+  disclosure gate. WeasyPrint was declared for years for a renderer that did not
+  exist and is now removed: it resolves GTK/Pango at IMPORT time and does not
+  import on Windows, so it could never have been run on the machine that
+  produces the bundle. ReportLab is pure Python with the base-14 fonts built in,
+  so the document carries no external asset. `jinja2` remains declared and unused
+  — stated rather than quietly dropped, since removing a dependency is a separate
+  decision from noticing it is unused.
 - MCP Python SDK for tool servers; Docker for sandboxed tool execution
   (`clinkz-tools`; `TOOL_EXEC_MODE=local` for the in-process HTTP path).
 - Typer CLI; `clinkz trace inspect <engagement>` renders execution traces.
@@ -454,27 +506,41 @@ reports the missing capability to the Orchestrator.
 
 ```
 src/clinkz/
-├── cli.py            # Typer CLI: scan / abort / actions / artifact-scan / trace inspect /
-│                     #   tool-invoke / step-replay / corpus-replay
+├── cli.py            # Typer CLI: scan / abort / actions / artifact-scan / report-pdf /
+│                     #   trace inspect / tool-invoke / step-replay / corpus-replay
 ├── config.py         # Settings (env vars, per-agent LLM overrides, outputs_root —
 │                     #   read via outputs_root() at CALL time, never as a default arg)
 ├── state.py          # SQLite state + message store; findings + research_leads
 ├── orchestrator/     # OrchestratorAgent, lifecycle, prompts
-├── agents/           # recon, scan, exploit, research, report, _route_discovery,
+├── agents/           # recon, scan, exploit, research, report, _report_pdf (the
+│                     #   PDF deliverable — THIRD renderer of the same redacted
+│                     #   structure; control arms are its top-level section),
+│                     #   _route_discovery,
 │                     #   _js_api_mining (what does the frontend CALL?), _api_schema
 │                     #   (what does the live target ACCEPT? — safe methods only),
 │                     #   _json_body (addressing a field INSIDE a structure),
 │                     #   _url_safety (may we fetch it?), _url_shape (in what order?),
 │                     #   _origin (THE scheme+host fence — one helper, six call sites),
+│                     #   _plan_ranking (phase 3: which types is this parameter
+│                     #   worth attempting? — the fingerprint decides the SET,
+│                     #   the cap guards the unsupported tail; pure, replayable),
 │                     #   _secret_exposure / _input_validation / _mass_assignment /
 │                     #   _crypto_tokens (the four new classes' pure logic, offline-testable)
 │                     #   _business_logic (intent inferred from the app's OWN surface,
 │                     #   with the evidence — offline-testable),
 │                     #   _auth_bypass (THE one vocabulary for "did this response log us
 │                     #   in?" — artifact reader + the three-arm differential),
+│                     #   _principal (a NAMED authenticated identity + the handoff
+│                     #   that carries one — the wire _role_sessions was missing),
+│                     #   _idor_oracle (the four-arm access-control oracle: whose
+│                     #   object is this? — pure, offline-testable),
 │                     #   _control_arm (the never-sent control + attribution + WHICH
 │                     #   arm produced a status: what an oracle must clear before it
 │                     #   may confirm — offline-testable),
+│                     #   _report_integrity (what the report may CLAIM, reconciled
+│                     #   against the run's OWN record: the testing WINDOW, the
+│                     #   authentication state, the cost, the document's name —
+│                     #   pure, read by all three renderers at BOTH seams),
 │                     #   _archive/ (built, registered, invoked zero times: critic)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
@@ -499,10 +565,13 @@ src/clinkz/
 │                     #   topology(+recall), recall, relations, versions
 ├── knowledge/        # KnowledgeBase, persistent_kb, seeders, MITRE/OWASP datasets, payloads,
 │                     #   component_cves (published CVE ↔ observed version — a LEAD, never
-│                     #   a finding; see the dependency→CVE rule below)
+│                     #   a finding; ordered by VERSION PROVENANCE, see the
+│                     #   dependency→CVE rule below)
 ├── llm/              # base (+ ResearchGrounding: does research() see the live web?),
 │                     #   call_purpose (does this call's answer EMIT, SUPPRESS, or
-│                     #   only PLAN? -> whether a fallback is refused), degradation,
+│                     #   only PLAN? -> whether a fallback is refused),
+│                     #   degradation (substitution AND absence: an exhausted chain
+│                     #   substitutes nothing, so it wrote nothing),
 │                     #   factory, fallback, providers, spend,
 │                     #   {anthropic,gemini,openai,ollama}_client
 ├── tools/            # ToolBase (discovery + fingerprint contracts), resolver, mcp_client,
@@ -516,11 +585,17 @@ src/clinkz/
 │                     #   ZERO clinkz imports, so it runs in the tools container)
 ├── observability/    # trace.py (JSONL), replay.py, corpus_replay.py (offline gate),
 │                     #   ledger.py (what each component CONTRIBUTED — the silent-
-│                     #   degradation gate), plan_alarms.py (what the task cap
+│                     #   degradation gate), component_registry.py (what the engine HAS,
+│                     #   declared at start + a COMPUTED reachability predicate settled
+│                     #   at report time), plan_alarms.py (what the task cap
 │                     #   DROPPED, and separately whether the ORDERING held)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes (+ ControlArm: which of a class's OWN channels
-                      #   dispatch their own control), target, recon, scan, methodology,
+                      #   dispatch their own control; + MultiPrincipalRequirement:
+                      #   how many identities a class needs before it may CONFIRM),
+                      #   target,
+                      #   recon (+ VersionProvenance: how a version was OBSERVED),
+                      #   scan, methodology,
                       #   research,
                       #   finding, report
 docker/  scripts/  tests/  docs/
@@ -568,6 +643,16 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   material? Covers the engagement directory AND the companion artifacts beside
   it; `--bundle-only` asks the narrower question. Exits non-zero if so. Runs
   automatically at the end of every engagement.
+- `python -m clinkz report-pdf <engagement_id> [--outputs-root <dir>] [--out <file>]`
+  — re-render the client-facing PDF from `report_<id>.json`. **Offline**: it
+  reads the stored, already-redacted structure and sends nothing, which is the
+  whole point — three renderers, one source. For a bundle written before the
+  governor stamped its request window it recovers the narrower window from that
+  bundle's own `actions.jsonl` — the governor's own writer, inside the bundle —
+  and renders the provenance beside it rather than presenting it as the full one. Every engagement writes this PDF
+  itself; the command exists for a re-render after a layout fix, or for a bundle
+  produced before the renderer did. Exits 2 on a missing bundle or unreadable
+  report, 1 when the renderer is absent or the document could not be built.
 - `python -m clinkz trace inspect <engagement_id>` — render an execution trace.
 - `python -m clinkz tool-invoke <engagement_id> <seq> [--replay]` — inspect/replay
   one tool invocation.
@@ -599,6 +684,14 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   `_test_javascript_attacks` at all three exploitable ladder levels — wrong
   remediation, wrong declared yield, wrong class in the re-grade. A title that
   resolves is authoritative.
+- `python scripts/plan_variance_corpus.py [--outputs-root <dir>] [--json]` —
+  **offline** replay of every recorded phase-3 ranking against the deterministic
+  ranking layer. Sends nothing; reads only `outputs/*/trace.jsonl`, which already
+  carries the phase-2 fingerprint, the order phase 3 produced and the type phase
+  5 confirmed. Reports per class what the recorded window kept, what the new one
+  keeps, the attempt cost, and how many fingerprints produced more than one
+  order. Exits non-zero if the new window loses a confirmation the engine is
+  known to have made.
 - `python -m clinkz corpus-replay [--rebuild]` — **offline** parser regression gate:
   re-parses every recorded `tool_invocations/` stdout and diffs against
   `tests/fixtures/corpus_replay_baseline.json`; exits non-zero on drift. Sends
@@ -641,6 +734,34 @@ LESSONS #17).
   model decided it was not real". Six of the twelve recorded Gemini-served
   exploit calls were false-positive cross-checks. Every agent call site declares
   its purpose and an unclassified one is a red build, not a permissive default.
+- **A run where NOTHING answered is not a clean run** (`llm/degradation.py`).
+  `degraded` was `bool(self._events)` and an event was written only on a
+  **substitution**; a chain that runs out substitutes nothing, so the worst
+  outcome wrote nothing and the eligibility flag computed from that list said
+  the run was fit to be a baseline. Engagement `2e21a200` failed recon, scan AND
+  exploit with `All providers exhausted`, produced zero findings, and reported
+  `provider_degraded: false, baseline_eligible: true`. Three kinds degrade a run
+  now — `SUBSTITUTION`, `TERMINAL_EXCLUSION` (a provider lost for the rest of
+  the run, so every later call ran a shorter chain and was silent about it) and
+  `CHAIN_EXHAUSTED` — the last two carried as **absences**, which have no served
+  model and so could not be expressed as a `ProviderFallback` at all.
+  `baseline_eligible` now FOLLOWS `degraded` rather than re-deriving it: two
+  expressions of one fact drift, and this pair did.
+  **Two witnesses, because neither covers both instances.** The register catches
+  a raise the trace attributes to the last provider that worked (run `9317e813`,
+  one methodology call, `stop_reason=refusal`); `model_stamp` catches the outage
+  in a STORED bundle, where the process that knew ended long ago.
+  `reconcile_with_model_stamp` refuses a clean claim the run's own stamp
+  contradicts, only ever tightening, at **both** the build seam (so `report.json`
+  carries it) and the render seam (so an older bundle re-renders honestly).
+- **A report about a run that did not happen must say so.** The same engagement
+  rendered "0 findings identified. Risk rating: Informational." — the strongest
+  claim a pentest report contains, made out of no evidence at all.
+  `ExecutiveSummary.run_completed` / `incomplete_reason` are computed by
+  `_run_completion` from the orchestrator's `phase_outcomes` AND the model
+  stamp's exhausted stages; incomplete + zero findings rates **`Not assessed`**,
+  because "Informational" is a verdict about the target. The banner renders
+  ahead of the counts in all three documents.
 - **A capability lost to routing is STATED, never absorbed.** Research led with
   Gemini for native Search Grounding and the Anthropic path has none, so a
   research answer is bounded by a training cutoff with no signal in the text that
@@ -649,6 +770,70 @@ LESSONS #17).
   grounding any of its calls ran under, every runbook entry carries it (the claim
   persists to the KB, so the caveat must too), and the report renders it either
   way. `undeclared` counts as ungrounded.
+- **A section that reads one field and contradicts the document's own contents is
+  worse than a missing section** (`agents/_report_integrity.py`, **detail →
+  [`docs/report-integrity.md`](docs/report-integrity.md)**). Three of them
+  shipped, all on the first page, all checkable by a client without tooling.
+  **The testing window** was `test_start`/`test_end` defaulting to
+  `datetime.now(UTC)` because nobody ever passed either, so a 4,597s run rendered
+  as zero directly beneath the authorized window — the one place the document
+  evidences that testing happened inside it. The producer is now the governor,
+  the only component every dispatched request passes through, and the rule is
+  *any request sent ⇒ `test_end > test_start`, or the render fails*. Its one
+  exception is a bundle carrying **no stamp at all**: the ABSENCE of the key is
+  what separates an old bundle from a new one that is lying, so an old bundle
+  renders an explicit "not recorded" and `clinkz report-pdf` recovers the
+  narrower window from the bundle's own `actions.jsonl`, provenance attached.
+  **The authentication state** was one boolean whose negative branch renders the
+  strongest sentence in the header — "Anything behind authentication was not
+  examined" — above 22 findings behind DVWA's login. Reconciled into four states
+  now (`PROVEN` / `DISPROVEN` / `INCONSISTENT` / `NOT_ATTEMPTED`): a negative
+  claim is only as good as the check that produced it, and in that run
+  `assertion` is `null`, so no check ran. **The cost** was `$0.00` beside "a
+  LOWER BOUND", which reads as a wrong number; an engagement whose models carry
+  no declared rate is `not priced`. Every reconciliation is pure, reads only
+  engine-declared fields, only ever TIGHTENS, and runs at BOTH seams — the build
+  seam so `report.json` carries it, the render seam so a stored bundle
+  re-renders honestly. Same shape, same reason, as `reconcile_with_model_stamp`.
+- **A session the engine GUESSED is still a session, and the record has to say
+  so.** `_authentication_summary` reads `_role_sessions` and `_auth_assertion`,
+  and only the SUPPLIED-credential path writes them — the default-credential
+  sweep's `_attempt_login` wrote its cookies, jar path and bearer token to the
+  credential store, which is what every later phase reads. So a run logged in for
+  its whole duration reported that it had never logged in, on all four ladder
+  levels (`DEFAULT CRED VALID: admin:*** on .../login.php`).
+  `_register_swept_session` files it under `SWEPT_CREDENTIAL_ROLE`, deliberately
+  not a supplied role name, because "a credential the client handed us" and "one
+  this engine guessed" are different provenance. `established` stays False and
+  `_role_session_handoff` still skips it: holding session material and having
+  PROVEN a session are different facts, and *we posted a password and got a
+  cookie* is the assumed-not-proven claim refused everywhere else here.
+- **A class the never-sent rule does not bind is not a class with no control — it
+  is a class whose control is a DIFFERENT rule, and the row names it.** The
+  control-arm section header promises "the row says which rule applies instead"
+  and 19 of 29 rows said only which rule does NOT govern them. Nineteen verbatim
+  repetitions of an absence invite a client to read the strongest evidence in the
+  document — a browser-witnessed nonce, a rejected broken signature — as
+  unverified. The PRODUCER declares it (`VulnClass.control_arm.governing_rule`,
+  plus `evidence_key`, the field in the finding's OWN structured evidence
+  carrying the observation the rule turned on), required for every member of
+  `CONTROL_EXEMPT_CLASSES`, and `control_arm_row` raises on a row that names no
+  rule. The observation is read by `declared_observation`, which the host under
+  test cannot reach: the strict structured reader first, then an entry whose
+  FIRST token is `key=` — position 0 is never occupied by target bytes, because
+  every entry carrying them is written by the engine with its own `Request: ` /
+  `Response: ` prefix.
+- **An IDOR finding proves attribution with NAMES and FINGERPRINTS, never
+  values.** `attributing_values` reproduced `field=value` pairs out of the OWNING
+  principal's record — the first target data this class has ever carried into a
+  deliverable — and an 80-character cap bounds volume, not sensitivity: on a
+  client engagement that value is a real customer's email or postal address, in a
+  document that gets emailed. `attributing_fields` renders
+  `field=<name> owner_fp=<hash> caller_fp=<hash|absent>`: equal to the owner's
+  own authorized read, different from (or absent in) the caller's, which is the
+  whole claim. The field NAME survives because it is schema, not data, and is
+  what a remediation has to name. Same trade as `AuthArtifact.principal` — the
+  claim survives, the value never lands.
 - **A bound that decides coverage is reported in the DELIVERABLE, not just the
   log** (`observability/plan_alarms.py`). The plan cap ranks `(class, endpoint)`
   pairs and drops the tail — four D1 runs each truncated ~1,500 candidates to 150
@@ -660,8 +845,15 @@ LESSONS #17).
   **And `kept` is a total, so it is not evidence about its parts**:
   `kept_by_class` + `classes_with_candidates` separate "the cap took every
   candidate this class had" (a bigger cap) from "tasks survived and the class
-  still never ran" (the dispatcher) — indistinguishable before, and the second
-  is the ffuf shape at class granularity. The **class-coverage account**
+  still never ran" — indistinguishable before, and the second is the ffuf
+  shape at class granularity. That second verdict is
+  `no_phase_event_tasks_survived_the_cap`, and it deliberately does **not** name
+  the dispatcher: it used to read "the plan reached it and the dispatcher did
+  not", which sent maintenance to the wrong file. A class that returns `[]` at
+  its own entry gate, before its first phase trace, produces a byte-identical
+  shape — and every observed instance was that (a form gate reading `page.forms`
+  on a framework target). The alarm names what was observed, and points at the
+  class's applicability gate first. The **class-coverage account**
   (`scripts/d1_consistency_runner.py::class_coverage`) gives every dispatchable
   class exactly one verdict on **how far its own pipeline got**, never on what
   it says about itself; "the plan held nothing for it" is the fifth fact and is
@@ -695,6 +887,33 @@ LESSONS #17).
   methodology did not intend to set is omitted — never sent empty-but-present.
 - **A new injection *shape* gets a DEDICATED carrier**; leave the shared
   string-only `_send_probe` untouched.
+- **How a class READS the target is not the class's business** — there are two
+  accessors and a class uses them, never the raw layer beneath. `page.forms` is
+  `_http_get` + `_FormParser().feed(body)`, so it is `[]` on any
+  React/Angular/Vue target: the form exists, it is just rendered after the bytes
+  we parsed. `_http_get(page.url, {param: value})` puts the probe in the query
+  string whatever the parameter's declared location is. So a form-shaped class
+  reads **`_injectable_forms`** (HTML forms first and unchanged, plus the JSON
+  and multipart pseudo-forms this agent synthesizes for body-bearing API
+  endpoints) and a probing class carries through **`_send_probe`**. Eight of the
+  eleven classes read the raw layer and were therefore invisible on a framework
+  target while reporting nothing — which reads exactly like a clean result.
+  Enforced structurally: `tests/test_agents/test_tier1_migrations.py` AST-walks
+  the agent for `self._http_get(url, {k: v})` and fails on any site not
+  allow-listed with a reason (the domain is the source, per the guard-domain
+  law). **`_test_javascript_attacks` is the one that does NOT migrate** and says
+  why: its phase-1 hypothesis is a conjunction of a form AND an inline
+  `<script>` block, and its only confirming path needs a hidden field of that
+  form written by that script — a pseudo-form has no hidden field by
+  construction and a JSON response has no script. Reaching a framework's
+  client-side security logic means reading its bundle, which is a new oracle.
+- **An upload point is declared by a protocol artifact, never by a URL that
+  sounds like one.** The upload pseudo-form is synthesized only when the
+  endpoint's DECLARED request content type is `multipart/*` — read off the
+  frontend's own `new FormData()` builder by `_js_api_mining`, not guessed — AND
+  one of the field names that builder appended is upload-shaped. A multipart
+  endpoint with no file part gets no pseudo-form, because there is nothing for an
+  upload test to submit and a fabricated one would be a target detector.
 - **A body field is a PATH, not a name** (`agents/_json_body.py`) —
   `config.app.name`, `items[0].sku`. Written into place with `set_json_path`, so
   the body that goes out has the shape the target declared; only **leaves** are
@@ -775,8 +994,17 @@ LESSONS #17).
   removed and the marker re-minted, graded by the SAME phase-5 oracle — and it
   must **round-trip like the payload**, because a bare decoy is
   encoding-invariant, refuses everywhere, and would have passed that run
-  cleanly. `MARKER_ORACLE_CLASSES` / `CONTROL_EXEMPT_CLASSES` partition every
-  dispatchable class with a stated reason; an unclassified one is a red build.
+  cleanly. `MARKER_ORACLE_CLASSES` / `DIFFERENTIAL_CONTROL_CLASSES` /
+  `CONTROL_EXEMPT_CLASSES` partition every dispatchable class with a stated
+  reason; an unclassified one is a red build. The middle table exists because
+  **what the decoy must BE differs by oracle kind**: a marker oracle's control
+  carries a minted token, because what it must not do is appear in a body; a
+  DIFFERENTIAL oracle's control carries a value of the class's own SHAPE, because
+  what it must do is round-trip through the same handler and differ only in the
+  primitive. Handing `_test_idor` a `clinkzdecoyidor48211` where the endpoint
+  expects an integer produces a control that takes the parse-error path, differs
+  from everything, and passes on a vulnerable target and a phantom alike.
+  `control_required()` is the union, so the RULE stays one rule.
   Enforced at `_persist_finding`, read only from fully-structured evidence so a
   page echoing `never_sent_control=refused` cannot license itself.
 - **Every kill discloses, wherever it happens.** The rule had two enforcement
@@ -819,6 +1047,58 @@ LESSONS #17).
   a value the interpreter must COMPUTE (`'clinkz'.'exec'.(A*B)`) and that appears
   nowhere in the uploaded bytes. Neither is reachable by weakening the control:
   a decoy that does not round-trip refuses everywhere and proves nothing.
+- **Whose object is this? is a relation, not a property of a response — so the
+  access-control oracle needs a SECOND identity, and it now has one**
+  (`agents/_idor_oracle.py`, `agents/_principal.py`, **detail →
+  [`docs/methodology/idor.md`](docs/methodology/idor.md)**). Two defects, one
+  class. The **plumbing stopped one layer short**: the Orchestrator logged in
+  every supplied role, asserted each session, kept all of them and logged that
+  the access-control classes could compare principals — while handing Exploit
+  the primary role's cookies and nothing else. And the ORACLE had its control
+  inverted: phase 5 opened by requiring the target to have REFUSED an
+  out-of-allotment reference, which consumed **616 of 668 phase-5 refusals**
+  across 2,955 recorded engagements, because an application that 404s an id
+  nobody owns and 200s a neighbour's record discriminates perfectly and that
+  gate read the shape as "no boundary exists". `ref(∅)` is now the CONTROL, in
+  four dispatched arms — `self` (A, ref(A)), `crossing` (A, ref(B)),
+  `nonexistent` (A, ref(∅), must differ materially), `anonymous` (no session,
+  ref(B), must NOT return it) — plus B's own authorized read, which is what makes
+  ref(B) *attributable* and is the arm one principal cannot dispatch. The control
+  round-trips like the payload (numeric far outside the OBSERVED issued range, a
+  fresh v4, or the same length and character classes) because a minted marker is
+  encoding-invariant and would pass on a vulnerable target and a phantom alike.
+  **Reflection is deliberately NOT covered by it**: a sink echoes the control
+  too, so the control refuses correctly and the owner's read echoes the same
+  string back — three arms agreeing on one substitution — and it keeps its own
+  guard.
+- **A class that needs two identities declares it in the registry, and the code
+  READS the declaration.** `models/vuln_classes.py` has said "requires at least
+  two authenticated roles" since it was written, the report rendered that
+  verbatim, and the oracle emitted `high`/CONFIRMED on a single role 49 times. A
+  limitation only the report knows about is a disclaimer.
+  `MultiPrincipalRequirement` makes it a number the emission chokepoint compares
+  against the run's own principal list, with the lead reason declared beside it
+  (`single_role_cannot_attribute`, registered in `UNPROVEN_WHY_UNCONFIRMED`).
+  **Tier 1 multi-role MAY CONFIRM; Tier 2 single-role MAY ONLY LEAD** — "not A's"
+  is satisfied identically by a public catalogue record, so three negatives are
+  not a positive. Enforced at the methodology AND at `_persist_finding`
+  (deterministic ground 9), because a rule a class has to remember is a rule that
+  holds until the twenty-fifth class is written. A direct invocation holds no
+  principals and is in the single-role tier: that is the honest answer, not an
+  exemption.
+- **A request carries the ENGAGEMENT's session, a NAMED principal's, or none —
+  one field, three values** (`tools/http_client.py::session_mode`). `isolated`
+  did not exist and both alternatives are wrong for a cross-principal arm: under
+  `ambient` curl still passes `-c <jar>`, so role B's `Set-Cookie` overwrites the
+  engagement's own session and every later probe silently becomes B; under `none`
+  the explicit cookies are dropped and the request carries no principal at all.
+  `no_session` stays as shorthand for `none` and is now DERIVED from the mode
+  rather than supplied beside it — two booleans that must agree is how the
+  session-link leak happened. Only an `ambient` response is `session_bearing`, so
+  a role-B 401 is never read as our own session expiring. The agent-side carrier
+  (`_as_principal`) swaps the ambient material for the duration of one arm and is
+  **not re-entrant**: nesting raises, because concurrent use would send one
+  principal's session under another's label.
 - **A control arm's outcome is the PROOF, so a consumer must know WHICH arm it
   read.** "Marker-bound" is declared per class, and `_test_sqli` confirms on five
   channels: four are marker matches and `auth_bypass` is a three-arm differential
@@ -852,10 +1132,11 @@ LESSONS #17).
   citing something else, refutes itself in its own evidence — which shipped
   verbatim seven times.
 - **A deterministic guard whose value is that it needs no model is never gated by
-  one.** All **eight** grounds run unconditionally at `_persist_finding` over
+  one.** All **nine** grounds run unconditionally at `_persist_finding` over
   every finding, from one declaration (`_deterministic_grounds` — probe plus the
   lead reason it produces, read by the emission gate and the FP cross-check
-  alike). Four of them used to be reachable only *through* the cross-check, i.e.
+  alike). Ground 9 is the only one that reads no evidence at all: it compares a
+  registry DECLARATION against the run's own principal list, both engine facts. Four of them used to be reachable only *through* the cross-check, i.e.
   only once a model had nominated the finding; on the portfolio run that check
   returned **no opinion at all** and every ground behind it went unconsulted.
   Two consequences are structural, not incidental: an LLM can no longer suppress
@@ -977,6 +1258,32 @@ LESSONS #17).
   class's **own** surface, while lower-relevance tasks survive, is logged
   separately as a **RANKING FAILURE**: an ordering defect reads nothing like
   tail truncation and must not hide inside it.
+- **A phase-3 ranking is a function of the phase-2 FINGERPRINT, and the bound
+  on it is the fingerprint too** (`agents/_plan_ranking.py`, **detail →
+  [`docs/methodology/plan-ranking.md`](docs/methodology/plan-ranking.md)**). Two
+  defects, one shape. The ORDER was a model's answer, so the same fingerprint
+  ranked 210 times produced 16 different orders and 48 of the 64 fingerprints
+  ranked more than once produced at least two — an engagement whose plan is drawn
+  from a distribution cannot be re-run or compared against its own baseline, so
+  this is a measurement defect before it is a coverage one. And the FINGERPRINT
+  WAS NOT READ: phase 2 counts the UNION columns and proves the breakout context
+  and the ranking discarded both, while `predictability == "opaque"` — *you
+  cannot guess the next identifier* — was read as *there is no horizontal
+  access*. Replayed over the recorded corpus the old fallback rankings keep
+  **770 of 833 confirmations** a current vocabulary can express, and 41 of the 63
+  they miss are IDOR `horizontal` from that one condition.
+  A ranking now returns the order AND `supported`, the subset some phase-2 probe
+  empirically backed; `attempt_window` never truncates a supported type and
+  applies the cap to the unsupported tail, which is hypothesis rather than
+  evidence. The tail is never empty, because "the fingerprint did not back it" is
+  not "the fingerprint refuted it" — three recorded `appended_url` confirmations
+  sit on parameters whose fingerprint said that primitive does not work, and a
+  ranking built only out of confirmed primitives could not probe them at all. `sqli` and `cmdi` make no
+  phase-3 LLM call; elsewhere the model orders the SUPPORTED block only — on the
+  tail it ranks hypotheses against no observation, and it ranked LFI
+  `error_based_path` ahead of the `wrapper_extraction` that confirmed. Held by a
+  reachability guard whose domain is COMPUTED from each enum, with both
+  directions asserted and every exemption reasoned.
 - **The plan order is a function of the endpoint SET, never of the crawl's
   order** — a concurrent crawler emits a different sequence each run, so any tie
   broken by traversal order makes the engagement non-reproducible. Ranking scores
@@ -1028,6 +1335,55 @@ LESSONS #17).
   unconditionally — an unbounded `*` over an alternation of generic servers — is
   refused by a gate, because a lead equally true of every host says nothing
   about this one.
+- **The fourth plan source RESERVES its slots, and spends them by version
+  provenance.** Being a plan source it could never win a slot in is the same as
+  not being one: the Tier-1 interleave fills the plan to
+  `exploit_max_plan_tasks`, so by the time the CVE union ran `len(merged) >= cap`
+  was already true and every confirmable match took a "the plan cap was reached"
+  branch — on every engagement ever run. `_resolve_component_cve_reservation`
+  now runs BEFORE planning, sizes the reservation at
+  `min(_MAX_COMPONENT_CVE_MATCHES, dispatchable)` — the 16 is a ceiling, never
+  the size — and the Tier-1 passes spend `cap - reserved`. Unused reservation
+  returns to the Tier-1 fill, so a match deduped away against another source's
+  task costs coverage nothing; **a run that matched no CVE reserves zero and
+  plans byte-identically**, which is pinned as a test because that is nearly
+  every engagement. The reservation is a bound that decides coverage, so it is
+  in `report.json` (`plan_coverage.passes[].reserved` / `configured_cap`), not
+  only the log.
+  **Which matches get the reserved slots is decided by how the VERSION was
+  observed** (`models/recon.py::VersionProvenance`, declared by the PRODUCER —
+  a consumer parsing `nmap:service` back out to guess the evidence kind is the
+  `getattr`-with-a-default pattern again). A `Server:` banner is a string the
+  target chose and a back-ported fix defeats it; a lockfile entry or an artifact
+  hash is one it cannot easily lie about. `match_components` orders confirmable
+  first, then by provenance, THEN by published severity — ahead of severity
+  deliberately, because the ordering decides what is TESTED and ranking a
+  banner-backed CRITICAL over a lockfile-backed MEDIUM spends the scarce slots
+  on the weakest evidence in the system and calls it prioritisation.
+  `undeclared` ranks last, like `undeclared` research grounding. Every producer
+  in the tree declares `BANNER` today and says why in its own docstring; an
+  AST guard (`tests/test_tools/test_component_provenance_declared.py`) fails a
+  construction site that declares nothing, so a future lockfile reader cannot be
+  silently demoted to the weakest rank.
+  **The provenance rides the task into the finding** (`ComponentCVEContext` on
+  `ExploitTask`, stamped onto findings at the `_execute_task` seam). The CVE is
+  still context and nothing here can create, promote or rescue a finding — but
+  the deliverable now says *which* observation the oracle was pointed at and how
+  strong it was, which is the difference between this and a template scanner.
+  The evidence line is prose by construction so the structured-evidence readers
+  (`_evidence_strength`, the deterministic grounds) cannot mistake a
+  target-chosen product name for an engine verdict.
+- **A plan source that gets no slots must still say so.** The tier-2/3 research
+  source sat behind `if len(tasks) < cap`, which the interleave makes false on
+  any saturating target — so `_build_tier23_tasks` was never even CALLED and a
+  starved research source looked identical to a research phase that produced no
+  techniques. It is now always computed and its candidates join the truncation
+  buckets, so the cap refusing them shows up in the report's per-class dropped
+  counts. It is deliberately given no reservation of its own: both names it
+  produces are registered `NOT_IMPLEMENTED` and construct no `Finding`, while
+  the dispatcher fetches the endpoint before calling them — so a reserved slot
+  would cost the client's target a real request and a confirming class a real
+  task. The fill itself is unchanged.
 - **The PRODUCER declares what it fingerprinted, too.** `detected_components()` /
   `declares_components()` is the discovery contract's twin, for the seam that
   used to read `hasattr(r, "technologies")` then `hasattr(r, "tech")` — two
@@ -1135,6 +1491,45 @@ LESSONS #17).
   *declared but never invoked* is tracked separately, since a capability the run
   never reached for did not degrade. **Absent by default** like the governor,
   and it never raises from the data path.
+- **A benchmark number a client sees must be what TESTING earned.** Runs 2 and 3
+  of the Juice Shop variance envelope dispatched **zero** methodology tasks and
+  still had four challenges marked solved by the target — `errorHandling`,
+  `loginAdmin`, `securityPolicy`, `weakPassword` — from authenticating and
+  crawling alone. Those are in `solved_total` for every run including the ones
+  that tested, so run 1's "7 of 49" is roughly twice what exploitation achieved;
+  the honest figure is 3. `reconciliation.json` now carries `solved_by_testing`
+  BESIDE `solved_total` (both are true, only one is a claim about this engine),
+  plus `methodology_dispatches` and the floor's provenance. The floor is
+  **measured, never declared**: written by a run whose ledger shows
+  `methodology:*` contributing zero dispatches, carrying the engagement id that
+  produced it, and `record_floor` REFUSES any other kind of run — a floor taken
+  from a run that tested is this engine subtracting its own results from itself.
+  A union across zero-dispatch runs, one-way. **No floor measured ⇒
+  `solved_by_testing: null`**, not zero: defaulting to "subtract nothing"
+  silently restores the inflated number. `--record-floor` derives one offline
+  from a stored bundle and sends nothing.
+- **A recon component that RAISED must not look like a target with nothing to
+  find.** Recon is where the component inventory comes from, and an empty
+  inventory has two causes indistinguishable from every downstream position: a
+  target with no versioned component, or a parser that raised on the tool's real
+  bytes (`whatweb` discarded a complete Apache/PHP fingerprint on every run for
+  years, silently). The fingerprinter's handler was fixed alone; its two
+  siblings in the same file had the identical shape — including
+  `_step_service_scan`, the RICHER source, since `nmap -sV` resolves a banner to
+  a product AND a version through nmap's own signature database, which is why
+  its provenance outranks a `Server:` header. All three record now, and the
+  domain is COMPUTED (guard-domain law): every `except` inside a
+  component-bearing method must reach the ledger or carry an allow-list entry
+  with its reason (`tests/test_agents/test_recon_failures_reach_the_ledger.py`).
+- **A ledger VIEW is not a second population.** `exploit.component_cve_match`
+  appearing twice in `component_ledger` is `components` (the population) plus a
+  by-name reference from `correctly_empty` — one registration, `invocations: 1`.
+  Containment, not double registration and not a serialization bug. It was
+  pinned for `alarms` alone while three sibling views went unchecked, so the
+  domain is now every list key `to_dict()` emits, each classified as a VIEW (and
+  its containment asserted) or its own population (with the reason `fallbacks`
+  is one). The distinction decides whether a consumer may SUM, and a union would
+  stay invisible until a component alarms while carrying real items.
 - **"Correctly found nothing" is a fifth fact, and it is NOT an alarm.** A
   GraphQL discoverer on an app with no GraphQL contributes zero forever and is
   working perfectly; reported as a defect it becomes a permanent false alarm,
@@ -1149,6 +1544,49 @@ LESSONS #17).
   emitted is the ffuf shape and stays SILENT**, and no reason string may talk
   it away. A discoverer that does not declare `contribution_report()` is a
   loud `DEAD_SEAM`, never an assumed zero.
+- **A component the ledger never hears from is not measurable, so every
+  component is DECLARED at engagement start**
+  (`observability/component_registry.py`). The ledger can only measure what
+  registers, and exactly one call site in the engine declared anything (LLM
+  providers) — so a vuln class that never dispatched, a discoverer that never
+  ran and a tool the resolver never found all produced the same artifact:
+  nothing at all, indistinguishable from never having been built. `declare_all()`
+  runs immediately after `set_active_ledger` and declares every member of three
+  **computed** domains — `DISPATCHABLE_TEST_METHODS`, `default_discoverers()`,
+  `TOOL_CHAINS` — plus `STATIC_EXPLOIT_COMPONENTS`, the declared half, held to a
+  **bidirectional AST assertion** over every string-literal `record_contribution`
+  name in `src/` (guard-domain law: `computed − declared` catches a new call
+  site, `declared − computed` catches an entry that outlived one). Per-class
+  methodology components register at the ONE dispatch seam, keyed on the
+  `_test_*` name VERBATIM — never a derived skill, because `_test_x → "x"` is
+  right 23 times and wrong once — and their `items` counts DISPATCHES, not
+  findings: counting findings would trip SILENT for every clean class on every
+  clean run, which is the permanent false alarm this whole section exists to
+  prevent.
+- **"Declared and never invoked" has two opposite readings, so reachability is a
+  COMPUTED PREDICATE and its TIMING is split from the declaration's.** A
+  free-text `reachable_because` is a hand-maintained excuse list and would drift
+  the way every hand-maintained guard domain here has; a sentence attached to a
+  *predicate function* cannot, because there is one per predicate rather than
+  one per entry. Existence is knowable at engagement start; reachability is not
+  — whether the target has a SQL surface is something only Scan can answer, and
+  the plan does not exist yet. So `ContributionLedger.resolve_reachability` runs
+  at REPORT time against an `EngagementReachability` the orchestrator assembles
+  from completed phase state. Three states fall out mechanically: predicate true
+  + not invoked ⇒ **`BUILT_BUT_NOT_RUN`**, a new alarm class (built, reachable,
+  did not run); predicate false + not invoked ⇒ NOT APPLICABLE with the
+  predicate's own sentence as the reason (`component_ledger.unreachable`,
+  enumerated in `report.json` and summarised as a count in the Markdown so
+  thirty per-class lines cannot bury the alarm table); no predicate declarable ⇒
+  a build failure, not a runtime branch. `reachable is None` — never evaluated,
+  a direct invocation or a run that stopped early — is not `False` and never
+  alarms. The tool predicate has three distinct "no" answers because they have
+  three different fixes: nobody asked for the capability (nuclei, subfinder —
+  both deliberately unwired), the tool is a declared fallback and the preferred
+  one answered, or it is not available in this execution mode. That first answer
+  needs `ToolResolver.requested_capabilities`, and the chain map the predicate
+  reads is built through `available_chain()`, which does NOT record — a question
+  asked *about* a run must never become part of what the run did.
 - **The prompt cache is a ledger component like any other, because it degraded
   exactly like one.** It was invoked every run, succeeded every time, and
   contributed **zero**: the breakpoint sat after the engagement-scoped span —

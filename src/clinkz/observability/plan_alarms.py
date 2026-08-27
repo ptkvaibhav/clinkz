@@ -63,7 +63,19 @@ class PlanTruncation:
 
     Attributes:
         stage: Which pass reported ("deterministic" / "union").
-        cap: The task cap in force.
+        cap: The task cap in force **for this pass** — the configured cap minus
+            whatever a reservation held back. Reported as the number that
+            actually decided the truncation, because a reader reconciling a
+            dropped tail against ``exploit_max_plan_tasks`` would otherwise be
+            reading a bound that was never applied.
+        reserved: Slots the configured cap held back from this pass for another
+            plan source, and ``reserved_for`` names which. Rendered beside the
+            cap rather than folded into it: "the cap dropped your tail" and "a
+            reservation shrank the cap first" have different fixes, exactly like
+            truncation and ranking inversion, and a single number cannot say
+            which happened. ``0`` on every run with no reservation, which is
+            what keeps the clean rendering unchanged.
+        reserved_for: The plan source the reservation was made for, or ``""``.
         kept: How many tasks survived it.
         kept_by_class: Per class, HOW MANY of its tasks survived. The total
             above cannot answer the question the class-coverage account asks —
@@ -85,6 +97,8 @@ class PlanTruncation:
     cap: int
     kept: int
     dropped_total: int
+    reserved: int = 0
+    reserved_for: str = ""
     kept_by_class: dict[str, int] = field(default_factory=dict)
     dropped_by_class: dict[str, list[str]] = field(default_factory=dict)
     ranking_inversions: list[dict[str, Any]] = field(default_factory=list)
@@ -99,6 +113,9 @@ class PlanTruncation:
         return {
             "stage": self.stage,
             "cap": self.cap,
+            "reserved": self.reserved,
+            "reserved_for": self.reserved_for,
+            "configured_cap": self.cap + self.reserved,
             "kept": self.kept,
             "kept_by_class": dict(sorted(self.kept_by_class.items())),
             "dropped_total": self.dropped_total,

@@ -193,6 +193,18 @@ class TestPhase1ReflectionMapping:
         assert any(p.context == ReflectionContext.HTML_ATTRIBUTE_NAME for p in mapper.points)
 
 
+def _probe_page(url: str = "http://x/q", param: str = "q") -> PageAnalysis:
+    """The probe target for a phase helper that now takes the page, not a URL.
+
+    ``_xss_phase2_character_fingerprint`` / ``_xss_phase5_verify`` carry their
+    probe through ``_send_probe`` so a JSON-body or path-borne parameter reaches
+    where it actually lives. For a plain query parameter with no parsed form —
+    this shape — ``_send_probe`` resolves to the same ``_http_get`` these tests
+    already mock, so what they assert about the oracle is unchanged.
+    """
+    return PageAnalysis(url=url, body="", status=200, input_params=[param])
+
+
 # ===========================================================================
 # Phase 2 — Character fingerprinting
 # ===========================================================================
@@ -261,56 +273,56 @@ class TestPhase2CharacterFingerprint:
     async def test_survived_classification(self) -> None:
         agent = _make_agent()
         agent._http_get = _make_fingerprint_responder({"<": "survived"})  # type: ignore[method-assign]
-        char_map = await agent._xss_phase2_character_fingerprint("http://x/q", "q")
+        char_map = await agent._xss_phase2_character_fingerprint(_probe_page(), "q")
         assert char_map.per_char.get("<") == FilterBehavior.SURVIVED
 
     async def test_stripped_classification(self) -> None:
         agent = _make_agent()
         agent._http_get = _make_fingerprint_responder({"<": "stripped"})  # type: ignore[method-assign]
-        char_map = await agent._xss_phase2_character_fingerprint("http://x/q", "q")
+        char_map = await agent._xss_phase2_character_fingerprint(_probe_page(), "q")
         assert char_map.per_char.get("<") == FilterBehavior.STRIPPED
 
     async def test_html_encoded_classification(self) -> None:
         agent = _make_agent()
         agent._http_get = _make_fingerprint_responder({"<": "html_encoded"})  # type: ignore[method-assign]
-        char_map = await agent._xss_phase2_character_fingerprint("http://x/q", "q")
+        char_map = await agent._xss_phase2_character_fingerprint(_probe_page(), "q")
         assert char_map.per_char.get("<") == FilterBehavior.HTML_ENCODED
 
     async def test_url_encoded_classification(self) -> None:
         agent = _make_agent()
         # URL-encoding < gives %3C, which is distinguishable from html-encoded.
         agent._http_get = _make_fingerprint_responder({"<": "url_encoded"})  # type: ignore[method-assign]
-        char_map = await agent._xss_phase2_character_fingerprint("http://x/q", "q")
+        char_map = await agent._xss_phase2_character_fingerprint(_probe_page(), "q")
         assert char_map.per_char.get("<") == FilterBehavior.URL_ENCODED
 
     async def test_backslash_escaped_classification(self) -> None:
         agent = _make_agent()
         agent._http_get = _make_fingerprint_responder({"'": "backslash_escaped"})  # type: ignore[method-assign]
-        char_map = await agent._xss_phase2_character_fingerprint("http://x/q", "q")
+        char_map = await agent._xss_phase2_character_fingerprint(_probe_page(), "q")
         assert char_map.per_char.get("'") == FilterBehavior.BACKSLASH_ESCAPED
 
     async def test_replaced_classification(self) -> None:
         agent = _make_agent()
         agent._http_get = _make_fingerprint_responder({"<": "replaced"})  # type: ignore[method-assign]
-        char_map = await agent._xss_phase2_character_fingerprint("http://x/q", "q")
+        char_map = await agent._xss_phase2_character_fingerprint(_probe_page(), "q")
         assert char_map.per_char.get("<") == FilterBehavior.REPLACED
 
     async def test_server_error_classification(self) -> None:
         agent = _make_agent()
         agent._http_get = _make_fingerprint_responder({"<": "server_error"})  # type: ignore[method-assign]
-        char_map = await agent._xss_phase2_character_fingerprint("http://x/q", "q")
+        char_map = await agent._xss_phase2_character_fingerprint(_probe_page(), "q")
         assert char_map.per_char.get("<") == FilterBehavior.SERVER_ERROR
 
     async def test_blocked_classification(self) -> None:
         agent = _make_agent()
         agent._http_get = _make_fingerprint_responder({"<": "blocked"})  # type: ignore[method-assign]
-        char_map = await agent._xss_phase2_character_fingerprint("http://x/q", "q")
+        char_map = await agent._xss_phase2_character_fingerprint(_probe_page(), "q")
         assert char_map.per_char.get("<") == FilterBehavior.BLOCKED
 
     async def test_probe_summary_populated(self) -> None:
         agent = _make_agent()
         agent._http_get = _make_fingerprint_responder({})  # type: ignore[method-assign]
-        char_map = await agent._xss_phase2_character_fingerprint("http://x/q", "q")
+        char_map = await agent._xss_phase2_character_fingerprint(_probe_page(), "q")
         # All chars survive by default; summary should mention several of them.
         assert "survived" in char_map.probe_summary
         assert len(char_map.per_char) >= 16  # at least the structural batch
@@ -466,7 +478,7 @@ class TestPhase5Verification:
             )
         )
         verified, ctx, _ = await agent._xss_phase5_verify(
-            "http://x/q", "q", "<script>alert(1)</script>"
+            _probe_page(), "q", "<script>alert(1)</script>"
         )
         assert verified is True
         # Landing context should be html_body (we're between </body>'s siblings).
@@ -478,7 +490,7 @@ class TestPhase5Verification:
             return_value=_HTTPResponse(status=200, body="<html><body>safe</body></html>")
         )
         verified, ctx, _ = await agent._xss_phase5_verify(
-            "http://x/q", "q", "<script>alert(1)</script>"
+            _probe_page(), "q", "<script>alert(1)</script>"
         )
         assert verified is False
         assert "absent" in ctx
@@ -492,7 +504,7 @@ class TestPhase5Verification:
             )
         )
         verified, ctx, _ = await agent._xss_phase5_verify(
-            "http://x/q", "q", "<script>alert(1)</script>"
+            _probe_page(), "q", "<script>alert(1)</script>"
         )
         assert verified is False
         assert "comment" in ctx
@@ -505,7 +517,7 @@ class TestPhase5Verification:
             return_value=_HTTPResponse(status=200, body=body)
         )
         verified, _ctx, _ = await agent._xss_phase5_verify(
-            "http://x/q", "q", '" onmouseover=alert(1) x="'
+            _probe_page(), "q", '" onmouseover=alert(1) x="'
         )
         assert verified is True
 

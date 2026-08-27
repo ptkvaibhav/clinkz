@@ -426,6 +426,37 @@ class ReconAgent(BaseAgent):
 
         except Exception as exc:
             self._logger.error("Service scan failed: %s", exc)
+            # A failed service scan is a LEDGER row, not just a log line — the
+            # same rule, and the same reason, as the fingerprinter's own handler
+            # below. This is the OTHER component source for the published-CVE
+            # path, and the richer of the two: ``-sV`` resolves a banner to a
+            # product AND a version through nmap's own signature database,
+            # already split, which is why its provenance outranks a ``Server:``
+            # header. When it raises, that inventory is empty — and an empty
+            # inventory has two causes that are indistinguishable from every
+            # downstream position. A target that genuinely exposes no versioned
+            # service yields no components; a parser that raised on the tool's
+            # real bytes also yields no components, and only the component's own
+            # failure record separates them. ``whatweb`` proved that is not
+            # hypothetical: it discarded a complete Apache/PHP fingerprint on
+            # every run for years, silently, because nobody recorded the raise.
+            #
+            # ``ok=False`` and not ``not_applicable``: open ports were present
+            # and a tool resolved, so the precondition held and the component
+            # failed to read it. The exception's TYPE plus a bounded slice of
+            # its text — a tool error can carry the argv that produced it, and
+            # ``add_note`` redacts, but this bounds what reaches the redactor.
+            record_contribution(
+                name=match.name,
+                kind=ComponentKind.TOOL,
+                items=0,
+                ok=False,
+                note=(
+                    f"service scan of {target} raised {type(exc).__name__}: "
+                    f"{str(exc)[:200]} — no service version reached the component "
+                    "inventory or the CVE path"
+                ),
+            )
             return ServiceScanResult(tool_used="none")
 
     # ------------------------------------------------------------------
@@ -574,6 +605,39 @@ class ReconAgent(BaseAgent):
                         )
                 except Exception as exc:
                     self._logger.warning("Fingerprinting %s failed: %s", url, exc)
+                    # A failed fingerprint is a LEDGER row, not just a log line.
+                    # This is the component source for the whole published-CVE
+                    # path: fingerprint -> component+version -> known CVE -> our
+                    # own oracle. When it raises, the inventory is empty — and an
+                    # empty inventory has two causes that look identical from
+                    # every downstream position. A genuinely patched or
+                    # unfingerprintable stack yields no components; a parser that
+                    # raised on the tool's real bytes also yields no components.
+                    # ``whatweb --log-json=-`` interleaves its human log with the
+                    # JSON array, so whole-blob ``json.loads`` raised here on
+                    # every run for years, discarding a complete Apache/PHP
+                    # fingerprint, and nothing anywhere recorded that it had
+                    # happened. Only the fingerprinter's OWN failure record
+                    # separates the two readings, which is why it is made here
+                    # rather than inferred downstream from a zero.
+                    #
+                    # ``ok=False`` and not ``not_applicable``: the precondition
+                    # was present (an HTTP service was there to fingerprint) and
+                    # the component failed to read it. The exception's TYPE plus
+                    # a bounded slice of its text — a tool error can carry the
+                    # argv that produced it, and ``add_note`` redacts, but this
+                    # bounds what reaches the redactor.
+                    record_contribution(
+                        name=fp_match.name,
+                        kind=ComponentKind.TOOL,
+                        items=0,
+                        ok=False,
+                        note=(
+                            f"fingerprinting {url} raised {type(exc).__name__}: "
+                            f"{str(exc)[:200]} — no component or version reached the "
+                            "CVE path from this service"
+                        ),
+                    )
 
             # 2. WAF detection
             waf_match = self._resolver.find_tool("waf_detection")
@@ -595,8 +659,14 @@ class ReconAgent(BaseAgent):
                     self._logger.warning("WAF detection on %s failed: %s", url, exc)
 
             # 3. HTTP headers + body fingerprinting via simple GET
+            # Resolved OUTSIDE the try so the handler can name the component
+            # that failed. Recording under a literal like
+            # ``recon.header_collection`` would key the ledger on a place in
+            # this file rather than on the tool, and would need its own registry
+            # declaration; the tool's own name is already declared from
+            # TOOL_CHAINS, which is the computed source.
+            http_match = self._resolver.find_tool("http_request")
             try:
-                http_match = self._resolver.find_tool("http_request")
                 if http_match and http_match.available and http_match.tool_class:
                     http_tool = http_match.tool_class(
                         scope=self.scope, engagement_id=self.engagement_id, stage="recon"
@@ -622,6 +692,25 @@ class ReconAgent(BaseAgent):
                     self._logger.warning("No http_request tool available for header collection")
             except Exception as exc:
                 self._logger.warning("Header collection from %s failed: %s", url, exc)
+                # The third component-adjacent source in this method, and the
+                # one that carries the header set every WSTG-CONF-07 rule is a
+                # pure function of, plus the body fingerprints that reach
+                # ``technologies_found``. Recorded for the same reason as its two
+                # siblings above: an empty header set reads as a target that
+                # sends no interesting headers, which is a finding, and it must
+                # not be produced by a GET that raised.
+                if http_match is not None:
+                    record_contribution(
+                        name=http_match.name,
+                        kind=ComponentKind.TOOL,
+                        items=0,
+                        ok=False,
+                        note=(
+                            f"header collection from {url} raised {type(exc).__name__}: "
+                            f"{str(exc)[:200]} — no header or body fingerprint from this "
+                            "service reached recon"
+                        ),
+                    )
 
         # Deduplicate technologies
         technologies_found = sorted(set(technologies_found))

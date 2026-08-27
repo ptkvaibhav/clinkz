@@ -4,7 +4,7 @@ Each phase is exercised in isolation with mocked ``_send_probe`` and LLM:
 
     Phase 1 (injection-point mapping)   — separator-variant probes vs baseline
     Phase 2 (shell fingerprinting)      — OS detection + primitive map
-    Phase 3 (execution-type ranking)    — LLM JSON parsing + fallback table
+    Phase 3 (execution-type ranking)    — deterministic, on the phase-2 probes
     Phase 4 (payload synthesis)         — LLM JSON parsing + fallback table
     Phase 5 (verification)              — indicator-type matching logic
 
@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from clinkz.agents._plan_ranking import attempt_window, rank_cmdi
 from clinkz.agents.exploit import (
     ExploitAgent,
     PageAnalysis,
@@ -312,63 +313,76 @@ class TestPhase2PrimitiveExtraction:
 
 
 class TestPhase3ExecutionTypeRanking:
-    @pytest.mark.asyncio
-    async def test_llm_ranking_parsed(self) -> None:
-        llm = _ScriptedLLM(
-            answers=[
-                '{"ranked": ['
-                '{"type": "direct_exec", "rationale": "best yield"},'
-                '{"type": "blind_time", "rationale": "fallback"}'
-                "]}"
-            ]
-        )
-        agent = _make_agent(llm)
-        agent._methodology_llm = llm
-        ranked = await agent._cmdi_phase3_rank_execution_types(
+    """Phase 3 is deterministic here too.
+
+    Replayed over the recorded corpus, the model and this ranking already agreed
+    on the top-3 set 97.9% of the time and on the leading type 85.8%, and the
+    ranking loses none of the 135 recorded command-injection confirmations — so
+    inverting removes a variance source and costs nothing measurable.
+    """
+
+    def test_observed_command_output_supports_direct_exec(self) -> None:
+        ranking = rank_cmdi(
             ShellType.BASH,
             ShellPrimitives(separators=[";"], substitution=["$()"]),
             {"os_probe": {"label": "uname", "classified": "bash"}},
         )
-        assert ranked[0] == CMDIExecutionType.DIRECT_EXEC
-        assert ranked[1] == CMDIExecutionType.BLIND_TIME
-        # OOB pruned out.
-        assert CMDIExecutionType.BLIND_OOB not in ranked
+        assert ranking.ranked[0] == CMDIExecutionType.DIRECT_EXEC
+        assert ranking.supported == frozenset({CMDIExecutionType.DIRECT_EXEC})
 
-    @pytest.mark.asyncio
-    async def test_fallback_when_os_via_output_prefers_direct_exec(self) -> None:
-        llm = _ScriptedLLM(answers=[""])
-        agent = _make_agent(llm)
-        agent._methodology_llm = llm
-        ranked = await agent._cmdi_phase3_rank_execution_types(
-            ShellType.BASH,
-            ShellPrimitives(separators=[";"]),
-            {"os_probe": {"label": "uname", "classified": "bash"}},
-        )
-        assert ranked[0] == CMDIExecutionType.DIRECT_EXEC
-
-    @pytest.mark.asyncio
-    async def test_fallback_when_only_time_works_prefers_blind_time(self) -> None:
-        llm = _ScriptedLLM(answers=[""])
-        agent = _make_agent(llm)
-        agent._methodology_llm = llm
-        ranked = await agent._cmdi_phase3_rank_execution_types(
+    def test_working_time_payload_supports_blind_time(self) -> None:
+        ranking = rank_cmdi(
             ShellType.UNKNOWN,
             ShellPrimitives(separators=[";"], working_time_payload="test;sleep 5"),
             {},
         )
-        assert ranked[0] == CMDIExecutionType.BLIND_TIME
+        assert ranking.ranked[0] == CMDIExecutionType.BLIND_TIME
+        assert ranking.supported == frozenset({CMDIExecutionType.BLIND_TIME})
 
-    @pytest.mark.asyncio
-    async def test_fallback_prunes_blind_oob(self) -> None:
-        llm = _ScriptedLLM(answers=[""])
-        agent = _make_agent(llm)
-        agent._methodology_llm = llm
-        ranked = await agent._cmdi_phase3_rank_execution_types(
+    def test_both_probes_support_both_channels(self) -> None:
+        ranking = rank_cmdi(
+            ShellType.BASH,
+            ShellPrimitives(separators=[";"], working_time_payload="test;sleep 5"),
+            {"os_probe": {"label": "uname", "classified": "bash"}},
+        )
+        assert ranking.supported == frozenset(
+            {CMDIExecutionType.DIRECT_EXEC, CMDIExecutionType.BLIND_TIME}
+        )
+        assert list(ranking.ranked[:2]) == [
+            CMDIExecutionType.DIRECT_EXEC,
+            CMDIExecutionType.BLIND_TIME,
+        ]
+
+    def test_error_based_and_oob_are_ranked_but_never_supported(self) -> None:
+        """Neither has a phase-2 observation of its own."""
+        ranking = rank_cmdi(ShellType.SH, ShellPrimitives(separators=[";"]), {})
+        assert CMDIExecutionType.ERROR_BASED in ranking.ranked
+        assert CMDIExecutionType.BLIND_OOB in ranking.ranked
+        assert ranking.supported == frozenset()
+
+    def test_the_agent_prunes_oob_before_the_window(self) -> None:
+        """The ranking states the fingerprint; whether a collaborator is wired
+        up is a fact about the agent, so the prune lives at the call site — and
+        running it first stops the tail slot being spent on a dropped type."""
+        ranking = rank_cmdi(
             ShellType.BASH,
             ShellPrimitives(separators=[";"]),
             {"os_probe": {"label": "uname", "classified": "bash"}},
         )
-        assert CMDIExecutionType.BLIND_OOB not in ranked
+        in_band = [t for t in ranking.ranked if t is not CMDIExecutionType.BLIND_OOB]
+        window = attempt_window(in_band, ranking.supported)
+        assert CMDIExecutionType.BLIND_OOB not in window
+        assert window[0] == CMDIExecutionType.DIRECT_EXEC
+        assert CMDIExecutionType.BLIND_TIME in window
+
+    def test_the_same_fingerprint_always_ranks_the_same_way(self) -> None:
+        args = (
+            ShellType.BASH,
+            ShellPrimitives(separators=[";", "|"], working_time_payload="x;sleep 5"),
+            {"os_probe": {"label": "uname", "classified": "bash"}},
+        )
+        first = rank_cmdi(*args)
+        assert all(rank_cmdi(*args) == first for _ in range(25))
 
 
 # ===========================================================================

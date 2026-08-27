@@ -93,6 +93,7 @@ class TestTheOracleThatRanIsNotAnOracleThatIsMissing:
             scope_out=[],
             safety={},
             authentication={"authenticated": True, "multi_role": True},
+            finding_count=0,
             client_oracle=client_oracle,
         )
 

@@ -43,8 +43,15 @@ non-finding.
 The phase-2 empirical working-set beats the LLM twice:
 
 - **Phase 3** stable-partitions the ranked bypass types so every phase-2-confirmed
-  primitive precedes every unconfirmed one and re-adds any the LLM dropped
-  (`_prioritize_confirmed_bypass_types`) — otherwise a live LLM ranks a NON-working
+  primitive precedes every unconfirmed one and re-adds any the LLM dropped — the
+  shared `merge_llm_ranking` rule over `rank_open_redirect`'s supported set
+  (`agents/_plan_ranking.py`; it replaced a bespoke float that could only reorder
+  what was already in the list, so a ranking built out of confirmed primitives
+  alone could not probe a parameter whose own probes had failed — four recorded
+  confirmations are on exactly those parameters, see
+  [plan-ranking.md](plan-ranking.md); `ALLOWLIST_BYPASS` stays out of that
+  ranking on purpose, it has the dedicated branch below) — otherwise a live LLM
+  ranks a NON-working
   type first and phase 4/5 confirm a genuine redirect under that wrong label (the
   `e72ed60a` full-pipeline `appended_url` **mislabel**: a real off-site 302 through
   the crawled `source/low.php?redirect=` endpoint, attributed to a type phase 2

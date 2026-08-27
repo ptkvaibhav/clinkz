@@ -91,6 +91,20 @@ def _generate_form() -> dict[str, Any]:
     }
 
 
+def _html_page(set_cookie: str = "") -> PageAnalysis:
+    """A page carrying an HTML form — phase 1 judges these on the submit label.
+
+    ``set_cookie`` populates the response header the PSEUDO-form branch reads;
+    an HTML form never reaches it, which is what keeps the DVWA path unchanged.
+    """
+    return PageAnalysis(
+        url="http://x/session",
+        body="",
+        status=200,
+        response_headers={"Set-Cookie": set_cookie} if set_cookie else {},
+    )
+
+
 # ===========================================================================
 # Phase 1 — Hypothesis
 # ===========================================================================
@@ -99,7 +113,7 @@ def _generate_form() -> dict[str, Any]:
 class TestPhase1Hypothesis:
     def test_generate_button_qualifies(self) -> None:
         agent = _make_agent()
-        ok, _ev = agent._weak_session_phase1_hypothesis(_generate_form())
+        ok, _ev = agent._weak_session_phase1_hypothesis(_html_page(), _generate_form())
         assert ok is True
 
     def test_action_with_new_session_qualifies(self) -> None:
@@ -109,7 +123,7 @@ class TestPhase1Hypothesis:
             "action": "/api/new_session",
             "fields": [{"name": "x", "type": "submit", "value": ""}],
         }
-        ok, _ev = agent._weak_session_phase1_hypothesis(form)
+        ok, _ev = agent._weak_session_phase1_hypothesis(_html_page(), form)
         assert ok is True
 
     def test_no_submit_no_trigger_skipped(self) -> None:
@@ -119,7 +133,7 @@ class TestPhase1Hypothesis:
             "action": "/search",
             "fields": [{"name": "q", "type": "text"}],
         }
-        ok, _ev = agent._weak_session_phase1_hypothesis(form)
+        ok, _ev = agent._weak_session_phase1_hypothesis(_html_page(), form)
         assert ok is False
 
 

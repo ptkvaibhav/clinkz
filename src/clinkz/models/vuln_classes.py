@@ -63,6 +63,15 @@ class ControlArm(BaseModel):
     producer declares which of ITS OWN channels carry their own dispatched arm,
     and the consumers read the declaration.
 
+    A class the never-sent rule does not bind is not a class with no control. It
+    is a class whose control is a DIFFERENT rule, and the report has to name that
+    rule: 19 of 29 control-arm rows across the two generated PDFs said only which
+    rule does NOT govern them, under a header promising "the row says which rule
+    applies instead". Nineteen verbatim repetitions of an absence invite a client
+    to read the strongest evidence in the document — a browser-witnessed nonce, a
+    rejected broken signature — as unverified. So the producer declares the rule
+    that DOES govern, beside the exemption from the one that does not.
+
     Attributes:
         self_controlled_indicators: ``indicator_type`` values this class confirms
             on whose oracle dispatches its own control arm and refuses on it.
@@ -72,10 +81,23 @@ class ControlArm(BaseModel):
             whenever ``self_controlled_indicators`` is non-empty, and rendered
             into the re-grade output so the exemption is auditable rather than
             asserted.
+        governing_rule: What this class's oracle DOES require before it may
+            confirm, in one clause a client can read. Required for every class
+            the never-sent-control rule does not bind — see
+            :func:`~clinkz.agents._control_arm.control_required` — and rendered
+            as the basis of that class's control-arm row.
+        evidence_key: The ``key=value`` field in the finding's own structured
+            evidence that carries the observation ``governing_rule`` names, so
+            the row shows what was MEASURED and not only what was promised. Read
+            through ``structured_evidence_field``, so a response body cannot
+            supply it. Optional: a class whose rule is a pure function of an
+            observation it did not have to inject has no such key.
     """
 
     self_controlled_indicators: tuple[str, ...] = ()
     reason: str = ""
+    governing_rule: str = ""
+    evidence_key: str = ""
 
     @model_validator(mode="after")
     def _reason_required(self) -> ControlArm:
@@ -84,6 +106,75 @@ class ControlArm(BaseModel):
             raise ValueError(
                 "ControlArm.self_controlled_indicators requires a reason — a channel "
                 "excused from the never-sent control states why it needs no separate arm"
+            )
+        if self.evidence_key and not self.governing_rule.strip():
+            raise ValueError(
+                "ControlArm.evidence_key without a governing_rule names an observation "
+                "and no rule to read it under"
+            )
+        return self
+
+
+class MultiPrincipalRequirement(BaseModel):
+    """How many authenticated principals this class needs before it may CONFIRM.
+
+    The access-control classes have a limitation no other family has: their
+    defining effect is about WHOSE object was returned, and "whose" is not a
+    property of a response. It is a relation between a response and an identity,
+    and establishing it takes a second identity — one whose own authorized read
+    of the same object says "this record is mine".
+
+    That limitation was already written down. ``_test_idor``'s ``limitation``
+    field has said "Requires at least two authenticated roles to prove that an
+    authorization boundary was crossed. With a single role (or none) the class
+    can only report candidates" since the registry was written, and it was
+    rendered verbatim into every report — while the oracle confirmed at
+    ``high``/CONFIRMED on a single role for 49 recorded findings. A limitation
+    that only the report knows about is a disclaimer, not a rule.
+
+    So the requirement is a FIELD, in numbers the emission chokepoint can compare
+    against the run's own principal list, with the lead reason a shortfall
+    produces declared beside it. The prose stays: it is what the client reads.
+    This is what the code reads.
+
+    Attributes:
+        principals_required: Authenticated principals needed to CONFIRM. ``1``
+            (the default) means the ordinary rule — the engagement's own session
+            is enough — and every class except the access-control family is that.
+        why_unconfirmed: The :data:`~clinkz.models.finding.UNPROVEN_WHY_UNCONFIRMED`
+            member a shortfall demotes to. Required whenever more than one
+            principal is needed, because "it became a lead" is only actionable if
+            the lead says which observation was missing.
+        reason: Why one principal cannot prove this class's effect. Rendered
+            beside the lead so the operator can judge whether supplying a second
+            credential is worth another engagement.
+    """
+
+    principals_required: int = 1
+    why_unconfirmed: str = ""
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def _requirement_is_complete(self) -> MultiPrincipalRequirement:
+        """A requirement with no lead reason cannot be enforced, only asserted."""
+        if self.principals_required < 1:
+            raise ValueError("MultiPrincipalRequirement.principals_required must be at least 1")
+        if self.principals_required == 1:
+            return self
+        if not self.why_unconfirmed.strip() or not self.reason.strip():
+            raise ValueError(
+                "a class needing more than one authenticated principal must declare BOTH "
+                "why_unconfirmed (the lead reason a shortfall produces) and reason (why one "
+                "principal cannot prove it) — otherwise the shortfall demotes to a lead "
+                "nobody can act on"
+            )
+        from clinkz.models.finding import UNPROVEN_WHY_UNCONFIRMED
+
+        if self.why_unconfirmed not in UNPROVEN_WHY_UNCONFIRMED:
+            raise ValueError(
+                f"MultiPrincipalRequirement.why_unconfirmed={self.why_unconfirmed!r} is not in "
+                "UNPROVEN_WHY_UNCONFIRMED — an unregistered reason is normalised to "
+                "'not_instrumentable', which is not what happened"
             )
         return self
 
@@ -117,6 +208,7 @@ class VulnClass(BaseModel):
     label: str
     capability: ConfirmationCapability
     control_arm: ControlArm = ControlArm()
+    multi_principal: MultiPrincipalRequirement = MultiPrincipalRequirement()
     limitation: str = ""
     title_tokens: tuple[str, ...] = ()
     remediation: str = ""
@@ -198,6 +290,15 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="jwt",
         test_method="_test_jwt",
+        control_arm=ControlArm(
+            governing_rule=(
+                "a three-arm status differential: the valid baseline token was ACCEPTED "
+                "and a broken-signature token of the same shape was REJECTED, so the "
+                "forged token's acceptance is attributable to the forgery and not to an "
+                "endpoint that accepts anything"
+            ),
+            evidence_key="indicator_observed",
+        ),
         label="JWT / Token Forgery",
         capability=_C.SERVER_SIDE,
         title_tokens=(
@@ -264,6 +365,16 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="xss_dom",
         test_method="_test_xss_dom",
+        control_arm=ControlArm(
+            governing_rule=(
+                "P7 witnessed the injected nonce returned by a CALL from inside the "
+                "page's own JS context, while a second nonce minted in the same call "
+                "and injected NOWHERE stayed silent. Inert reflected bytes cannot call "
+                "a function, so the silent control is what separates execution from "
+                "reflection"
+            ),
+            evidence_key="control_silent",
+        ),
         label="DOM-based Cross-Site Scripting",
         capability=_C.CLIENT_SIDE_ORACLE_REQUIRED,
         limitation=(
@@ -345,6 +456,15 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="csrf",
         test_method="_test_csrf",
+        control_arm=ControlArm(
+            governing_rule=(
+                "the form's own token field and the SameSite attribute of the cookie "
+                "the target set. Nothing is injected; the rule is that the "
+                "state-changing form carried no unpredictable token and no SameSite "
+                "mitigation stood in for one"
+            ),
+            evidence_key="rationale",
+        ),
         label="Cross-Site Request Forgery",
         capability=_C.SERVER_SIDE,
         limitation=(
@@ -366,11 +486,30 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
         test_method="_test_idor",
         label="Insecure Direct Object Reference / Broken Access Control",
         capability=_C.SERVER_SIDE,
+        multi_principal=MultiPrincipalRequirement(
+            principals_required=2,
+            why_unconfirmed="single_role_cannot_attribute",
+            reason=(
+                "the defining effect is that the caller was served an object belonging to "
+                "someone else, and 'belonging' is a relation between a response and an "
+                "identity rather than anything visible in the response. One principal "
+                "establishes three negatives — not the caller's own object, not a "
+                "never-issued reference, not what an anonymous caller is served — and a "
+                "shared record behind a login satisfies all three exactly as well as "
+                "another principal's record does. Positive attribution needs a second "
+                "principal's OWN authorized read of the same object"
+            ),
+        ),
         limitation=(
             "Requires at least two authenticated roles to prove that an "
             "authorization boundary was crossed. With a single role (or none) "
             "the class can only report candidates."
         ),
+        # No ``control_arm`` exemption. The four-arm oracle DISPATCHES a
+        # never-sent control (``ref(∅)``) through the shared ``_run_control_arm``
+        # seam and records its verdict in the evidence, so the class is bound by
+        # the rule rather than excused from it — see
+        # :data:`~clinkz.agents._control_arm.DIFFERENTIAL_CONTROL_CLASSES`.
         title_tokens=(
             "idor",
             "insecure direct object",
@@ -385,6 +524,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="brute_force",
         test_method="_test_brute_force",
+        control_arm=ControlArm(
+            governing_rule=(
+                "a POSITIVE control: every attempt is proven to have REACHED the "
+                "authentication handler and been answered with an auth failure, so 'no "
+                "lockout' is a measurement rather than a failure to arrive"
+            ),
+            evidence_key="positive_control",
+        ),
         label="Weak Authentication / Credential Brute Force",
         capability=_C.SERVER_SIDE,
         title_tokens=(
@@ -401,6 +548,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="open_redirect",
         test_method="_test_open_redirect",
+        control_arm=ControlArm(
+            governing_rule=(
+                "the browser-resolved host of the 3xx Location header the target "
+                "returned - an origin comparison, not a substring in a body, so there "
+                "is no marker for a decoy to collide with"
+            ),
+            evidence_key="redirect_target_observed",
+        ),
         label="Open Redirect",
         capability=_C.SERVER_SIDE,
         title_tokens=("open redirect",),
@@ -414,6 +569,15 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="security_headers",
         test_method="_test_security_headers",
+        control_arm=ControlArm(
+            governing_rule=(
+                "a pure function of the header set captured in phase 2. Nothing is "
+                "injected, so the observation and its control are the same bytes: the "
+                "rule is that the named header was absent from, or weak in, a response "
+                "the target served unprompted"
+            ),
+            evidence_key="rationale",
+        ),
         label="Security Header & Transport Hygiene",
         capability=_C.SERVER_SIDE,
         limitation=(
@@ -439,6 +603,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="weak_session",
         test_method="_test_weak_session",
+        control_arm=ControlArm(
+            governing_rule=(
+                "the sequence of identifiers the TARGET itself issued across repeated "
+                "authentications, graded on entropy and structure. Nothing is injected "
+                "- the values under test are the server's own"
+            ),
+            evidence_key="rationale",
+        ),
         label="Weak Session Management",
         capability=_C.SERVER_SIDE,
         title_tokens=(
@@ -455,6 +627,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="javascript_attacks",
         test_method="_test_javascript_attacks",
+        control_arm=ControlArm(
+            governing_rule=(
+                "the server answered a value forged by replaying the page's own chain "
+                "differently from an equal-shaped control value it never issued, with "
+                "both arms interleaved and repeated and both shown stable"
+            ),
+            evidence_key="forge_confirmed",
+        ),
         label="Client-Side Logic Flaws",
         capability=_C.CLIENT_SIDE_ORACLE_REQUIRED,
         limitation=(
@@ -478,6 +658,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="csp_bypass",
         test_method="_test_csp",
+        control_arm=ControlArm(
+            governing_rule=(
+                "P7 under the SERVED policy, with CSP bypass asserted off and recorded: "
+                "the injected nonce came back by a call from inside the page, and the "
+                "never-injected control nonce did not"
+            ),
+            evidence_key="control_nonce_silent",
+        ),
         label="Content-Security-Policy Bypass",
         capability=_C.CLIENT_SIDE_ORACLE_REQUIRED,
         limitation=(
@@ -508,6 +696,13 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="weak_cryptography",
         test_method="_test_crypto",
+        control_arm=ControlArm(
+            governing_rule=(
+                "the forgery is graded against a random token of the SAME SHAPE the "
+                "scheme never issued; a server that honours that one too was not "
+                "broken, and the class says so rather than confirming"
+            ),
+        ),
         label="Weak Cryptography / Forgeable Token",
         capability=_C.SERVER_SIDE,
         limitation=(
@@ -536,6 +731,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="input_validation",
         test_method="_test_input_validation",
+        control_arm=ControlArm(
+            governing_rule=(
+                "probe and control bodies are compared on the READ-BACK, never on the "
+                "status code - an API that answers 200 and stores the "
+                "constraint-satisfying value enforced the constraint"
+            ),
+            evidence_key="control_status",
+        ),
         label="Client-Only Input Validation",
         capability=_C.SERVER_SIDE,
         limitation=(
@@ -562,6 +765,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="secrets_exposure",
         test_method="_test_secrets_exposure",
+        control_arm=ControlArm(
+            governing_rule=(
+                "an anonymous arm IS the control: fetched with NO session material, "
+                "minus everything the site root also serves, minus anything whose "
+                "fingerprint matches material this engagement supplied"
+            ),
+            evidence_key="context",
+        ),
         label="Secret & Configuration Exposure",
         capability=_C.SERVER_SIDE,
         limitation=(
@@ -591,6 +802,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="mass_assignment",
         test_method="_test_mass_assignment",
+        control_arm=ControlArm(
+            governing_rule=(
+                "the privileged field is graded on the READ-BACK of the created object "
+                "against a control body that omitted it, so a field echoed but not "
+                "honoured cannot confirm"
+            ),
+            evidence_key="honoured",
+        ),
         label="Mass Assignment / Privilege Escalation on Create",
         capability=_C.SERVER_SIDE,
         limitation=(
@@ -619,6 +838,13 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="state_sequence_bypass",
         test_method="_test_state_sequence",
+        control_arm=ControlArm(
+            governing_rule=(
+                "business logic: the out-of-order step is graded on a read-back of the "
+                "object it should not have reached, against a control object driven "
+                "through the intended sequence"
+            ),
+        ),
         label="Business Logic: Workflow Sequence Bypass",
         capability=_C.SERVER_SIDE,
         limitation=(
@@ -649,6 +875,13 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="constraint_violation",
         test_method="_test_constraint_violation",
+        control_arm=ControlArm(
+            governing_rule=(
+                "business logic: the out-of-range value is graded on the READ-BACK "
+                "against a boundary control, because an API that accepts quantity=-1 "
+                "and stores 1 enforced the constraint"
+            ),
+        ),
         label="Business Logic: Numeric Constraint Violation",
         capability=_C.SERVER_SIDE,
         limitation=(
@@ -679,6 +912,14 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="repeatability",
         test_method="_test_repeatability",
+        control_arm=ControlArm(
+            governing_rule=(
+                "business logic: two identical creates are read back and compared, "
+                "because an idempotent handler answers 200 to a replay and has created "
+                "nothing"
+            ),
+            evidence_key="satisfied",
+        ),
         label="Business Logic: Single-Use Action Replayed",
         capability=_C.SERVER_SIDE,
         limitation=(
@@ -712,6 +953,14 @@ DISCOVERY_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="log4shell",
         test_method="_test_log4shell",
+        control_arm=ControlArm(
+            governing_rule=(
+                "P6 out-of-band: an inbound callback bearing a single-use nonce that "
+                "existed only in the one probe that carried it, with a second nonce "
+                "minted alongside and sent nowhere. The channel is an inbound callback, "
+                "so there is no response body for a decoy to collide with"
+            ),
+        ),
         label="Log4Shell: JNDI lookup in a logged value (CVE-2021-44228)",
         capability=_C.OUT_OF_BAND,
         title_tokens=("log4shell", "cve-2021-44228"),
@@ -823,6 +1072,13 @@ UNIMPLEMENTED_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="kb_matched_technique",
         test_method="_test_tier2_technique",
+        control_arm=ControlArm(
+            governing_rule=(
+                "none is needed and none can exist: this applier sends no request and "
+                "returns an empty list from all three of its exits, so it constructs no "
+                "finding for a control to discriminate. Registered NOT_IMPLEMENTED"
+            ),
+        ),
         label="Technology-matched techniques (knowledge-base Tier 2)",
         capability=_C.NOT_IMPLEMENTED,
         limitation=(
@@ -838,6 +1094,13 @@ UNIMPLEMENTED_CLASSES: tuple[VulnClass, ...] = (
     VulnClass(
         key="research_runbook_technique",
         test_method="_test_tier3_technique",
+        control_arm=ControlArm(
+            governing_rule=(
+                "none is needed and none can exist: this applier sends no request and "
+                "returns an empty list from all three of its exits, so it constructs no "
+                "finding for a control to discriminate. Registered NOT_IMPLEMENTED"
+            ),
+        ),
         label="Research-runbook techniques (Tier 3)",
         capability=_C.NOT_IMPLEMENTED,
         limitation=(
@@ -967,6 +1230,35 @@ def for_key(key: str) -> VulnClass | None:
     return _BY_KEY.get((key or "").strip().lower())
 
 
+def multi_principal_requirement(test_method: str) -> MultiPrincipalRequirement:
+    """How many authenticated principals *test_method* needs before it may confirm.
+
+    The one reader every consumer goes through — the methodology deciding
+    whether to confirm, the emission chokepoint enforcing it, and the report
+    explaining a lead. An unknown class gets the default (one principal), which
+    is the pre-existing behaviour of every class that is not in the
+    access-control family.
+
+    Args:
+        test_method: The ``_test_*`` name.
+
+    Returns:
+        The declared requirement, never ``None``.
+    """
+    vuln_class = _BY_METHOD.get(test_method)
+    return vuln_class.multi_principal if vuln_class else MultiPrincipalRequirement()
+
+
+def classes_requiring_multiple_principals() -> tuple[VulnClass, ...]:
+    """Every class that cannot confirm on the engagement's own session alone.
+
+    The domain of the emission-gate rule, COMPUTED from the registry rather than
+    listed beside it: a second class added to the family is covered by the guard
+    the day it is declared, not the day somebody remembers to widen a tuple.
+    """
+    return tuple(vc for vc in _ALL if vc.multi_principal.principals_required > 1)
+
+
 def classes_requiring_client_side_oracle() -> tuple[VulnClass, ...]:
     """Classes this engine cannot confirm without a browser-side oracle."""
     return tuple(vc for vc in VULN_CLASSES if vc.capability is _C.CLIENT_SIDE_ORACLE_REQUIRED)
@@ -983,11 +1275,14 @@ __all__ = [
     "UNIMPLEMENTED_CLASSES",
     "VULN_CLASSES",
     "ConfirmationCapability",
+    "MultiPrincipalRequirement",
     "VulnClass",
     "classes_requiring_client_side_oracle",
+    "classes_requiring_multiple_principals",
     "finding_title",
     "for_finding",
     "for_key",
     "for_method",
     "limited_classes",
+    "multi_principal_requirement",
 ]
