@@ -1714,9 +1714,13 @@ class IDORMethodologyResult(BaseModel):
     #: How the crossing response was attributed to the owning principal:
     #: ``identical_rendering``, ``stable_fields``, or ``""`` for not attributed.
     attribution: str = ""
-    #: The specific ``field=value`` pairs that attributed it, when the route was
-    #: ``stable_fields``. Empty for an identical rendering, which needs none.
-    attributing_values: tuple[str, ...] = ()
+    #: The fields that attributed it when the route was ``stable_fields``, as
+    #: ``field=<name> owner_fp=<hash> caller_fp=<hash|absent>``. Names and salted
+    #: fingerprints, never values: an attributing value is a real customer's
+    #: email or address, and the claim — this field matched B's own read and did
+    #: not match A's — is made by the two fingerprints. Empty for an identical
+    #: rendering, which needs none.
+    attributing_fields: tuple[str, ...] = ()
     #: The never-issued reference the control arm carried.
     absent_reference: str = ""
     #: One line per dispatched arm — what it carried, as whom, and what came

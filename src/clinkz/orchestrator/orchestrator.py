@@ -159,6 +159,13 @@ _SCAN_PHASE_GRACE = 180
 # Maximum cross-phase re-spins per engagement (e.g., Exploit asks for more recon).
 MAX_CROSS_PHASE_RESPINS = 3
 
+#: Role name a session established by the DEFAULT-CREDENTIAL sweep is filed
+#: under. Distinct from any supplied role on purpose: "a credential the client
+#: handed us" and "a credential this engine guessed" are different provenance,
+#: and a client reading the authentication section is entitled to know which one
+#: opened the door.
+SWEPT_CREDENTIAL_ROLE = "default-credential-sweep"
+
 # Poll interval when waiting for agent messages (seconds).
 _POLL_INTERVAL = 1.0
 
@@ -369,6 +376,9 @@ class OrchestratorAgent:
         # role → {cookies, headers, username, assertion}
         self._role_sessions: dict[str, dict[str, Any]] = {}
         self._auth_assertion: AuthAssertion | None = None
+        #: How the engagement came to hold session material, when it does. Set by
+        #: whichever route established one; empty means no session at all.
+        self._session_material_source: str = ""
         self._auth_mechanism: AuthMechanism = AuthMechanism.NONE
         self._reauth_credential: RoleCredential | None = None
         self._reauth_login_url: str = ""
@@ -845,6 +855,23 @@ class OrchestratorAgent:
                         "and remediation recommendations.",
                         "engagement_id": engagement_id,
                         "engagement_name": scope.name,
+                        # The engagement's REQUEST window, from the one component
+                        # that sees every dispatched request. Nobody ever passed
+                        # these, so the report fell back to its own generation
+                        # clock for both ends: a 4,597s run rendered a zero-length
+                        # testing window directly beneath the authorized window,
+                        # which is where that line is the report's own evidence
+                        # that testing happened inside it.
+                        "test_start": (
+                            governor.first_request_at.isoformat()
+                            if governor.first_request_at
+                            else None
+                        ),
+                        "test_end": (
+                            governor.last_request_at.isoformat()
+                            if governor.last_request_at
+                            else None
+                        ),
                         "authorization": self._authorization.model_dump(mode="json")
                         if self._authorization
                         else None,
@@ -2151,6 +2178,7 @@ class OrchestratorAgent:
                         login_url,
                         tech,
                     )
+                    self._register_swept_session(cred.username, login_url, tech)
                 else:
                     await self._cred_store.mark_invalid(cred.id)
 
@@ -2932,6 +2960,14 @@ class OrchestratorAgent:
             )
 
         headers = {"Authorization": f"Bearer {result.bearer_token}"} if result.bearer_token else {}
+        # Session material is HELD from here, whether or not the assertion below
+        # goes on to prove it. The two are separate facts and the report needs
+        # both: a held-but-unproven session is the case that must reconcile
+        # rather than assert a negative.
+        if not self._session_material_source:
+            self._session_material_source = (
+                f"the credential supplied for role {cred.role!r}, logged in at {login_url}"
+            )
         assertion = await self._assert_role_session(
             cred, result.session_cookies, headers, login_url
         )
@@ -3253,6 +3289,49 @@ class OrchestratorAgent:
             "summary": report.summary_line(),
         }
 
+    def _register_swept_session(self, username: str, login_url: str, technology: str) -> None:
+        """Record a session the DEFAULT-CREDENTIAL sweep established.
+
+        A session obtained by guessing is a session. ``_attempt_login`` wrote its
+        cookies, jar path and bearer token to the credential store — which every
+        later phase reads, and which is why the DVWA ladder reached
+        ``/vulnerabilities/sqli/``, ``/exec/``, ``/fi/`` and ``/upload/`` and
+        emitted 22 findings from behind the login — while ``_role_sessions`` and
+        ``_auth_assertion``, the ONLY two fields :meth:`_authentication_summary`
+        reads, stayed empty. So the report said "Authenticated state: NOT
+        established - this engagement examined only the surface reachable without
+        a login" above those 22 findings, on all four ladder levels.
+
+        Registered under its own role name rather than a supplied one, because
+        the two are different provenance and a client is entitled to know which:
+        a credential the client handed us, versus one this engine guessed. The
+        record is deliberately NOT an assertion — ``established`` stays False
+        until :func:`~clinkz.engagement.auth_state.assert_authenticated` proves it
+        against an anonymous control, since "we posted a password and got a
+        cookie" is exactly the assumed-not-proven claim this codebase refuses
+        everywhere else. What it does do is make the session VISIBLE, so the
+        report reconciles rather than asserting a negative it cannot back.
+
+        Args:
+            username: The identity the sweep authenticated as.
+            login_url: Where the successful login was posted.
+            technology: The fingerprinted technology whose defaults matched.
+        """
+        role = f"{SWEPT_CREDENTIAL_ROLE}:{username}" if username else SWEPT_CREDENTIAL_ROLE
+        self._role_sessions.setdefault(role, {}).update(
+            {
+                "established": False,
+                "username": username,
+                "login_url": login_url,
+                "technology": technology,
+                "provenance": SWEPT_CREDENTIAL_ROLE,
+            }
+        )
+        self._session_material_source = (
+            f"the default-credential sweep, which authenticated as {username!r} at "
+            f"{login_url} against fingerprinted {technology}"
+        )
+
     def _authentication_summary(self) -> dict[str, Any]:
         """Authentication state as the report and the run summary render it."""
         assertion = self._auth_assertion
@@ -3263,6 +3342,15 @@ class OrchestratorAgent:
             >= 2,
             "authenticated": bool(assertion and assertion.established),
             "assertion": assertion.model_dump(mode="json") if assertion else None,
+            # Whether the engagement HOLDS session material, which is a different
+            # question from whether an assertion PROVED it. The two were conflated
+            # into one boolean, so a run that was logged in for its whole duration
+            # reported "NOT established" and the report's own "what was NOT tested"
+            # section told the client the authenticated surface went unexamined.
+            # Stated separately, so the report can reconcile the two rather than
+            # render whichever one it happened to read.
+            "session_material_held": bool(self._session_material_source),
+            "session_source": self._session_material_source,
             # Session maintenance, stated so the numbers cannot contradict each
             # other silently. `session_losses_detected` counts ONLY responses to
             # requests that actually carried the session; the engagement's own

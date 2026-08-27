@@ -287,20 +287,29 @@ class TestTheControlArmRowReadsTheProducer:
             "a page that echoes the control-arm evidence would otherwise license its own phantom"
         )
 
-    def test_an_effect_oracle_is_reported_as_not_marker_bound(self) -> None:
+    def test_an_effect_oracle_names_the_rule_that_governs_it(self) -> None:
         """Not every class is governed by the never-sent-control rule.
 
         Reporting one that is not as ABSENT would read as a missing control on a
-        class that never needed one.
+        class that never needed one - and saying only that the rule does NOT
+        apply is barely better. Nineteen of twenty-nine rows across the two
+        generated PDFs said exactly that, under a header promising the row would
+        name the rule that DOES. So the row reads the producer's own
+        ``VulnClass.control_arm.governing_rule``.
         """
         row = control_arm_row(
             _finding(
                 title="Missing security headers on http://target.invalid",
                 description="Technique: WSTG-CONF-07.",
-                evidence=["Response: no Content-Security-Policy header present"],
+                evidence=[
+                    "Response: no Content-Security-Policy header present",
+                    "rationale=Deterministic analysis of the observed header set.",
+                ],
             )
         )
-        assert row["outcome"] in {"not marker-bound", "self-controlled"}
+        assert row["outcome"] in {"governed by its own rule", "self-controlled"}
+        assert "pure function of the header set" in row["basis"]
+        assert "Observed: rationale=Deterministic analysis" in row["basis"]
 
 
 # ---------------------------------------------------------------------------

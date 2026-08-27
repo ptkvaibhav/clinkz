@@ -116,6 +116,29 @@ Two routes, in strength order (`attribution_between`):
    record too, so the residue is what is specific to B. One shared value is a
    property of the template, not of the principal.
 
+### The evidence carries names and fingerprints, never values
+
+`attributing_fields` renders one line per field:
+
+```
+field=<name> owner_fp=<hash> caller_fp=<hash|absent>
+```
+
+`owner_fp` is equal on the crossing arm and B's own authorized read (*this is B's
+record*); `caller_fp` differs, or is `absent` (*and it is not A's*). Together
+that is the whole claim, and it is the same claim the values were making.
+
+It used to render `field=value` out of the **owning principal's** record — the
+first target data this class has ever carried into a deliverable. Bounding each
+value to 80 characters bounds *volume, not sensitivity*: on a client engagement an
+attributing value is a real customer's email or postal address, in a document
+that gets emailed. The field NAME survives because it is schema rather than data
+— `billing.email` is the application's own vocabulary, and it is what a
+remediation has to name. The fingerprint is
+`engagement/credential_shapes.py::fingerprint`, per-process salted, so two lines
+in one bundle correlate and nothing in it replays or reverses. Same trade as
+`AuthArtifact.principal`: the claim survives, the value never lands.
+
 ## Reflection is NOT covered by the control
 
 A parameter that echoes its input defeats every other arm at once: `ref(∅)` is

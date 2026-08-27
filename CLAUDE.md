@@ -11,6 +11,8 @@ tools dynamically.
 > per class); gray-box discovery-engine detail → `docs/discovery-engine-*.md`;
 > engagement setup / authenticated scanning / safety rails →
 > [`docs/productization-engagement-safety.md`](docs/productization-engagement-safety.md);
+> what the deliverable may CLAIM (testing window, authentication state, control-arm
+> rows, IDOR evidence, cost) → [`docs/report-integrity.md`](docs/report-integrity.md);
 > recurring-mistake narratives → [`.claude/LESSONS.md`](.claude/LESSONS.md) (index)
 > → `docs/lessons/`. Fetch on demand — do not restate them here.
 
@@ -535,6 +537,10 @@ src/clinkz/
 │                     #   _control_arm (the never-sent control + attribution + WHICH
 │                     #   arm produced a status: what an oracle must clear before it
 │                     #   may confirm — offline-testable),
+│                     #   _report_integrity (what the report may CLAIM, reconciled
+│                     #   against the run's OWN record: the testing WINDOW, the
+│                     #   authentication state, the cost, the document's name —
+│                     #   pure, read by all three renderers at BOTH seams),
 │                     #   _archive/ (built, registered, invoked zero times: critic)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
@@ -640,7 +646,10 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
 - `python -m clinkz report-pdf <engagement_id> [--outputs-root <dir>] [--out <file>]`
   — re-render the client-facing PDF from `report_<id>.json`. **Offline**: it
   reads the stored, already-redacted structure and sends nothing, which is the
-  whole point — three renderers, one source. Every engagement writes this PDF
+  whole point — three renderers, one source. For a bundle written before the
+  governor stamped its request window it recovers the narrower window from that
+  bundle's own `actions.jsonl` — the governor's own writer, inside the bundle —
+  and renders the provenance beside it rather than presenting it as the full one. Every engagement writes this PDF
   itself; the command exists for a re-render after a layout fix, or for a bundle
   produced before the renderer did. Exits 2 on a missing bundle or unreadable
   report, 1 when the renderer is absent or the document could not be built.
@@ -761,6 +770,70 @@ LESSONS #17).
   grounding any of its calls ran under, every runbook entry carries it (the claim
   persists to the KB, so the caveat must too), and the report renders it either
   way. `undeclared` counts as ungrounded.
+- **A section that reads one field and contradicts the document's own contents is
+  worse than a missing section** (`agents/_report_integrity.py`, **detail →
+  [`docs/report-integrity.md`](docs/report-integrity.md)**). Three of them
+  shipped, all on the first page, all checkable by a client without tooling.
+  **The testing window** was `test_start`/`test_end` defaulting to
+  `datetime.now(UTC)` because nobody ever passed either, so a 4,597s run rendered
+  as zero directly beneath the authorized window — the one place the document
+  evidences that testing happened inside it. The producer is now the governor,
+  the only component every dispatched request passes through, and the rule is
+  *any request sent ⇒ `test_end > test_start`, or the render fails*. Its one
+  exception is a bundle carrying **no stamp at all**: the ABSENCE of the key is
+  what separates an old bundle from a new one that is lying, so an old bundle
+  renders an explicit "not recorded" and `clinkz report-pdf` recovers the
+  narrower window from the bundle's own `actions.jsonl`, provenance attached.
+  **The authentication state** was one boolean whose negative branch renders the
+  strongest sentence in the header — "Anything behind authentication was not
+  examined" — above 22 findings behind DVWA's login. Reconciled into four states
+  now (`PROVEN` / `DISPROVEN` / `INCONSISTENT` / `NOT_ATTEMPTED`): a negative
+  claim is only as good as the check that produced it, and in that run
+  `assertion` is `null`, so no check ran. **The cost** was `$0.00` beside "a
+  LOWER BOUND", which reads as a wrong number; an engagement whose models carry
+  no declared rate is `not priced`. Every reconciliation is pure, reads only
+  engine-declared fields, only ever TIGHTENS, and runs at BOTH seams — the build
+  seam so `report.json` carries it, the render seam so a stored bundle
+  re-renders honestly. Same shape, same reason, as `reconcile_with_model_stamp`.
+- **A session the engine GUESSED is still a session, and the record has to say
+  so.** `_authentication_summary` reads `_role_sessions` and `_auth_assertion`,
+  and only the SUPPLIED-credential path writes them — the default-credential
+  sweep's `_attempt_login` wrote its cookies, jar path and bearer token to the
+  credential store, which is what every later phase reads. So a run logged in for
+  its whole duration reported that it had never logged in, on all four ladder
+  levels (`DEFAULT CRED VALID: admin:*** on .../login.php`).
+  `_register_swept_session` files it under `SWEPT_CREDENTIAL_ROLE`, deliberately
+  not a supplied role name, because "a credential the client handed us" and "one
+  this engine guessed" are different provenance. `established` stays False and
+  `_role_session_handoff` still skips it: holding session material and having
+  PROVEN a session are different facts, and *we posted a password and got a
+  cookie* is the assumed-not-proven claim refused everywhere else here.
+- **A class the never-sent rule does not bind is not a class with no control — it
+  is a class whose control is a DIFFERENT rule, and the row names it.** The
+  control-arm section header promises "the row says which rule applies instead"
+  and 19 of 29 rows said only which rule does NOT govern them. Nineteen verbatim
+  repetitions of an absence invite a client to read the strongest evidence in the
+  document — a browser-witnessed nonce, a rejected broken signature — as
+  unverified. The PRODUCER declares it (`VulnClass.control_arm.governing_rule`,
+  plus `evidence_key`, the field in the finding's OWN structured evidence
+  carrying the observation the rule turned on), required for every member of
+  `CONTROL_EXEMPT_CLASSES`, and `control_arm_row` raises on a row that names no
+  rule. The observation is read by `declared_observation`, which the host under
+  test cannot reach: the strict structured reader first, then an entry whose
+  FIRST token is `key=` — position 0 is never occupied by target bytes, because
+  every entry carrying them is written by the engine with its own `Request: ` /
+  `Response: ` prefix.
+- **An IDOR finding proves attribution with NAMES and FINGERPRINTS, never
+  values.** `attributing_values` reproduced `field=value` pairs out of the OWNING
+  principal's record — the first target data this class has ever carried into a
+  deliverable — and an 80-character cap bounds volume, not sensitivity: on a
+  client engagement that value is a real customer's email or postal address, in a
+  document that gets emailed. `attributing_fields` renders
+  `field=<name> owner_fp=<hash> caller_fp=<hash|absent>`: equal to the owner's
+  own authorized read, different from (or absent in) the caller's, which is the
+  whole claim. The field NAME survives because it is schema, not data, and is
+  what a remediation has to name. Same trade as `AuthArtifact.principal` — the
+  claim survives, the value never lands.
 - **A bound that decides coverage is reported in the DELIVERABLE, not just the
   log** (`observability/plan_alarms.py`). The plan cap ranks `(class, endpoint)`
   pairs and drops the tail — four D1 runs each truncated ~1,500 candidates to 150

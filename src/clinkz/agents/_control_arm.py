@@ -62,6 +62,7 @@ __all__ = [
     "control_evidence_lines",
     "control_required",
     "control_verdict_from_evidence",
+    "declared_observation",
     "is_minted_marker",
     "mint_decoy",
     "payload_invokes",
@@ -607,6 +608,45 @@ def structured_evidence_field(evidence: list[str], key: str) -> str:
             name, _, value = token.partition("=")
             if name == key:
                 return value
+    return ""
+
+
+def declared_observation(evidence: list[str], key: str) -> str:
+    """The observation *key* names, read only from an entry the ENGINE wrote.
+
+    Two shapes qualify, tried in that order, and neither is reachable by the host
+    under test:
+
+    1. The strict :func:`structured_evidence_field` reader, which returns ONE
+       token's value out of a fully-structured entry (``control_silent`` sits
+       inside P7's ``primitive=… executed=… control_silent=…`` line). Tried
+       first because it is precise: reading that entry from position 0 would
+       return every field after the one asked for.
+    2. Otherwise an entry whose FIRST token is ``key=`` — the whole entry is one
+       prose observation (``positive_control=all 8 attempts reached the
+       authentication handler``). Anchoring at position 0 is what makes this
+       safe: every entry carrying target bytes is written by the engine with its
+       own ``Request: `` / ``Response: `` prefix, so a body cannot occupy
+       position 0 of an entry. Same distinction that spared the juice-shop
+       authentication bypass — ``startswith`` where ``re.search`` would have
+       scanned on into the target's own text.
+
+    Args:
+        evidence: The finding's evidence entries.
+        key: The field name declared by the producer.
+
+    Returns:
+        The observation as a string, or ``""``.
+    """
+    if not key:
+        return ""
+    structured = structured_evidence_field(evidence, key)
+    if structured:
+        return structured
+    prefix = f"{key}="
+    for entry in evidence:
+        if entry.startswith(prefix):
+            return entry[len(prefix) :].strip()
     return ""
 
 

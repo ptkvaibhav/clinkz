@@ -36,6 +36,14 @@ from clinkz.config import outputs_root as configured_outputs_root
 
 if TYPE_CHECKING:
     from clinkz.knowledge.query import KnowledgeBase
+from clinkz.agents._report_integrity import (
+    TestingWindowError,
+    authentication_state,
+    authentication_verdict,
+    reconciled_not_tested_reason,
+    spend_cost_line,
+    testing_window,
+)
 from clinkz.engagement.secrets import redact, redact_structure
 from clinkz.llm.base import LLMClient
 from clinkz.llm.degradation import (
@@ -193,7 +201,7 @@ def write_report_pdf(report: PentestReport, path: Path) -> Path | None:
         failed.
     """
     try:
-        from clinkz.agents._report_pdf import render_report_pdf
+        from clinkz.agents._report_pdf import ControlArmRuleMissingError, render_report_pdf
     except ImportError as exc:  # pragma: no cover — reportlab is a declared dep
         from clinkz.agents._report_pdf import PDF_UNAVAILABLE_HINT
 
@@ -205,6 +213,15 @@ def write_report_pdf(report: PentestReport, path: Path) -> Path | None:
         from clinkz.agents._report_pdf import PDF_UNAVAILABLE_HINT
 
         logger.error("%s (%s)", PDF_UNAVAILABLE_HINT, exc)
+        return None
+    except (ControlArmRuleMissingError, TestingWindowError) as exc:
+        # Caught by NAME, ahead of the broad handler, because these two messages
+        # are OURS. The generic branch below withholds the message for a good
+        # reason — ReportLab quotes the target's bytes back — and that reason is
+        # false here: both are composed entirely of engine-declared facts, and
+        # they are exactly the diagnosis an operator needs. A refusal nobody can
+        # read is a refusal that gets worked around.
+        logger.error("PDF deliverable NOT written - the document would misstate itself: %s", exc)
         return None
     except Exception as exc:  # noqa: BLE001 — a layout error must not lose the findings
         # The TYPE is logged and the MESSAGE is not, for the same reason the
@@ -512,6 +529,7 @@ class ReportAgent(BaseAgent):
                 scope_out=scope_out,
                 safety=safety,
                 authentication=authentication,
+                finding_count=len(finding_models),
                 graybox_source=dict(input_data.get("graybox_source") or {}),
                 resumed_from=str(input_data.get("resumed_from") or ""),
                 client_oracle=dict(input_data.get("client_oracle") or {}),
@@ -620,6 +638,7 @@ class ReportAgent(BaseAgent):
         scope_out: list[str],
         safety: dict[str, Any],
         authentication: dict[str, Any],
+        finding_count: int,
         graybox_source: dict[str, Any] | None = None,
         resumed_from: str = "",
         client_oracle: dict[str, Any] | None = None,
@@ -638,6 +657,9 @@ class ReportAgent(BaseAgent):
             scope_out: Explicitly excluded scope entries.
             safety: The governor's stats dict.
             authentication: The authentication summary dict.
+            finding_count: Confirmed findings this run emitted, so the
+                authenticated-surface item can be reconciled against them rather
+                than written off one boolean.
             graybox_source: What happened to the ``--source`` tree, when one was
                 supplied. Empty on a black-box engagement.
             resumed_from: The engagement this deliverable was regenerated from,
@@ -802,15 +824,34 @@ class ReportAgent(BaseAgent):
             )
 
         # Access-control coverage without two principals to compare.
+        #
+        # "Anything behind authentication was not examined" is the strongest
+        # sentence in this section and it used to be written off one boolean.
+        # 3c47a0de rendered it above 22 findings at /vulnerabilities/sqli/,
+        # /exec/, /fi/ and /upload/ — every one of them behind DVWA's login,
+        # reached on a session the default-credential sweep established and never
+        # registered. The claim is now made only when the reconciliation says the
+        # run can back it; otherwise the item states the inconsistency, which is a
+        # different limitation with a different remedy.
         if not authentication.get("authenticated"):
+            verdict = authentication_verdict(authentication, finding_count)
             items.append(
                 NotTestedItem(
                     item="Authenticated application surface",
                     category=NotTestedCategory.UNAUTHENTICATED,
                     reason=(
-                        "No authenticated session was established for this engagement, "
-                        "so only the surface reachable without a login was tested. "
-                        "Anything behind authentication was not examined."
+                        (
+                            "No authenticated session was established for this "
+                            "engagement, so only the surface reachable without a login "
+                            "was tested. Anything behind authentication was not examined."
+                        )
+                        if verdict.may_assert_no_session
+                        else (
+                            "This engagement's authentication record says no session was "
+                            "established and the run's own output contradicts it, so the "
+                            "authenticated surface can be reported neither as tested nor "
+                            "as untested. " + " ".join(verdict.contradictions)
+                        )
                     ),
                 )
             )
@@ -1304,13 +1345,9 @@ class ReportAgent(BaseAgent):
             ]
         )
         if stamp.get("usd_is_complete"):
-            lines.append(f"- Cost: ${float(stamp.get('usd_spent') or 0.0):.4f}")
+            lines.append(f"- Cost: {spend_cost_line(stamp)}")
         else:
-            unpriced = ", ".join(stamp.get("unpriced_models") or [])
-            lines.append(
-                f"- Cost: ${float(stamp.get('usd_spent') or 0.0):.4f} "
-                f"(**lower bound** — no rate declared for: {unpriced})"
-            )
+            lines.append(f"- Cost: {spend_cost_line(stamp)}")
         lines.append("")
 
     @staticmethod
@@ -1597,8 +1634,7 @@ class ReportAgent(BaseAgent):
                     if window is not None
                     else "- **Authorized window:** none agreed"
                 ),
-                f"- **Testing performed:** {report.test_start.isoformat()} → "
-                f"{report.test_end.isoformat()}",
+                f"- **Testing performed:** {testing_window(report).describe()}",
                 "",
                 "## Scope",
                 "",
@@ -1635,10 +1671,15 @@ class ReportAgent(BaseAgent):
                     lines.append(f"  - {evidence}")
                 lines.extend(ReportAgent._render_session_maintenance(auth))
             else:
-                lines.append(
-                    "- **Authenticated state:** NOT established — this engagement "
-                    "examined only the surface reachable without a login."
+                verdict = authentication_state(report)
+                lines.extend(
+                    [
+                        f"- **Mechanism:** {auth.get('mechanism', 'unknown')}",
+                        f"- **Authenticated state:** {verdict.headline}",
+                    ]
                 )
+                for line in verdict.contradictions:
+                    lines.append(f"  - {line}")
 
         safety = report.safety_summary
         if safety:
@@ -1760,7 +1801,7 @@ class ReportAgent(BaseAgent):
             rendered.add(str(category))
             lines.extend([f"### {heading}", ""])
             for item in group:
-                lines.append(f"- **{item.item}** — {item.reason}")
+                lines.append(f"- **{item.item}** — {ReportAgent._not_tested_reason(report, item)}")
             lines.append("")
 
         # A category with no heading is rendered anyway, under its raw name. The
@@ -1774,6 +1815,19 @@ class ReportAgent(BaseAgent):
                 lines.append(f"- **{item.item}** [{item.category}] — {item.reason}")
             lines.append("")
         lines.extend(["---", ""])
+
+    @staticmethod
+    def _not_tested_reason(report: PentestReport, item: NotTestedItem) -> str:
+        """The reason to render, reconciled against the run's own output.
+
+        The same function the PDF reads, for the same reason: a STORED bundle
+        carries the sentence its original run wrote, and a header block that says
+        the record and the run disagree does not un-write "Anything behind
+        authentication was not examined" three sections later.
+        """
+        if item.category is not NotTestedCategory.UNAUTHENTICATED:
+            return item.reason
+        return reconciled_not_tested_reason(item.reason, authentication_state(report))
 
     @staticmethod
     def _render_unproven_leads(lines: list[str], leads: list[UnprovenExploitLead]) -> None:

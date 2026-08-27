@@ -1168,6 +1168,7 @@ def report_pdf(
 
     from clinkz.agents._report_pdf import PDF_UNAVAILABLE_HINT, render_report_pdf
     from clinkz.models.report import PentestReport
+    from clinkz.safety.action_log import request_window_from_log
 
     outputs_root = outputs_root or _default_outputs_root()
     cleaned = _validated_engagement_id(engagement_id, flag="report-pdf")
@@ -1198,6 +1199,25 @@ def report_pdf(
             err=True,
         )
         raise typer.Exit(code=EXIT_BAD_INPUT) from exc
+
+    # A bundle written before the governor stamped its own request window has no
+    # honest value for "testing performed" - both ends are the report-generation
+    # clock, so a 4,597s run renders as zero directly beneath the authorized
+    # window. The run's own action log is in this bundle and is that governor's
+    # own writer, so the window is RECOVERED rather than invented. It is narrower
+    # than the governor's (state-changing requests and browser navigations, not
+    # every GET), and it renders with that provenance attached. Never overrides a
+    # stamp the run itself recorded.
+    if "first_request_at" not in report.safety_summary:
+        recovered = request_window_from_log(root / "actions.jsonl")
+        if recovered is not None:
+            report.safety_summary["first_request_at"] = recovered[0]
+            report.safety_summary["last_request_at"] = recovered[1]
+            report.safety_summary["request_window_source"] = (
+                "recovered from this bundle's action log, which records state-changing "
+                "requests and browser navigations - the full request window was not "
+                "stamped by the run"
+            )
 
     destination = out or (root / f"report_{cleaned}.pdf")
     try:

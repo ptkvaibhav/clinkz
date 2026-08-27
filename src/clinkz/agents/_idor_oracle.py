@@ -60,6 +60,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from clinkz.engagement.credential_shapes import fingerprint
+
 __all__ = [
     "ATTRIBUTION_IDENTICAL_RENDERING",
     "ATTRIBUTION_STABLE_FIELDS",
@@ -196,7 +198,16 @@ def _json_leaves(node: Any, prefix: str, out: dict[str, str]) -> None:
     """
     if isinstance(node, dict):
         for key, value in node.items():
-            _json_leaves(value, f"{prefix}.{key}" if prefix else str(key), out)
+            # A key carrying a ``.`` is bracketed, because otherwise the joined
+            # path cannot be split back into segments — and one of those segments
+            # may be an identifier the evidence must not reproduce. A map keyed
+            # by ``victim@corp.example`` would split into ``victim@corp`` and
+            # ``example``, and fingerprinting the first leaves the second in the
+            # deliverable. Bracket notation is what a JSON path already uses for
+            # a key that is not a bare name.
+            name = str(key)
+            segment = f"[{name}]" if "." in name else name
+            _json_leaves(value, f"{prefix}.{segment}" if prefix else segment, out)
     elif isinstance(node, list):
         for index, value in enumerate(node):
             _json_leaves(value, f"{prefix}[{index}]", out)
@@ -275,9 +286,21 @@ def attribution_between(
         self_body: What A was served for ``ref(A)``.
 
     Returns:
-        ``(route, attributing_values)``. ``("", ())`` when the crossing response
+        ``(route, attributing_fields)``. ``("", ())`` when the crossing response
         is not attributable to B at all — which is not a weaker finding, it is a
         different response, and the caller moves on.
+
+        Each attributing field is rendered as
+        ``field=<name> owner_fp=<hash> caller_fp=<hash|absent>`` — the field NAME
+        and a salted fingerprint, never the value. The value is the one piece of
+        the target's own data an IDOR finding has ever carried, and on a client
+        engagement it is a real customer's email or postal address in a document
+        that gets emailed. Bounding it to 80 characters bounded volume, not
+        sensitivity. The claim the values were carrying is *this field came back
+        identical to B's own read and differs from A's*, and two fingerprints
+        make exactly that claim — the same trade
+        :attr:`~clinkz.agents._auth_bypass.AuthArtifact.principal` already makes
+        for a captured credential.
     """
     if not owner_body or not crossing_body:
         return "", ()
@@ -287,7 +310,8 @@ def attribution_between(
 
     owner = stable_fields(owner_body)
     crossing = stable_fields(crossing_body)
-    mine = {v.strip() for v in stable_fields(self_body).values()}
+    caller = stable_fields(self_body)
+    mine = {v.strip() for v in caller.values()}
 
     matched: list[str] = []
     for key, value in owner.items():
@@ -296,10 +320,98 @@ def attribution_between(
         if value.strip() in mine:
             continue
         if crossing.get(key, "").strip() == value.strip():
-            matched.append(f"{key}={value.strip()}")
+            matched.append(_attributing_field_line(key, value.strip(), caller.get(key)))
     if len(matched) < MIN_ATTRIBUTING_FIELDS:
         return "", ()
     return ATTRIBUTION_STABLE_FIELDS, tuple(sorted(matched))
+
+
+def _attributing_field_line(field: str, owner_value: str, caller_value: str | None) -> str:
+    """One attributing field as names and fingerprints, carrying no target data.
+
+    ``caller_fp`` is deliberately part of the line rather than left implicit:
+    "the owner's value came back" is only half the claim, and the half that makes
+    it a BOUNDARY crossing is that the caller's own record holds something else —
+    or holds nothing under that field at all, which is ``absent``.
+
+    The field NAME survives because it is schema, not data: ``billing.email`` is
+    the application's own vocabulary and is what a remediation has to name. The
+    fingerprint is per-process salted, so two lines in one bundle can be compared
+    and nothing in it can be replayed or reversed.
+
+    A path segment is only schema while the object it indexes is a RECORD. An
+    API that returns a **map keyed by the record's own identifier** —
+    ``{"accounts": {"victim@corp.example": {...}}}`` — puts the identifier in the
+    path, so fingerprinting the values alone still reproduced a victim's email
+    verbatim. Identifier-shaped segments are therefore fingerprinted too; see
+    :func:`_schema_path`.
+    """
+    caller = (caller_value or "").strip()
+    caller_fp = fingerprint(caller) if caller else "absent"
+    return f"field={_schema_path(field)} owner_fp={fingerprint(owner_value)} caller_fp={caller_fp}"
+
+
+#: A path segment that is DATA rather than schema. Each alternative is an
+#: identifier shape a field name does not have: an address (``@``), a UUID, a
+#: bare number, a long hex run, or any run of five or more digits — which is an
+#: account number or an order reference, and is not ``line1``, ``address2``,
+#: ``sha256`` or ``oauth2``.
+_IDENTIFIER_SEGMENT: re.Pattern[str] = re.compile(
+    r"^[^\s]*@[^\s]*$"
+    r"|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    r"|^\d+$"
+    r"|^[0-9a-fA-F]{12,}$"
+    r"|\d{5,}"
+)
+
+
+def _schema_path(path: str) -> str:
+    """*path* with any identifier-shaped segment replaced by a fingerprint.
+
+    The dot-joined leaf path is the application's vocabulary right up until the
+    application keys a map by the record's identifier, at which point one segment
+    of it is the very data this evidence must not reproduce. Fingerprinting that
+    segment keeps the path readable as a shape (``accounts.<id:a3f…>.iban`` still
+    names the field a remediation has to fix) and keeps the correlation — the
+    same identifier fingerprints the same way inside one bundle.
+
+    List indices (``items[0].sku``) are positions, not identifiers, and are left
+    alone.
+    """
+    segments = _path_segments(path)
+    if not any(_IDENTIFIER_SEGMENT.search(segment) for segment in segments):
+        return path
+    return ".".join(
+        f"<id:{fingerprint(segment.strip('[]'))}>"
+        if _IDENTIFIER_SEGMENT.search(segment)
+        else segment
+        for segment in segments
+    )
+
+
+def _path_segments(path: str) -> list[str]:
+    """Split a leaf path on the dots that SEPARATE segments, not the ones inside one.
+
+    ``str.split(".")`` cannot do this: ``_json_leaves`` brackets a key containing
+    a dot precisely so the path stays splittable, and a naive split would tear
+    ``[victim@corp.example]`` in half — leaving the domain in the deliverable
+    after the local part had been fingerprinted.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in path:
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth = max(0, depth - 1)
+        if char == "." and depth == 0:
+            segments.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    segments.append("".join(current))
+    return segments
 
 
 def reflection_explains(crossing: ArmObservation, self_arm: ArmObservation) -> bool:
@@ -390,7 +502,9 @@ class IDORVerdict:
             (:class:`~clinkz.models.vuln_classes.MultiPrincipalRequirement`), not
             decided here; this records which one the run was in.
         attribution: Which route attributed the crossing response to B, or ``""``.
-        attributing_values: The specific ``field=value`` pairs that did it.
+        attributing_fields: The fields that did it, as
+            ``field=<name> owner_fp=<hash> caller_fp=<hash|absent>``. Names and
+            salted fingerprints only — see :func:`attribution_between`.
         why_unconfirmed: The closed-vocabulary lead reason, or ``""``.
         detail: One sentence for the trace, the lead, and the evidence.
         arms_detail: Per-arm one-liners, rendered into the finding so a reviewer
@@ -400,7 +514,7 @@ class IDORVerdict:
     confirmed: bool
     tier: str
     attribution: str = ""
-    attributing_values: tuple[str, ...] = ()
+    attributing_fields: tuple[str, ...] = ()
     why_unconfirmed: str = ""
     detail: str = ""
     arms_detail: tuple[str, ...] = ()
@@ -585,7 +699,7 @@ def decide_idor(
         confirmed=True,
         control_refused=True,
         attribution=route,
-        attributing_values=values,
+        attributing_fields=values,
         detail=(
             f"as {self_arm.principal}, reference {crossing.reference!r} returned the record "
             f"{owner_read.principal} is served by its own authorized read ({route}"

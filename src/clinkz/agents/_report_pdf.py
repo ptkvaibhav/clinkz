@@ -65,19 +65,44 @@ from clinkz.agents._control_arm import (
     ControlVerdict,
     control_required,
     control_verdict_from_evidence,
+    declared_observation,
     indicator_is_self_controlled,
     structured_evidence_field,
+)
+from clinkz.agents._report_integrity import (
+    AuthenticationState,
+    assert_testing_window_renderable,
+    authentication_state,
+    document_title,
+    reconciled_not_tested_reason,
+    spend_cost_line,
 )
 from clinkz.engagement.secrets import redact
 from clinkz.llm.degradation import reconcile_with_model_stamp
 from clinkz.models.finding import Finding, Severity
-from clinkz.models.report import NotTestedCategory, PentestReport
+from clinkz.models.report import NotTestedCategory, NotTestedItem, PentestReport
 from clinkz.models.vuln_classes import for_finding
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from reportlab.platypus import Flowable
 
-__all__ = ["PDF_UNAVAILABLE_HINT", "control_arm_row", "render_report_pdf"]
+__all__ = [
+    "PDF_UNAVAILABLE_HINT",
+    "ControlArmRuleMissingError",
+    "control_arm_row",
+    "render_report_pdf",
+]
+
+
+class ControlArmRuleMissingError(RuntimeError):
+    """A control-arm row that can only say which rule does NOT govern it.
+
+    The section header promises "the row says which rule applies instead". A
+    row that names no rule breaks that promise in the one place a client
+    checks whether the evidence was controlled, so the render fails rather
+    than shipping the nineteenth verbatim repetition of an absence.
+    """
+
 
 PDF_UNAVAILABLE_HINT = (
     "reportlab is not installed - the PDF deliverable was not written. "
@@ -96,6 +121,12 @@ _MONO_WRAP: int = 108
 #: claiming the evidence is complete.
 _MAX_EVIDENCE_ENTRIES: int = 24
 _MAX_EVIDENCE_CHARS: int = 4000
+
+#: Ceiling on the observation quoted into a control-arm row. The row is a table
+#: cell summarising WHY the class may confirm; the finding's own evidence block
+#: carries the entry in full a few pages later, and the cut says so rather than
+#: implying the observation ended there.
+_MAX_OBSERVATION_CHARS: int = 190
 
 _SEVERITY_ORDER: tuple[Severity, ...] = (
     Severity.CRITICAL,
@@ -194,11 +225,24 @@ def control_arm_row(finding: Finding) -> dict[str, str]:
         row["basis"] = self_controlled
         return row
     if test_method and not control_required(test_method):
-        row["outcome"] = "not marker-bound"
-        row["basis"] = (
-            "this class confirms on its defining effect rather than on a marker in a "
-            "response body, so the never-sent-control rule does not govern it"
-        )
+        rule = vuln_class.control_arm.governing_rule.strip() if vuln_class else ""
+        if not rule:
+            raise ControlArmRuleMissingError(
+                f"{test_method} is not bound by the never-sent-control rule and declares no "
+                "governing_rule, so its row can only say which rule does NOT apply. Nineteen "
+                "of twenty-nine rows across the two generated PDFs said exactly that, under a "
+                "header promising the row would name the rule that does"
+            )
+        key = vuln_class.control_arm.evidence_key  # type: ignore[union-attr]
+        observed = declared_observation(finding.evidence, key)
+        # Rendered as ``key=value`` rather than the bare value: half these
+        # observations are a bare ``True`` on their own, which says nothing, and
+        # naming the field is what lets a reviewer find it in the evidence block
+        # below and check it.
+        row["outcome"] = "governed by its own rule"
+        if len(observed) > _MAX_OBSERVATION_CHARS:
+            observed = observed[:_MAX_OBSERVATION_CHARS] + "… (full entry in the evidence block)"
+        row["basis"] = rule + (f". Observed: {key}={observed}" if observed else "")
         return row
     row["outcome"] = "ABSENT"
     row["basis"] = (
@@ -247,6 +291,11 @@ class _PDFReport:
         self.report = report
         self.story: list[Flowable] = []
         self.colors = colors
+        # Reconciled ONCE, at construction, so the cover and the engagement-window
+        # section cannot disagree about the same fact. The guard raises here rather
+        # than after a page has been laid out: a half-written document that states a
+        # false testing window is exactly what this refuses to produce.
+        self.window = assert_testing_window_renderable(report)
 
         base = getSampleStyleSheet()
         self.body = ParagraphStyle(
@@ -438,7 +487,7 @@ class _PDFReport:
             canvas.setFont("Helvetica", 7)
             canvas.setFillColorRGB(0.4, 0.4, 0.44)
             canvas.drawString(
-                18 * mm, 11 * mm, redact(f"CONFIDENTIAL - {report.engagement_name}")[:110]
+                18 * mm, 11 * mm, redact(f"CONFIDENTIAL - {document_title(report)}")[:110]
             )
             canvas.drawRightString(A4[0] - 18 * mm, 11 * mm, f"page {document.page}")
             canvas.restoreState()
@@ -455,7 +504,7 @@ class _PDFReport:
             # report's own already-redacted fields and from nothing else — a
             # producer that stuffs an operator name or a session id in here
             # writes it somewhere no page-text scan would ever look.
-            title=redact(f"Penetration Test Report - {report.engagement_name}")[:200],
+            title=redact(f"Penetration Test Report - {document_title(report)}")[:200],
             author="Clinkz",
             subject=redact(f"Authorized penetration test of {', '.join(report.target_scope)}")[
                 :400
@@ -470,10 +519,9 @@ class _PDFReport:
     def _cover(self) -> None:
         report = self.report
         self._heading("Penetration Test Report", self.h1)
-        self._para(f"<b>{self._text(report.engagement_name)}</b>")
+        self._para(f"<b>{self._text(document_title(report))}</b>")
         self._para(
-            f"Testing performed {self._text(self._stamp(report.test_start))} &rarr; "
-            f"{self._text(self._stamp(report.test_end))}. "
+            f"Testing performed {self._text(self.window.describe())}. "
             f"Report generated {self._text(self._stamp(report.generated_at))}."
         )
         self._para(
@@ -539,8 +587,7 @@ class _PDFReport:
                     if window is not None
                     else "none agreed"
                 ),
-                f"<b>Testing performed:</b> {self._text(self._stamp(report.test_start))} "
-                f"&rarr; {self._text(self._stamp(report.test_end))}",
+                f"<b>Testing performed:</b> {self._text(self.window.describe())}",
             ]
         )
 
@@ -574,10 +621,21 @@ class _PDFReport:
                     [self._text(line) for line in (assertion.get("evidence") or [])], self.note
                 )
             else:
-                self._para(
-                    "<b>Authenticated state:</b> NOT established &mdash; this engagement "
-                    "examined only the surface reachable without a login."
+                verdict = authentication_state(report)
+                self._bullets(
+                    [
+                        f"<b>Mechanism:</b> {self._text(auth.get('mechanism', 'unknown'))}",
+                        f"<b>Authenticated state:</b> {self._text(verdict.headline)}",
+                    ]
                 )
+                if verdict.state is AuthenticationState.INCONSISTENT:
+                    self._para(
+                        "The record and the run disagree, so this document states both "
+                        "rather than picking the one field that happens to be rendered "
+                        "here:",
+                        self.note,
+                    )
+                    self._bullets([self._text(line) for line in verdict.contradictions], self.note)
 
         safety = report.safety_summary
         if safety:
@@ -744,7 +802,8 @@ class _PDFReport:
             "removed and its marker re-minted, then graded by the same oracle. A finding is "
             "reported only when that control REFUSED. Where a class confirms on an effect "
             "rather than on a marker in a response body, the never-sent-control rule does "
-            "not govern it and the row says which rule applies instead.",
+            "not govern it, and the row names the rule that does &mdash; read from the "
+            "class's own declaration, with the observation it turned on.",
             self.note,
         )
         rows: list[list[str]] = [["Finding", "Class / channel", "Control outcome", "Basis"]]
@@ -953,6 +1012,19 @@ class _PDFReport:
                 ]
             )
 
+    def _not_tested_reason(self, item: NotTestedItem) -> str:
+        """The reason to render, reconciled against the run's own output.
+
+        A stored bundle carries the sentence its original run wrote. 3c47a0de's
+        says "Anything behind authentication was not examined" — three pages
+        after a header block that now says the record and the run disagree, above
+        22 findings behind DVWA's login. The header being right does not make the
+        document right.
+        """
+        if item.category is not NotTestedCategory.UNAUTHENTICATED:
+            return item.reason
+        return reconciled_not_tested_reason(item.reason, authentication_state(self.report))
+
     def _not_tested(self) -> None:
         """What was NOT tested, grouped by whose limitation it is."""
         report = self.report
@@ -978,7 +1050,8 @@ class _PDFReport:
             self._heading(label, self.h3)
             self._bullets(
                 [
-                    f"<b>{self._text(item.item)}</b> &mdash; {self._text(item.reason)}"
+                    f"<b>{self._text(item.item)}</b> &mdash; "
+                    f"{self._text(self._not_tested_reason(item))}"
                     for item in group
                 ]
             )
@@ -1284,22 +1357,11 @@ class _PDFReport:
         if not spend:
             return
         self._heading("LLM consumption", self.h3)
-        usd_spent = spend.get("usd_spent")
-        usd = f"${usd_spent:.2f}" if isinstance(usd_spent, int | float) else "-"
         self._grid(
             [
                 ["Measure", "Value"],
                 ["Total tokens", self._text(spend.get("total_tokens", 0))],
-                [
-                    "Cost",
-                    self._text(usd)
-                    + (
-                        ""
-                        if spend.get("usd_is_complete")
-                        else " (a LOWER BOUND - a model with no declared price contributes "
-                        "tokens and no dollars rather than a guess)"
-                    ),
-                ],
+                ["Cost", self._text(spend_cost_line(spend))],
                 [
                     "Token cap",
                     self._text(spend.get("token_cap"))

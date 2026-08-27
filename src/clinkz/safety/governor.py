@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -218,6 +219,14 @@ class EngagementGovernor:
         self._consecutive_blocks = 0
         self._state_changes_sent = 0
         self._requests_authorized = 0
+        # The engagement's REQUEST window, stamped here because this is the one
+        # place that sees every dispatched request. The report used to source
+        # its "testing performed" line from the report-generation clock, so both
+        # ends were the same instant and a run of 4,597s rendered as zero —
+        # directly under the authorized window, where that line is the report's
+        # own evidence that testing happened inside it.
+        self._first_request_at: datetime | None = None
+        self._last_request_at: datetime | None = None
         self._benchmark_permitted = 0
         self._rate_wait_seconds = 0.0
         # Extra watchers fed every response. The session sentinel registers here
@@ -417,6 +426,7 @@ class EngagementGovernor:
         self._rate_wait_seconds += await self._bucket.acquire()
         await self._slots.acquire()
         self._requests_authorized += 1
+        self._stamp_request_window()
         if state_changing:
             self._state_changes_sent += 1
             self.action_log.record_sent(
@@ -528,11 +538,43 @@ class EngagementGovernor:
     # Reporting
     # ------------------------------------------------------------------
 
+    @property
+    def first_request_at(self) -> datetime | None:
+        """When the first request was authorized, or ``None`` if none was."""
+        return self._first_request_at
+
+    @property
+    def last_request_at(self) -> datetime | None:
+        """When the most recent request was authorized, or ``None``."""
+        return self._last_request_at
+
+    def _stamp_request_window(self) -> None:
+        """Extend the request window to now.
+
+        Called on the authorized path only: a refused request is not a request
+        the engagement made, and a window that counted refusals would report
+        testing that never happened.
+        """
+        now = datetime.now(UTC)
+        if self._first_request_at is None:
+            self._first_request_at = now
+        self._last_request_at = now
+
     def stats(self) -> dict[str, object]:
         """Runtime counters for the report and the run summary."""
         profile = get_active_benchmark_profile()
         return {
             "requests_authorized": self._requests_authorized,
+            # The window is stated even when it is empty, because its ABSENCE is
+            # what tells a renderer that a bundle predates this stamp — the one
+            # case in which a degenerate testing window is a missing record
+            # rather than a lie.
+            "first_request_at": (
+                self._first_request_at.isoformat() if self._first_request_at else None
+            ),
+            "last_request_at": (
+                self._last_request_at.isoformat() if self._last_request_at else None
+            ),
             "state_changing_sent": self.action_log.sent_count,
             "state_changing_refused": self.action_log.refused_count,
             "browser_navigations": self.action_log.navigation_count,

@@ -230,6 +230,30 @@ class TestAttribution:
         assert route == ATTRIBUTION_IDENTICAL_RENDERING
         assert values == ()
 
+    def test_a_map_keyed_by_the_record_identifier_does_not_leak_it(self) -> None:
+        """A path segment is schema only while the object it indexes is a RECORD.
+
+        ``{"accounts": {"victim@corp.example": {...}}}`` puts the identifier in
+        the leaf PATH, so fingerprinting the values alone still reproduced a
+        victim's email verbatim in the evidence — the exact disclosure moving off
+        values was meant to remove.
+        """
+        body = '{"caller": "%s", "accounts": {"%s": {"iban": "GB29ABCD1234", "bal": "41902.55"}}}'
+        route, values = attribution_between(
+            owner_body=body % ("victim", "victim@corp.example"),
+            crossing_body=body % ("tester", "victim@corp.example"),
+            self_body='{"caller": "tester", "accounts": {"tester@corp.example": '
+            '{"iban": "GB77WXYZ9999", "bal": "12.00"}}}',
+        )
+        assert route == ATTRIBUTION_STABLE_FIELDS
+        blob = " ".join(values)
+        for leaked in ("victim@corp.example", "victim", "corp.example", "GB29ABCD1234"):
+            assert leaked not in blob, f"{leaked!r} reached the evidence through the path"
+        assert "<id:" in blob, "the identifier segment is fingerprinted, not dropped"
+        assert "accounts." in blob and ".iban" in blob, (
+            "the surrounding path is schema and must survive - it is what a remediation has to name"
+        )
+
     def test_field_values_attribute_across_different_renderings(self) -> None:
         """An envelope naming the caller changes the page and not the record."""
         owner = json.dumps(
@@ -251,7 +275,22 @@ class TestAttribution:
             owner_body=owner, crossing_body=crossing, self_body=mine
         )
         assert route == ATTRIBUTION_STABLE_FIELDS
-        assert any("bergman" in v for v in values)
+        # The attributing FIELDS are named; their values are not. An attributing
+        # value is a real customer's surname, IBAN or address on a client
+        # engagement, and this is the first target data an IDOR finding has
+        # carried into a document that gets emailed. The claim survives on two
+        # fingerprints: equal to the owner's own read, different from A's.
+        assert any("field=record.surname" in v for v in values)
+        assert any("field=record.iban" in v for v in values)
+        blob = " ".join(values)
+        for value in ("bergman", "GB29ABCD", "bob"):
+            assert value not in blob, f"{value!r} is the target's data and must not be reproduced"
+        for line in values:
+            assert "owner_fp=" in line and "caller_fp=" in line
+        assert "caller_fp=absent" not in blob, (
+            "the caller's own record carries all three fields, so each has a differing "
+            "fingerprint rather than an absence"
+        )
 
     def test_values_the_callers_own_record_carries_do_not_attribute(self) -> None:
         """Subtracting A's record is the load-bearing half; without it the template wins."""
