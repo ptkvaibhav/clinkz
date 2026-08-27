@@ -503,7 +503,15 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
         limitation=(
             "Requires at least two authenticated roles to prove that an "
             "authorization boundary was crossed. With a single role (or none) "
-            "the class can only report candidates."
+            "the class can only report candidates. It also requires those roles "
+            "to be RANKED, via the optional 'privilege' field on each role in "
+            "the credential file (lower is less privileged): the crossing is "
+            "dispatched from the least privileged identity supplied, because a "
+            "more privileged one being served a subordinate's record is in most "
+            "applications the feature rather than the flaw. Where no ranking was "
+            "declared the crossing is reported as a candidate rather than "
+            "confirmed — the engine does not infer a hierarchy from a role's "
+            "name."
         ),
         # No ``control_arm`` exemption. The four-arm oracle DISPATCHES a
         # never-sent control (``ref(∅)``) through the shared ``_run_control_arm``

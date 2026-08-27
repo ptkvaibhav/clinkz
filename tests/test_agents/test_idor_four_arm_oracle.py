@@ -43,12 +43,19 @@ from clinkz.agents._idor_oracle import (
     stable_fields,
     synthesize_absent_reference,
 )
-from clinkz.agents._principal import ANONYMOUS, Principal, parse_role_sessions
+from clinkz.agents._principal import (
+    ANONYMOUS,
+    PRIVILEGE_ORDER_UNDECLARED,
+    Principal,
+    parse_role_sessions,
+    privilege_order,
+)
 from clinkz.agents.exploit import ExploitAgent, PageAnalysis, _HTTPResponse
 from clinkz.llm.base import LLMClient, LLMMessage
+from clinkz.models.finding import UNPROVEN_WHY_UNCONFIRMED, Finding
 from clinkz.models.methodology import IDORPrimitives
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
-from clinkz.models.vuln_classes import multi_principal_requirement
+from clinkz.models.vuln_classes import for_method, multi_principal_requirement
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
 
@@ -535,13 +542,27 @@ def _make_agent(principals: tuple[Principal, ...] = ()) -> ExploitAgent:
     return agent
 
 
+def _idor_finding() -> Finding:
+    """A confirmed IDOR finding, for the emission-chokepoint grounds."""
+    return Finding(
+        title="Insecure Direct Object Reference via id parameter",
+        severity="high",
+        target="http://example.com/account",
+        description="Technique: WSTG-ATHZ-04. Parameter: id.",
+    )
+
+
 def _page(url: str = "http://example.com/account?id=1") -> PageAnalysis:
     return PageAnalysis(url=url, body="", status=200, input_params=["id"])
 
 
+# Ranked as peers: neither holds a role that authorizes reading the other's
+# record, which is the direction that makes a crossing arm evidence. An
+# undeclared rank is a lead, not a confirmation — asserted separately in
+# ``TestTheCrossingRunsUphill``.
 TWO_ROLES = (
-    Principal(role="alice", username="alice", cookies={"sid": "a"}, primary=True),
-    Principal(role="bob", username="bob", cookies={"sid": "b"}),
+    Principal(role="alice", username="alice", cookies={"sid": "a"}, primary=True, privilege=0),
+    Principal(role="bob", username="bob", cookies={"sid": "b"}, privilege=0),
 )
 ONE_ROLE = (Principal(role="alice", username="alice", cookies={"sid": "a"}, primary=True),)
 
@@ -724,6 +745,14 @@ class TestTheHandoff:
             assert parse_role_sessions(raw) == ()
 
     def test_the_agent_parses_the_handoff_into_principals(self) -> None:
+        """A ranked handoff crosses UPHILL: the low role reads the admin's object.
+
+        This assertion used to read ``_idor_principal_a() is None`` — the ambient
+        session IS A — and the ambient session is the primary role, which on the
+        ordinary client engagement is the administrator. That direction grades
+        "the admin was served a customer's record" as a boundary crossing, which
+        is what most applications authorize an admin to do.
+        """
         agent = _make_agent()
         agent._principals = parse_role_sessions(
             [
@@ -733,15 +762,233 @@ class TestTheHandoff:
                     "established": True,
                     "cookies": {"PHPSESSID": "x"},
                     "primary": True,
+                    "privilege": 10,
                 },
                 {
                     "role": "user_b",
                     "username": "gordonb",
                     "established": True,
                     "headers": {"Authorization": "Bearer y"},
+                    "privilege": 0,
                 },
             ]
         )
         assert agent._idor_tier() == TIER_MULTI_ROLE
-        assert [p.role for p in agent._idor_principals_b()] == ["user_b"]
-        assert agent._idor_principal_a() is None  # the ambient session IS A
+        principal_a = agent._idor_principal_a()
+        assert principal_a is not None
+        assert principal_a.role == "user_b"
+        assert [p.role for p in agent._idor_principals_b()] == ["admin"]
+
+
+class TestTheCrossingRunsUphill:
+    """Which identity the crossing is dispatched FROM decides whether it is one.
+
+    Every arm in the four-arm table is satisfied by an administrator being served
+    a customer's record, and in most applications that is the feature. So A is
+    the least privileged identity the engagement holds, and where the operator
+    declared no hierarchy the engine says so rather than picking one: the
+    commonest engagement in the field supplies a single admin or service account,
+    and that is exactly the run a name-based guess would produce a false positive
+    on.
+    """
+
+    def test_a_declared_rank_orders_least_privileged_first(self) -> None:
+        order = privilege_order(
+            (
+                Principal(role="admin", cookies={"s": "1"}, primary=True, privilege=10),
+                Principal(role="customer", cookies={"s": "2"}, privilege=0),
+            )
+        )
+        assert order.known is True
+        assert order.least_privileged is not None
+        assert order.least_privileged.role == "customer"
+        assert [p.role for p in order.crossing_candidates()] == ["admin"]
+
+    def test_a_candidate_ranked_below_a_is_not_a_crossing(self) -> None:
+        """Downhill is where an entitlement lives, so it is not dispatched as one."""
+        order = privilege_order(
+            (
+                Principal(role="mid", cookies={"s": "1"}, privilege=5),
+                Principal(role="admin", cookies={"s": "2"}, privilege=10),
+                Principal(role="low", cookies={"s": "3"}, privilege=0),
+            )
+        )
+        assert order.least_privileged is not None
+        assert order.least_privileged.role == "low"
+        assert [p.role for p in order.crossing_candidates()] == ["mid", "admin"]
+
+    def test_peers_cross_each_other(self) -> None:
+        """Equal rank is the cleanest crossing: no role authorizes either read."""
+        order = privilege_order(
+            (
+                Principal(role="alice", cookies={"s": "1"}, privilege=0),
+                Principal(role="bob", cookies={"s": "2"}, privilege=0),
+            )
+        )
+        assert order.known is True
+        assert order.least_privileged is not None
+        assert order.least_privileged.role == "alice"
+        assert [p.role for p in order.crossing_candidates()] == ["bob"]
+
+    def test_the_order_is_a_function_of_the_set_not_the_handoff(self) -> None:
+        """Ties break on role name, so two handoff orders rank identically.
+
+        A run whose arms depend on dict ordering cannot be compared against its
+        own baseline - the same reason the exploit plan refuses to break a tie on
+        the crawler's emission sequence.
+        """
+        a = Principal(role="alice", cookies={"s": "1"}, privilege=0)
+        b = Principal(role="bob", cookies={"s": "2"}, privilege=0)
+        assert [p.role for p in privilege_order((a, b)).ordered] == [
+            p.role for p in privilege_order((b, a)).ordered
+        ]
+
+    def test_one_undeclared_rank_makes_the_whole_order_unknown(self) -> None:
+        order = privilege_order(
+            (
+                Principal(role="admin", cookies={"s": "1"}, primary=True, privilege=10),
+                Principal(role="customer", cookies={"s": "2"}),
+            )
+        )
+        assert order.known is False
+        assert "customer" in order.why_unknown
+        # The arms still dispatch: what an unknown order costs is the
+        # confirmation, not the observation.
+        assert [p.role for p in order.crossing_candidates()] == ["customer"]
+
+    def test_fewer_than_two_principals_is_vacuously_ordered(self) -> None:
+        """There is no pair, so there is no order to get wrong.
+
+        The single-role tier refuses to confirm for its own, more specific
+        reason; reporting the direction as unknown here as well would demote
+        under a reason naming the wrong missing observation.
+        """
+        assert privilege_order(()).known is True
+        assert privilege_order((Principal(role="solo", cookies={"s": "1"}),)).known is True
+
+    def test_a_boolean_is_not_a_rank(self) -> None:
+        """A ``privilege: true`` typo is undeclared: ``bool`` is an ``int`` here."""
+        parsed = parse_role_sessions(
+            [
+                {"role": "a", "established": True, "cookies": {"s": "1"}, "privilege": True},
+                {"role": "b", "established": True, "cookies": {"s": "2"}, "privilege": 0},
+            ]
+        )
+        assert [p.privilege for p in parsed] == [None, 0]
+        assert privilege_order(parsed).known is False
+
+    def test_the_handoff_carries_the_declared_rank(self) -> None:
+        parsed = parse_role_sessions(
+            [
+                {"role": "a", "established": True, "cookies": {"s": "1"}, "privilege": 7},
+                {"role": "b", "established": True, "cookies": {"s": "2"}, "privilege": -1},
+            ]
+        )
+        assert {p.role: p.privilege for p in parsed} == {"a": 7, "b": -1}
+
+    @pytest.mark.asyncio
+    async def test_the_arms_are_dispatched_from_the_low_principal(self) -> None:
+        """The crossing is sent as the customer, not as the primary admin."""
+        agent = _make_agent(
+            (
+                Principal(
+                    role="admin",
+                    username="admin",
+                    cookies={"sid": "a"},
+                    primary=True,
+                    privilege=10,
+                ),
+                Principal(role="customer", username="customer", cookies={"sid": "b"}, privilege=0),
+            )
+        )
+        target = _ScriptedTarget({"1": "customer", "2": "admin"}, enforces=False)
+        target.bind(agent)
+        verdict, _arms, _control = await agent._idor_phase5_verify(
+            _page(),
+            "id",
+            {"reference": "2", "rationale": "the admin's record"},
+            {"baseline_status": 200, "baseline_body": _record_for("customer", "customerson", "1")},
+            IDORPrimitives(id_format="numeric"),
+            original_value="1",
+        )
+        crossing_callers = [who for ref, who in target.requests if ref == "2"]
+        assert "customer" in crossing_callers
+        assert verdict.confirmed is True, verdict.detail
+
+    @pytest.mark.asyncio
+    async def test_an_undeclared_order_leads_instead_of_confirming(self) -> None:
+        """Same target, same arms, ranks removed: a lead with an actionable reason."""
+        agent = _make_agent(
+            (
+                Principal(role="alice", username="alice", cookies={"sid": "a"}, primary=True),
+                Principal(role="bob", username="bob", cookies={"sid": "b"}),
+            )
+        )
+        _ScriptedTarget({"1": "alice", "2": "bob"}, enforces=False).bind(agent)
+        verdict, _arms, _control = await agent._idor_phase5_verify(
+            _page(),
+            "id",
+            {"reference": "2", "rationale": "peer"},
+            {"baseline_status": 200, "baseline_body": A_RECORD},
+            IDORPrimitives(id_format="numeric"),
+        )
+        assert verdict.confirmed is False
+        assert verdict.why_unconfirmed == PRIVILEGE_ORDER_UNDECLARED
+        assert verdict.why_unconfirmed in UNPROVEN_WHY_UNCONFIRMED
+        # The attribution SUCCEEDED and is reported. What is missing is the
+        # direction, and the lead has to say which of the two it is.
+        assert verdict.attribution == ATTRIBUTION_IDENTICAL_RENDERING
+        assert "privilege rank" in verdict.detail
+
+    def test_the_emission_chokepoint_refuses_an_unranked_confirmation(self) -> None:
+        """Ground 10: the rule holds even if a future class forgets to check.
+
+        Both halves are engine facts - a registry declaration and the run's own
+        principal list - so nothing the target sends reaches this ground in
+        either direction.
+        """
+        agent = _make_agent(
+            (
+                Principal(role="alice", cookies={"sid": "a"}, primary=True),
+                Principal(role="bob", cookies={"sid": "b"}),
+            )
+        )
+        ground = agent._fp_ground_undeclared_privilege_order(_idor_finding())
+        assert ground is not None
+        assert "outrank" in ground
+
+    def test_ground_ten_stands_down_for_a_ranked_run(self) -> None:
+        agent = _make_agent(
+            (
+                Principal(role="alice", cookies={"sid": "a"}, primary=True, privilege=0),
+                Principal(role="bob", cookies={"sid": "b"}, privilege=0),
+            )
+        )
+        assert agent._fp_ground_undeclared_privilege_order(_idor_finding()) is None
+
+    def test_ground_ten_defers_to_ground_nine_on_a_single_role_run(self) -> None:
+        """Two grounds, two missing observations - the lead names the right one."""
+        agent = _make_agent((Principal(role="alice", cookies={"sid": "a"}, primary=True),))
+        assert agent._fp_ground_undeclared_privilege_order(_idor_finding()) is None
+        assert agent._fp_ground_insufficient_principals(_idor_finding()) is not None
+
+    def test_a_class_needing_one_principal_is_untouched(self) -> None:
+        agent = _make_agent(
+            (
+                Principal(role="alice", cookies={"sid": "a"}, primary=True),
+                Principal(role="bob", cookies={"sid": "b"}),
+            )
+        )
+        finding = Finding(
+            title="SQL Injection via id parameter",
+            severity="high",
+            target="http://example.com/account",
+            description="Technique: WSTG-INPV-05. Parameter: id.",
+        )
+        assert agent._fp_ground_undeclared_privilege_order(finding) is None
+
+    def test_the_registry_tells_a_client_the_ranking_is_needed(self) -> None:
+        """A rule the code enforces and the report does not mention is a trap."""
+        limitation = for_method("_test_idor").limitation
+        assert "privilege" in limitation
+        assert "least privileged" in limitation

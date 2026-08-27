@@ -730,6 +730,36 @@ class TestTheSuppressionKeyIsCredentialPossession:
         )
         assert ok is True, observed
 
+    @pytest.mark.asyncio
+    async def test_a_wider_supplied_set_does_not_suppress_a_real_bypass(self) -> None:
+        """Two held credentials, and the tautology submits neither password.
+
+        The first engagement carrying two credentials is the first real test of
+        this keying under a wider supplied set, and the failure mode it guards is
+        a silent regression to identity MATCHING: a bypass payload naming the
+        admin would be suppressed on every application whose first row is the
+        admin, exactly because the engagement happens to hold that account's
+        credential. Possession is per-request, so holding two changes nothing —
+        neither password rode this request.
+        """
+        from clinkz.engagement.credential_shapes import fingerprint
+
+        agent = _agent()
+        agent._authenticated_as = ADMIN
+        agent._known_valid_credentials = {
+            ADMIN: fingerprint("admin123"),
+            "jim@t": fingerprint("ncc-1701"),
+        }
+        _drive(
+            agent,
+            probe_body=json.dumps({"authentication": {"token": _jwt({"email": ADMIN})}}),
+            submitted={"email": ADMIN, "password": "Clinkz-Probe-1!"},
+        )
+        ok, observed = await agent._sqli_verify_auth_bypass(
+            _login_page(), "email", f"{ADMIN}'-- ", f"{ADMIN}'and'1'='2'-- ", {"value": "1"}
+        )
+        assert ok is True, observed
+
     def test_both_halves_must_ride_the_same_request(self) -> None:
         from clinkz.engagement.credential_shapes import fingerprint
 

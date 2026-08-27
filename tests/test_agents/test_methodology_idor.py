@@ -98,8 +98,13 @@ def _make_page(
 # ---------------------------------------------------------------------------
 
 
-ALICE = Principal(role="alice", username="alice", cookies={"sid": "a"}, primary=True)
-BOB = Principal(role="bob", username="bob", cookies={"sid": "b"})
+# Peers, and RANKED as peers. A crossing arm is evidence only while the caller
+# does not outrank the owner, so an undeclared rank bounds every one of these
+# verdicts to a lead — see ``privilege_order``. Equal rank is the cleanest
+# crossing there is: no role either of them holds authorizes reading the
+# other's record.
+ALICE = Principal(role="alice", username="alice", cookies={"sid": "a"}, primary=True, privilege=0)
+BOB = Principal(role="bob", username="bob", cookies={"sid": "b"}, privilege=0)
 
 
 def _who(agent: ExploitAgent) -> str:

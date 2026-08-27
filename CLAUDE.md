@@ -531,7 +531,9 @@ src/clinkz/
 │                     #   _auth_bypass (THE one vocabulary for "did this response log us
 │                     #   in?" — artifact reader + the three-arm differential),
 │                     #   _principal (a NAMED authenticated identity + the handoff
-│                     #   that carries one — the wire _role_sessions was missing),
+│                     #   that carries one — the wire _role_sessions was missing;
+│                     #   + privilege_order: which identity a crossing runs FROM,
+│                     #   declared by the operator, never read off a role label),
 │                     #   _idor_oracle (the four-arm access-control oracle: whose
 │                     #   object is this? — pure, offline-testable),
 │                     #   _control_arm (the never-sent control + attribution + WHICH
@@ -1086,6 +1088,28 @@ LESSONS #17).
   holds until the twenty-fifth class is written. A direct invocation holds no
   principals and is in the single-role tier: that is the honest answer, not an
   exemption.
+- **A crossing arm is evidence only when it runs UPHILL, and which way is up is
+  the operator's to declare.** Two principals make the arm dispatchable; they do
+  not make it meaningful. Every one of the four arms is satisfied by an
+  administrator being served a customer's record — which in most applications is
+  the feature — and the commonest client engagement supplies exactly one admin or
+  service account, so A being the PRIMARY role pointed the oracle at a false
+  positive on the shape it will meet most often. A is now the LEAST privileged
+  identity the engagement holds (`_principal.privilege_order`), and the candidate
+  owners are everyone A does not outrank — equal rank included, since two
+  customers are peers and no role either holds authorizes reading the other's
+  record. The rank is DECLARED (`privilege` on the role credential, lower is
+  less privileged) and never inferred from a role LABEL: a label is free text an
+  operator picked for their own application, and reading a hierarchy out of it is
+  the consumer-guesses-the-producer pattern that has already cost a component's
+  field names, a tool's output model and a version's provenance. An undeclared
+  rank does not stop the arms — the crossing dispatches and is recorded — it
+  bounds the VERDICT to a lead
+  (`privilege_order_undeclared_crossing_may_be_authorized`), which an operator
+  clears in one line of their credential file. Enforced at the methodology AND at
+  `_persist_finding` (deterministic ground 10), the same pair as the tier rule,
+  and the two grounds are mutually exclusive so a lead names the observation that
+  was actually missing.
 - **A request carries the ENGAGEMENT's session, a NAMED principal's, or none —
   one field, three values** (`tools/http_client.py::session_mode`). `isolated`
   did not exist and both alternatives are wrong for a cross-principal arm: under
@@ -1132,11 +1156,14 @@ LESSONS #17).
   citing something else, refutes itself in its own evidence — which shipped
   verbatim seven times.
 - **A deterministic guard whose value is that it needs no model is never gated by
-  one.** All **nine** grounds run unconditionally at `_persist_finding` over
+  one.** All **ten** grounds run unconditionally at `_persist_finding` over
   every finding, from one declaration (`_deterministic_grounds` — probe plus the
   lead reason it produces, read by the emission gate and the FP cross-check
-  alike). Ground 9 is the only one that reads no evidence at all: it compares a
-  registry DECLARATION against the run's own principal list, both engine facts. Four of them used to be reachable only *through* the cross-check, i.e.
+  alike). Grounds 9 and 10 are the two that read no evidence at all: they
+  compare a registry DECLARATION against the run's own principal list — how
+  MANY principals it holds, and whether it can say which of them outranks the
+  other — both engine facts, so nothing the target sends reaches them in either
+  direction. Four of them used to be reachable only *through* the cross-check, i.e.
   only once a model had nominated the finding; on the portfolio run that check
   returned **no opinion at all** and every ground behind it went unconsulted.
   Two consequences are structural, not incidental: an LLM can no longer suppress

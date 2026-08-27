@@ -179,6 +179,96 @@ principals and is therefore in the single-role tier. That is the honest answer
 rather than an exemption: an invocation with no second identity cannot attribute
 an object to one.
 
+Holding two principals is necessary and not sufficient: see *Which identity the
+crossing runs FROM* below for the second half of the same claim.
+
+## Which identity the crossing runs FROM
+
+Two principals make a crossing arm dispatchable. They do not make it meaningful.
+
+Read the four-arm table again with an administrator as A. The crossing resolves;
+the never-issued reference refuses; an anonymous caller is turned away; the
+record is positively attributable to a customer. Every arm clears — and what was
+observed is an administrator reading a customer's record, which in most
+applications is the feature that administrator exists for. The oracle would emit
+`high`/CONFIRMED on an application behaving exactly as designed.
+
+That is not a corner case. It is the commonest engagement shape there is: a
+client hands over one admin or service account, because that is the credential
+they have to give. So the direction the arm runs in is not a refinement of the
+claim, it is half of it.
+
+**A is the LEAST privileged identity the engagement holds**, and the candidate
+owners are everyone A does not outrank:
+
+| A's rank vs the owner's | dispatched? | why |
+| --- | --- | --- |
+| below | yes | no role A holds authorizes the read |
+| equal | yes | peers — two customers, neither entitled to the other's record |
+| above | no | the read may be an entitlement, and nothing in band separates the two |
+
+Equal rank is not a weaker case, it is the cleanest one available: there is no
+hierarchy to appeal to at all.
+
+### The rank is declared, never inferred
+
+`privilege` is an optional integer on each role in the credential file — lower is
+less privileged, and only the relative order is ever read:
+
+```json
+{"credentials": [
+  {"role": "admin", "username": "...", "password": "...", "privilege": 10},
+  {"role": "customer", "username": "...", "password": "...", "privilege": 0}
+]}
+```
+
+Nothing infers it from the role LABEL. A label is free text an operator picked
+for their own application — `svc-reporting`, `l2`, `tier3` — and reading a
+hierarchy out of it is the consumer-guesses-what-the-producer-meant pattern that
+has already cost this codebase a component's field names (`injectable` vs
+`vulnerable`), a tool's output model, and a version's provenance. Here it would
+cost something worse than a dead capability: it would manufacture the exact false
+positive the rule exists to prevent, and manufacture it confidently.
+
+### An undeclared rank costs the confirmation, not the observation
+
+The arms still dispatch and are still recorded in full. What changes is the
+verdict: `why_unconfirmed = privilege_order_undeclared_crossing_may_be_authorized`,
+registered in `UNPROVEN_WHY_UNCONFIRMED`, with the attribution route reported
+beside it — because the attribution SUCCEEDED, and the operator needs to see that
+the only thing between this lead and a finding is one line of their credential
+file.
+
+`privilege_order` reports `known=False` if **any** participating principal
+declared nothing: a partial hierarchy is not a hierarchy. It is vacuously `True`
+below two principals, since there is no pair to order — and those runs are
+refused one step earlier by the tier rule anyway, under the reason that names the
+observation they actually lack.
+
+Ties break on role name, so the order is a function of the principal SET and not
+of handoff order. An engagement whose arms depend on dict ordering cannot be
+compared against its own baseline — the same reason the exploit plan refuses to
+break a tie on the crawler's emission sequence.
+
+### Enforced in two places, like the tier rule
+
+The methodology refuses first (phase 5 grades the direction as step 6, after
+attribution, so the lead can say what it did prove), and `_persist_finding`
+carries deterministic **ground 10**
+(`_fp_ground_undeclared_privilege_order`). Both halves are engine facts — a
+registry declaration and the run's own principal list — so nothing the target
+sends reaches this ground in either direction, and it needs no
+structured-evidence reader.
+
+Grounds 9 and 10 are mutually exclusive by construction: ground 10 stands down
+whenever the run holds fewer principals than the registry requires, so a
+single-role run demotes under `single_role_cannot_attribute` and not under a
+reason naming the wrong missing observation.
+
+The registry's `limitation` says all of this in the client's words, because a
+rule the code enforces and the report does not mention is a trap for the
+operator who supplied two credentials and wondered why nothing confirmed.
+
 ## Carrying an arm as a named principal
 
 `_role_sessions` now reaches Exploit (`role_sessions` on the phase message →

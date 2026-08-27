@@ -2888,6 +2888,15 @@ class OrchestratorAgent:
         the Exploit Agent knows which principal its ordinary probes already
         carry and does not re-send them under an isolated carrier.
 
+        ``privilege`` travels beside it, read from the CREDENTIAL rather than
+        from the session, because it is a statement the operator made about
+        their application and not anything the login observed. It decides which
+        identity an access-control crossing is dispatched FROM
+        (:func:`~clinkz.agents._principal.privilege_order`), and ``None`` — the
+        operator did not say — is carried forward as ``None`` rather than
+        defaulted to a rank, so the far side reports an unknown order instead of
+        acting on one this side invented.
+
         The session material here is the same material ``session_cookies`` and
         ``session_headers`` already carry on this message, so this adds no new
         disclosure class — and it leaves through the same redaction chokepoint
@@ -2899,6 +2908,7 @@ class OrchestratorAgent:
         for role, session in self._role_sessions.items():
             if not session.get("established"):
                 continue
+            declared = self._credentials.for_role(role) if self._credentials else None
             handoff.append(
                 {
                     "role": role,
@@ -2907,6 +2917,7 @@ class OrchestratorAgent:
                     "headers": dict(session.get("headers") or {}),
                     "established": True,
                     "primary": role == primary_role,
+                    "privilege": declared.privilege if declared else None,
                 }
             )
         return handoff
