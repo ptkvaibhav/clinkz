@@ -892,10 +892,23 @@ async def preflight_provider_available(
 
     Returns:
         ``False`` if the probe hit a rate-limit (429 / RESOURCE_EXHAUSTED),
-        service-unavailable, timeout, or unavailable error — the signal to
-        route the engagement to a fallback provider. ``True`` on success, and
-        conservatively ``True`` on any unexpected error so a transient quirk
-        never needlessly abandons the cheaper primary provider.
+        service-unavailable, timeout, unavailable, or ACCOUNT error — the
+        signal to route the engagement to a fallback provider. ``True`` on
+        success, and conservatively ``True`` on any unexpected error so a
+        transient quirk never needlessly abandons the cheaper primary provider.
+
+        A :class:`~clinkz.llm.base.ProviderAccountError` — a depleted balance
+        or a revoked key — is a KNOWN-unusable state, not an unknown one, and
+        is classified here exactly as
+        :func:`~clinkz.llm.providers.preflight_providers` classifies it
+        (:attr:`~clinkz.llm.providers.KeyStatus.INVALID`). It arrives as an
+        HTTP 400 ``invalid_request_error``, so it matches none of the retry
+        predicates and used to fall into the conservative "unknown error,
+        assume available" branch — the same defect, in a second function, that
+        the batch pre-flight was hardened against. Leaving the pair asymmetric
+        is how the fixed half drifts back: an engagement would keep the
+        depleted provider in every fallback chain and re-discover the condition
+        on every call.
     """
     cfg = config or global_settings
     model = cfg.gemini_model if provider == "gemini" else None
@@ -912,6 +925,18 @@ async def preflight_provider_available(
     try:
         await client.generate_text("ping")
         return True
+    except ProviderAccountError as exc:
+        # The message is bounded the way ``providers._classify`` bounds it: it
+        # is a provider SDK string, and an operator needs "credit balance is too
+        # low" to act on this, but nothing downstream redacts a run log.
+        logger.warning(
+            "Pre-flight probe for %s refused on an ACCOUNT condition (%s: %s) — "
+            "provider unusable for this engagement",
+            provider,
+            type(exc).__name__,
+            str(exc)[:200],
+        )
+        return False
     except (RateLimitError, ServiceUnavailableError, LLMTimeoutError, LLMUnavailableError) as exc:
         logger.warning(
             "Pre-flight probe for %s failed (%s) — provider unavailable for this engagement",

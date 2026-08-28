@@ -76,7 +76,15 @@ done). **Credit pre-flight** (`llm/fallback.py::preflight_provider_available`):
 with both keys present, one cheap Gemini probe at start; a depleted signal
 excludes Gemini from every **fallback** chain for the engagement (under v2 Gemini
 answers only where Anthropic could not) — detecting depletion up front instead of
-storming 429s mid-pipeline.
+storming 429s mid-pipeline. **A depleted account is a KNOWN-unusable state, not
+an unknown one**: `ProviderAccountError` arrives as an HTTP 400
+`invalid_request_error`, so it matches none of the retry predicates and used to
+fall into this function's conservative "unknown error, assume available" branch
+— keeping a provider that cannot answer in every chain for the whole run. It is
+now classified exactly as `providers._classify` classifies it
+(`KeyStatus.INVALID`), and the agreement between the two pre-flights is
+asserted: the same defect in a second function, and leaving the pair asymmetric
+is how the fixed half drifts back.
 
 ### Message format
 ```python
