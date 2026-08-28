@@ -292,6 +292,10 @@ _LEDGER_VIEWS: dict[str, str] = {
     "never_invoked": "components with zero invocations, by name",
     "correctly_empty": "components that ran and were right to find nothing, by name",
     "unreachable": "declared components the engagement could not reach, by name",
+    "reachability_undetermined": (
+        "declared components whose reachability predicate could not be evaluated because "
+        "the producer it reads delivered nothing, by name"
+    ),
 }
 
 _LEDGER_NON_VIEWS: dict[str, str] = {

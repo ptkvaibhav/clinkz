@@ -161,6 +161,12 @@ class ComponentRecord:
     #: :meth:`set_reachability`, never assigned directly — see that method for
     #: why the redaction has to live at the property.
     reachability_reason: str = ""
+    #: Why the predicate could not be evaluated at all — the producer it reads
+    #: delivered nothing this run. Non-empty means ``reachable is None`` was a
+    #: DECISION rather than an absence of one, and it is what the deliverable
+    #: renders in place of a reachability verdict. Set through
+    #: :meth:`set_reachability_undetermined`.
+    reachability_undetermined: str = ""
 
     def add_note(self, note: str) -> None:
         """Append a bounded, deduplicated, REDACTED note.
@@ -248,6 +254,38 @@ class ComponentRecord:
                 self.reachability_reason = ""
         else:
             self.reachability_reason = ""
+        self.reachability_undetermined = ""
+
+    def set_reachability_undetermined(self, reason: str) -> None:
+        """Record that no predicate could be evaluated, and why.
+
+        The producer this component's predicate reads delivered nothing, so the
+        predicate's counters carry defaults rather than measurements. Evaluating
+        it anyway answers ``False`` and writes the predicate's sentence — a claim
+        about the target's surface — out of a phase that never ran.
+
+        ``reachable`` deliberately stays ``None``: it is not ``False`` (which
+        would file the component NOT APPLICABLE and put that sentence in the
+        deliverable) and it is not ``True`` (which would alarm). The reason
+        string is what separates this from the other ``None`` — a component
+        nobody ever evaluated, in a replay or a direct invocation.
+
+        Redacted at the property for the same reason :meth:`set_reachability` is,
+        and a failed redaction drops the sentence while keeping the state: the
+        load-bearing half is that no verdict was reached.
+        """
+        self.reachable = None
+        self.reachability_reason = ""
+        if not reason:
+            self.reachability_undetermined = ""
+            return
+        try:
+            from clinkz.engagement.secrets import redact
+
+            self.reachability_undetermined = redact(reason)
+        except Exception as exc:  # noqa: BLE001 — never raise from the data path
+            logger.debug("Ledger undetermined-reachability reason redaction failed: %s", exc)
+            self.reachability_undetermined = "reachability was not determined for this run"
 
     @property
     def correctly_empty(self) -> bool:
@@ -309,6 +347,7 @@ class ComponentRecord:
             "declared_reachability": self.declared_reachability,
             "reachable": self.reachable,
             "reachability_reason": self.reachability_reason,
+            "reachability_undetermined": self.reachability_undetermined,
             "alarms": [a.value for a in self.alarms],
             "notes": list(self.notes),
         }
@@ -391,12 +430,23 @@ class ContributionLedger:
         (``reachable is None``), which produces no alarm — an observability layer
         must not manufacture a defect out of its own bug.
 
+        **A predicate whose producer said nothing is not evaluated either.** Each
+        predicate declares the ``ReachabilitySource`` its counters come from, and
+        *state* declares which sources reported. A predicate reading a silent
+        producer would compare against a default and answer ``False``, filing the
+        component NOT APPLICABLE with a sentence about the target's surface — the
+        exploit phase erroring once put that sentence beside all thirty
+        methodology classes, in the client PDF. Those records get
+        :meth:`ComponentRecord.set_reachability_undetermined` instead: no alarm,
+        and no claim.
+
         Args:
             state: An
                 :class:`~clinkz.observability.component_registry.EngagementReachability`.
 
         Returns:
-            How many records were evaluated.
+            How many records were evaluated. Records left undetermined are not
+            counted — nothing was answered for them.
         """
         from clinkz.observability.component_registry import PREDICATES, ReachabilityKey
 
@@ -408,6 +458,10 @@ class ContributionLedger:
                 continue
             try:
                 predicate = PREDICATES[ReachabilityKey(rec.declared_reachability)]
+                silent = state.unreported_reason(predicate.source)
+                if silent:
+                    rec.set_reachability_undetermined(silent)
+                    continue
                 reachable = bool(predicate.holds(state, rec.name))
                 rec.set_reachability(
                     reachable, "" if reachable else predicate.describe(state, rec.name)
@@ -549,6 +603,26 @@ class ContributionLedger:
             if r.invocations == 0 and not r.dead_seam and r.reachable is False
         ]
 
+    def reachability_undetermined(self) -> list[ComponentRecord]:
+        """Never-invoked components whose predicate could not be evaluated at all.
+
+        The producer the predicate reads delivered nothing — an exploit phase
+        that errored, a planner that recorded no pass — so its counters carry
+        defaults, not measurements. Neither of the other two answers is
+        available: the component is not an alarm (nothing says the run could
+        have reached it) and it is not NOT APPLICABLE either, because that
+        verdict comes with a sentence about what this target does not expose and
+        no such observation was made.
+
+        Reported as its own state so the deliverable can say *reachability was
+        not determined* instead of picking one of two answers it does not have.
+        """
+        return [
+            r
+            for r in self.records()
+            if r.invocations == 0 and not r.dead_seam and r.reachability_undetermined
+        ]
+
     def correctly_empty(self) -> list[ComponentRecord]:
         """Components that ran, found nothing, and were right to.
 
@@ -571,7 +645,8 @@ class ContributionLedger:
           drivers) and a name-only reference would push a join into each of
           them. A join that silently misses a key drops an alarm, which is a
           worse failure than a duplicated payload.
-        * ``never_invoked`` / ``correctly_empty`` — references by name.
+        * ``never_invoked`` / ``correctly_empty`` / ``unreachable`` /
+          ``reachability_undetermined`` — references by name.
 
         So an alarming component appears TWICE in this dict, with identical
         content, and that is containment rather than double registration. It
@@ -609,6 +684,21 @@ class ContributionLedger:
                 }
                 for r in self.unreachable()
             ],
+            # The FOURTH state, and the one whose absence let a phase that never
+            # ran write target claims into the PDF. Held apart from
+            # ``unreachable`` because they answer different questions: that one
+            # says the engagement could not reach the component, this one says
+            # nobody can tell, and only the first is a statement about the
+            # target.
+            "reachability_undetermined": [
+                {
+                    "component": r.name,
+                    "kind": r.kind.value,
+                    "predicate": r.declared_reachability,
+                    "reason": r.reachability_undetermined,
+                }
+                for r in self.reachability_undetermined()
+            ],
             "correctly_empty": [
                 {"component": r.name, "reasons": list(r.not_applicable_reasons)}
                 for r in inapplicable
@@ -625,6 +715,7 @@ class ContributionLedger:
                     1 for r in alarming if LedgerAlarm.BUILT_BUT_NOT_RUN in r.alarms
                 ),
                 "unreachable_components": len(self.unreachable()),
+                "reachability_undetermined_components": len(self.reachability_undetermined()),
                 "correctly_empty_components": len(inapplicable),
                 "fallback_activations": len(self._fallbacks),
             },
@@ -676,8 +767,15 @@ class ContributionLedger:
                     rec.kind.value,
                     rec.reachability_reason or rec.declared_reachability,
                 )
+            for rec in self.reachability_undetermined():
+                out.info(
+                    "  NOT DETERMINED %s (%s) — %s",
+                    rec.name,
+                    rec.kind.value,
+                    rec.reachability_undetermined,
+                )
             for rec in self.never_invoked():
-                if rec.reachable is not None:
+                if rec.reachable is not None or rec.reachability_undetermined:
                     continue  # already reported above, or alarming
                 out.info(
                     "  NEVER INVOKED  %s (%s) — declared but the run never asked for it",

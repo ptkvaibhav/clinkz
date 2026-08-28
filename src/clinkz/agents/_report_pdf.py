@@ -74,6 +74,7 @@ from clinkz.agents._report_integrity import (
     assert_testing_window_renderable,
     authentication_state,
     document_title,
+    reconcile_reachability_claims,
     reconciled_not_tested_reason,
     spend_cost_line,
 )
@@ -1222,7 +1223,17 @@ class _PDFReport:
             )
 
     def _component_contribution(self) -> None:
-        ledger = self.report.component_ledger or {}
+        summary_block = self.report.executive_summary
+        # The render seam's half of the reconciliation — a stored bundle written
+        # before this rule re-renders honestly, exactly like the model stamp.
+        ledger = (
+            reconcile_reachability_claims(
+                self.report.component_ledger,
+                run_completed=summary_block.run_completed if summary_block else True,
+                incomplete_reason=summary_block.incomplete_reason if summary_block else "",
+            )
+            or {}
+        )
         alarms = [a for a in (ledger.get("alarms") or []) if isinstance(a, dict)]
         self._heading("Component contribution", self.h3)
         if not ledger:
@@ -1259,6 +1270,24 @@ class _PDFReport:
                 "could not reach them; each is enumerated in report.json under "
                 "<font face='Courier'>component_ledger.unreachable</font> with the "
                 "predicate that decided it.",
+                self.note,
+            )
+        undetermined = [
+            u for u in (ledger.get("reachability_undetermined") or []) if isinstance(u, dict)
+        ]
+        if undetermined:
+            # Deliberately NOT a per-component sentence. The only sentences
+            # available are the predicates', and every one of them is a claim
+            # about the client's application - which is the thing a phase that
+            # delivered nothing cannot support. This page used to carry thirty
+            # of them.
+            reasons = sorted({str(u.get("reason") or "").strip() for u in undetermined} - {""})
+            self._para(
+                f"<b>Reachability was not determined for {len(undetermined)} "
+                "component(s).</b> Whether this engagement could reach them is unknown, "
+                "which is not the same as their surface being absent from the target: "
+                f"{self._text(' '.join(reasons))} They are enumerated in report.json under "
+                "<font face='Courier'>component_ledger.reachability_undetermined</font>.",
                 self.note,
             )
 

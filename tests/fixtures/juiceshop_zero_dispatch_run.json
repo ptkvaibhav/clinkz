@@ -1,5 +1,5 @@
 {
-  "_what": "The observation that DEFINES the crawl-and-authenticate floor: a Juice Shop engagement that dispatched zero methodology tasks and still had four challenges marked solved by the target. Committed so the floor mechanism is asserted against a real zero-dispatch run rather than a constructed one - the live floor file itself lives under outputs/ and is never committed, because a committed floor set is the hardcoded claim this replaces.",
+  "_what": "The Juice Shop observations the crawl-and-authenticate floor is asserted against, read off real bundles. Committed because the live floor file lives under outputs/ and is never committed - and because a committed floor SET would be the hardcoded claim the measurement replaces. Each run carries the three fields the guards read: the methodology ledger rows (did it dispatch?), authentication.roles (as whom?) and model_stamp (was every stage served?).",
   "zero_dispatch_run": {
     "engagement": "2e21a200-39c1-45bd-bfbd-34986cc0e19f",
     "_source": "outputs/2e21a200-39c1-45bd-bfbd-34986cc0e19f, 2026-08-25",
@@ -159,7 +159,34 @@
           "difficulty": 2
         }
       ]
-    }
+    },
+    "authentication": {
+      "roles": [
+        "admin"
+      ],
+      "authenticated": true
+    },
+    "model_stamp": [
+      {
+        "stage": "exploit",
+        "provider": "exhausted",
+        "model": "",
+        "calls": 1
+      },
+      {
+        "stage": "recon",
+        "provider": "exhausted",
+        "model": "",
+        "calls": 1
+      },
+      {
+        "stage": "scan",
+        "provider": "exhausted",
+        "model": "",
+        "calls": 1
+      }
+    ],
+    "_floor_status": "REFUSED as a floor observation. It dispatched zero methodology tasks, but its own model stamp records that NOTHING served recon, scan or exploit - the Anthropic account ran out of credit partway through the 2026-08-25 envelope. Its crawl is therefore not a complete crawl, and an under-measured floor subtracts too little and INFLATES solved_by_testing, which is the number the floor exists to deflate. Its provider_degradation block says provider_degraded: false, baseline_eligible: true, so the stamp is the only witness in the bundle that tells the truth."
   },
   "testing_run": {
     "engagement": "9317e813-281e-4de6-8ff2-48f8ee46a6da",
@@ -286,6 +313,92 @@
         "component": "methodology:_test_xxe",
         "items_contributed": 2
       }
+    ],
+    "authentication": {
+      "roles": [
+        "admin"
+      ],
+      "authenticated": true
+    },
+    "model_stamp": [
+      {
+        "stage": "exploit",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 192
+      },
+      {
+        "stage": "recon",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 3
+      },
+      {
+        "stage": "research",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 4
+      },
+      {
+        "stage": "scan",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 3
+      }
     ]
-  }
+  },
+  "ledger_predating_methodology_components": {
+    "engagement": "88a83878-401e-4c6c-9a87-06204a5c1426",
+    "_source": "outputs/88a83878-401e-4c6c-9a87-06204a5c1426, 2026-08-20",
+    "_note": "A run that plainly TESTED - 11 findings, 116 exploit LLM calls - whose ledger predates the per-class methodology components declare_all() registers at engagement start. It carries 12 components and not one methodology row, so a counter that sums the rows it finds reports zero and the run qualifies as a floor observation. That is this engine subtracting its own results from itself by way of a missing key, which is why an absent population is unmeasurable rather than zero.",
+    "component_names": [
+      "chain_planner",
+      "discoverer:graphql",
+      "discoverer:js_call_site",
+      "discoverer:openapi",
+      "discoverer:static_bundle",
+      "exploit.fp_cross_check",
+      "exploit.plan_llm",
+      "llm:anthropic",
+      "exploit.emission_gate",
+      "katana",
+      "nmap",
+      "whatweb"
+    ],
+    "methodology_ledger_rows": [],
+    "authentication": {
+      "roles": [
+        "admin"
+      ],
+      "authenticated": true
+    },
+    "model_stamp": [
+      {
+        "stage": "exploit",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 116
+      },
+      {
+        "stage": "recon",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 3
+      },
+      {
+        "stage": "research",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 4
+      },
+      {
+        "stage": "scan",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "calls": 3
+      }
+    ],
+    "findings_emitted": 11
+  },
+  "_floor_never_cleanly_measured": "As of 2026-08-28 no stored Juice Shop bundle satisfies all three guards at once. Every zero-dispatch bundle either predates the methodology ledger population (so its dispatch count is unmeasurable) or has exhausted stages in its model stamp (so it is void). The floor on disk was taken from 2e21a200, which is the second kind. solved_by_testing therefore rests on a floor no complete run has ever measured, and the re-measure is a zero-dispatch run under the credential set the next envelope will use."
 }

@@ -523,6 +523,16 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # enforced at the emission chokepoint, so the class cannot confirm by
         # forgetting to check.
         "single_role_cannot_attribute",
+        # The run held enough principals to attribute the object, and could not
+        # say which of them outranks the other. A crossing arm is evidence of a
+        # broken boundary only while no role the CALLER holds authorizes the
+        # read: dispatched from an administrator, "I was served a customer's
+        # record" is the application working. The rank is the operator's to
+        # declare (``privilege`` on the role credential) because a role label is
+        # free text and no response can be asked about a hierarchy — so an
+        # undeclared order costs the confirmation rather than producing one in
+        # the direction that cannot be told apart from a feature.
+        "privilege_order_undeclared_crossing_may_be_authorized",
         # Same version match, and this engine DOES have an oracle — which ran
         # against the live target and did not witness the effect. Recorded so
         # the difference between "we could not test this" and "we tested it and

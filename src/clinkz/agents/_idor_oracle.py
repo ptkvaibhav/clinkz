@@ -35,6 +35,17 @@ arm              carried as         what it must show
 **B's own authorized read** of the same reference. That is what "belonging" means
 operationally, and it is why the class cannot confirm with one principal.
 
+**Which identity is A is the other half of the claim.** Every arm above is
+satisfied by an administrator being served a customer's record, and in most
+applications that is the feature rather than the flaw. So A is the LEAST
+privileged identity the engagement holds, from the operator's own declared rank
+(:func:`~clinkz.agents._principal.privilege_order`) — dispatched that way there
+is no role the caller holds that authorizes the read. An undeclared rank is
+reported as undeclared and the crossing becomes a lead: guessing the hierarchy
+out of a role LABEL would manufacture exactly the false positive this rule
+exists to prevent, on the commonest client engagement there is — one supplied
+admin or service account.
+
 **The decoy must round-trip like the payload.** ``ref(∅)`` is compared against
 ``ref(B)`` through the same handler, the same encoder and the same template. A
 bare marker (``clinkzdecoyidor48211``) is encoding-invariant: it fails to parse
@@ -60,6 +71,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from clinkz.agents._principal import PRIVILEGE_ORDER_UNDECLARED
 from clinkz.engagement.credential_shapes import fingerprint
 
 __all__ = [
@@ -546,6 +558,8 @@ def decide_idor(
     principals_available: int,
     principals_required: int,
     single_role_why: str,
+    privilege_order_known: bool = True,
+    privilege_why: str = "",
 ) -> IDORVerdict:
     """Grade the arms.
 
@@ -565,6 +579,12 @@ def decide_idor(
     5. Is it positively attributable to B? Needs B's own authorized read, which
        needs a second principal. Without one the answer is a LEAD, never a
        finding: "not A's" is satisfied identically by a public catalogue record.
+    6. Which DIRECTION did the arm run in? Every step above is satisfied by an
+       administrator reading a customer's record, which is the application
+       working. A crossing is evidence only when the caller holds no role that
+       authorizes the read, so the arm must be dispatched from an identity that
+       does not outrank the owner — and whether it was is a fact about the
+       operator's declared hierarchy, not about the response.
 
     Args:
         self_arm: As A, ``ref(A)``.
@@ -575,10 +595,17 @@ def decide_idor(
         principals_available: How many authenticated principals the run holds.
         principals_required: How many the registry says confirming needs.
         single_role_why: The registry's declared lead reason for having fewer.
+        privilege_order_known: Whether the operator declared a rank for every
+            principal that could take part, so the caller is known not to
+            outrank the owner (:func:`~clinkz.agents._principal.privilege_order`).
+            Defaults True, which is the honest answer for the callers that hold
+            fewer than two principals and therefore have no pair to order — and
+            those callers are refused one step earlier anyway.
+        privilege_why: What was undeclared, for the lead.
 
     Returns:
-        The verdict. ``confirmed`` is only ever True with every arm cleared AND
-        ``principals_available >= principals_required``.
+        The verdict. ``confirmed`` is only ever True with every arm cleared,
+        ``principals_available >= principals_required`` AND a known direction.
     """
     tier = TIER_MULTI_ROLE if principals_available >= principals_required else TIER_SINGLE_ROLE
     arms = tuple(
@@ -695,6 +722,28 @@ def decide_idor(
             ),
         )
 
+    # 6. Direction. Everything above establishes that A was served B's record.
+    #    Whether that is a BROKEN boundary depends on which way the arm ran: no
+    #    role authorizes a customer to read another customer's basket, and most
+    #    applications do authorize an administrator to. The rank is the
+    #    operator's declaration, and without it the honest answer is that the
+    #    observation was made and its direction is unknown.
+    if not privilege_order_known:
+        return verdict(
+            confirmed=False,
+            control_refused=True,
+            attribution=route,
+            attributing_fields=values,
+            why_unconfirmed=PRIVILEGE_ORDER_UNDECLARED,
+            detail=(
+                f"as {self_arm.principal}, reference {crossing.reference!r} returned the "
+                f"record {owner_read.principal} is served by its own authorized read "
+                f"({route}) — but {privilege_why or 'the privilege order was not declared'}, "
+                "so this cannot be told apart from a more privileged caller legitimately "
+                "reading a less privileged one's record"
+            ),
+        )
+
     return verdict(
         confirmed=True,
         control_refused=True,
@@ -706,7 +755,8 @@ def decide_idor(
             + (f": {', '.join(values[:4])}" if values else "")
             + f"); the never-issued reference {nonexistent.reference!r} did not return it "
             f"(status={nonexistent.status}) and neither did an anonymous caller "
-            f"(status={anonymous.status})"
+            f"(status={anonymous.status}); the arm was dispatched from "
+            f"{self_arm.principal}, which does not outrank {owner_read.principal}"
         ),
     )
 

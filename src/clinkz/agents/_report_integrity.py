@@ -21,6 +21,12 @@ section, because a client reads the conclusion and has no reason to check it.
   engagement whose models carry no declared rate has no price, and "not priced"
   is what that is.
 
+* **Reachability.** ``component_ledger.unreachable`` renders one sentence per
+  component about what this target does not expose. Those sentences are worth
+  what the phase that observed them is worth, and a document whose own banner
+  says the run did not complete must not carry target claims derived from the
+  phase that did not. They become "not determined" here.
+
 Every function is pure and reads only what the ENGINE declared, so it holds at
 both seams — the build seam, so ``report.json`` carries the reconciled claim,
 and the render seam, so a stored bundle re-renders honestly. Same shape, and the
@@ -47,6 +53,7 @@ __all__ = [
     "authentication_verdict",
     "document_title",
     "primary_scope_label",
+    "reconcile_reachability_claims",
     "reconciled_not_tested_reason",
     "spend_cost_line",
     "testing_window",
@@ -467,3 +474,84 @@ def document_title(report: PentestReport) -> str:
     if not label or label in scope_text or target in label:
         return target
     return f"{label} — {target}"
+
+
+# ---------------------------------------------------------------------------
+# Reachability claims vs. the run-completion banner
+# ---------------------------------------------------------------------------
+
+
+#: Why a reachability verdict cannot stand over an incomplete run. One sentence,
+#: written once, interpolated with what the banner already says did not finish.
+_INCOMPLETE_RUN_REACHABILITY = (
+    "the run did not complete, so whether this component was reachable is not determined: {reason}"
+)
+
+
+def reconcile_reachability_claims(
+    ledger: dict[str, Any] | None,
+    *,
+    run_completed: bool,
+    incomplete_reason: str = "",
+) -> dict[str, Any]:
+    """Move every reachability CLAIM out of an incomplete run's ledger.
+
+    ``component_ledger.unreachable`` carries one sentence per component saying
+    what this target does not expose — no endpoint with this class's surface, no
+    HTTP surface for a discoverer to read. Those are claims about the client's
+    application, and they are only worth what the phase that observed them is
+    worth. A document whose own executive summary says the run did not complete
+    must not carry target claims derived from the phase that did not.
+
+    The orchestrator's source gating already covers a phase that delivered no
+    result. This covers the other way in, which that cannot see: a phase that
+    delivered a result whose reasoning step nothing served. ``model_stamp``
+    naming an exhausted stage is exactly that — the plan is empty because the
+    planner was starved, not because the target has no surface — and
+    ``_run_completion`` is the one place both witnesses are already reconciled.
+
+    Only ever TIGHTENS: a claim becomes "not determined", never the reverse, and
+    a completed run is returned unchanged. Pure, and reads only engine-declared
+    fields, so it holds at the build seam (``report.json`` carries the reconciled
+    ledger) and at the render seam (a stored bundle re-renders honestly). Same
+    shape, same reason, as ``reconcile_with_model_stamp``.
+
+    Args:
+        ledger: The ``component_ledger`` dict, or ``None``/``{}`` when no ledger
+            was installed.
+        run_completed: ``ExecutiveSummary.run_completed``.
+        incomplete_reason: ``ExecutiveSummary.incomplete_reason``, quoted into
+            the substituted sentence so the two cannot disagree.
+
+    Returns:
+        The ledger, reconciled. The input dict is never mutated.
+    """
+    if not isinstance(ledger, dict) or not ledger:
+        return ledger if isinstance(ledger, dict) else {}
+    unreachable = [c for c in (ledger.get("unreachable") or []) if isinstance(c, dict)]
+    if run_completed or not unreachable:
+        return ledger
+
+    reason = _INCOMPLETE_RUN_REACHABILITY.format(
+        reason=incomplete_reason.strip() or "one or more phases did not finish."
+    )
+    undetermined = [
+        c for c in (ledger.get("reachability_undetermined") or []) if isinstance(c, dict)
+    ]
+    out = dict(ledger)
+    out["unreachable"] = []
+    out["reachability_undetermined"] = undetermined + [
+        {
+            "component": entry.get("component", "?"),
+            "kind": entry.get("kind", "component"),
+            "predicate": entry.get("predicate", ""),
+            "reason": reason,
+        }
+        for entry in unreachable
+    ]
+    summary = dict(ledger.get("summary") or {})
+    if summary:
+        summary["unreachable_components"] = 0
+        summary["reachability_undetermined_components"] = len(out["reachability_undetermined"])
+        out["summary"] = summary
+    return out

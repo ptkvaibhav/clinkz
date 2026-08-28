@@ -84,8 +84,10 @@ entry** — `login_url` and `assert_url` included:
       "username": "admin@example.com",
       "password": "...",
       "login_url": "https://app.example.com/rest/user/login",
-      "assert_url": "https://app.example.com/account"
+      "assert_url": "https://app.example.com/account",
+      "privilege": 10
     },
+    {"role": "customer", "username": "...", "password": "...", "privilege": 0},
     {"role": "anonymous"}
   ]
 }
@@ -97,6 +99,19 @@ express — so it is not on `EngagementScope` beside `EngagementWindow`, and it 
 not an environment variable. `assert_url` names a URL known to behave
 differently authenticated vs anonymous; the assertion tries it first, before its
 conventional-path fallbacks.
+
+`privilege` ranks the role in the application's own hierarchy — lower is less
+privileged, and only the relative order is read, so any integers work. The
+access-control classes dispatch their crossing arm from the LEAST privileged
+identity supplied, because an administrator being served a subordinate's record
+is in most applications the feature rather than the flaw. Nothing infers this
+from the role LABEL: a label is free text chosen for one application, and a
+hierarchy guessed out of it would manufacture a false positive on the commonest
+engagement there is — one supplied admin or service account. Undeclared is a
+legitimate answer and costs a confirmation rather than producing a wrong one; the
+crossing is still dispatched and recorded, and reported as a lead naming the
+missing declaration. See
+[`docs/methodology/idor.md`](methodology/idor.md#which-identity-the-crossing-runs-from).
 
 Both existed and appeared in **no example, no `--help` text and no document** —
 only in the model's own docstrings. A misplaced key used to validate cleanly and

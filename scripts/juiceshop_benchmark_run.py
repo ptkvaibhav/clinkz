@@ -27,6 +27,15 @@ that rule are stated here and computed from the live target, so the number is
 auditable. It is deliberately **not** forced to match any previously-quoted
 figure.
 
+**And the floor is what THESE principals trip.** ``solved_by_testing`` is
+``solved_total`` minus what authenticating and crawling reach on their own, so
+the floor is keyed by the credential set that measured it: adding ``jim`` beside
+``admin`` adds whatever ``jim``'s own login trips, and subtracting the admin-only
+floor would credit that to testing. :func:`record_floor` refuses four kinds of
+run — one that tested, one whose dispatch count is unmeasurable, one whose model
+stamp names a stage nothing served, and one that does not say who it logged in
+as — and no floor that applies means ``solved_by_testing: None``, never zero.
+
 Usage::
 
     python scripts/juiceshop_benchmark_run.py \\
@@ -56,6 +65,12 @@ from d1_consistency_runner import (  # noqa: E402
 )
 from regrade_stored_bundles import NO_ARM, REFUSED, SURVIVES, grade  # noqa: E402
 
+# ``_artifact_io`` puts ``src/`` on the path, so the engine is importable from here.
+# The exhausted-stage reader is the PRODUCER's own: "what does an LLM outage look
+# like in a stored bundle" is one question with one answer, and a second copy of
+# it inside a driver is a second thing to keep in step.
+from clinkz.llm.degradation import exhausted_stages  # noqa: E402
+
 BASE = "http://localhost:3000"
 COMPOSE = ["docker", "compose", "-f", "docker/docker-compose.yml"]
 RESULTS_DIR = Path("outputs/_juiceshop_benchmark")
@@ -67,8 +82,25 @@ RESULTS_DIR = Path("outputs/_juiceshop_benchmark")
 #: and carries the engagement id that produced it.
 FLOOR_PATH = RESULTS_DIR / "benchmark_floor.json"
 
+#: Schema version of :data:`FLOOR_PATH`. Version 1 was a single unkeyed record;
+#: version 2 keys every record by the credential set that produced it. A v1 file
+#: is readable and is applied to NOTHING — see :func:`read_floor`.
+FLOOR_FILE_VERSION = 2
 
-def methodology_dispatches(report: dict[str, Any]) -> int:
+#: The key for a run whose report does not say who it authenticated as. It is
+#: deliberately not a value any real run produces: nothing may be recorded under
+#: it and nothing may be subtracted from it. An unknown credential set is not the
+#: anonymous one, and treating the two alike is the same absence-read-as-a-zero
+#: this whole section exists to remove.
+UNKNOWN_CREDENTIAL_SET = ""
+
+#: What a run that authenticated as nobody is keyed under. A real observation —
+#: an anonymous crawl trips a floor of its own — and comparable, unlike the
+#: unknown case above.
+ANONYMOUS_CREDENTIAL_SET = "(anonymous)"
+
+
+def methodology_dispatches(report: dict[str, Any]) -> int | None:
     """How many methodology tasks this engagement actually DISPATCHED.
 
     Read from the component ledger's per-class methodology components, whose
@@ -76,85 +108,194 @@ def methodology_dispatches(report: dict[str, Any]) -> int:
     declared contract at the one dispatch seam, chosen precisely so a clean
     class on a clean run does not read as a silent component.
 
+    **A ledger carrying no methodology component at all is not a zero.** Those
+    components are declared at engagement start by ``declare_all()``, so their
+    absence means the bundle predates that registration and the count is
+    UNMEASURABLE — the run may have dispatched hundreds. Four stored Juice Shop
+    bundles have exactly that shape and between six and eleven findings each;
+    read as zeroes they would each qualify as a floor observation, which is this
+    engine subtracting its own results from itself by way of a missing key. It is
+    the ledger's own law: a component the ledger never hears from is not
+    measurable, and "declared and never invoked" is a different fact from "never
+    declared".
+
     Args:
         report: A parsed ``report_<id>.json``.
 
     Returns:
-        The total across every ``methodology:*`` component. Zero means no
-        ``_test_*`` method was invoked against any endpoint: whatever the target
-        recorded as solved, this engine did not exploit it.
+        The total across every ``methodology:*`` component, or ``None`` when the
+        ledger carries no such component. Zero means no ``_test_*`` method was
+        invoked against any endpoint: whatever the target recorded as solved,
+        this engine did not exploit it.
     """
     ledger = report.get("component_ledger") or {}
-    return sum(
-        int(component.get("items_contributed") or 0)
+    rows = [
+        component
         for component in (ledger.get("components") or [])
         if isinstance(component, dict)
         and str(component.get("component") or "").startswith("methodology:")
-    )
+    ]
+    if not rows:
+        return None
+    return sum(int(component.get("items_contributed") or 0) for component in rows)
+
+
+def credential_set_key(report: dict[str, Any]) -> str:
+    """The identity set this run authenticated as, as a comparable key.
+
+    A floor is what authenticating and crawling trips **as those principals**.
+    Adding a principal adds whatever its own login trips — supplying ``jim``
+    beside ``admin`` adds ``loginJim`` — so a floor measured under one credential
+    set understates the next one's, and every challenge it understates by is
+    credited to testing. The floor is therefore keyed by this, and
+    :func:`subtract_floor` refuses a floor whose key differs from the run's.
+
+    Read from ``authentication.roles``, which the orchestrator DECLARES: it is
+    the run's own record of the roles it holds session material for, present in
+    the bundle, so the offline recorder and the live path read one fact from one
+    producer. The role LABEL is used as an opaque identity, never for its
+    meaning — nothing here reads a hierarchy, a privilege or a capability out of
+    it, which is the read that ``_principal.privilege_order`` exists to refuse.
+
+    Args:
+        report: A parsed ``report_<id>.json``.
+
+    Returns:
+        ``role+role`` for an authenticated run, :data:`ANONYMOUS_CREDENTIAL_SET`
+        for one that authenticated as nobody, and :data:`UNKNOWN_CREDENTIAL_SET`
+        when the report has no authentication block to read.
+    """
+    auth = report.get("authentication")
+    if not isinstance(auth, dict) or auth.get("roles") is None:
+        return UNKNOWN_CREDENTIAL_SET
+    roles = sorted({str(role).strip().lower() for role in auth["roles"] if str(role).strip()})
+    return "+".join(roles) if roles else ANONYMOUS_CREDENTIAL_SET
 
 
 def read_floor() -> dict[str, Any]:
-    """The recorded floor, or the shape that says there isn't one.
+    """The floor file, normalised to the keyed shape. Never a floor by itself.
 
-    "No floor has been measured" is a different fact from "the floor is empty",
-    and conflating them is exactly the error this whole section removes: it would
-    silently make ``solved_by_testing == solved_total`` again, which is the
-    number that was wrong.
+    Returns the whole file — ``{"floors": {credential_set: record}}`` — because
+    selecting a record and refusing a mismatched one are one decision, and
+    :func:`subtract_floor` owns it. Two functions comparing the same key is two
+    expressions of one fact, which drift.
+
+    A version-1 file (one unkeyed record) is read and reported under
+    ``unkeyed_legacy``, never under a credential set. It cannot be applied: it
+    was measured under a credential set nobody wrote down, so "does it match this
+    run" is unanswerable, and answering it anyway is a guess in the direction
+    that inflates ``solved_by_testing``.
     """
+    empty: dict[str, Any] = {"version": FLOOR_FILE_VERSION, "floors": {}}
     if not FLOOR_PATH.is_file():
-        return {"recorded": False, "keys": [], "sources": []}
+        return empty
     try:
         stored = json.loads(FLOOR_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         # Type only. A JSONDecodeError quotes the bytes around the fault, and
         # this harness prints to a log an operator keeps.
         print(f"WARNING: could not read {FLOOR_PATH}: {type(exc).__name__}")
-        return {"recorded": False, "keys": [], "sources": [], "error": type(exc).__name__}
-    stored.setdefault("recorded", True)
-    stored.setdefault("keys", [])
-    stored.setdefault("sources", [])
-    return stored
+        return {**empty, "error": type(exc).__name__}
+    if not isinstance(stored, dict):
+        print(f"WARNING: {FLOOR_PATH} is not an object; ignoring it")
+        return empty
+    if isinstance(stored.get("floors"), dict):
+        return {
+            "version": int(stored.get("version") or FLOOR_FILE_VERSION),
+            "floors": stored["floors"],
+            **(
+                {"unkeyed_legacy": stored["unkeyed_legacy"]} if stored.get("unkeyed_legacy") else {}
+            ),
+        }
+    if stored.get("keys") or stored.get("recorded"):
+        return {**empty, "unkeyed_legacy": stored}
+    return empty
+
+
+def floor_for(floor_file: dict[str, Any], credential_set: str) -> dict[str, Any] | None:
+    """The record measured under *credential_set*, or ``None``.
+
+    The unknown key never resolves: a run that did not say who it authenticated
+    as cannot be matched to a floor, in either direction.
+    """
+    if credential_set == UNKNOWN_CREDENTIAL_SET:
+        return None
+    record = (floor_file.get("floors") or {}).get(credential_set)
+    return record if isinstance(record, dict) else None
 
 
 def record_floor(
-    *, engagement: str, solved_keys: list[str], dispatches: int, challenge_index: dict[str, Any]
+    *,
+    engagement: str,
+    solved_keys: list[str],
+    dispatches: int | None,
+    challenge_index: dict[str, Any],
+    credential_set: str,
+    exhausted_stages: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Fold a zero-dispatch run's solved set into the measured floor.
+    """Fold a zero-dispatch run's solved set into the floor for its credential set.
 
     A run that dispatched **zero** methodology tasks and still solved challenges
     solved them by authenticating and crawling. Those challenges are not
     evidence about this engine's exploitation, and counting them is how a "7 of
     49" becomes a number nobody should put in front of a client.
 
-    The union is deliberate and one-way: another zero-dispatch run that trips a
-    challenge the first did not has widened what crawling alone reaches, and the
-    floor has to widen with it. Nothing here removes a key — a run that fails to
-    reproduce a floor challenge is evidence about that run's crawl, not about
-    whether the challenge is reachable without testing.
+    The union is deliberate, one-way, and **within a credential set**: another
+    zero-dispatch run under the same principals that trips a challenge the first
+    did not has widened what crawling alone reaches, and the floor has to widen
+    with it. Nothing here removes a key — a run that fails to reproduce a floor
+    challenge is evidence about that run's crawl, not about whether the challenge
+    is reachable without testing. Nothing here merges across credential sets
+    either: an ``admin`` floor and an ``admin+jim`` floor are two measurements of
+    two different things, and both are worth keeping.
 
     Args:
         engagement: The engagement id that produced this observation.
         solved_keys: What the target confirmed it solved.
-        dispatches: This run's methodology dispatch count. Must be zero.
+        dispatches: This run's methodology dispatch count. Must be zero — and
+            must not be ``None``, which is "unmeasurable", not "none".
         challenge_index: ``{key: challenge}`` for the names and categories.
+        credential_set: :func:`credential_set_key` for this run.
+        exhausted_stages: Stages whose model stamp says nothing served them.
+            Must be empty.
 
     Returns:
-        The written floor record.
+        The written record for *credential_set*.
 
     Raises:
-        ValueError: *dispatches* is not zero. A floor derived from a run that
-            DID test is not a floor; it is a subtraction of this engine's own
-            results from itself.
+        ValueError: The run is not a floor observation — it tested, its dispatch
+            count is unmeasurable, it does not say who it authenticated as, or an
+            LLM provider outage means its crawl was not a complete crawl.
     """
+    if dispatches is None:
+        raise ValueError(
+            f"refusing to record a floor from engagement {engagement}: its ledger "
+            f"carries no methodology component, so its dispatch count is unmeasurable "
+            f"rather than zero"
+        )
     if dispatches:
         raise ValueError(
             f"refusing to record a floor from engagement {engagement}: it dispatched "
             f"{dispatches} methodology task(s), so its solved set is not the "
             f"crawl-and-authenticate floor"
         )
-    floor = read_floor()
-    keys = sorted(set(floor.get("keys") or []) | set(solved_keys))
-    sources = list(floor.get("sources") or [])
+    if credential_set == UNKNOWN_CREDENTIAL_SET:
+        raise ValueError(
+            f"refusing to record a floor from engagement {engagement}: its report does "
+            f"not say who it authenticated as, and a floor that cannot be keyed to a "
+            f"credential set cannot be safely applied to any later run"
+        )
+    if exhausted_stages:
+        raise ValueError(
+            f"refusing to record a floor from engagement {engagement}: its model stamp "
+            f"reports no provider served {', '.join(exhausted_stages)}, so its crawl was "
+            f"not a complete crawl. An under-measured floor subtracts too little and "
+            f"INFLATES solved_by_testing, which is the number the floor exists to deflate"
+        )
+    floor_file = read_floor()
+    previous = floor_for(floor_file, credential_set) or {}
+    keys = sorted(set(previous.get("keys") or []) | set(solved_keys))
+    sources = list(previous.get("sources") or [])
     sources.append(
         {
             "engagement": engagement,
@@ -165,10 +306,13 @@ def record_floor(
     )
     record = {
         "recorded": True,
+        "credential_set": credential_set,
         "_what": (
             "Challenges Juice Shop marks solved for a run that dispatched ZERO "
-            "methodology tasks - i.e. what authenticating and crawling trips on their "
-            "own. Subtracted from solved_total to give solved_by_testing."
+            "methodology tasks WHILE AUTHENTICATED AS THIS CREDENTIAL SET - i.e. what "
+            "logging in as these principals and crawling trips on their own. Subtracted "
+            "from solved_total to give solved_by_testing, and only for a run that "
+            "authenticated as the same set."
         ),
         "keys": keys,
         "challenges": [
@@ -182,41 +326,101 @@ def record_floor(
         ],
         "sources": sources,
     }
-    write_redacted_json(FLOOR_PATH, record)
+    floors = dict(floor_file.get("floors") or {})
+    floors[credential_set] = record
+    write_redacted_json(
+        FLOOR_PATH,
+        {
+            "version": FLOOR_FILE_VERSION,
+            "_what": (
+                "One measured crawl-and-authenticate floor per credential set. Keyed "
+                "because a floor is what THESE principals trip: adding a principal adds "
+                "whatever its own login trips, and subtracting the narrower floor would "
+                "credit that to testing."
+            ),
+            "floors": floors,
+            **(
+                {"unkeyed_legacy": floor_file["unkeyed_legacy"]}
+                if floor_file.get("unkeyed_legacy")
+                else {}
+            ),
+        },
+    )
     return record
 
 
-def subtract_floor(solved_keys: list[str], floor: dict[str, Any]) -> dict[str, Any]:
+def subtract_floor(
+    solved_keys: list[str], floor_file: dict[str, Any], *, credential_set: str
+) -> dict[str, Any]:
     """Split a solved set into what testing earned and what the floor supplies.
 
-    Returns ``solved_by_testing: None`` when no floor has been measured. That is
-    the honest answer and not a zero: without a zero-dispatch observation there
-    is nothing to subtract, and defaulting to "subtract nothing" reproduces the
-    inflated number the floor exists to remove.
+    Returns ``solved_by_testing: None`` whenever no floor applies — none has been
+    measured, the only ones measured were measured under different principals, or
+    this run does not say who it authenticated as. That is the honest answer and
+    not a zero: without an applicable zero-dispatch observation there is nothing
+    to subtract, and defaulting to "subtract nothing" reproduces the inflated
+    number the floor exists to remove.
+
+    Args:
+        solved_keys: What the target confirmed this run solved.
+        floor_file: :func:`read_floor`.
+        credential_set: :func:`credential_set_key` for this run.
     """
-    if not floor.get("recorded"):
+    measured = sorted(k for k in (floor_file.get("floors") or {}) if k)
+    unmeasured: dict[str, Any] = {
+        "floor_recorded": False,
+        "floor_keys": [],
+        "credential_set": credential_set,
+        "measured_credential_sets": measured,
+        "solved_by_testing": None,
+        "solved_by_testing_count": None,
+    }
+    if credential_set == UNKNOWN_CREDENTIAL_SET:
         return {
-            "floor_recorded": False,
-            "floor_keys": [],
-            "solved_by_testing": None,
-            "solved_by_testing_count": None,
+            **unmeasured,
             "note": (
-                "No zero-dispatch run has been recorded, so the crawl-and-authenticate "
-                "floor is unmeasured and solved_total cannot be split. Record one with "
-                "`--record-floor`, or run this harness once against a target the "
-                "engagement does not test."
+                "This run's report does not say who it authenticated as, so no floor can "
+                "be matched to it. A floor is what a given credential set trips; applying "
+                "one to a run whose principals are unknown is a guess."
             ),
         }
-    floor_keys = sorted(floor.get("keys") or [])
+    record = floor_for(floor_file, credential_set)
+    if record is None:
+        legacy = floor_file.get("unkeyed_legacy") or {}
+        note = (
+            f"No zero-dispatch run has been recorded for credential set "
+            f"{credential_set!r}, so the crawl-and-authenticate floor is unmeasured for "
+            f"this run and solved_total cannot be split. "
+        )
+        if measured:
+            note += (
+                f"A floor exists for {', '.join(repr(k) for k in measured)} and is NOT "
+                f"applied: a floor measured under different principals understates this "
+                f"run's, and every challenge it understates by would be credited to "
+                f"testing. "
+            )
+        if legacy:
+            note += (
+                f"An unkeyed floor from before credential-set keying is also on file "
+                f"({len(legacy.get('keys') or [])} challenge(s), from "
+                f"{', '.join(str(s.get('engagement'))[:8] for s in (legacy.get('sources') or []))}"
+                f"); it records no credential set, so it cannot be matched to anything. "
+            )
+        note += "Record one with `--record-floor <zero-dispatch engagement id>`."
+        return {**unmeasured, "note": note}
+    floor_keys = sorted(record.get("keys") or [])
     earned = [key for key in solved_keys if key not in set(floor_keys)]
     return {
         "floor_recorded": True,
         "floor_keys": floor_keys,
-        "floor_sources": [s.get("engagement") for s in (floor.get("sources") or [])],
+        "credential_set": credential_set,
+        "measured_credential_sets": measured,
+        "floor_sources": [s.get("engagement") for s in (record.get("sources") or [])],
         "solved_by_testing": earned,
         "solved_by_testing_count": len(earned),
         "solved_from_floor": [key for key in solved_keys if key in set(floor_keys)],
     }
+
 
 #: Juice Shop's own category labels, mapped to whether this engine dispatches a
 #: class that could confirm that kind of flaw. Every category the target ships is
@@ -529,7 +733,14 @@ def record_floor_offline(engagement: str = "") -> int:
         print(f"FATAL: no stored report for engagement {engagement}")
         return 2
     dispatches = methodology_dispatches(report)
-    print(f"engagement {engagement}: {dispatches} methodology dispatch(es)")
+    credential_set = credential_set_key(report)
+    starved = exhausted_stages(report.get("model_stamp") or [])
+    print(
+        f"engagement {engagement}: "
+        f"{'unmeasurable' if dispatches is None else dispatches} methodology dispatch(es), "
+        f"credential set {credential_set or '(not recorded)'}, "
+        f"exhausted stage(s): {', '.join(starved) or 'none'}"
+    )
     solved = sorted(snapshot.get("solved") or [])
     index = {
         str(challenge.get("key")): challenge
@@ -542,11 +753,16 @@ def record_floor_offline(engagement: str = "") -> int:
             solved_keys=solved,
             dispatches=dispatches,
             challenge_index=index,
+            credential_set=credential_set,
+            exhausted_stages=starved,
         )
     except ValueError as exc:
         print(f"FATAL: {exc}")
         return 2
-    print(f"floor recorded at {FLOOR_PATH}: {len(record['keys'])} challenge(s)")
+    print(
+        f"floor recorded at {FLOOR_PATH} under credential set {record['credential_set']!r}: "
+        f"{len(record['keys'])} challenge(s)"
+    )
     for key in record["keys"]:
         print(f"  - {key}")
     return 0
@@ -562,7 +778,11 @@ def main() -> int:
         metavar="ENGAGEMENT_ID",
         help=(
             "OFFLINE. Derive the crawl-and-authenticate floor from a stored "
-            "zero-dispatch run and exit. Refuses a run that dispatched anything."
+            "zero-dispatch run and exit, keyed to the credential set that run "
+            "authenticated as. Refuses a run that dispatched anything, one whose "
+            "ledger carries no methodology component (unmeasurable, not zero), one "
+            "whose model stamp names an unserved stage (its crawl was not a complete "
+            "crawl), and one whose report does not say who it logged in as."
         ),
     )
     known, _ = parser.parse_known_args()
@@ -713,22 +933,33 @@ def main() -> int:
     # weakPassword - purely by authenticating and crawling. Counting those makes
     # the headline number roughly twice what testing earned.
     dispatches = methodology_dispatches(report)
+    credential_set = credential_set_key(report)
+    starved = exhausted_stages(report.get("model_stamp") or [])
     if dispatches == 0:
         # This run IS a floor observation. Recording it here rather than in a
         # separate pass is what keeps the floor measured instead of asserted:
         # the condition that defines one is exactly the condition just observed.
+        # `record_floor` still owns every refusal — a run whose providers were
+        # exhausted looks exactly like a zero-dispatch run from here, and both
+        # zero-dispatch runs of the 2026-08-25 envelope were that.
         print(
             f"\nThis run dispatched ZERO methodology tasks; its {len(newly)} solved "
-            f"challenge(s) define the crawl-and-authenticate floor."
+            f"challenge(s) are a candidate crawl-and-authenticate floor for credential "
+            f"set {credential_set or '(not recorded)'}."
         )
-        record_floor(
-            engagement=engagement,
-            solved_keys=newly,
-            dispatches=dispatches,
-            challenge_index=after_by_key,
-        )
+        try:
+            record_floor(
+                engagement=engagement,
+                solved_keys=newly,
+                dispatches=dispatches,
+                challenge_index=after_by_key,
+                credential_set=credential_set,
+                exhausted_stages=starved,
+            )
+        except ValueError as exc:
+            print(f"  NOT RECORDED: {exc}")
     floor = read_floor()
-    split = subtract_floor(newly, floor)
+    split = subtract_floor(newly, floor, credential_set=credential_set)
     by_testing = split.get("solved_by_testing")
     testing_in_addressable = (
         [k for k in by_testing if k in addressable_keys] if by_testing is not None else None
@@ -766,7 +997,16 @@ def main() -> int:
     print(f"  challenges solved (target-confirmed) : {len(newly)}")
     print(f"    of which inside the addressable set: {len(solved_addressable)}/{len(target_set)}")
     print(f"    of which outside it                : {len(solved_outside)}")
-    print(f"  methodology tasks dispatched         : {dispatches}")
+    print(
+        f"  methodology tasks dispatched         : "
+        f"{'unmeasurable (no methodology row in the ledger)' if dispatches is None else dispatches}"
+    )
+    print(f"  credential set authenticated as      : {credential_set or '(not recorded)'}")
+    if starved:
+        print(
+            f"  LLM stages nothing served            : {', '.join(starved)} "
+            f"— this run is VOID as a measurement"
+        )
     if by_testing is None:
         print(f"  solved BY TESTING                    : unknown - {split['note']}")
     else:
@@ -863,6 +1103,11 @@ def main() -> int:
             # apart rather than replacing it, because both are true and only one
             # is a claim about this engine.
             "methodology_dispatches": dispatches,
+            # Who this run authenticated as, and whether any LLM stage went
+            # unserved. Both decide whether the run is a measurement at all: the
+            # floor is keyed by the first, and a run with the second is void.
+            "credential_set": credential_set,
+            "exhausted_stages": starved,
             "solved_by_testing": split.get("solved_by_testing"),
             "solved_by_testing_count": split.get("solved_by_testing_count"),
             "solved_by_testing_in_addressable": testing_in_addressable,

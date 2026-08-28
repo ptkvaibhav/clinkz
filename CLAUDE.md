@@ -76,7 +76,15 @@ done). **Credit pre-flight** (`llm/fallback.py::preflight_provider_available`):
 with both keys present, one cheap Gemini probe at start; a depleted signal
 excludes Gemini from every **fallback** chain for the engagement (under v2 Gemini
 answers only where Anthropic could not) — detecting depletion up front instead of
-storming 429s mid-pipeline.
+storming 429s mid-pipeline. **A depleted account is a KNOWN-unusable state, not
+an unknown one**: `ProviderAccountError` arrives as an HTTP 400
+`invalid_request_error`, so it matches none of the retry predicates and used to
+fall into this function's conservative "unknown error, assume available" branch
+— keeping a provider that cannot answer in every chain for the whole run. It is
+now classified exactly as `providers._classify` classifies it
+(`KeyStatus.INVALID`), and the agreement between the two pre-flights is
+asserted: the same defect in a second function, and leaving the pair asymmetric
+is how the fixed half drifts back.
 
 ### Message format
 ```python
@@ -531,7 +539,9 @@ src/clinkz/
 │                     #   _auth_bypass (THE one vocabulary for "did this response log us
 │                     #   in?" — artifact reader + the three-arm differential),
 │                     #   _principal (a NAMED authenticated identity + the handoff
-│                     #   that carries one — the wire _role_sessions was missing),
+│                     #   that carries one — the wire _role_sessions was missing;
+│                     #   + privilege_order: which identity a crossing runs FROM,
+│                     #   declared by the operator, never read off a role label),
 │                     #   _idor_oracle (the four-arm access-control oracle: whose
 │                     #   object is this? — pure, offline-testable),
 │                     #   _control_arm (the never-sent control + attribution + WHICH
@@ -697,6 +707,20 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   `tests/fixtures/corpus_replay_baseline.json`; exits non-zero on drift. Sends
   nothing — unlike `tool-invoke --replay`, which RE-EXECUTES the recorded
   command against the live target and always exits 0.
+- `python scripts/three_run_envelope.py --authorization <auth.json>
+  --benchmark-profile <bp.json> --creds <creds.json> [--scope <scope.json>]
+  [--runs 3]` — **LIVE.** N identical Juice Shop benchmark runs, each preserved
+  under `outputs/_juiceshop_benchmark/envelope/run_<n>/` because the harness
+  overwrites its own results directory every run. Carries the two guards a
+  credit lapse needs: a **terminal account state refuses the batch** before
+  anything is sent (exit 3) and a run whose `model_stamp` names an unserved
+  stage is **not recorded** and ends the batch (exit 4). Variance is computed
+  over the recorded runs only.
+- `python scripts/juiceshop_benchmark_run.py --record-floor [<engagement id>]` —
+  **offline.** Re-derive the crawl-and-authenticate floor from a stored
+  zero-dispatch bundle, keyed to the credential set that bundle authenticated
+  as. Refuses a run that tested, one whose dispatch count is unmeasurable, one
+  with an unserved stage, and one that does not say who it logged in as.
 - `docker compose -f docker/docker-compose.yml up -d` — start the test targets.
 
 ## Code Style
@@ -861,7 +885,14 @@ LESSONS #17).
   DECLARED by the producer (`_CLASS_TRACE_SKILL`), verified against the call
   graph, because guessing `_test_x → "x"` is right 23 times and wrong for
   `_test_javascript_attacks` — and a mis-guessed skill reports zero coverage,
-  which reads exactly like a class that never ran.
+  which reads exactly like a class that never ran. **`kept_breakdown_present` is
+  consulted FIRST, ahead of every benign branch**: all three never-dispatched
+  verdicts are read off `kept_by_class`, so its absence decides them before any
+  of them is asked. It used to sit last, behind "the plan held no candidate" —
+  whose inputs are empty in exactly the same way an absent breakdown's are — so
+  a bundle with **no `trace.jsonl` at all** reported thirty correctly-empty
+  classes, `alarms: []` and `reached_an_endpoint: 0`: a clean coverage account
+  for the whole engine, out of a missing file.
   **Detail → [`docs/observability.md`](docs/observability.md).**
 - **The crawl's enrichment budget is that same bound, one layer earlier**
   (`CrawlBudgetTruncation`). It decides which discovered URLs ever BECOME
@@ -1086,6 +1117,28 @@ LESSONS #17).
   holds until the twenty-fifth class is written. A direct invocation holds no
   principals and is in the single-role tier: that is the honest answer, not an
   exemption.
+- **A crossing arm is evidence only when it runs UPHILL, and which way is up is
+  the operator's to declare.** Two principals make the arm dispatchable; they do
+  not make it meaningful. Every one of the four arms is satisfied by an
+  administrator being served a customer's record — which in most applications is
+  the feature — and the commonest client engagement supplies exactly one admin or
+  service account, so A being the PRIMARY role pointed the oracle at a false
+  positive on the shape it will meet most often. A is now the LEAST privileged
+  identity the engagement holds (`_principal.privilege_order`), and the candidate
+  owners are everyone A does not outrank — equal rank included, since two
+  customers are peers and no role either holds authorizes reading the other's
+  record. The rank is DECLARED (`privilege` on the role credential, lower is
+  less privileged) and never inferred from a role LABEL: a label is free text an
+  operator picked for their own application, and reading a hierarchy out of it is
+  the consumer-guesses-the-producer pattern that has already cost a component's
+  field names, a tool's output model and a version's provenance. An undeclared
+  rank does not stop the arms — the crossing dispatches and is recorded — it
+  bounds the VERDICT to a lead
+  (`privilege_order_undeclared_crossing_may_be_authorized`), which an operator
+  clears in one line of their credential file. Enforced at the methodology AND at
+  `_persist_finding` (deterministic ground 10), the same pair as the tier rule,
+  and the two grounds are mutually exclusive so a lead names the observation that
+  was actually missing.
 - **A request carries the ENGAGEMENT's session, a NAMED principal's, or none —
   one field, three values** (`tools/http_client.py::session_mode`). `isolated`
   did not exist and both alternatives are wrong for a cross-principal arm: under
@@ -1132,11 +1185,14 @@ LESSONS #17).
   citing something else, refutes itself in its own evidence — which shipped
   verbatim seven times.
 - **A deterministic guard whose value is that it needs no model is never gated by
-  one.** All **nine** grounds run unconditionally at `_persist_finding` over
+  one.** All **ten** grounds run unconditionally at `_persist_finding` over
   every finding, from one declaration (`_deterministic_grounds` — probe plus the
   lead reason it produces, read by the emission gate and the FP cross-check
-  alike). Ground 9 is the only one that reads no evidence at all: it compares a
-  registry DECLARATION against the run's own principal list, both engine facts. Four of them used to be reachable only *through* the cross-check, i.e.
+  alike). Grounds 9 and 10 are the two that read no evidence at all: they
+  compare a registry DECLARATION against the run's own principal list — how
+  MANY principals it holds, and whether it can say which of them outranks the
+  other — both engine facts, so nothing the target sends reaches them in either
+  direction. Four of them used to be reachable only *through* the cross-check, i.e.
   only once a model had nominated the finding; on the portfolio run that check
   returned **no opinion at all** and every ground behind it went unconsulted.
   Two consequences are structural, not incidental: an LLM can no longer suppress
@@ -1508,6 +1564,49 @@ LESSONS #17).
   `solved_by_testing: null`**, not zero: defaulting to "subtract nothing"
   silently restores the inflated number. `--record-floor` derives one offline
   from a stored bundle and sends nothing.
+  **"Any other kind of run" is four kinds, and three of them were found in the
+  bundle the stored floor was taken from.** A floor is what authenticating and
+  crawling trip **as those principals**, so it is KEYED by the credential set
+  (`credential_set_key`, read from the run's own `authentication.roles`) and a
+  floor measured under different principals is refused rather than applied:
+  adding `jim` beside `admin` adds whatever `jim`'s login trips, and subtracting
+  the admin-only floor credits that to testing — the inflation re-entering by
+  the door nobody was watching. One record per credential set, unioned only
+  within one. A run whose **`model_stamp` names an unserved stage** is refused:
+  it dispatched zero because nothing served it, which from the harness's
+  position is indistinguishable from a floor observation, and its truncated
+  crawl UNDER-measures the floor, which inflates `solved_by_testing`. And a
+  ledger carrying **no `methodology:*` row at all** is unmeasurable, not zero —
+  those components are declared at engagement start, so their absence means the
+  bundle predates that registration (four stored Juice Shop bundles, 6–11
+  findings each, would each have qualified as a floor). The stamp is the witness
+  because the register is not: `2e21a200` reports `provider_degraded: false,
+  baseline_eligible: true` beside a stamp saying nothing served recon, scan or
+  exploit. **No stored bundle satisfies all four guards**, so the floor on disk
+  is a legacy unkeyed record that applies to nothing and the re-measure is a
+  prerequisite, not a nicety.
+- **A batch is unattended, so a credit lapse must stop it rather than fill it**
+  (`scripts/three_run_envelope.py`). The 2026-08-25 envelope produced three
+  bundles and one measurement: runs 2 and 3 died to a depleted Anthropic
+  balance. Two guards, both reusing vocabulary that already exists. **Before the
+  batch**, `preflight_providers()` — already run at every engagement start —
+  classifies a depleted balance or revoked key as `KeyStatus.INVALID`, which is
+  what `primary_usable` is False on; the Orchestrator logs it and continues,
+  correct for one engagement an operator is watching and wrong for a batch, so
+  the batch refuses to start (exit 3, nothing sent). A busy provider
+  (`UNREACHABLE`) does NOT refuse — the chain retries, and a three-hour batch
+  should not die of a 429 at t=0. **After each run**, a bundle whose
+  `model_stamp` names an unserved stage is excluded from the envelope entirely
+  and the batch aborts (exit 4): an average over one real run and two dead ones
+  is a wrong number, not a wider envelope, and an account condition does not
+  clear between runs. **And a metric no run REPORTED is `null`, not zero** — the
+  rule `variance` documents and three of its four metrics kept by doing nothing,
+  since `recorded.get(key)` is already `None` on a missing key. `findings_emitted`
+  is a list and `len(... or [])` broke it in the one place it took an expression
+  to keep: an omitted key became `0`, which passes the `is not None` filter and
+  widens the envelope downward as a real observation of a run that found nothing.
+  `envelope_metrics()` is the one reader, and `isinstance(v, list)` is what
+  separates a recorded empty list (a measurement of zero) from an absent key.
 - **A recon component that RAISED must not look like a target with nothing to
   find.** Recon is where the component inventory comes from, and an empty
   inventory has two causes indistinguishable from every downstream position: a
@@ -1587,6 +1686,38 @@ LESSONS #17).
   needs `ToolResolver.requested_capabilities`, and the chain map the predicate
   reads is built through `available_chain()`, which does NOT record — a question
   asked *about* a run must never become part of what the run did.
+- **A predicate may only be evaluated against a producer that SPOKE, so there is
+  a FOURTH state: NOT DETERMINED.** Every predicate compares a counter against
+  zero and then writes a sentence about the CLIENT'S APPLICATION — *no endpoint
+  the scan discovered carried this class's surface* — and a counter left at its
+  default is byte-identical to one a producer set to zero. An exploit phase that
+  errored yields all-zero state, `resolve_reachability` ran on it
+  unconditionally, and every methodology class was filed NOT APPLICABLE carrying
+  that sentence, in the client PDF under *Built, but not reachable on this
+  target*. Not a wrong number: a wrong sentence about a client's application,
+  generated from a phase that never ran. **Suppressing a wall of alarms and
+  substituting a target claim are different acts**, and the defensive-defaults
+  docstring bought the first with the second. Each predicate now declares its
+  `ReachabilitySource` (`EXPLOIT_PHASE` / `EXPLOIT_PLAN` / `SCAN_PHASE` /
+  `ENGINE`), `EngagementReachability.reported_sources` declares which producers
+  delivered — defaulting to NONE, so an unpopulated state answers nothing — and
+  a predicate reading a silent producer gets
+  `set_reachability_undetermined`: `reachable` stays `None` (no alarm), the
+  record leaves `unreachable` (no claim) and lands in
+  `component_ledger.reachability_undetermined`, which both documents render as
+  *reachability not determined* naming the silent PRODUCER and never a
+  per-class sentence. **Both doors are closed**, because gating on the exploit
+  result alone leaves the second open: `plan_alarm_summary()` returns the same
+  empty `classes_with_candidates` when no register is installed, and a register
+  that recorded no pass has said nothing about a plan the planner writes on
+  every pass, truncated or not. The gate is per-PREDICATE, not per-run — a dead
+  exploit phase must not cost the answers a live scan supports. And it is
+  reconciled against the run-completion banner
+  (`_report_integrity.reconcile_reachability_claims`, pure, only ever
+  tightening, at BOTH seams): a phase can deliver a result whose reasoning step
+  nothing served, which the source gate cannot see, and a document whose own
+  summary says the run did not complete must not carry target claims derived
+  from the phase that did not.
 - **The prompt cache is a ledger component like any other, because it degraded
   exactly like one.** It was invoked every run, succeeded every time, and
   contributed **zero**: the breakpoint sat after the engagement-scoped span —

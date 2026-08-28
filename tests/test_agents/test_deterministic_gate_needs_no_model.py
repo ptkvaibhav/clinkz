@@ -114,7 +114,7 @@ class TestEveryGroundRunsAtTheChokepoint:
         """
         agent = _make_agent()
         declared = agent._deterministic_grounds()
-        assert len(declared) == 9, "a ground was added or dropped without updating the table"
+        assert len(declared) == 10, "a ground was added or dropped without updating the table"
         names = [probe.__name__ for probe, _ in declared]
         assert len(set(names)) == len(names), "a ground is declared twice"
         reasons = [why for _, why in declared]

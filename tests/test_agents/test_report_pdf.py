@@ -425,3 +425,70 @@ class TestTheGateRefusesASeededPDF:
         report = scan_artifact_tree(bundle, engagement_id="engagement")
         assert not report.clean
         assert any(s.path.endswith("broken.pdf") for s in report.unexplained_skips)
+
+
+class TestReachabilityIsNotClaimedOutOfAPhaseThatDidNotRun:
+    """The PDF is where the manufactured sentence actually reached a client.
+
+    An absent exploit result made every reachability predicate answer ``False``,
+    and this page rendered *Built, but not reachable on this target* over thirty
+    methodology classes — each carrying a sentence about what the client's
+    application does not expose, generated from a phase that never ran.
+    """
+
+    @staticmethod
+    def _ledger(*, unreachable: bool) -> dict[str, object]:
+        from clinkz.observability.component_registry import (
+            METHODOLOGY_PREFIX,
+            EngagementReachability,
+            ReachabilityKey,
+            ReachabilitySource,
+        )
+        from clinkz.observability.ledger import ComponentKind, ContributionLedger
+
+        ledger = ContributionLedger(engagement_id="pdf-reach")
+        ledger.declare(
+            f"{METHODOLOGY_PREFIX}_test_sqli",
+            ComponentKind.METHODOLOGY,
+            reachability=ReachabilityKey.CLASS_HAD_PLAN_CANDIDATES.value,
+        )
+        ledger.resolve_reachability(
+            EngagementReachability(
+                reported_sources=frozenset(ReachabilitySource) if unreachable else frozenset()
+            )
+        )
+        return ledger.to_dict()
+
+    def test_an_undetermined_component_renders_as_undetermined(self, tmp_path: Path) -> None:
+        report = _report(component_ledger=self._ledger(unreachable=False))
+        text = _pages(render_report_pdf(report, tmp_path / "r.pdf")).replace("\n", " ")
+
+        assert "Reachability was not determined" in text
+        assert "not reachable on this target" not in text
+        assert "no endpoint" not in text, (
+            "the predicate's own sentence is the target claim this section withholds"
+        )
+
+    def test_an_incomplete_run_withdraws_the_claim_at_the_render_seam(self, tmp_path: Path) -> None:
+        """A stored bundle whose banner says the run did not complete."""
+        report = _report(
+            component_ledger=self._ledger(unreachable=True),
+            executive_summary=ExecutiveSummary(
+                overview="THIS RUN DID NOT COMPLETE.",
+                risk_rating="Not assessed",
+                run_completed=False,
+                incomplete_reason="No LLM provider served the exploit stage.",
+            ),
+        )
+        text = _pages(render_report_pdf(report, tmp_path / "r.pdf")).replace("\n", " ")
+
+        assert "Reachability was not determined" in text
+        assert "could not reach them" not in text
+        assert "no endpoint" not in text
+
+    def test_a_completed_run_keeps_the_observation_it_earned(self, tmp_path: Path) -> None:
+        report = _report(component_ledger=self._ledger(unreachable=True))
+        text = _pages(render_report_pdf(report, tmp_path / "r.pdf")).replace("\n", " ")
+
+        assert "could not reach them" in text
+        assert "Reachability was not determined" not in text

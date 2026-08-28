@@ -13,6 +13,7 @@ registered via the module-level factory so we can verify:
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import pytest
@@ -25,6 +26,7 @@ from clinkz.llm.base import (
     LLMMessage,
     LLMTimeoutError,
     LLMUnavailableError,
+    ProviderAccountError,
     RateLimitError,
     ServiceUnavailableError,
 )
@@ -594,3 +596,44 @@ async def test_preflight_assumes_available_on_unexpected_error(
     _register(monkeypatch, {"gemini": gemini})
 
     assert await preflight_provider_available("gemini") is True
+
+
+@pytest.mark.asyncio
+async def test_preflight_returns_false_on_account_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A depleted balance / revoked key is KNOWN-unusable, not unknown.
+
+    ``ProviderAccountError`` arrives as an HTTP 400 ``invalid_request_error``,
+    so it matches none of the retry predicates and used to land in the
+    conservative "unknown error, assume available" branch — keeping a provider
+    that cannot answer in every fallback chain for the whole engagement.
+    """
+    _set_all_keys(monkeypatch)
+    gemini = _FakeLLM("gemini", [ProviderAccountError("credit balance is too low")])
+    _register(monkeypatch, {"gemini": gemini})
+
+    assert await preflight_provider_available("gemini") is False
+    assert gemini.calls == 1
+
+
+def test_preflight_pair_classifies_account_errors_identically() -> None:
+    """The two pre-flights agree on ``ProviderAccountError``.
+
+    ``providers._classify`` calls it ``KeyStatus.INVALID`` (which
+    ``primary_usable`` is False on) and ``preflight_provider_available``
+    returns False. An asymmetric pair is how the fixed half drifts back, so
+    the agreement is asserted rather than documented.
+    """
+    from clinkz.llm.providers import KeyStatus, _classify
+
+    verdict = _classify(ProviderAccountError("credit balance is too low"))
+    assert verdict is not None, "the account condition must be a KNOWN status"
+    assert verdict.status is KeyStatus.INVALID
+
+    source = inspect.getsource(preflight_provider_available)
+    assert "ProviderAccountError" in source, (
+        "preflight_provider_available must classify the account condition "
+        "explicitly — falling through to the unknown-error branch reports a "
+        "depleted account as available"
+    )

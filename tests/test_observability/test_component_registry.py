@@ -33,6 +33,7 @@ from clinkz.observability.component_registry import (
     STATIC_EXPLOIT_COMPONENTS,
     EngagementReachability,
     ReachabilityKey,
+    ReachabilitySource,
     declare_all,
     declared_components,
 )
@@ -165,6 +166,12 @@ def test_declared_names_are_unique() -> None:
 # ---------------------------------------------------------------------------
 
 
+#: Every producer reported. The predicates below are being tested on what they
+#: SAY, so the source gate has to be open; the gate itself is tested in
+#: ``test_reachability_determination.py``.
+_ALL_REPORTED = frozenset(ReachabilitySource)
+
+
 def _ledger_with(name: str, kind: ComponentKind, key: ReachabilityKey) -> ContributionLedger:
     ledger = ContributionLedger(engagement_id="registry-test")
     ledger.declare(name, kind, reachability=key.value)
@@ -178,7 +185,10 @@ def test_reachable_and_not_invoked_is_an_alarm() -> None:
         ReachabilityKey.CLASS_HAD_PLAN_CANDIDATES,
     )
     ledger.resolve_reachability(
-        EngagementReachability(classes_with_plan_candidates=frozenset({"_test_sqli"}))
+        EngagementReachability(
+            classes_with_plan_candidates=frozenset({"_test_sqli"}),
+            reported_sources=_ALL_REPORTED,
+        )
     )
     alarming = {r.name: r.alarms for r in ledger.alarming()}
     assert alarming[f"{METHODOLOGY_PREFIX}_test_sqli"] == [LedgerAlarm.BUILT_BUT_NOT_RUN]
@@ -190,7 +200,7 @@ def test_unreachable_and_not_invoked_is_not_an_alarm_and_states_the_predicate() 
         ComponentKind.METHODOLOGY,
         ReachabilityKey.CLASS_HAD_PLAN_CANDIDATES,
     )
-    ledger.resolve_reachability(EngagementReachability())
+    ledger.resolve_reachability(EngagementReachability(reported_sources=_ALL_REPORTED))
     assert not ledger.alarming(), (
         "a class the target has no surface for is the component working, not a "
         "defect — reporting it as one is how an alarm section stops being read"
@@ -204,7 +214,7 @@ def test_unreachable_and_not_invoked_is_not_an_alarm_and_states_the_predicate() 
 def test_an_invoked_component_is_never_evaluated_at_all() -> None:
     ledger = _ledger_with("nmap", ComponentKind.TOOL, ReachabilityKey.EXPLOIT_PLAN_BUILT)
     ledger.record(name="nmap", kind=ComponentKind.TOOL, items=3)
-    ledger.resolve_reachability(EngagementReachability())
+    ledger.resolve_reachability(EngagementReachability(reported_sources=_ALL_REPORTED))
     (record,) = ledger.records()
     assert record.reachable is None, (
         "for a component that ran, the ledger's ordinary accounting is the answer; "

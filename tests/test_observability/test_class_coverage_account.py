@@ -221,6 +221,35 @@ def test_a_trace_without_kept_by_class_reports_indeterminate_rather_than_guessin
     assert row["verdict"] in registry.ALARM_COVERAGE_VERDICTS
 
 
+def test_a_bundle_with_no_trace_is_indeterminate_not_a_clean_account(
+    registry: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing file must never produce a coverage account for the whole engine.
+
+    With no ``trace.jsonl`` there are no phase events and no plan record, so
+    every input the benign branch reads is empty — for exactly the reason an
+    absent ``kept_by_class`` is. It reported thirty ``never_dispatched_no_candidates``
+    rows, ``alarms: []`` and ``reached_an_endpoint: 0``: a clean bill of health
+    for every class this engine has, out of a file that was not there.
+    """
+    from clinkz.agents.exploit import _DETERMINISTIC_CATEGORY_ORDER
+
+    monkeypatch.setattr(registry, "OUTPUTS", tmp_path)
+    (tmp_path / "eng").mkdir(parents=True)  # a bundle directory with no trace in it
+
+    coverage = registry.class_coverage("eng")
+    assert coverage["kept_breakdown_present"] is False
+    assert coverage["reached_an_endpoint"] == 0
+    assert len(coverage["alarms"]) == len(_DETERMINISTIC_CATEGORY_ORDER), (
+        "every class is indeterminate, and an indeterminate answer IS an alarm"
+    )
+    assert set(coverage["by_verdict"]) == {"never_dispatched_kept_breakdown_absent"}
+    assert "no plan_coverage/union record" in _row(coverage, "_test_sqli")["reason"]
+    assert all(row["plan_kept"] is None for row in coverage["rows"]), (
+        "None means 'this trace cannot say'; 0 would be a measurement"
+    )
+
+
 def test_a_cross_cutting_skill_is_never_read_as_a_classs_own_dispatch(
     registry: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

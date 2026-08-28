@@ -96,6 +96,7 @@ from clinkz.models.recon import (
 from clinkz.models.scope import EngagementScope
 from clinkz.observability.component_registry import (
     EngagementReachability,
+    ReachabilitySource,
     declare_all,
 )
 from clinkz.observability.ledger import (
@@ -104,6 +105,7 @@ from clinkz.observability.ledger import (
 )
 from clinkz.observability.plan_alarms import (
     PlanAlarmRegister,
+    get_active_plan_alarms,
     plan_alarm_summary,
     set_active_plan_alarms,
 )
@@ -831,10 +833,14 @@ class OrchestratorAgent:
                 # knowable before the phases run, so declaring EXISTENCE early
                 # and settling REACHABILITY late is what lets a never-invoked
                 # component say which of its two meanings applies.
+                # Both phase ENVELOPES, not their unwrapped results: whether a
+                # phase delivered anything is the signal that licenses every
+                # predicate reading it, and unwrapping here would throw exactly
+                # that away.
                 ledger.resolve_reachability(
                     self._engagement_reachability(
                         concurrent_results.get("scan", {}),
-                        exploit_result,
+                        exploit_data,
                         resolver,
                     )
                 )
@@ -2183,18 +2189,58 @@ class OrchestratorAgent:
                     await self._cred_store.mark_invalid(cred.id)
 
     @staticmethod
+    def _phase_delivered(phase: dict[str, Any]) -> bool:
+        """Whether a phase envelope carries a result its agent actually produced.
+
+        The envelope is ``{"status": …, "result": {…}}`` on delivery; a phase
+        that errored is ``{"status": "error", "error": …}`` with no ``result``
+        key at all, ``_phase_stop_result`` omits ``result`` when the agent handed
+        over nothing before the stop, and an unreached phase is
+        ``{"status": "not_started"}``. So the presence of a non-empty ``result``
+        dict is the producer's own signal that it spoke, read off the shape the
+        orchestrator itself writes rather than inferred from a status string.
+        """
+        result = phase.get("result")
+        return isinstance(result, dict) and bool(result)
+
+    @staticmethod
     def _engagement_reachability(
         scan_phase: dict[str, Any],
-        exploit_result: dict[str, Any],
+        exploit_phase: dict[str, Any],
         resolver: ToolResolver,
     ) -> EngagementReachability:
-        """Assemble the state every reachability predicate reads.
+        """Assemble the state every reachability predicate reads, and say who SPOKE.
 
         Called once, after the concurrent phase, when the answers exist. Every
-        read is defensive in the same direction: a phase that errored or was
-        halted yields the "nothing happened" value, so its components report as
-        NOT REACHABLE rather than as a wall of alarms about work a kill switch
-        stopped.
+        counter read is defensive in the same direction: a phase that errored or
+        was halted yields the "nothing happened" value, so its components do not
+        produce a wall of alarms about work a kill switch stopped.
+
+        **That intent stands; what it must not do is buy the quiet with a
+        fabrication.** Suppressing an alarm and substituting a claim about the
+        client's application are different acts, and reading a defaulted counter
+        as a measurement does the second: an absent exploit result made every
+        predicate answer ``False``, which filed all thirty methodology classes
+        NOT APPLICABLE under *no endpoint the scan discovered carried this
+        class's surface* — rendered in the client PDF, out of a phase that never
+        ran. So ``reported_sources`` carries which producers actually delivered,
+        and a predicate reading a silent one is left UNDETERMINED.
+
+        Two producers can go silent independently, and gating on one leaves the
+        other door open:
+
+        * the **exploit phase**, whose envelope carries no result;
+        * the **plan-alarm register**, which the planner writes on every pass,
+          truncated or not — so ``passes_recorded == 0`` means no plan was ever
+          recorded, and the clean shape ``plan_alarm_summary()`` returns when no
+          register is installed reaches the same empty
+          ``classes_with_candidates`` by a different route entirely.
+
+        The scan phase is gated the same way, for the same reason: "the scan
+        discovered no HTTP endpoint" is a statement about the target, and a scan
+        that errored made no such observation. The resolver needs no gate — it is
+        engine state, present whatever the phases did — and is declared reported
+        so the mapping has no silent special case.
 
         ``requested_capabilities`` is snapshotted BEFORE the chain map is built,
         because ``find_tools_ranked`` records a request — the chain map is a
@@ -2204,18 +2250,33 @@ class OrchestratorAgent:
         requested = frozenset(resolver.requested_capabilities)
         chains = {capability: resolver.available_chain(capability) for capability in TOOL_CHAINS}
 
+        reported = {ReachabilitySource.ENGINE}
+
         scan_result = scan_phase.get("result") or {}
         endpoints = 0
         for service_scan in scan_result.get("service_scans") or []:
             if isinstance(service_scan, dict):
                 result = service_scan.get("result") or {}
                 endpoints += len(result.get("endpoints") or [])
+        if OrchestratorAgent._phase_delivered(scan_phase):
+            reported.add(ReachabilitySource.SCAN_PHASE)
+
+        exploit_result = exploit_phase.get("result") or {}
+        if OrchestratorAgent._phase_delivered(exploit_phase):
+            reported.add(ReachabilitySource.EXPLOIT_PHASE)
+
+        plan_summary = plan_alarm_summary()
+        # A register that recorded no pass has said nothing about the plan. It
+        # is NOT the same fact as an empty candidate set, and the two are
+        # byte-identical in this dict.
+        if get_active_plan_alarms() is not None and int(plan_summary.get("passes_recorded") or 0):
+            reported.add(ReachabilitySource.EXPLOIT_PLAN)
 
         plan = exploit_result.get("plan") or {}
         tasks = plan.get("tasks") or []
         return EngagementReachability(
             classes_with_plan_candidates=frozenset(
-                plan_alarm_summary().get("classes_with_candidates") or []
+                plan_summary.get("classes_with_candidates") or []
             ),
             http_endpoints_discovered=endpoints,
             requested_capabilities=requested,
@@ -2227,6 +2288,7 @@ class OrchestratorAgent:
             tier23_tasks_planned=sum(
                 1 for t in tasks if isinstance(t, dict) and t.get("tier") in (2, 3)
             ),
+            reported_sources=frozenset(reported),
         )
 
     def _extract_technologies(self, recon_result: dict[str, Any]) -> list[str]:
@@ -2888,6 +2950,15 @@ class OrchestratorAgent:
         the Exploit Agent knows which principal its ordinary probes already
         carry and does not re-send them under an isolated carrier.
 
+        ``privilege`` travels beside it, read from the CREDENTIAL rather than
+        from the session, because it is a statement the operator made about
+        their application and not anything the login observed. It decides which
+        identity an access-control crossing is dispatched FROM
+        (:func:`~clinkz.agents._principal.privilege_order`), and ``None`` — the
+        operator did not say — is carried forward as ``None`` rather than
+        defaulted to a rank, so the far side reports an unknown order instead of
+        acting on one this side invented.
+
         The session material here is the same material ``session_cookies`` and
         ``session_headers`` already carry on this message, so this adds no new
         disclosure class — and it leaves through the same redaction chokepoint
@@ -2899,6 +2970,7 @@ class OrchestratorAgent:
         for role, session in self._role_sessions.items():
             if not session.get("established"):
                 continue
+            declared = self._credentials.for_role(role) if self._credentials else None
             handoff.append(
                 {
                     "role": role,
@@ -2907,6 +2979,7 @@ class OrchestratorAgent:
                     "headers": dict(session.get("headers") or {}),
                     "established": True,
                     "primary": role == primary_role,
+                    "privilege": declared.privilege if declared else None,
                 }
             )
         return handoff

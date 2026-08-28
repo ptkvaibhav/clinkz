@@ -457,6 +457,19 @@ class RoleCredential(BaseModel):
             will fail that guess — and the engagement then aborts rather than
             scanning blind, which is correct but unhelpful if the operator
             already knew the answer. This is where they say it.
+        privilege: Optional rank in the application's OWN role hierarchy — lower
+            is less privileged. Only the relative order matters, so any integers
+            work (``0`` for a customer, ``10`` for an administrator).
+
+            This is what makes a crossing arm unambiguous, and it is declared
+            rather than inferred because nobody else can know it. An engine that
+            read ``admin`` out of a role NAME would be guessing at a hierarchy
+            the operator never stated — the same shape as parsing a producer's
+            provenance back out of a string, refused everywhere else here — and
+            the label is free text an operator picks for their own application.
+            Undeclared is a legitimate answer, and it costs a confirmation rather
+            than producing a wrong one: see
+            :func:`~clinkz.agents._principal.privilege_order`.
         description: Free-text note (e.g. "read-only reporting account").
     """
 
@@ -474,6 +487,7 @@ class RoleCredential(BaseModel):
     password: SecretStr = SecretStr("")
     login_url: str = ""
     assert_url: str = ""
+    privilege: int | None = None
     description: str = ""
 
     @field_validator("role")
