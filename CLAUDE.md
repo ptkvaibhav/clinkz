@@ -699,6 +699,20 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   `tests/fixtures/corpus_replay_baseline.json`; exits non-zero on drift. Sends
   nothing — unlike `tool-invoke --replay`, which RE-EXECUTES the recorded
   command against the live target and always exits 0.
+- `python scripts/three_run_envelope.py --authorization <auth.json>
+  --benchmark-profile <bp.json> --creds <creds.json> [--scope <scope.json>]
+  [--runs 3]` — **LIVE.** N identical Juice Shop benchmark runs, each preserved
+  under `outputs/_juiceshop_benchmark/envelope/run_<n>/` because the harness
+  overwrites its own results directory every run. Carries the two guards a
+  credit lapse needs: a **terminal account state refuses the batch** before
+  anything is sent (exit 3) and a run whose `model_stamp` names an unserved
+  stage is **not recorded** and ends the batch (exit 4). Variance is computed
+  over the recorded runs only.
+- `python scripts/juiceshop_benchmark_run.py --record-floor [<engagement id>]` —
+  **offline.** Re-derive the crawl-and-authenticate floor from a stored
+  zero-dispatch bundle, keyed to the credential set that bundle authenticated
+  as. Refuses a run that tested, one whose dispatch count is unmeasurable, one
+  with an unserved stage, and one that does not say who it logged in as.
 - `docker compose -f docker/docker-compose.yml up -d` — start the test targets.
 
 ## Code Style
@@ -1535,6 +1549,42 @@ LESSONS #17).
   `solved_by_testing: null`**, not zero: defaulting to "subtract nothing"
   silently restores the inflated number. `--record-floor` derives one offline
   from a stored bundle and sends nothing.
+  **"Any other kind of run" is four kinds, and three of them were found in the
+  bundle the stored floor was taken from.** A floor is what authenticating and
+  crawling trip **as those principals**, so it is KEYED by the credential set
+  (`credential_set_key`, read from the run's own `authentication.roles`) and a
+  floor measured under different principals is refused rather than applied:
+  adding `jim` beside `admin` adds whatever `jim`'s login trips, and subtracting
+  the admin-only floor credits that to testing — the inflation re-entering by
+  the door nobody was watching. One record per credential set, unioned only
+  within one. A run whose **`model_stamp` names an unserved stage** is refused:
+  it dispatched zero because nothing served it, which from the harness's
+  position is indistinguishable from a floor observation, and its truncated
+  crawl UNDER-measures the floor, which inflates `solved_by_testing`. And a
+  ledger carrying **no `methodology:*` row at all** is unmeasurable, not zero —
+  those components are declared at engagement start, so their absence means the
+  bundle predates that registration (four stored Juice Shop bundles, 6–11
+  findings each, would each have qualified as a floor). The stamp is the witness
+  because the register is not: `2e21a200` reports `provider_degraded: false,
+  baseline_eligible: true` beside a stamp saying nothing served recon, scan or
+  exploit. **No stored bundle satisfies all four guards**, so the floor on disk
+  is a legacy unkeyed record that applies to nothing and the re-measure is a
+  prerequisite, not a nicety.
+- **A batch is unattended, so a credit lapse must stop it rather than fill it**
+  (`scripts/three_run_envelope.py`). The 2026-08-25 envelope produced three
+  bundles and one measurement: runs 2 and 3 died to a depleted Anthropic
+  balance. Two guards, both reusing vocabulary that already exists. **Before the
+  batch**, `preflight_providers()` — already run at every engagement start —
+  classifies a depleted balance or revoked key as `KeyStatus.INVALID`, which is
+  what `primary_usable` is False on; the Orchestrator logs it and continues,
+  correct for one engagement an operator is watching and wrong for a batch, so
+  the batch refuses to start (exit 3, nothing sent). A busy provider
+  (`UNREACHABLE`) does NOT refuse — the chain retries, and a three-hour batch
+  should not die of a 429 at t=0. **After each run**, a bundle whose
+  `model_stamp` names an unserved stage is excluded from the envelope entirely
+  and the batch aborts (exit 4): an average over one real run and two dead ones
+  is a wrong number, not a wider envelope, and an account condition does not
+  clear between runs.
 - **A recon component that RAISED must not look like a target with nothing to
   find.** Recon is where the component inventory comes from, and an empty
   inventory has two causes indistinguishable from every downstream position: a
