@@ -570,10 +570,16 @@ def class_coverage(engagement: str) -> dict[str, Any]:
         hole** — the fix is in the dispatcher. This is the ffuf shape at class
         granularity, and it is the outcome the old registry could not see.
 
-    The last two are only separable when the trace carries ``kept_by_class``. A
-    run recorded before that field existed gets its own verdict rather than a
-    guess: an indeterminate answer is reported as an alarm, never rounded down
-    to the benign side.
+    **All three of those are read off ``kept_by_class``, so its absence decides
+    them before any of them is asked.** A run recorded before that field existed
+    — or a bundle with no ``trace.jsonl`` at all — gets its own verdict rather
+    than a guess: an indeterminate answer is reported as an alarm, never rounded
+    down to the benign side. That check is FIRST for a reason. It used to sit
+    last, behind "the plan held no candidate", whose inputs are empty in exactly
+    the same way an absent breakdown's are — so a missing trace file produced
+    thirty correctly-empty classes, an empty alarm list and
+    ``reached_an_endpoint: 0``: a clean coverage account for the whole engine,
+    out of a file that was not there.
     """
     phases = _phases_by_skill(engagement)
     records = _plan_records(engagement)
@@ -626,10 +632,31 @@ def class_coverage(engagement: str) -> dict[str, Any]:
         elif observed:
             row["verdict"] = "dispatched_gate_refused"
             row["reason"] = "reached the dispatch chokepoint and was refused there (phase 0)"
+        elif not kept_breakdown_present:
+            # FIRST, ahead of every benign branch. All three verdicts below are
+            # read off ``kept_by_class``, and without it their inputs are empty
+            # for the same reason a class with no candidates is: absence. A
+            # bundle with no ``trace.jsonl`` at all reaches exactly this state,
+            # and used to fall straight through to "the plan held no candidate"
+            # — thirty correctly-empty classes and an empty alarm list, a clean
+            # coverage account for the whole engine, produced by a missing file.
+            row["verdict"] = "never_dispatched_kept_breakdown_absent"
+            row["reason"] = (
+                f"{dropped_counts.get(klass, 0)} candidate(s) were dropped and this trace "
+                "carries no kept_by_class"
+                + (
+                    " (no plan_coverage/union record was found at all — the trace may be "
+                    "missing or predate that stage)"
+                    if not record
+                    else ""
+                )
+                + ", so 'the plan held no candidate', 'the cap took them all' and 'tasks "
+                "survived and never ran' cannot be told apart"
+            )
         elif not dropped_counts.get(klass) and not kept_counts.get(klass):
             row["verdict"] = "never_dispatched_no_candidates"
             row["reason"] = "the plan held no candidate endpoint for this class"
-        elif kept_breakdown_present and kept_counts.get(klass):
+        elif kept_counts.get(klass):
             row["verdict"] = "no_phase_event_tasks_survived_the_cap"
             row["reason"] = (
                 f"{kept_counts[klass]} task(s) survived the cap and the class wrote no "
@@ -639,18 +666,14 @@ def class_coverage(engagement: str) -> dict[str, Any]:
                 f"cases were. Read {klass}'s applicability gate first, the dispatcher "
                 "second."
             )
-        elif kept_breakdown_present:
+        else:
+            # The breakdown is present (the branch above owns its absence), the
+            # class kept nothing, and something was dropped: the cap took them
+            # all.
             row["verdict"] = "never_dispatched_all_candidates_dropped"
             row["reason"] = (
                 f"all {dropped_counts.get(klass, 0)} candidate(s) were dropped by the plan "
                 "cap; no task remained to dispatch"
-            )
-        else:
-            row["verdict"] = "never_dispatched_kept_breakdown_absent"
-            row["reason"] = (
-                f"{dropped_counts.get(klass, 0)} candidate(s) were dropped and this trace "
-                "carries no kept_by_class, so 'the cap took them all' cannot be told from "
-                "'tasks survived and never ran'"
             )
         rows.append(row)
 

@@ -885,7 +885,14 @@ LESSONS #17).
   DECLARED by the producer (`_CLASS_TRACE_SKILL`), verified against the call
   graph, because guessing `_test_x → "x"` is right 23 times and wrong for
   `_test_javascript_attacks` — and a mis-guessed skill reports zero coverage,
-  which reads exactly like a class that never ran.
+  which reads exactly like a class that never ran. **`kept_breakdown_present` is
+  consulted FIRST, ahead of every benign branch**: all three never-dispatched
+  verdicts are read off `kept_by_class`, so its absence decides them before any
+  of them is asked. It used to sit last, behind "the plan held no candidate" —
+  whose inputs are empty in exactly the same way an absent breakdown's are — so
+  a bundle with **no `trace.jsonl` at all** reported thirty correctly-empty
+  classes, `alarms: []` and `reached_an_endpoint: 0`: a clean coverage account
+  for the whole engine, out of a missing file.
   **Detail → [`docs/observability.md`](docs/observability.md).**
 - **The crawl's enrichment budget is that same bound, one layer earlier**
   (`CrawlBudgetTruncation`). It decides which discovered URLs ever BECOME
@@ -1592,7 +1599,14 @@ LESSONS #17).
   `model_stamp` names an unserved stage is excluded from the envelope entirely
   and the batch aborts (exit 4): an average over one real run and two dead ones
   is a wrong number, not a wider envelope, and an account condition does not
-  clear between runs.
+  clear between runs. **And a metric no run REPORTED is `null`, not zero** — the
+  rule `variance` documents and three of its four metrics kept by doing nothing,
+  since `recorded.get(key)` is already `None` on a missing key. `findings_emitted`
+  is a list and `len(... or [])` broke it in the one place it took an expression
+  to keep: an omitted key became `0`, which passes the `is not None` filter and
+  widens the envelope downward as a real observation of a run that found nothing.
+  `envelope_metrics()` is the one reader, and `isinstance(v, list)` is what
+  separates a recorded empty list (a measurement of zero) from an absent key.
 - **A recon component that RAISED must not look like a target with nothing to
   find.** Recon is where the component inventory comes from, and an empty
   inventory has two causes indistinguishable from every downstream position: a
@@ -1672,6 +1686,38 @@ LESSONS #17).
   needs `ToolResolver.requested_capabilities`, and the chain map the predicate
   reads is built through `available_chain()`, which does NOT record — a question
   asked *about* a run must never become part of what the run did.
+- **A predicate may only be evaluated against a producer that SPOKE, so there is
+  a FOURTH state: NOT DETERMINED.** Every predicate compares a counter against
+  zero and then writes a sentence about the CLIENT'S APPLICATION — *no endpoint
+  the scan discovered carried this class's surface* — and a counter left at its
+  default is byte-identical to one a producer set to zero. An exploit phase that
+  errored yields all-zero state, `resolve_reachability` ran on it
+  unconditionally, and every methodology class was filed NOT APPLICABLE carrying
+  that sentence, in the client PDF under *Built, but not reachable on this
+  target*. Not a wrong number: a wrong sentence about a client's application,
+  generated from a phase that never ran. **Suppressing a wall of alarms and
+  substituting a target claim are different acts**, and the defensive-defaults
+  docstring bought the first with the second. Each predicate now declares its
+  `ReachabilitySource` (`EXPLOIT_PHASE` / `EXPLOIT_PLAN` / `SCAN_PHASE` /
+  `ENGINE`), `EngagementReachability.reported_sources` declares which producers
+  delivered — defaulting to NONE, so an unpopulated state answers nothing — and
+  a predicate reading a silent producer gets
+  `set_reachability_undetermined`: `reachable` stays `None` (no alarm), the
+  record leaves `unreachable` (no claim) and lands in
+  `component_ledger.reachability_undetermined`, which both documents render as
+  *reachability not determined* naming the silent PRODUCER and never a
+  per-class sentence. **Both doors are closed**, because gating on the exploit
+  result alone leaves the second open: `plan_alarm_summary()` returns the same
+  empty `classes_with_candidates` when no register is installed, and a register
+  that recorded no pass has said nothing about a plan the planner writes on
+  every pass, truncated or not. The gate is per-PREDICATE, not per-run — a dead
+  exploit phase must not cost the answers a live scan supports. And it is
+  reconciled against the run-completion banner
+  (`_report_integrity.reconcile_reachability_claims`, pure, only ever
+  tightening, at BOTH seams): a phase can deliver a result whose reasoning step
+  nothing served, which the source gate cannot see, and a document whose own
+  summary says the run did not complete must not carry target claims derived
+  from the phase that did not.
 - **The prompt cache is a ledger component like any other, because it degraded
   exactly like one.** It was invoked every run, succeeded every time, and
   contributed **zero**: the breakpoint sat after the engagement-scoped span —

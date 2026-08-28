@@ -201,13 +201,38 @@ def run_once(
     if reconciliation.is_file():
         recorded = json.loads(reconciliation.read_text(encoding="utf-8"))
         row["credential_set"] = recorded.get("credential_set")
-        row["metrics"] = {
-            "solved_total": recorded.get("solved_total"),
-            "solved_by_testing_count": recorded.get("solved_by_testing_count"),
-            "methodology_dispatches": recorded.get("methodology_dispatches"),
-            "findings_emitted": len(recorded.get("findings_emitted") or []),
-        }
+        row["metrics"] = envelope_metrics(recorded)
     return row
+
+
+def envelope_metrics(recorded: dict[str, Any]) -> dict[str, Any]:
+    """The four compared numbers, read off one run's reconciliation.
+
+    A metric the reconciliation did not record is ``None``, which
+    :func:`variance` then excludes. That rule is the function's whole contract
+    and three of the four kept it by doing nothing — ``recorded.get(key)`` is
+    ``None`` on a missing key already.
+
+    ``findings_emitted`` is a list, and ``len(recorded.get(...) or [])`` broke the
+    rule in the one place it took an expression to keep: a reconciliation missing
+    the key yielded ``0``, which is not ``None``, so it survived the filter and
+    widened the envelope downward as a real observation of a run with no
+    findings. A recorded empty list still says ``0`` — that IS a measurement, and
+    the two are what ``isinstance`` separates.
+
+    Args:
+        recorded: One run's parsed ``reconciliation.json``.
+
+    Returns:
+        ``{metric: value_or_None}`` over :data:`ENVELOPE_METRICS`.
+    """
+    emitted = recorded.get("findings_emitted")
+    return {
+        "solved_total": recorded.get("solved_total"),
+        "solved_by_testing_count": recorded.get("solved_by_testing_count"),
+        "methodology_dispatches": recorded.get("methodology_dispatches"),
+        "findings_emitted": len(emitted) if isinstance(emitted, list) else None,
+    }
 
 
 def variance(rows: list[dict[str, Any]]) -> dict[str, Any]:

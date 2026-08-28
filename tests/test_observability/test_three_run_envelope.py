@@ -216,6 +216,31 @@ class TestTheVarianceIsOverRecordedRunsOnly:
         spread = envelope.variance([])
         assert all(metric["runs"] == 0 and metric["min"] is None for metric in spread.values())
 
+    def test_every_metric_a_reconciliation_omits_is_null(self, envelope: Any) -> None:
+        """The rule ``variance`` documents, checked at the producer of its input.
+
+        ``findings_emitted`` was ``len(... or [])``, so an omitted key became
+        ``0`` — past the ``is not None`` filter and into the envelope as an
+        observation of a run that emitted nothing. The other three metrics keep
+        the rule by doing nothing at all.
+        """
+        metrics = envelope.envelope_metrics({})
+        assert set(metrics) == set(envelope.ENVELOPE_METRICS)
+        assert all(value is None for value in metrics.values())
+        assert envelope.variance([{"run": 1, "metrics": metrics}]) == {
+            metric: {"values": [], "min": None, "max": None, "runs": 0}
+            for metric in envelope.ENVELOPE_METRICS
+        }
+
+    def test_a_recorded_empty_list_is_still_a_measurement_of_zero(self, envelope: Any) -> None:
+        """Absence and zero are different; only the first leaves the envelope."""
+        metrics = envelope.envelope_metrics({"findings_emitted": [], "solved_total": 0})
+        assert metrics["findings_emitted"] == 0
+        assert metrics["solved_total"] == 0
+        spread = envelope.variance([{"run": 1, "metrics": metrics}])
+        assert spread["findings_emitted"]["runs"] == 1
+        assert spread["findings_emitted"]["min"] == 0
+
 
 def _fake(preflight: ProviderPreflight) -> Any:
     async def _run() -> ProviderPreflight:
