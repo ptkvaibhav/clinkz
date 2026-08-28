@@ -39,17 +39,30 @@ something only Scan can answer, and the exploit plan does not exist yet. So:
 * :func:`engagement_reachability` is assembled at REPORT time, when the phases
   have finished, and handed to ``ContributionLedger.resolve_reachability``.
 
-Three rendered states then fall out of one boolean:
+Four rendered states then fall out, and the fourth is the one that was missing:
 
 ===========================  ==========  ===================================
 predicate                    invoked     rendering
 ===========================  ==========  ===================================
 ``True``                     no          **ALARM** — built, reachable, never ran
 ``False``                    no          NOT APPLICABLE, the predicate is the reason
+not evaluated                no          NOT DETERMINED, the silent producer is the reason
 (any)                        yes         the ledger's ordinary accounting
 ===========================  ==========  ===================================
 
-A component with no declarable predicate is the fourth state, and it does not
+**A predicate may only be evaluated against a producer that SPOKE.** Every
+predicate is a comparison against a counter, and a counter left at its default
+is indistinguishable from one a producer set to zero — so an exploit phase that
+errored used to file all thirty methodology classes as NOT APPLICABLE, each
+carrying the predicate's sentence: *no endpoint the scan discovered carried this
+class's surface*. That is a claim about a client's application, manufactured out
+of a phase that never ran, and it rendered in the PDF. Each predicate now names
+its :class:`ReachabilitySource`, the assembling call site declares which sources
+reported, and a predicate whose source is silent produces the third row above:
+no alarm, and no claim either. Suppressing a wall of alarms and substituting a
+target claim are different acts, and only the first was ever wanted.
+
+A component with no declarable predicate is a fifth state, and it does not
 exist: :data:`STATIC_EXPLOIT_COMPONENTS` entries carry a predicate key from a
 closed vocabulary and the computed sources assign one per source, so a member
 that cannot state its reachability cannot be added at all.
@@ -75,6 +88,39 @@ METHODOLOGY_PREFIX = "methodology:"
 
 #: Prefix the route-discovery seam already registers under.
 DISCOVERER_PREFIX = "discoverer:"
+
+
+class ReachabilitySource(StrEnum):
+    """Whose output a predicate reads — the producer that has to have SPOKEN.
+
+    Every predicate below is a comparison against a counter or a set, and a zero
+    has two causes that are indistinguishable from the predicate's position: the
+    producer said zero, or the producer said nothing. Only the first licenses the
+    sentence the predicate then writes, because that sentence is a claim about
+    the CLIENT'S APPLICATION — "no endpoint the scan discovered carried this
+    class's surface" — and a phase that never delivered a result discovered
+    nothing about the target either way.
+
+    So each predicate names its producer, the assembling call site names the
+    producers that actually reported, and a predicate whose producer is silent is
+    left UNDETERMINED rather than evaluated to ``False``. Suppressing a wall of
+    alarms and substituting a target claim are different acts; this is what keeps
+    the first from becoming the second.
+    """
+
+    #: The exploit phase's result dict — plan size, dispatches, candidates, kills.
+    EXPLOIT_PHASE = "exploit_phase"
+    #: The plan-alarm register, written by the exploit planner on every pass
+    #: (truncated or not). A register that recorded no pass has not said that the
+    #: plan held no candidates; it has said nothing about the plan at all.
+    EXPLOIT_PLAN = "exploit_plan"
+    #: The scan phase's result dict — the discovered HTTP surface.
+    SCAN_PHASE = "scan_phase"
+    #: State the engine holds regardless of which phases ran: the resolver's own
+    #: record of what was asked for and what each chain resolved to. It is always
+    #: available, and it is listed here anyway so the mapping has no special case
+    #: — a source nobody has to declare is a source nobody notices going missing.
+    ENGINE = "engine"
 
 
 class ReachabilityKey(StrEnum):
@@ -114,10 +160,17 @@ class EngagementReachability:
     """Engagement state complete enough to answer every predicate.
 
     Assembled at report time, from phase results the orchestrator already holds.
-    Every field defaults to the "nothing happened" value, so a partially
-    completed engagement — a halt, a phase that errored — evaluates predicates
-    to ``False`` and reports its unreached components as NOT APPLICABLE rather
-    than as a wall of alarms about work a kill switch stopped.
+    Every counter defaults to the "nothing happened" value, so a partially
+    completed engagement — a halt, a phase that errored — does not produce a wall
+    of alarms about work a kill switch stopped.
+
+    :attr:`reported_sources` is what keeps that defensiveness from turning into a
+    fabrication. The counters cannot say whether a zero came from a producer that
+    reported zero or from one that never reported, and the predicates that read
+    them write sentences about the client's application. So the assembling call
+    site declares which producers SPOKE, and it defaults to *none of them*: an
+    unpopulated state answers no question at all, which is the honest reading of
+    a state nobody filled in.
     """
 
     classes_with_plan_candidates: frozenset[str] = frozenset()
@@ -131,6 +184,44 @@ class EngagementReachability:
     exploit_candidate_findings: int = 0
     control_arm_kills: int = 0
     tier23_tasks_planned: int = 0
+    #: The producers whose output the counters above actually carry. A source
+    #: absent from this set has said NOTHING, and every predicate reading it is
+    #: left undetermined rather than answered.
+    reported_sources: frozenset[ReachabilitySource] = frozenset()
+
+    def unreported_reason(self, source: ReachabilitySource) -> str:
+        """Why *source* cannot be read, or ``""`` when it reported.
+
+        The string is rendered to an operator in place of a reachability verdict,
+        so it says which producer was silent rather than naming an enum member.
+        """
+        if source in self.reported_sources:
+            return ""
+        return _UNREPORTED_REASONS.get(
+            source, f"the {source.value} producer delivered no result this run"
+        )
+
+
+#: One sentence per silent producer, written once. The reachability verdict a
+#: component would otherwise carry is replaced by this, so it has to say what did
+#: not happen in the RUN and claim nothing about the target.
+_UNREPORTED_REASONS: dict[ReachabilitySource, str] = {
+    ReachabilitySource.EXPLOIT_PHASE: (
+        "the exploit phase delivered no result, so whether this component was reachable "
+        "is not determined — it is not a statement about the target"
+    ),
+    ReachabilitySource.EXPLOIT_PLAN: (
+        "no exploit plan was recorded, so whether the plan held a candidate for this "
+        "class is not determined — it is not a statement about the target"
+    ),
+    ReachabilitySource.SCAN_PHASE: (
+        "the scan phase delivered no result, so what surface this target exposes was "
+        "never measured and reachability is not determined"
+    ),
+    ReachabilitySource.ENGINE: (
+        "the engine state this predicate reads was not assembled, so reachability is not determined"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -140,9 +231,15 @@ class ReachabilityPredicate:
     ``describe`` takes the component name because the sentence names the
     component — but the SENTENCE is the predicate's, written once, so it cannot
     drift entry by entry the way a per-component reason does.
+
+    ``source`` names the producer ``holds`` reads. It is not optional and there
+    is no default: a predicate that does not say whose zero it is reading is a
+    predicate that cannot tell "the producer said zero" from "the producer said
+    nothing", which is the whole defect this field exists to close.
     """
 
     key: ReachabilityKey
+    source: ReachabilitySource
     holds: Callable[[EngagementReachability, str], bool]
     describe: Callable[[EngagementReachability, str], str]
 
@@ -211,12 +308,14 @@ def _describe_no_http_surface(state: EngagementReachability, name: str) -> str:
 
 def _counter_predicate(
     key: ReachabilityKey,
+    source: ReachabilitySource,
     read: Callable[[EngagementReachability], int],
     absent: str,
 ) -> ReachabilityPredicate:
     """A predicate that holds when an engagement counter is non-zero."""
     return ReachabilityPredicate(
         key=key,
+        source=source,
         holds=lambda state, _name: read(state) > 0,
         describe=lambda _state, _name: absent,
     )
@@ -226,42 +325,50 @@ def _counter_predicate(
 PREDICATES: dict[ReachabilityKey, ReachabilityPredicate] = {
     ReachabilityKey.CLASS_HAD_PLAN_CANDIDATES: ReachabilityPredicate(
         key=ReachabilityKey.CLASS_HAD_PLAN_CANDIDATES,
+        source=ReachabilitySource.EXPLOIT_PLAN,
         holds=_class_had_candidates,
         describe=_describe_class_candidates,
     ),
     ReachabilityKey.HTTP_SURFACE_DISCOVERED: ReachabilityPredicate(
         key=ReachabilityKey.HTTP_SURFACE_DISCOVERED,
+        source=ReachabilitySource.SCAN_PHASE,
         holds=lambda state, _name: state.http_endpoints_discovered > 0,
         describe=_describe_no_http_surface,
     ),
     ReachabilityKey.TOOL_CHOSEN_FOR_A_REQUESTED_CAPABILITY: ReachabilityPredicate(
         key=ReachabilityKey.TOOL_CHOSEN_FOR_A_REQUESTED_CAPABILITY,
+        source=ReachabilitySource.ENGINE,
         holds=_tool_was_chosen,
         describe=_describe_tool_not_chosen,
     ),
     ReachabilityKey.EXPLOIT_PLAN_BUILT: _counter_predicate(
         ReachabilityKey.EXPLOIT_PLAN_BUILT,
+        ReachabilitySource.EXPLOIT_PHASE,
         lambda state: state.exploit_plan_tasks,
         "the exploit phase produced no plan, so nothing downstream of planning was reached",
     ),
     ReachabilityKey.EXPLOIT_TASK_DISPATCHED: _counter_predicate(
         ReachabilityKey.EXPLOIT_TASK_DISPATCHED,
+        ReachabilitySource.EXPLOIT_PHASE,
         lambda state: state.exploit_tasks_dispatched,
         "the exploit phase dispatched no task, so this component was never on a live path",
     ),
     ReachabilityKey.EXPLOIT_PRODUCED_A_CANDIDATE_FINDING: _counter_predicate(
         ReachabilityKey.EXPLOIT_PRODUCED_A_CANDIDATE_FINDING,
+        ReachabilitySource.EXPLOIT_PHASE,
         lambda state: state.exploit_candidate_findings,
         "no methodology produced a candidate finding, so the emission path had nothing to examine",
     ),
     ReachabilityKey.CONTROL_ARM_KILLED_A_CANDIDATE: _counter_predicate(
         ReachabilityKey.CONTROL_ARM_KILLED_A_CANDIDATE,
+        ReachabilitySource.EXPLOIT_PHASE,
         lambda state: state.control_arm_kills,
         "no control arm refused to refuse this run, which is the only event this "
         "component registers on — every dispatched arm behaved",
     ),
     ReachabilityKey.TIER23_TECHNIQUE_PLANNED: _counter_predicate(
         ReachabilityKey.TIER23_TECHNIQUE_PLANNED,
+        ReachabilitySource.EXPLOIT_PHASE,
         lambda state: state.tier23_tasks_planned,
         "the plan held no Tier-2/3 research technique task",
     ),
@@ -417,6 +524,7 @@ __all__ = [
     "EngagementReachability",
     "ReachabilityKey",
     "ReachabilityPredicate",
+    "ReachabilitySource",
     "declare_all",
     "declared_components",
 ]

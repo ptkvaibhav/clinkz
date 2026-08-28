@@ -278,9 +278,20 @@ because "there was nothing to find" is what a broken class reports too:
   called — and every observed instance so far was the former (a form gate
   reading `page.forms` on a framework target). Read the class's
   applicability gate first.
-* `never_dispatched_kept_breakdown_absent` — ALARM: a trace older than
-  `kept_by_class` cannot separate the last two, and an indeterminate answer is
-  reported rather than rounded to the benign side.
+* `never_dispatched_kept_breakdown_absent` — ALARM: without `kept_by_class` none
+  of the three verdicts above it can be told apart, and an indeterminate answer
+  is reported rather than rounded to the benign side.
+
+**`kept_breakdown_present` is consulted FIRST**, ahead of every benign branch.
+All three never-dispatched verdicts are read off `kept_by_class`, so its absence
+decides them before any of them is asked. The check used to sit last, behind
+`never_dispatched_no_candidates` — whose inputs are empty in exactly the same way
+an absent breakdown's are — so a bundle with **no `trace.jsonl` at all** produced
+thirty `never_dispatched_no_candidates` rows, `alarms: []` and
+`reached_an_endpoint: 0`: a clean coverage account for every class this engine
+has, out of a file that was not there. `plan_kept` stays `None` rather than `0` in
+that state, for the same reason — `None` means "this trace cannot say", and `0`
+is a measurement.
 
 Only the **union** stage is read, for the same reason `dropped_primary_targets`
 reads only the union stage: it is the plan that actually dispatched, and the
@@ -431,18 +442,68 @@ can answer, and the exploit plan does not exist yet. So
 an `EngagementReachability` the orchestrator assembles from completed phase
 results.
 
-Three states then fall out of one boolean:
+Four states then fall out:
 
 | Predicate | Invoked | Rendering |
 |-----------|---------|-----------|
 | `True` | no | **`BUILT_BUT_NOT_RUN`** — an alarm. Built, reachable this engagement, never ran. |
 | `False` | no | NOT APPLICABLE. `component_ledger.unreachable`, carrying the predicate's own sentence. |
+| not evaluated | no | NOT DETERMINED. `component_ledger.reachability_undetermined`, naming the silent PRODUCER. |
 | *(any)* | yes | The ledger's ordinary accounting. A predicate would add a second, weaker answer. |
 
 `reachable is None` — never evaluated, which is a direct methodology invocation,
 a replay, or a run that stopped before the report — is **not** `False`. It makes
 no claim in either direction and never alarms; an observability layer must not
 manufacture a defect out of its own absence.
+
+### A predicate may only be evaluated against a producer that SPOKE
+
+Every predicate compares a counter against zero, and a counter left at its
+default is byte-identical to one a producer set to zero. The difference matters
+because of what the predicate then writes: *no endpoint the scan discovered
+carried this class's surface* is a claim about the **client's application**.
+
+An exploit phase that errored yields all-zero state, `resolve_reachability` ran
+on it unconditionally, and every methodology class was filed NOT APPLICABLE
+carrying that sentence — rendered in the client PDF under *Built, but not
+reachable on this target*. That is not a wrong number. It is a wrong sentence
+about a client's application, generated from a phase that never ran. The
+assembler's own docstring explained the defensive defaults as avoiding "a wall of
+alarms about work a kill switch stopped", and that intent stands: **suppressing a
+wall of alarms and substituting a target claim are different acts**, and the
+code bought the first with the second.
+
+So each predicate declares the `ReachabilitySource` it reads —
+`EXPLOIT_PHASE`, `EXPLOIT_PLAN`, `SCAN_PHASE`, `ENGINE` — and
+`EngagementReachability.reported_sources` declares which producers actually
+delivered. It defaults to **none of them**: an unpopulated state answers no
+question at all, which is the honest reading of a state nobody filled in. A
+predicate whose source is silent gets `set_reachability_undetermined`:
+`reachable` stays `None` (so it never alarms), the record leaves `unreachable`
+(so it makes no claim), and it lands in
+`component_ledger.reachability_undetermined` with the producer that was silent.
+
+**Both doors are closed.** Gating on the exploit result alone leaves the second
+one open: `plan_alarm_summary()` returns the same empty `classes_with_candidates`
+when no register is installed, and a register that recorded no pass has said
+nothing about the plan — the planner writes a pass on *both* branches, truncated
+or not, so `passes_recorded == 0` means no plan was ever built. The scan phase is
+gated for the same reason ("the scan discovered no HTTP endpoint" is a
+statement about the target); the resolver is not, because it is engine state
+present whatever the phases did, and it is declared reported so the mapping has
+no silent special case.
+
+The gate is **per predicate, not per run**. Over-suppression is its own defect: a
+dead exploit phase must not cost the answers a live scan supports.
+
+And it is reconciled against the run-completion banner —
+`_report_integrity.reconcile_reachability_claims`, pure, only ever tightening,
+read at BOTH seams like `reconcile_with_model_stamp`. The source gate cannot see
+the third way in: a phase that *did* deliver a result whose reasoning step
+nothing served, so the plan is empty because the planner was starved rather than
+because the target has no surface. A document whose own executive summary says
+the run did not complete must not carry target claims derived from the phase that
+did not.
 
 The Markdown renders the unreachable set as a **count with a kind breakdown**,
 not a list: every dispatchable class, discoverer and chained tool is declared on
@@ -653,13 +714,16 @@ phase state.
 |---|---|---|
 | `True` | no | **`BUILT_BUT_NOT_RUN`** — a new alarm class. Built, reachable, did not run. |
 | `False` | no | NOT APPLICABLE, the predicate's own sentence as the reason |
+| not evaluated | no | NOT DETERMINED — the silent PRODUCER as the reason, never the predicate's sentence |
 | *(any)* | yes | the ledger's ordinary accounting |
 | *no predicate declarable* | — | **a build failure**, not a runtime branch |
 
 `reachable is None` — never evaluated, which is a direct methodology invocation,
 a replay, or a run that stopped early — is **not** `False`. It makes no claim in
 either direction and never alarms; an observability layer must not manufacture a
-defect out of its own absence.
+defect out of its own absence. The third row is that same `None` reached
+*deliberately*, and its reason string is what tells the two apart: see
+[A predicate may only be evaluated against a producer that SPOKE](#a-predicate-may-only-be-evaluated-against-a-producer-that-spoke).
 
 The tool predicate has three distinct **no** answers with three distinct fixes:
 nobody asked for the capability (`nuclei`, `nikto`, `subfinder` are deliberately

@@ -40,6 +40,7 @@ from clinkz.agents._report_integrity import (
     TestingWindowError,
     authentication_state,
     authentication_verdict,
+    reconcile_reachability_claims,
     reconciled_not_tested_reason,
     spend_cost_line,
     testing_window,
@@ -536,7 +537,15 @@ class ReportAgent(BaseAgent):
             ),
             safety_summary=safety,
             authentication=authentication,
-            component_ledger=_active_ledger_snapshot(),
+            # Reconciled against this run's own completion banner, at the BUILD
+            # seam so report.json carries it. ``unreachable`` renders a sentence
+            # per component about what this target does not expose, and a run
+            # that did not complete did not observe that.
+            component_ledger=reconcile_reachability_claims(
+                _active_ledger_snapshot(),
+                run_completed=run_completed,
+                incomplete_reason=incomplete_reason,
+            ),
             model_stamp=model_stamp,
             # Reconciled against the run's OWN model stamp, not taken from the
             # register alone. The two witnessed one fact and disagreed: the
@@ -1467,21 +1476,42 @@ class ReportAgent(BaseAgent):
         Silent when no ledger was installed (a directly invoked ReportAgent), and
         silent when nothing alarmed — an all-clear line rather than a table.
         """
-        ledger = report.component_ledger
+        ledger = reconcile_reachability_claims(
+            report.component_ledger,
+            run_completed=(
+                report.executive_summary.run_completed if report.executive_summary else True
+            ),
+            incomplete_reason=(
+                report.executive_summary.incomplete_reason if report.executive_summary else ""
+            ),
+        )
         if not ledger:
             return
         alarms = ledger.get("alarms") or []
         summary = ledger.get("summary") or {}
         correctly_empty = [c for c in (ledger.get("correctly_empty") or []) if isinstance(c, dict)]
         unreachable = [c for c in (ledger.get("unreachable") or []) if isinstance(c, dict)]
+        undetermined = [
+            c for c in (ledger.get("reachability_undetermined") or []) if isinstance(c, dict)
+        ]
         lines.extend(["## Component contribution", ""])
         if not alarms:
+            # "or were not reachable on this target" is a claim, so it is only
+            # made when the run actually made that observation. A component
+            # whose reachability was never determined is neither reachable nor
+            # unreachable, and the all-clear must not absorb it.
+            reach_clause = (
+                ", or were not reachable on this target"
+                if unreachable
+                else ", or had their reachability left undetermined"
+                if undetermined
+                else ""
+            )
             lines.extend(
                 [
                     f"All {summary.get('components_tracked', 0)} tracked component(s) "
-                    "contributed at least one item, found nothing correctly, or were "
-                    "not reachable on this target. No fallback covered for a component "
-                    "that produced nothing.",
+                    f"contributed at least one item, found nothing correctly{reach_clause}. "
+                    "No fallback covered for a component that produced nothing.",
                     "",
                 ]
             )
@@ -1566,6 +1596,30 @@ class ReportAgent(BaseAgent):
                     "",
                 ]
             )
+
+        if undetermined:
+            # The state that used to be rendered as the one above. A predicate
+            # reads a phase's output, and a phase that delivered nothing made no
+            # observation about this target — so the honest line names the
+            # producer that was silent and stops. No per-component sentence: the
+            # only sentences available are the predicate's, and those are exactly
+            # the target claims this section exists to withhold.
+            reasons = sorted({str(rec.get("reason") or "").strip() for rec in undetermined} - {""})
+            lines.extend(
+                [
+                    "### Reachability not determined",
+                    "",
+                    f"For {len(undetermined)} component(s) this engine has, whether the "
+                    "engagement could reach them was NOT determined. This is not a "
+                    "statement that the target lacks their surface — it is the absence of "
+                    "one. Each is named in `report.json` under "
+                    "`component_ledger.reachability_undetermined` with the producer that "
+                    "was silent.",
+                    "",
+                ]
+            )
+            lines.extend(f"- {reason}" for reason in reasons)
+            lines.append("")
 
     @staticmethod
     def _render_header(lines: list[str], report: PentestReport) -> None:

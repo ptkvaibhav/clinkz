@@ -2,7 +2,7 @@
 
 `src/clinkz/agents/_report_integrity.py`
 
-Three sections of the client deliverable read **one field each** and stated a
+Four sections of the client deliverable read **one field each** and stated a
 conclusion the rest of the same document refuted. That is a worse failure than a
 missing section: a client reads the conclusion and has no reason to check it, and
 every one of these is visible on the first page without tooling.
@@ -228,3 +228,36 @@ and the raw `--target` string when one was not. `document_title` is one rule use
 by the cover, the page footer and the `/Info` dictionary, so those three can
 never disagree: the target is always named, and the operator's label is added
 only when it says something the scope entry does not already carry.
+
+---
+
+## 6. Reachability is a claim about the target, so an incomplete run may not make one
+
+`component_ledger.unreachable` renders one sentence per component saying what
+this target does not expose — *no endpoint the scan discovered carried this
+class's surface*, *the scan discovered no HTTP endpoint*. Both generated
+documents surface it, the PDF under **Built, but not reachable on this target**.
+
+Those sentences are worth exactly what the phase that observed them is worth.
+The orchestrator's source gating (see
+[`docs/observability.md`](observability.md#a-predicate-may-only-be-evaluated-against-a-producer-that-spoke))
+covers the direct case: a phase that delivered no result leaves every predicate
+reading it UNDETERMINED. It cannot see the other way in — **a phase that DID
+deliver a result whose reasoning step nothing served**. The plan is empty because
+the planner was starved, not because the target has no parameterised surface, and
+the ledger has no way to tell.
+
+`_run_completion` is the one place both witnesses of that are already
+reconciled — the orchestrator's `phase_outcomes` live, and `model_stamp`'s
+exhausted stages in a stored bundle. So `reconcile_reachability_claims` reads
+`ExecutiveSummary.run_completed` and, when the banner says the run did not
+complete, moves every `unreachable` entry into `reachability_undetermined`
+carrying the banner's own `incomplete_reason` rather than the predicate's
+sentence. A document that says the run did not complete cannot also carry target
+claims derived from the phase that did not.
+
+It **only ever tightens**: a claim becomes "not determined", never the reverse,
+and a completed run is returned byte-identical. Pure, reads only engine-declared
+fields, and runs at both seams — the build seam so `report.json` carries the
+reconciled ledger, the render seam so a bundle stored before this rule re-renders
+honestly. Same shape, same reason, as `reconcile_with_model_stamp`.
