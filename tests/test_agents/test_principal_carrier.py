@@ -186,6 +186,38 @@ class TestOnlyAnAmbientResponseIsEvidenceAboutTheSession:
             )
             assert observed == [expected], mode
 
+    def test_a_request_that_got_no_response_is_not_observed_at_all(self) -> None:
+        """An absence entering the session oracle as a measurement.
+
+        The status was ``int(data.get("status_code") or 0)``, so a transport
+        failure (whose envelope carries ``status_code: 0``) and a truncated
+        envelope both arrived as 0. Neither ``_looks_blocked`` nor
+        ``looks_unauthenticated`` matches 0, so both were fed in as CLEAN
+        responses and RESET two streaks: the governor's consecutive-block count
+        and the sentinel's consecutive-loss count. Both counters exist to
+        accumulate across exactly the conditions under which transport failures
+        cluster.
+        """
+        seen: list[dict[str, Any]] = []
+
+        class _Gov:
+            def observe_response(self, **kw: Any) -> None:
+                seen.append(kw)
+
+        for raw in (
+            '{"response_headers": {}, "response_body": ""}',
+            '{"status_code": 0, "response_body": "", "error": "connection refused"}',
+            '{"status_code": null}',
+            '{"status_code": "200"}',
+        ):
+            HTTPClientTool._observe(_Gov(), raw)
+        assert seen == [], "a request with no response status must make no observation"
+
+        HTTPClientTool._observe(
+            _Gov(), '{"status_code": 200, "response_headers": {}, "response_body": "x"}'
+        )
+        assert [s["status"] for s in seen] == [200], "a real status is still observed"
+
 
 class TestTheAgentCarrier:
     @pytest.mark.asyncio
