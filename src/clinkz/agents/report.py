@@ -760,9 +760,21 @@ class ReportAgent(BaseAgent):
         # oracle refusing seven DOM-XSS candidates exactly as designed. A client
         # reading that section was told the engine could not look, when it had
         # looked and found nothing.
+        #
+        # The claim is read off runs that REPORTED, not off runs that were
+        # SPENT. A runner reply carrying no verdict used to validate into a
+        # default verdict and count as a clean non-execution, which pushed this
+        # section toward "the oracle looked and saw nothing" on the strength of
+        # an attempt that observed nothing in either direction. ``reported`` is
+        # absent from bundles written before that distinction existed, and the
+        # ABSENCE of the key is what separates an older bundle from a newer one
+        # — the same rule the testing window follows — so an older bundle falls
+        # back to ``runs`` and renders exactly as it did before.
         oracle = client_oracle or {}
         oracle_runs = int(oracle.get("runs") or 0)
-        oracle_ran = bool(oracle.get("resolved")) and oracle_runs > 0
+        reported = oracle.get("reported")
+        oracle_reported = int(reported if reported is not None else oracle_runs)
+        oracle_ran = bool(oracle.get("resolved")) and oracle_reported > 0
         witnessed = int(oracle.get("executions_witnessed") or 0)
         for vuln_class in VULN_CLASSES:
             if vuln_class.capability is not ConfirmationCapability.CLIENT_SIDE_ORACLE_REQUIRED:
@@ -774,7 +786,8 @@ class ReportAgent(BaseAgent):
                         category=NotTestedCategory.CLIENT_ORACLE_FOUND_NOTHING,
                         reason=(
                             f"The client-side execution oracle WAS available and ran "
-                            f"{oracle_runs} time(s) this engagement, witnessing execution "
+                            f"{oracle_runs} time(s) this engagement, reporting a verdict "
+                            f"on {oracle_reported} of them and witnessing execution "
                             f"{witnessed} time(s). Where a candidate of this class is not "
                             "among the confirmed findings, it is because the oracle "
                             "loaded the page in a real browser and no attacker-supplied "

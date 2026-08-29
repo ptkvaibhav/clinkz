@@ -121,6 +121,44 @@ class TestTheOracleThatRanIsNotAnOracleThatIsMissing:
         categories = {i.category for i in items}
         assert NotTestedCategory.NO_CLIENT_SIDE_ORACLE in categories
 
+    def test_runs_that_reported_nothing_are_not_an_oracle_that_looked(self) -> None:
+        """Budget spent is not the same as the browser having answered.
+
+        A runner reply with no verdict used to validate into a default verdict —
+        ``executed=False``, control silent — and counted here as a clean
+        non-execution. The section then told a client the page was examined in a
+        real browser when nothing was observed in either direction, which is the
+        very distinction this class holds apart.
+        """
+        items = self._not_tested(
+            {"resolved": True, "runs": 40, "reported": 0, "executions_witnessed": 0}
+        )
+        categories = {i.category for i in items}
+        assert NotTestedCategory.NO_CLIENT_SIDE_ORACLE in categories
+        assert NotTestedCategory.CLIENT_ORACLE_FOUND_NOTHING not in categories
+
+    def test_the_claim_names_both_numbers(self) -> None:
+        items = self._not_tested(
+            {"resolved": True, "runs": 40, "reported": 37, "executions_witnessed": 0}
+        )
+        answered = [i for i in items if i.category is NotTestedCategory.CLIENT_ORACLE_FOUND_NOTHING]
+        assert answered
+        for item in answered:
+            assert "40 time(s)" in item.reason
+            assert "37 of them" in item.reason
+
+    def test_a_bundle_predating_the_distinction_renders_as_before(self) -> None:
+        """The ABSENCE of ``reported`` separates an old bundle from a new one.
+
+        Same rule as the testing window: an older bundle cannot answer, and
+        defaulting it to zero would flip every one of them to "no oracle
+        exists" — the misreport this section was built to remove.
+        """
+        items = self._not_tested({"resolved": True, "runs": 40, "executions_witnessed": 0})
+        categories = {i.category for i in items}
+        assert NotTestedCategory.CLIENT_ORACLE_FOUND_NOTHING in categories
+        assert NotTestedCategory.NO_CLIENT_SIDE_ORACLE not in categories
+
     def test_missing_information_reads_as_no_oracle(self) -> None:
         """A run that cannot say what it did did not demonstrate that it did anything.
 
