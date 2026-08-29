@@ -624,3 +624,68 @@ class TestTheReconciliationCarriesBothNumbers:
             "the refusal has to see the stamp: a provider-starved run dispatches zero "
             "and is otherwise indistinguishable from a floor observation"
         )
+
+
+class TestTheDegradationCaveatRenders:
+    """A guard that has never fired is indistinguishable from one never written.
+
+    ``friction_log`` read ``report["model_stamp"]``, which is a ``list[dict]``:
+    ``or {}`` produced ``{}`` when the key was absent, and ``isinstance(stamp,
+    dict)`` was False whenever it was present, so the branch was unreachable by
+    both routes at once. It has never fired in any run this harness has graded.
+    ``provider_degraded`` lives in ``provider_degradation``.
+    """
+
+    @staticmethod
+    def _report(**degradation: Any) -> dict[str, Any]:
+        return {
+            "provider_degradation": degradation,
+            "safety_summary": {},
+            "model_stamp": [{"stage": "recon", "provider": "exhausted"}],
+        }
+
+    def _friction(self, harness: Any, report: dict[str, Any]) -> list[str]:
+        return harness.friction_log(report, returncode=0, disclosure={"clean": True}, ledger={})
+
+    def test_a_degraded_run_renders_the_caveat(self, harness: Any) -> None:
+        entries = self._friction(
+            harness,
+            self._report(
+                provider_degraded=True,
+                fallback_count=6,
+                absence_count=3,
+                exhausted_stages=["exploit"],
+            ),
+        )
+        caveat = [e for e in entries if "provider_degraded" in e]
+        assert len(caveat) == 1, entries
+        assert "6 call(s)" in caveat[0] and "3 served by nobody" in caveat[0]
+        assert "exploit" in caveat[0]
+        assert "baseline-ineligible" in caveat[0]
+
+    def test_a_clean_run_renders_no_caveat(self, harness: Any) -> None:
+        entries = self._friction(
+            harness, self._report(provider_degraded=False, fallback_count=0, absence_count=0)
+        )
+        assert not [e for e in entries if "provider_degrad" in e]
+
+    def test_a_bundle_with_no_routing_record_says_so(self, harness: Any) -> None:
+        """Absent is not clean here either — the same law, one field over."""
+        entries = self._friction(
+            harness, {"safety_summary": {}, "model_stamp": [{"stage": "recon"}]}
+        )
+        assert [e for e in entries if "INDETERMINATE" in e], entries
+
+    def test_the_model_stamp_can_never_satisfy_the_caveat(self, harness: Any) -> None:
+        """The regression pin: the field it used to read is a list, always.
+
+        A ``list[dict]`` never has ``.get``, so a future edit that points this
+        back at ``model_stamp`` cannot pass — which is the failure mode being
+        pinned, not the fix.
+        """
+        report = {
+            "safety_summary": {},
+            "model_stamp": [{"stage": "recon", "provider_degraded": True}],
+            "provider_degradation": {"provider_degraded": False},
+        }
+        assert not [e for e in self._friction(harness, report) if "provider_degraded:" in e]

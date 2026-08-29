@@ -656,13 +656,39 @@ def friction_log(
             "(each is named in the run's action log)"
         )
 
-    stamp = report.get("model_stamp") or {}
-    if isinstance(stamp, dict) and stamp.get("provider_degraded"):
+    # ``provider_degraded`` lives in ``provider_degradation``, the reconciled
+    # register summary. This used to read ``model_stamp``, which is a
+    # ``list[dict]`` — so ``or {}`` produced ``{}`` when the key was absent and
+    # ``isinstance(stamp, dict)`` was False whenever it was present. The caveat
+    # was unreachable by both routes at once and has never fired in any run this
+    # harness has graded, which is indistinguishable from never having been
+    # written. The absent-key case is kept separate on purpose: a bundle with no
+    # degradation record has not claimed to be clean.
+    degradation = report.get("provider_degradation")
+    if not isinstance(degradation, dict):
         entries.append(
-            "provider_degraded: a fallback served at least one call, so this run is "
-            "permanently baseline-ineligible"
+            "provider_degradation: this bundle carries no routing record, so whether a "
+            "fallback served any call is INDETERMINATE — not a clean run"
+        )
+    elif degradation.get("provider_degraded"):
+        fallbacks = int(degradation.get("fallback_count") or 0)
+        absences = int(degradation.get("absence_count") or 0)
+        starved = ", ".join(str(s) for s in (degradation.get("exhausted_stages") or []))
+        entries.append(
+            f"provider_degraded: {fallbacks} call(s) served by a provider other than the "
+            f"one asked for and {absences} served by nobody at all"
+            + (f"; nothing served {starved}" if starved else "")
+            + ", so this run is permanently baseline-ineligible"
         )
 
+    # A bundle with no ledger has not reported a clean degradation account; it
+    # has reported nothing. Absent and empty are the same value here and only
+    # one of them is a measurement.
+    if not ledger:
+        entries.append(
+            "component_ledger: this bundle carries none, so whether any component "
+            "degraded is UNMEASURED — not clean"
+        )
     for alarm in ledger.get("alarms") or []:
         entries.append(
             f"ledger {alarm.get('kind')}: {alarm.get('component')} "
