@@ -267,3 +267,25 @@ class TestParseOutput:
             {"verdict": {"executed": False, "refusal": WitnessRefusal.NOT_EXECUTED.value}}
         )
         assert _oracle().parse_output(raw).success is True
+
+    def test_a_reply_with_no_verdict_is_the_oracle_not_reporting(self) -> None:
+        """The defect: an absent verdict validated into a DEFAULT verdict.
+
+        ``executed=False``, ``control_silent=True``, ``refusal=NONE`` — and the
+        success test passed on ``NONE``, so a runner that produced nothing was
+        byte-identical to a browser that loaded the page and saw no script run.
+        P7 only promotes, so nothing became a finding; the cost is the claim the
+        report makes out of the count.
+        """
+        for raw in ('{"observation": {}}', "{}", '{"verdict": {}}', '{"verdict": null}', "[]"):
+            out = _oracle().parse_output(raw)
+            assert out.success is False, raw
+            assert out.verdict.refusal is WitnessRefusal.NO_VERDICT_REPORTED, raw
+            assert out.verdict.executed is False, raw
+            assert out.verdict.is_target_statement is False, raw
+
+    def test_malformed_output_carries_the_same_refusal(self) -> None:
+        """Unparseable and verdict-less are one fact: the oracle did not report."""
+        out = _oracle().parse_output("not json")
+        assert out.verdict.refusal is WitnessRefusal.NO_VERDICT_REPORTED
+        assert out.verdict.is_target_statement is False

@@ -111,15 +111,18 @@ class TestPageAuthoredTextNeverDecides:
 
 
 class TestOracleFailuresAreNotStatementsAboutTheTarget:
+    #: The two members that are NOT oracle failures. Everything else in the enum
+    #: is, and the domain below is the enum itself: a hand-listed set of
+    #: refusals is a guard whose domain excludes the member somebody forgets to
+    #: add, which is exactly the member most likely to be read as a clean
+    #: result. Guard-domain law — the domain is computed, the classification
+    #: (these two) is declared.
+    _NOT_ORACLE_FAILURES = frozenset({WitnessRefusal.NONE, WitnessRefusal.NOT_EXECUTED})
+
     def test_every_oracle_failure_is_excluded_from_target_statements(self) -> None:
-        for refusal in (
-            WitnessRefusal.ORACLE_UNAVAILABLE,
-            WitnessRefusal.OUT_OF_SCOPE,
-            WitnessRefusal.STATE_CHANGING_URL,
-            WitnessRefusal.SAFETY_REFUSED,
-            WitnessRefusal.NAVIGATION_FAILED,
-            WitnessRefusal.CONTROL_NONCE_OBSERVED,
-        ):
+        failures = set(WitnessRefusal) - self._NOT_ORACLE_FAILURES
+        assert len(failures) >= 6, "the domain must be the enum, not a copy of it"
+        for refusal in sorted(failures):
             v = _verdict(refusal=refusal)
             assert v.is_target_statement is False, refusal
 

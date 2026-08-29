@@ -53,6 +53,16 @@ class WitnessRefusal(StrEnum):
         CONTROL_NONCE_OBSERVED: The control nonce — minted and deliberately
             never injected — came back. The channel is not trustworthy for this
             run, so nothing it reported may be believed, including a positive.
+        NO_VERDICT_REPORTED: The runner replied and the reply carries no verdict
+            — unparseable, or parsed with the ``verdict`` key missing. Nothing
+            was observed in either direction. Without this the reply validated
+            into a DEFAULT verdict (``executed=False``, ``control_silent=True``,
+            ``refusal=NONE``) and ``success`` came back True: a runner that
+            produced nothing read as an oracle that ran and witnessed nothing.
+            P7 only ever promotes, so no finding was manufactured — the cost
+            landed in the deliverable, where "examined in a real browser, no
+            execution witnessed" is precisely the claim this engine holds apart
+            from "there was no oracle to look with".
         NOT_EXECUTED: The only member that IS a statement about the target: the
             oracle ran cleanly, the control stayed silent, and the payload did
             not execute.
@@ -65,6 +75,7 @@ class WitnessRefusal(StrEnum):
     SAFETY_REFUSED = "safety_refused"
     NAVIGATION_FAILED = "navigation_failed"
     CONTROL_NONCE_OBSERVED = "control_nonce_observed"
+    NO_VERDICT_REPORTED = "no_verdict_reported"
     NOT_EXECUTED = "not_executed"
 
 
