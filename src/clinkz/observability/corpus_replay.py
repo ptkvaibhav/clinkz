@@ -70,14 +70,29 @@ DEFAULT_BASELINE = Path("tests/fixtures/corpus_replay_baseline.json")
 
 @dataclass(frozen=True)
 class InvocationRecord:
-    """One recorded tool invocation, read off disk."""
+    """One recorded tool invocation, read off disk.
+
+    ``exit_code`` is ``int | None`` because a record can be truncated. It was
+    read as ``int(data.get("exit_code") or 0)``, and ``0`` is *the tool
+    succeeded* — the strongest reading available, manufactured out of a key a
+    half-written file never got to. Nothing consults it today, which is exactly
+    why the type is the place to fix it: the first consumer that does would
+    inherit the wrong answer silently, and the baseline diff would then lock the
+    parse of a record that never finished being written.
+
+    ``seq`` and ``duration_ms`` coalesce the same way and are deliberately left
+    alone: neither decides anything. ``seq`` is unread, and ``duration_ms``
+    reaches only ``_parse_curl_output``'s ``response_time_ms``, which the
+    baseline digest does not carry — and curl's own ``__CURL_TIMING__`` marker
+    overrides it whenever the recorded stdout has one.
+    """
 
     path: Path
     engagement: str
     seq: int
     tool_name: str
     stdout: str
-    exit_code: int
+    exit_code: int | None
     duration_ms: float
 
     @property
@@ -126,13 +141,17 @@ def load_corpus(
             stdout = data.get("stdout")
             if not isinstance(stdout, str):
                 continue
+            recorded_exit = data.get("exit_code")
             yield InvocationRecord(
                 path=path,
                 engagement=engagement_dir.name,
                 seq=int(data.get("seq") or 0),
                 tool_name=str(data.get("tool_name") or ""),
                 stdout=stdout,
-                exit_code=int(data.get("exit_code") or 0),
+                # ``None`` when the record does not carry one. NOT zero: zero is
+                # "the tool exited successfully", and a truncated record has
+                # made no claim about how the tool exited.
+                exit_code=int(recorded_exit) if isinstance(recorded_exit, int) else None,
                 duration_ms=float(data.get("duration_ms") or 0.0),
             )
 

@@ -577,6 +577,30 @@ class AnthropicClient(LLMClient):
         is recorded as-is and the cache counters are kept beside it rather than
         folded in — the sum is the real prompt size, and conflating them would
         make a working cache look like a shrinking prompt.
+
+        REGISTERED, DELIBERATELY NOT FIXED — an absent ``usage`` reads as zero
+        spend. When the SDK response carries no ``usage`` object the branch
+        below is skipped and every counter stays at its constructed ``0``, which
+        is indistinguishable from a call that consumed nothing: the same
+        absence-as-measurement shape this module's siblings were just corrected
+        for, one layer from the ledger rather than in it.
+
+        It is left alone because the consequence today is bounded and the fix is
+        not local. The only gate reading these numbers is the TOKEN cap
+        (``SpendLedger.token_cap`` against ``total_tokens``), so an absent usage
+        undercounts and the cap fires late — a coverage cost, not a false claim,
+        and it fails in the direction that spends rather than the one that
+        silently stops testing. The USD cap is a SEPARATE gate reading
+        ``usd_spent``, it will read this eventually, and a run that reports
+        ``$0.00`` because nobody told it the token count is the ``$0.00`` beside
+        "a LOWER BOUND" that ``_report_integrity`` already had to reconcile.
+
+        Fixing it means deciding what an unreported usage IS — the honest answer
+        is ``None``/unpriced, not ``0`` — and that is a change to ``CallStats``,
+        to the three accumulators below, and to every consumer that sums them,
+        which is a different piece of work from this one. Whoever wires the USD
+        cap to a live price table does it then, and must not read a coalesced
+        zero as a measurement of spend.
         """
         stats = CallStats(
             provider="anthropic", model=self._model, max_output_tokens=requested_max_tokens

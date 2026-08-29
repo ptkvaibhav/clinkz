@@ -305,6 +305,41 @@ class TestTheGateStatesItsOwnLimits:
         assert "tool-invoke --replay" in doc
         assert "re-executes" in doc
 
+    def test_a_truncated_record_reports_no_exit_code_rather_than_success(
+        self, tmp_path: Path
+    ) -> None:
+        """``int(data.get("exit_code") or 0)`` said the tool succeeded.
+
+        Zero is the strongest reading available - *the tool exited cleanly* -
+        and a half-written file from an interrupted run never made that claim.
+        Nothing reads the field today, which is the reason to fix it in the type
+        rather than at a consumer: the first consumer to read it would inherit
+        the wrong answer with nothing to notice.
+        """
+        import json
+
+        invocations = tmp_path / "eng" / "tool_invocations"
+        invocations.mkdir(parents=True)
+        stdout = "HTTP/1.1 200 OK\r\n\r\nbody"
+        (invocations / "1.json").write_text(
+            json.dumps({"seq": 1, "tool_name": "http_client", "stdout": stdout}),
+            encoding="utf-8",
+        )
+        (invocations / "2.json").write_text(
+            json.dumps(
+                {
+                    "seq": 2,
+                    "tool_name": "http_client",
+                    "stdout": stdout,
+                    "exit_code": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        records = {r.seq: r for r in load_corpus(tmp_path)}
+        assert records[1].exit_code is None, "an absent exit code is not a zero"
+        assert records[2].exit_code == 0, "a recorded zero IS a measurement"
+
     def test_replay_never_opens_a_socket(self) -> None:
         """Structural: the gate must be offline, not merely usually offline."""
         import socket

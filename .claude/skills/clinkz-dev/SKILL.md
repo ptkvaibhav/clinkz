@@ -148,6 +148,58 @@ the same rule as `artifact_scan._SKIP_ALLOWED` and
 `test_mock_shape_audit._DELIBERATE_FICTIONS`. `len(reason.split()) < 6` is a
 red build in the control-arm registry for exactly this reason.
 
+**The guard-pattern law (same law, second face).** A guard's DOMAIN is one way
+to exclude its own failure mode. Its PATTERN is the other, and it fails the same
+way — silently, with a clean report.
+
+> A sweep for absence-read-as-measurement used the regex
+> `\bor (0|\[\]|\{\})\b`. `\b` needs a word character on one side, and after
+> `]` or `}` the next character in real code is `)` or `,` — both non-word. The
+> pattern could therefore never match two of its own three alternatives. It
+> returned **65 of 865 hits** and reported clean on what it structurally could
+> not see. The one alternative it did match, `or 0`, is the one ending in a word
+> character.
+
+Every guard this repo lost this month failed by having a **domain** that
+excluded its failure mode; this one failed by having a **pattern** that did. The
+correction is the same: derive, don't hand-write. The corrected sweep is an AST
+walk for `BoolOp(Or)` whose last operand is an empty literal, bucketed by what
+the coalesced value is USED for — so the domain is every such node the parser
+finds, not every one a regex author remembered to spell.
+
+**And the CORRECTED regex is still wrong — that is the actual lesson.** Run
+side by side against the AST walk it returns **875** where the parser finds
+**882**: a seven-hit gap, after the character-class bug that hid two thirds of
+the domain was fixed. The residue is not another spelling to add. A regex reads
+a line; the thing being hunted is a node, and the two disagree wherever the
+source does not put them on the same line — a call broken across lines, a
+coalescence inside a comprehension, an operand that is itself an expression —
+and, in the other direction, wherever a *docstring or comment describing this
+very defect* contains the characters and is counted as an instance of it.
+
+So the lesson is not "fix the regex". It is that **a pattern-matched domain is a
+guessed domain**: the author enumerates the shapes they can picture, and the
+guard's coverage is silently bounded by that imagination rather than by the
+language. The first regex was a guess that was obviously wrong once measured;
+the second is a guess that was not, which is the more dangerous of the two,
+because it looks correct and its remaining error is invisible without the AST
+walk standing beside it to disagree. If the answer must be *complete*, parse.
+
+**How to tell.** Ask of a pattern exactly what you ask of a domain: *if the thing
+I am hunting appears in a new form, does this go red?* If matching depends on a
+character class the author had to reason about, write the check against the
+parsed structure instead. And **measure the denominator before trusting the
+verdict**: a sweep that reports its own hit count against a total it never
+computed cannot tell "nothing to find" from "nothing findable".
+
+The seven defects that corrected sweep surfaced share one shape, which is the
+thing worth recognising in review: **`X or <empty>` erases the difference between
+a value that was measured and one that was never produced**, and every consumer
+downstream then reads the absence as the measurement. It is only a defect where
+something CLAIMS on the coalesced value — a guard, a count in a deliverable, a
+verdict. Iterating an absent collection and an empty one are the same act; that
+is the idiom, and it is most of the 865.
+
 **Git protocol (every push):**
 - Commit **per logical unit**; imperative `prefix(scope): summary` with **no trailing period**; end each commit message with the `Co-Authored-By` trailer. Push to origin after each commit once gates pass. **No `--force`, no `--no-verify`.**
 - On Windows, multi-line commit/PR bodies go **via a file**: `git commit -F <file>` / `gh pr create --body-file <file>` — a `-m "$var"` with embedded `"` breaks PowerShell's arg parser.

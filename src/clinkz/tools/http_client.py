@@ -372,6 +372,19 @@ class HTTPClientTool(ToolBase):
         says about it is not evidence about the session the sentinel guards. A
         role-B probe that gets a 401 because role B lacks the object is not our
         session expiring.
+
+        **A request that produced no response produces no observation.** The
+        status was read as ``int(data.get("status_code") or 0)``, so a transport
+        failure — whose envelope carries ``status_code: 0`` beside an ``error``
+        — and a truncated envelope both arrived as a status of 0. Neither
+        predicate matches 0, so both were fed in as a CLEAN response: they reset
+        the governor's consecutive-block streak and the sentinel's
+        consecutive-loss streak. That direction is quiet today rather than
+        harmless — an absence that resets a counter is an absence deciding a
+        measurement, and both counters exist to accumulate across exactly the
+        conditions (a target that starts refusing us, a session that has died)
+        under which transport failures cluster. There is nothing to observe, so
+        nothing is observed.
         """
         try:
             data = json.loads(raw)
@@ -379,8 +392,11 @@ class HTTPClientTool(ToolBase):
             return
         if not isinstance(data, dict):
             return
+        status = data.get("status_code")
+        if not isinstance(status, int) or status <= 0:
+            return
         governor.observe_response(
-            status=int(data.get("status_code") or 0),
+            status=status,
             headers=data.get("response_headers") or {},
             body=data.get("response_body") or "",
             session_bearing=session_bearing,

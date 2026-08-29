@@ -760,9 +760,21 @@ class ReportAgent(BaseAgent):
         # oracle refusing seven DOM-XSS candidates exactly as designed. A client
         # reading that section was told the engine could not look, when it had
         # looked and found nothing.
+        #
+        # The claim is read off runs that REPORTED, not off runs that were
+        # SPENT. A runner reply carrying no verdict used to validate into a
+        # default verdict and count as a clean non-execution, which pushed this
+        # section toward "the oracle looked and saw nothing" on the strength of
+        # an attempt that observed nothing in either direction. ``reported`` is
+        # absent from bundles written before that distinction existed, and the
+        # ABSENCE of the key is what separates an older bundle from a newer one
+        # — the same rule the testing window follows — so an older bundle falls
+        # back to ``runs`` and renders exactly as it did before.
         oracle = client_oracle or {}
         oracle_runs = int(oracle.get("runs") or 0)
-        oracle_ran = bool(oracle.get("resolved")) and oracle_runs > 0
+        reported = oracle.get("reported")
+        oracle_reported = int(reported if reported is not None else oracle_runs)
+        oracle_ran = bool(oracle.get("resolved")) and oracle_reported > 0
         witnessed = int(oracle.get("executions_witnessed") or 0)
         for vuln_class in VULN_CLASSES:
             if vuln_class.capability is not ConfirmationCapability.CLIENT_SIDE_ORACLE_REQUIRED:
@@ -774,7 +786,8 @@ class ReportAgent(BaseAgent):
                         category=NotTestedCategory.CLIENT_ORACLE_FOUND_NOTHING,
                         reason=(
                             f"The client-side execution oracle WAS available and ran "
-                            f"{oracle_runs} time(s) this engagement, witnessing execution "
+                            f"{oracle_runs} time(s) this engagement, reporting a verdict "
+                            f"on {oracle_reported} of them and witnessing execution "
                             f"{witnessed} time(s). Where a candidate of this class is not "
                             "among the confirmed findings, it is because the oracle "
                             "loaded the page in a real browser and no attacker-supplied "
@@ -1284,13 +1297,37 @@ class ReportAgent(BaseAgent):
         if not stamp:
             return
         lines.extend(["## Research grounding", ""])
-        entries = int(stamp.get("runbook_entries") or 0)
-        providers = ", ".join(str(p) for p in (stamp.get("providers") or [])) or "none"
+        # A count of 0 and no count at all are different facts: the first says
+        # the phase ran and produced no technique, the second says the phase
+        # never reported. ``grounding`` carries a partial signal for the second
+        # (``undeclared``); the count carries none, so it does not invent one.
+        raw_entries = stamp.get("runbook_entries")
+        entries = (
+            f"the {int(raw_entries)} runbook entr(ies)"
+            if raw_entries is not None
+            else "the runbook entries, whose count this run did not record,"
+        )
+        raw_providers = stamp.get("providers")
+        providers = (
+            (", ".join(str(p) for p in raw_providers) or "none")
+            if raw_providers is not None
+            else "not recorded"
+        )
+        if stamp.get("research_reported") is False:
+            lines.extend(
+                [
+                    "**The research phase produced no record for this run** — it did not "
+                    "run, errored, or was skipped. That is not the same as a research "
+                    "phase that ran and found nothing, and nothing below should be read "
+                    "as a measurement of what research covered.",
+                    "",
+                ]
+            )
         if stamp.get("is_grounded"):
             lines.extend(
                 [
                     f"The research behind this report was **grounded in live web search** "
-                    f"(served by: {providers}). Its {entries} runbook entr(ies) reflect "
+                    f"(served by: {providers}). {entries[0].upper()}{entries[1:]} reflect "
                     f"advisories available at the time of testing.",
                     "",
                 ]
@@ -1316,7 +1353,7 @@ class ReportAgent(BaseAgent):
                 "",
                 f"Why: {why}.",
                 "",
-                f"What this means for the {entries} runbook entr(ies) and any CVE named "
+                f"What this means for {entries} and any CVE named "
                 "in them: they are bounded by the serving model's training cutoff. A "
                 "vulnerability disclosed after that date is invisible here, and the "
                 "research text gives no indication that anything is missing — so an "

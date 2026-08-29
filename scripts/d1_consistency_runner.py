@@ -761,7 +761,16 @@ def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
     # Every component invoked that contributed nothing. Not a violation: a
     # degraded component is a coverage fact the operator must SEE, and the run
     # is still honest about what it proved.
-    ledger = report.get("component_ledger") or {}
+    #
+    # A bundle carrying NO ledger is a third answer and it is not the clean one.
+    # ``report.get("component_ledger") or {}`` made an absent ledger produce
+    # ``ledger_alarms: []``, which the cross-run summary prints as "none — every
+    # invoked component contributed at least one item": a clean degradation
+    # account for the whole engine, out of a missing key. Exactly the shape the
+    # class-coverage account already refuses for a missing ``trace.jsonl``.
+    raw_ledger = report.get("component_ledger")
+    ledger_present = isinstance(raw_ledger, dict) and bool(raw_ledger)
+    ledger = raw_ledger if ledger_present else {}
 
     return {
         # The diff key: MODULE + PATH, so a query-string difference in the URL
@@ -788,14 +797,34 @@ def audit(report: dict[str, Any], engagement: str) -> dict[str, Any]:
         "class_coverage_alarms": coverage["alarms"],
         "dropped_primary_targets": dropped_primary,
         "artifact_scan": disclosure,
-        "ledger_alarms": [
-            f"{a.get('component')} [{a.get('kind')}]: {','.join(a.get('alarms') or [])} "
-            f"(invocations={a.get('invocations')}, contributed={a.get('items_contributed')})"
-            for a in (ledger.get("alarms") or [])
-        ],
-        "ledger_never_invoked": list(ledger.get("never_invoked") or []),
+        # ``ledger_present`` is consulted by every reader of the two lists below,
+        # because their emptiness has two causes and only one of them is a
+        # measurement. ``None`` is not the empty list.
+        "ledger_present": ledger_present,
+        "ledger_alarms": (
+            [
+                f"{a.get('component')} [{a.get('kind')}]: {','.join(a.get('alarms') or [])} "
+                f"(invocations={a.get('invocations')}, contributed={a.get('items_contributed')})"
+                for a in (ledger.get("alarms") or [])
+            ]
+            if ledger_present
+            else None
+        ),
+        "ledger_never_invoked": (
+            list(ledger.get("never_invoked") or []) if ledger_present else None
+        ),
         "violations": violations,
     }
+
+
+def _alarm_count(record: dict[str, Any]) -> str:
+    """The per-run alarm count, or ``?`` when the bundle carried no ledger.
+
+    Printed rather than a number because ``0`` here would say "nothing
+    degraded", which is the claim an absent ledger cannot make.
+    """
+    alarms = record.get("ledger_alarms")
+    return str(len(alarms)) if isinstance(alarms, list) else "?(no ledger)"
 
 
 def read_artifact_scan(engagement: str) -> dict[str, Any]:
@@ -883,7 +912,7 @@ def main() -> int:
             f"leads={len(record.get('leads', []))} "
             f"hash_unchanged={record['admin_hash_unchanged']} "
             f"artifact_scan={'clean' if scan.get('clean') else scan.get('present', 'absent')} "
-            f"ledger_alarms={len(record.get('ledger_alarms', []))}",
+            f"ledger_alarms={_alarm_count(record)}",
             flush=True,
         )
 
@@ -924,6 +953,7 @@ def main() -> int:
     # that looks for it never ran", and only one of those is a result.
     print("\n  COMPONENT DEGRADATION (invoked, contributed nothing)")
     any_alarm = False
+    unmeasured = [r for r in runs if r.get("engagement") and not r.get("ledger_present")]
     for record in runs:
         alarms = record.get("ledger_alarms") or []
         if alarms:
@@ -931,7 +961,13 @@ def main() -> int:
             print(f"    run {record['run']} ({record.get('engagement')}):")
             for alarm in alarms:
                 print(f"      ! {alarm}")
-    if not any_alarm:
+    for record in unmeasured:
+        print(
+            f"    run {record['run']} ({record.get('engagement')}): NOT DETERMINED — this "
+            f"bundle carries no component ledger, so whether anything degraded is "
+            f"unmeasured, not clean"
+        )
+    if not any_alarm and not unmeasured:
         print("    none — every invoked component contributed at least one item")
 
     print(f"\n  written: {out}")

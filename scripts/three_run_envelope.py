@@ -40,6 +40,13 @@ average over one real run and two dead ones is not a wider envelope, it is a
 wrong number — and the batch aborts, because the account condition that produced
 it does not clear between runs.
 
+**A bundle with no stamp is excluded too, and that is the same guard, not a
+stricter one.** The guard used to read ``exhausted_stages(report.get(...) or [])``
+and an absent stamp came back as the empty list — indistinguishable from a run
+every stage of which was served, and produced by exactly the outage the guard
+watches for. :func:`~clinkz.llm.degradation.stamp_exhaustion` returns ``None``
+there instead, and ``None`` is void.
+
 Usage::
 
     python scripts/three_run_envelope.py \\
@@ -49,8 +56,9 @@ Usage::
 Exit codes mirror the CLI's contract:
 ``0`` every run recorded · ``1`` a recorded run exited non-zero · ``2`` bad input ·
 ``3`` refused before testing (terminal account state, nothing sent) ·
-``4`` aborted mid-batch — a run's model stamp reported an unserved stage, or it
-produced no bundle at all. Both stop the batch: the conditions that cause them
+``4`` aborted mid-batch — a run's model stamp reported an unserved stage, its
+bundle carries no stamp to read, or it produced no bundle at all. All three
+stop the batch: the conditions that cause them
 (a depleted account, a dirty scoreboard) hold for the next run too, and "2 of 3
 attempted, and here is why" is a legible artifact where a silently missing third
 run is not.
@@ -73,7 +81,7 @@ from _artifact_io import redacted, write_redacted_json, write_redacted_text  # n
 from d1_consistency_runner import OUTPUTS, newest_engagement_dirs, read_report  # noqa: E402
 from juiceshop_benchmark_run import RESULTS_DIR  # noqa: E402
 
-from clinkz.llm.degradation import exhausted_stages  # noqa: E402
+from clinkz.llm.degradation import stamp_exhaustion  # noqa: E402
 from clinkz.llm.providers import KeyStatus, ProviderPreflight, preflight_providers  # noqa: E402
 
 #: Where each run's preserved artifacts and the envelope summary land. The
@@ -189,14 +197,17 @@ def run_once(
         "artifacts": str(run_dir),
     }
     if not engagement:
-        row["exhausted_stages"] = []
+        # ``None``, not ``[]``: no bundle means no claim about which stages were
+        # served. The void_reason decides this row either way, but a reader that
+        # takes the field at face value must not find a clean measurement here.
+        row["exhausted_stages"] = None
         row["void_reason"] = (
             "the run produced no engagement bundle, so there is nothing to record or read"
         )
         return row
 
     report = read_report(engagement)
-    row["exhausted_stages"] = exhausted_stages(report.get("model_stamp") or [])
+    row["exhausted_stages"] = stamp_exhaustion(report)
     reconciliation = run_dir / "reconciliation.json"
     if reconciliation.is_file():
         recorded = json.loads(reconciliation.read_text(encoding="utf-8"))
@@ -320,10 +331,18 @@ def main() -> int:
             f"in {row['seconds']}s; artifacts under {row['artifacts']}"
         )
 
-        starved = row.get("exhausted_stages") or []
-        if starved or row.get("void_reason"):
+        # ``None`` is the third answer and it is NOT clean: a bundle with no
+        # model stamp cannot say whether every stage was served, and an absent
+        # stamp is what an outage mid-run leaves behind. Read as an empty list
+        # it passed this guard, which is the shape that let the 2026-08-25
+        # batch keep going after the balance ran out.
+        starved = row.get("exhausted_stages")
+        if starved is None or starved or row.get("void_reason"):
             reason = row.get("void_reason") or (
-                f"its model stamp reports that nothing served {', '.join(starved)}"
+                "its bundle carries no model stamp, so whether every LLM stage was "
+                "served is INDETERMINATE"
+                if starved is None
+                else f"its model stamp reports that nothing served {', '.join(starved)}"
             )
             row["recorded"] = False
             row["void_reason"] = reason
@@ -343,9 +362,12 @@ def main() -> int:
     summary = {
         "_what": (
             "A variance envelope over identical Juice Shop runs. A run is RECORDED only "
-            "when its own model stamp shows every LLM stage was served; a void run is "
-            "listed with its reason and is absent from the variance, because an average "
-            "over one real run and two dead ones is a wrong number, not a wider envelope."
+            "when its own model stamp SAYS every LLM stage was served; a run whose stamp "
+            "names an unserved stage is void, and so is one carrying no stamp at all - an "
+            "absent stamp is indeterminate, and it is what a mid-run outage leaves behind. "
+            "A void run is listed with its reason and is absent from the variance, because "
+            "an average over one real run and two dead ones is a wrong number, not a wider "
+            "envelope."
         ),
         "runs_requested": args.runs,
         "runs_attempted": len(attempted),

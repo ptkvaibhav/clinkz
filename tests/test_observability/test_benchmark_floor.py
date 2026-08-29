@@ -407,6 +407,50 @@ class TestTheFloorIsMeasuredNotDeclared:
             )
         assert not (tmp_path / "benchmark_floor.json").exists()
 
+    def test_a_bundle_with_no_model_stamp_is_refused(
+        self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An absent stamp is INDETERMINATE, and the guard used to read it as clean.
+
+        ``exhausted_stages(report.get("model_stamp") or [])`` returns ``[]`` for
+        a bundle with no stamp — byte-identical to a run every stage of which was
+        served. The absence is not a corner case: a run that dies to a depleted
+        balance is exactly the one that may never write a stamp, so the guard's
+        own reading defeated the guard on the failure it exists to catch.
+        """
+        _isolate(harness, tmp_path, monkeypatch)
+        with pytest.raises(ValueError, match="INDETERMINATE"):
+            harness.record_floor(
+                engagement="stampless-bundle",
+                solved_keys=["a"],
+                dispatches=0,
+                challenge_index={},
+                credential_set="admin",
+                exhausted_stages=None,
+            )
+        assert not (tmp_path / "benchmark_floor.json").exists()
+
+    def test_stamp_exhaustion_separates_absent_empty_and_served(self, harness: Any) -> None:
+        """Three inputs, three answers. The middle one is what the fix adds."""
+        assert harness.stamp_exhaustion({}) is None, "no key at all"
+        assert harness.stamp_exhaustion({"model_stamp": []}) is None, (
+            "an empty stamp is written from no llm_call trace events, so it makes no "
+            "claim about any stage either"
+        )
+        assert harness.stamp_exhaustion({"model_stamp": {"a": 1}}) is None, "not a list"
+        assert (
+            harness.stamp_exhaustion({"model_stamp": [{"stage": "recon", "provider": "anthropic"}]})
+            == []
+        ), "a stamp that names a serving provider IS a claim that nothing was starved"
+        assert harness.stamp_exhaustion(
+            {
+                "model_stamp": [
+                    {"stage": "recon", "provider": "exhausted"},
+                    {"stage": "scan", "provider": "anthropic"},
+                ]
+            }
+        ) == ["recon"]
+
     def test_recording_without_a_credential_set_is_refused(
         self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -580,3 +624,68 @@ class TestTheReconciliationCarriesBothNumbers:
             "the refusal has to see the stamp: a provider-starved run dispatches zero "
             "and is otherwise indistinguishable from a floor observation"
         )
+
+
+class TestTheDegradationCaveatRenders:
+    """A guard that has never fired is indistinguishable from one never written.
+
+    ``friction_log`` read ``report["model_stamp"]``, which is a ``list[dict]``:
+    ``or {}`` produced ``{}`` when the key was absent, and ``isinstance(stamp,
+    dict)`` was False whenever it was present, so the branch was unreachable by
+    both routes at once. It has never fired in any run this harness has graded.
+    ``provider_degraded`` lives in ``provider_degradation``.
+    """
+
+    @staticmethod
+    def _report(**degradation: Any) -> dict[str, Any]:
+        return {
+            "provider_degradation": degradation,
+            "safety_summary": {},
+            "model_stamp": [{"stage": "recon", "provider": "exhausted"}],
+        }
+
+    def _friction(self, harness: Any, report: dict[str, Any]) -> list[str]:
+        return harness.friction_log(report, returncode=0, disclosure={"clean": True}, ledger={})
+
+    def test_a_degraded_run_renders_the_caveat(self, harness: Any) -> None:
+        entries = self._friction(
+            harness,
+            self._report(
+                provider_degraded=True,
+                fallback_count=6,
+                absence_count=3,
+                exhausted_stages=["exploit"],
+            ),
+        )
+        caveat = [e for e in entries if "provider_degraded" in e]
+        assert len(caveat) == 1, entries
+        assert "6 call(s)" in caveat[0] and "3 served by nobody" in caveat[0]
+        assert "exploit" in caveat[0]
+        assert "baseline-ineligible" in caveat[0]
+
+    def test_a_clean_run_renders_no_caveat(self, harness: Any) -> None:
+        entries = self._friction(
+            harness, self._report(provider_degraded=False, fallback_count=0, absence_count=0)
+        )
+        assert not [e for e in entries if "provider_degrad" in e]
+
+    def test_a_bundle_with_no_routing_record_says_so(self, harness: Any) -> None:
+        """Absent is not clean here either — the same law, one field over."""
+        entries = self._friction(
+            harness, {"safety_summary": {}, "model_stamp": [{"stage": "recon"}]}
+        )
+        assert [e for e in entries if "INDETERMINATE" in e], entries
+
+    def test_the_model_stamp_can_never_satisfy_the_caveat(self, harness: Any) -> None:
+        """The regression pin: the field it used to read is a list, always.
+
+        A ``list[dict]`` never has ``.get``, so a future edit that points this
+        back at ``model_stamp`` cannot pass — which is the failure mode being
+        pinned, not the fix.
+        """
+        report = {
+            "safety_summary": {},
+            "model_stamp": [{"stage": "recon", "provider_degraded": True}],
+            "provider_degradation": {"provider_degraded": False},
+        }
+        assert not [e for e in self._friction(harness, report) if "provider_degraded:" in e]

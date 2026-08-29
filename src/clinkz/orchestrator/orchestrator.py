@@ -3450,19 +3450,28 @@ class OrchestratorAgent:
         A research phase that did not run, errored, or was skipped reports
         ``undeclared`` — which is treated as ungrounded, the direction that
         cannot overstate.
+
+        **The COUNT carries no such signal, so it is ``None`` rather than 0.**
+        ``grounding: undeclared`` at least says something is missing; a phase
+        that never ran and a phase that ran and produced no technique both
+        rendered "Runbook entries produced: 0", and only the second of those is
+        a measurement of anything. ``research_reported`` states which case it is
+        so a renderer does not have to infer it from a zero.
         """
         result = research_phase.get("result") if isinstance(research_phase, dict) else None
         if not isinstance(result, dict):
             return {
                 "grounding": ResearchGrounding.UNDECLARED.value,
                 "is_grounded": False,
-                "providers": [],
-                "runbook_entries": 0,
+                "research_reported": False,
+                "providers": None,
+                "runbook_entries": None,
             }
         grounding = str(result.get("grounding") or ResearchGrounding.UNDECLARED.value)
         return {
             "grounding": grounding,
             "is_grounded": grounding == ResearchGrounding.LIVE_SEARCH.value,
+            "research_reported": True,
             "providers": list(result.get("grounding_providers") or []),
             "runbook_entries": len(result.get("runbook") or []),
         }

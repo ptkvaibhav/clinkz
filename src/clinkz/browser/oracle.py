@@ -843,16 +843,55 @@ class PlaywrightExecutionOracle(ToolBase):
         return json.dumps({"verdict": verdict.model_dump(mode="json")}, default=str)
 
     def parse_output(self, raw_output: str) -> ClientExecutionOutput:
-        """Parse the JSON verdict into a structured tool output."""
+        """Parse the JSON verdict into a structured tool output.
+
+        **A reply with no verdict is the oracle not reporting, not the oracle
+        reporting nothing.** ``model_validate(data.get("verdict") or {})``
+        coalesced an absent key into a DEFAULT verdict — ``executed=False``,
+        ``control_silent=True``, ``refusal=NONE`` — and the old success test
+        (``refusal in (NONE, NOT_EXECUTED)``) then returned ``success=True``. A
+        runner that produced nothing was indistinguishable from a browser that
+        loaded the page and saw no script run.
+
+        P7 only ever promotes, so nothing is manufactured into a finding by this.
+        The cost lands one layer later, in the client deliverable: a run counted
+        as an execution witness that never happened pushes the report's
+        *What was NOT tested* section toward "the oracle ran and found nothing"
+        when the honest answer is that this attempt never reported — the two
+        categories this engine deliberately keeps apart.
+
+        Both no-verdict shapes therefore refuse:
+        :attr:`~clinkz.browser.witness.WitnessRefusal.NO_VERDICT_REPORTED`, which
+        is an oracle failure and so is excluded from
+        :attr:`~clinkz.browser.witness.WitnessVerdict.is_target_statement` like
+        every other one.
+        """
         try:
             data = json.loads(raw_output)
-            verdict = WitnessVerdict.model_validate(data.get("verdict") or {})
+            if not isinstance(data, dict):
+                raise TypeError(f"runner reply is {type(data).__name__}, not an object")
+            reported = data.get("verdict")
+            if not isinstance(reported, dict) or not reported:
+                raise ValueError("runner reply carries no verdict")
+            verdict = WitnessVerdict.model_validate(reported)
         except Exception as exc:  # noqa: BLE001
+            # Bounded, because ``exc`` is not always engine-authored: a pydantic
+            # ValidationError over the runner's verdict quotes the offending
+            # ``input_value``, and two of that model's fields hold TARGET-authored
+            # bytes (``policy_in_force``, ``console_violations``). Same reason
+            # ``raw_output`` is sliced two lines down, and the same lesson as the
+            # pypdf ``str(exc)`` that republished document bytes into a gate
+            # report. ``refusal_detail`` reaches the trace and the lead, so an
+            # unbounded target-influenced string must not ride it.
+            detail = f"the P7 runner produced no usable verdict: {exc}"[:500]
             return ClientExecutionOutput(
                 tool_name=self.name,
                 success=False,
                 raw_output=raw_output[:2000],
-                error=f"could not parse P7 verdict: {exc}",
+                error=detail,
+                verdict=WitnessVerdict(
+                    refusal=WitnessRefusal.NO_VERDICT_REPORTED, refusal_detail=detail
+                ),
             )
         return ClientExecutionOutput(
             tool_name=self.name,

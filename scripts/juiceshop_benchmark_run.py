@@ -31,10 +31,14 @@ figure.
 ``solved_total`` minus what authenticating and crawling reach on their own, so
 the floor is keyed by the credential set that measured it: adding ``jim`` beside
 ``admin`` adds whatever ``jim``'s own login trips, and subtracting the admin-only
-floor would credit that to testing. :func:`record_floor` refuses four kinds of
+floor would credit that to testing. :func:`record_floor` refuses five kinds of
 run — one that tested, one whose dispatch count is unmeasurable, one whose model
-stamp names a stage nothing served, and one that does not say who it logged in
-as — and no floor that applies means ``solved_by_testing: None``, never zero.
+stamp names a stage nothing served, one carrying no model stamp to read, and one
+that does not say who it logged in as — and no floor that applies means
+``solved_by_testing: None``, never zero. The fourth is the same guard as the
+third and not a new one: an absent stamp used to coalesce to the empty list,
+which reads as "every stage was served" and is what an outage mid-run actually
+leaves behind.
 
 Usage::
 
@@ -69,7 +73,7 @@ from regrade_stored_bundles import NO_ARM, REFUSED, SURVIVES, grade  # noqa: E40
 # The exhausted-stage reader is the PRODUCER's own: "what does an LLM outage look
 # like in a stored bundle" is one question with one answer, and a second copy of
 # it inside a driver is a second thing to keep in step.
-from clinkz.llm.degradation import exhausted_stages  # noqa: E402
+from clinkz.llm.degradation import stamp_exhaustion  # noqa: E402
 
 BASE = "http://localhost:3000"
 COMPOSE = ["docker", "compose", "-f", "docker/docker-compose.yml"]
@@ -231,7 +235,7 @@ def record_floor(
     dispatches: int | None,
     challenge_index: dict[str, Any],
     credential_set: str,
-    exhausted_stages: list[str] | None = None,
+    exhausted_stages: list[str] | None,
 ) -> dict[str, Any]:
     """Fold a zero-dispatch run's solved set into the floor for its credential set.
 
@@ -256,16 +260,20 @@ def record_floor(
             must not be ``None``, which is "unmeasurable", not "none".
         challenge_index: ``{key: challenge}`` for the names and categories.
         credential_set: :func:`credential_set_key` for this run.
-        exhausted_stages: Stages whose model stamp says nothing served them.
-            Must be empty.
+        exhausted_stages: :func:`~clinkz.llm.degradation.stamp_exhaustion` for
+            this run. Must be an empty list — ``None`` is "the bundle carries no
+            model stamp", which is INDETERMINATE and refused, not clean. No
+            default: a caller that may omit this argument is a caller that can
+            record a floor without ever asking the question.
 
     Returns:
         The written record for *credential_set*.
 
     Raises:
         ValueError: The run is not a floor observation — it tested, its dispatch
-            count is unmeasurable, it does not say who it authenticated as, or an
-            LLM provider outage means its crawl was not a complete crawl.
+            count is unmeasurable, it does not say who it authenticated as, an
+            LLM provider outage means its crawl was not a complete crawl, or its
+            bundle cannot say whether there was one.
     """
     if dispatches is None:
         raise ValueError(
@@ -284,6 +292,13 @@ def record_floor(
             f"refusing to record a floor from engagement {engagement}: its report does "
             f"not say who it authenticated as, and a floor that cannot be keyed to a "
             f"credential set cannot be safely applied to any later run"
+        )
+    if exhausted_stages is None:
+        raise ValueError(
+            f"refusing to record a floor from engagement {engagement}: its bundle carries "
+            f"no model stamp, so whether every LLM stage was served is INDETERMINATE. An "
+            f"absent stamp is exactly what an outage mid-run leaves behind, and reading it "
+            f"as 'nothing was starved' is how the guard against a void floor passes one"
         )
     if exhausted_stages:
         raise ValueError(
@@ -641,13 +656,39 @@ def friction_log(
             "(each is named in the run's action log)"
         )
 
-    stamp = report.get("model_stamp") or {}
-    if isinstance(stamp, dict) and stamp.get("provider_degraded"):
+    # ``provider_degraded`` lives in ``provider_degradation``, the reconciled
+    # register summary. This used to read ``model_stamp``, which is a
+    # ``list[dict]`` — so ``or {}`` produced ``{}`` when the key was absent and
+    # ``isinstance(stamp, dict)`` was False whenever it was present. The caveat
+    # was unreachable by both routes at once and has never fired in any run this
+    # harness has graded, which is indistinguishable from never having been
+    # written. The absent-key case is kept separate on purpose: a bundle with no
+    # degradation record has not claimed to be clean.
+    degradation = report.get("provider_degradation")
+    if not isinstance(degradation, dict):
         entries.append(
-            "provider_degraded: a fallback served at least one call, so this run is "
-            "permanently baseline-ineligible"
+            "provider_degradation: this bundle carries no routing record, so whether a "
+            "fallback served any call is INDETERMINATE — not a clean run"
+        )
+    elif degradation.get("provider_degraded"):
+        fallbacks = int(degradation.get("fallback_count") or 0)
+        absences = int(degradation.get("absence_count") or 0)
+        starved = ", ".join(str(s) for s in (degradation.get("exhausted_stages") or []))
+        entries.append(
+            f"provider_degraded: {fallbacks} call(s) served by a provider other than the "
+            f"one asked for and {absences} served by nobody at all"
+            + (f"; nothing served {starved}" if starved else "")
+            + ", so this run is permanently baseline-ineligible"
         )
 
+    # A bundle with no ledger has not reported a clean degradation account; it
+    # has reported nothing. Absent and empty are the same value here and only
+    # one of them is a measurement.
+    if not ledger:
+        entries.append(
+            "component_ledger: this bundle carries none, so whether any component "
+            "degraded is UNMEASURED — not clean"
+        )
     for alarm in ledger.get("alarms") or []:
         entries.append(
             f"ledger {alarm.get('kind')}: {alarm.get('component')} "
@@ -734,12 +775,13 @@ def record_floor_offline(engagement: str = "") -> int:
         return 2
     dispatches = methodology_dispatches(report)
     credential_set = credential_set_key(report)
-    starved = exhausted_stages(report.get("model_stamp") or [])
+    starved = stamp_exhaustion(report)
     print(
         f"engagement {engagement}: "
         f"{'unmeasurable' if dispatches is None else dispatches} methodology dispatch(es), "
         f"credential set {credential_set or '(not recorded)'}, "
-        f"exhausted stage(s): {', '.join(starved) or 'none'}"
+        f"exhausted stage(s): "
+        f"{'INDETERMINATE (no model stamp)' if starved is None else ', '.join(starved) or 'none'}"
     )
     solved = sorted(snapshot.get("solved") or [])
     index = {
@@ -782,7 +824,8 @@ def main() -> int:
             "authenticated as. Refuses a run that dispatched anything, one whose "
             "ledger carries no methodology component (unmeasurable, not zero), one "
             "whose model stamp names an unserved stage (its crawl was not a complete "
-            "crawl), and one whose report does not say who it logged in as."
+            "crawl), one carrying no model stamp at all (indeterminate, not clean), "
+            "and one whose report does not say who it logged in as."
         ),
     )
     known, _ = parser.parse_known_args()
@@ -904,7 +947,9 @@ def main() -> int:
     report = read_report(engagement)
     findings = _finding_rows(report)
     disclosure = read_artifact_scan(engagement)
-    ledger = report.get("component_ledger") or {}
+    raw_ledger = report.get("component_ledger")
+    ledger_present = isinstance(raw_ledger, dict) and bool(raw_ledger)
+    ledger = raw_ledger if ledger_present else {}
     auth_proof = authentication_proof(report)
     friction = friction_log(report, returncode=rc, disclosure=disclosure, ledger=ledger)
 
@@ -934,7 +979,7 @@ def main() -> int:
     # the headline number roughly twice what testing earned.
     dispatches = methodology_dispatches(report)
     credential_set = credential_set_key(report)
-    starved = exhausted_stages(report.get("model_stamp") or [])
+    starved = stamp_exhaustion(report)
     if dispatches == 0:
         # This run IS a floor observation. Recording it here rather than in a
         # separate pass is what keeps the floor measured instead of asserted:
@@ -1002,7 +1047,12 @@ def main() -> int:
         f"{'unmeasurable (no methodology row in the ledger)' if dispatches is None else dispatches}"
     )
     print(f"  credential set authenticated as      : {credential_set or '(not recorded)'}")
-    if starved:
+    if starved is None:
+        print(
+            "  LLM stages nothing served            : INDETERMINATE (this bundle carries "
+            "no model stamp) — this run is VOID as a measurement"
+        )
+    elif starved:
         print(
             f"  LLM stages nothing served            : {', '.join(starved)} "
             f"— this run is VOID as a measurement"
@@ -1071,7 +1121,7 @@ def main() -> int:
     print("\nHONESTY CONTROLS")
     print(f"  artifact scan : {'CLEAN' if disclosure.get('clean') else disclosure}")
     alarms = ledger.get("alarms") or []
-    print(f"  ledger alarms : {len(alarms)}")
+    print(f"  ledger alarms : {len(alarms) if ledger_present else '?(no component ledger)'}")
     for alarm in alarms:
         print(
             f"    ! {alarm.get('component')} [{alarm.get('kind')}]: "
@@ -1106,6 +1156,8 @@ def main() -> int:
             # Who this run authenticated as, and whether any LLM stage went
             # unserved. Both decide whether the run is a measurement at all: the
             # floor is keyed by the first, and a run with the second is void.
+            # ``null`` is the third answer for the second — the bundle carries no
+            # model stamp and so cannot say — and it is not the empty list.
             "credential_set": credential_set,
             "exhausted_stages": starved,
             "solved_by_testing": split.get("solved_by_testing"),
@@ -1141,8 +1193,14 @@ def main() -> int:
             },
             "unproven_leads": report.get("unproven_leads") or [],
             "artifact_scan": disclosure,
-            "ledger_alarms": alarms,
-            "ledger_never_invoked": ledger.get("never_invoked") or [],
+            "ledger_alarms": alarms if ledger_present else None,
+            # ``null``, not ``[]``, when the bundle carries no ledger: an empty
+            # list here is a measurement ("every declared component ran"), and
+            # an absent ledger has made no measurement at all.
+            "ledger_present": ledger_present,
+            "ledger_never_invoked": (
+                list(ledger.get("never_invoked") or []) if ledger_present else None
+            ),
             "category_addressable": CATEGORY_ADDRESSABLE,
             "category_not_addressable": CATEGORY_NOT_ADDRESSABLE,
             "unknown_categories": unknown_categories,
