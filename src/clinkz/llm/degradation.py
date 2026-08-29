@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -431,6 +432,44 @@ def exhausted_stages(model_stamp: list[dict[str, Any]]) -> list[str]:
     )
 
 
+def stamp_exhaustion(report: Mapping[str, Any]) -> list[str] | None:
+    """Which stages nothing served, or ``None`` when the bundle makes no claim.
+
+    :func:`exhausted_stages` answers a question about a stamp that EXISTS. This
+    answers the question a stored bundle actually poses, which is one step
+    earlier: *does this bundle say anything about which stages were served?*
+    The two are not the same, and the difference is the whole guard —
+    ``exhausted_stages(report.get("model_stamp") or [])`` returns ``[]`` for a
+    bundle with no stamp, which is byte-identical to a run every stage of which
+    was served. An absent stamp is INDETERMINATE, never clean.
+
+    That distinction is load-bearing rather than pedantic, because the absence
+    is what the failure this guards against PRODUCES. A run that dies to a
+    depleted balance may never write its stamp at all; the two guards standing
+    between a credit lapse and another void batch — the benchmark floor's stamp
+    refusal and the variance envelope's per-run abort — both read the coalesced
+    ``[]`` and both passed it. The guard's own reading defeated the guard.
+
+    An EMPTY stamp is indeterminate for the same reason it is not a claim: the
+    stamp is written from the run's own ``llm_call`` trace events, and every
+    phase of a real engagement makes at least one. No entries means no trace,
+    not "every stage was served".
+
+    Args:
+        report: A parsed ``report_<id>.json``. The REPORT, deliberately, not the
+            stamp: a caller that has already coalesced ``model_stamp`` to a list
+            has destroyed the absence this function exists to see.
+
+    Returns:
+        Sorted, de-duplicated stage names that nothing served — possibly empty,
+        which IS a claim — or ``None`` when the bundle carries no usable stamp.
+    """
+    stamp = report.get("model_stamp")
+    if not isinstance(stamp, list) or not stamp:
+        return None
+    return exhausted_stages(stamp)
+
+
 def reconcile_with_model_stamp(
     summary: dict[str, Any], model_stamp: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -491,4 +530,5 @@ __all__ = [
     "record_provider_absence",
     "record_provider_fallback",
     "set_active_degradation_register",
+    "stamp_exhaustion",
 ]

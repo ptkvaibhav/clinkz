@@ -195,6 +195,61 @@ class TestAVoidRunIsNotRecorded:
         monkeypatch.setattr(envelope, "ENVELOPE_DIR", tmp_path / "envelope")
         assert _main(envelope, monkeypatch, tmp_path, runs=3) == 4
 
+    def test_a_bundle_with_no_model_stamp_is_void_too(
+        self, envelope: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``None`` is the third answer, and it is not the empty list.
+
+        The guard read ``exhausted_stages(report.get("model_stamp") or [])``, so
+        a bundle with no stamp came back as "no stage was starved" — the same
+        value a fully-served run produces. That is not a corner case: a run that
+        dies to a depleted balance is exactly the run that may never write its
+        stamp, so the absence is what the failure this guard exists to catch
+        actually leaves behind.
+        """
+        rows = [
+            {
+                "run": 1,
+                "engagement": "aaa",
+                "returncode": 0,
+                "seconds": 1.0,
+                "artifacts": "x",
+                "exhausted_stages": [],
+                "metrics": {"solved_total": 7},
+            },
+            {
+                "run": 2,
+                "engagement": "bbb",
+                "returncode": 0,
+                "seconds": 1.0,
+                "artifacts": "x",
+                "exhausted_stages": None,
+                "metrics": {"solved_total": 4},
+            },
+        ]
+        monkeypatch.setattr(envelope, "preflight_gate", lambda: (_preflight(KeyStatus.VALID), ""))
+        monkeypatch.setattr(envelope, "run_once", lambda i, **_: dict(rows[i - 1]))
+        out = tmp_path / "envelope"
+        monkeypatch.setattr(envelope, "ENVELOPE_DIR", out)
+        assert _main(envelope, monkeypatch, tmp_path, runs=2) == 4
+
+        summary = json.loads((out / "envelope.json").read_text(encoding="utf-8"))
+        assert summary["runs_recorded"] == 1
+        assert summary["aborted"] is True
+        assert "INDETERMINATE" in summary["abort_reason"]
+        assert summary["variance"]["solved_total"]["values"] == [7]
+
+    def test_run_once_reports_an_absent_stamp_as_none(
+        self, envelope: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The row the guard reads must carry the absence, not erase it."""
+        monkeypatch.setattr(envelope, "read_report", lambda _e: {"findings": []})
+        assert envelope.stamp_exhaustion({"findings": []}) is None
+
+    def test_a_served_stamp_is_an_empty_list_which_is_a_claim(self, envelope: Any) -> None:
+        report = {"model_stamp": [{"stage": "recon", "provider": "anthropic"}]}
+        assert envelope.stamp_exhaustion(report) == []
+
 
 class TestTheVarianceIsOverRecordedRunsOnly:
     def test_a_metric_no_run_reported_is_null_not_zero(self, envelope: Any) -> None:

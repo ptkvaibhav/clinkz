@@ -407,6 +407,50 @@ class TestTheFloorIsMeasuredNotDeclared:
             )
         assert not (tmp_path / "benchmark_floor.json").exists()
 
+    def test_a_bundle_with_no_model_stamp_is_refused(
+        self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An absent stamp is INDETERMINATE, and the guard used to read it as clean.
+
+        ``exhausted_stages(report.get("model_stamp") or [])`` returns ``[]`` for
+        a bundle with no stamp — byte-identical to a run every stage of which was
+        served. The absence is not a corner case: a run that dies to a depleted
+        balance is exactly the one that may never write a stamp, so the guard's
+        own reading defeated the guard on the failure it exists to catch.
+        """
+        _isolate(harness, tmp_path, monkeypatch)
+        with pytest.raises(ValueError, match="INDETERMINATE"):
+            harness.record_floor(
+                engagement="stampless-bundle",
+                solved_keys=["a"],
+                dispatches=0,
+                challenge_index={},
+                credential_set="admin",
+                exhausted_stages=None,
+            )
+        assert not (tmp_path / "benchmark_floor.json").exists()
+
+    def test_stamp_exhaustion_separates_absent_empty_and_served(self, harness: Any) -> None:
+        """Three inputs, three answers. The middle one is what the fix adds."""
+        assert harness.stamp_exhaustion({}) is None, "no key at all"
+        assert harness.stamp_exhaustion({"model_stamp": []}) is None, (
+            "an empty stamp is written from no llm_call trace events, so it makes no "
+            "claim about any stage either"
+        )
+        assert harness.stamp_exhaustion({"model_stamp": {"a": 1}}) is None, "not a list"
+        assert (
+            harness.stamp_exhaustion({"model_stamp": [{"stage": "recon", "provider": "anthropic"}]})
+            == []
+        ), "a stamp that names a serving provider IS a claim that nothing was starved"
+        assert harness.stamp_exhaustion(
+            {
+                "model_stamp": [
+                    {"stage": "recon", "provider": "exhausted"},
+                    {"stage": "scan", "provider": "anthropic"},
+                ]
+            }
+        ) == ["recon"]
+
     def test_recording_without_a_credential_set_is_refused(
         self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
