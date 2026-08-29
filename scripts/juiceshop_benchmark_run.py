@@ -947,7 +947,9 @@ def main() -> int:
     report = read_report(engagement)
     findings = _finding_rows(report)
     disclosure = read_artifact_scan(engagement)
-    ledger = report.get("component_ledger") or {}
+    raw_ledger = report.get("component_ledger")
+    ledger_present = isinstance(raw_ledger, dict) and bool(raw_ledger)
+    ledger = raw_ledger if ledger_present else {}
     auth_proof = authentication_proof(report)
     friction = friction_log(report, returncode=rc, disclosure=disclosure, ledger=ledger)
 
@@ -1119,7 +1121,7 @@ def main() -> int:
     print("\nHONESTY CONTROLS")
     print(f"  artifact scan : {'CLEAN' if disclosure.get('clean') else disclosure}")
     alarms = ledger.get("alarms") or []
-    print(f"  ledger alarms : {len(alarms)}")
+    print(f"  ledger alarms : {len(alarms) if ledger_present else '?(no component ledger)'}")
     for alarm in alarms:
         print(
             f"    ! {alarm.get('component')} [{alarm.get('kind')}]: "
@@ -1191,8 +1193,14 @@ def main() -> int:
             },
             "unproven_leads": report.get("unproven_leads") or [],
             "artifact_scan": disclosure,
-            "ledger_alarms": alarms,
-            "ledger_never_invoked": ledger.get("never_invoked") or [],
+            "ledger_alarms": alarms if ledger_present else None,
+            # ``null``, not ``[]``, when the bundle carries no ledger: an empty
+            # list here is a measurement ("every declared component ran"), and
+            # an absent ledger has made no measurement at all.
+            "ledger_present": ledger_present,
+            "ledger_never_invoked": (
+                list(ledger.get("never_invoked") or []) if ledger_present else None
+            ),
             "category_addressable": CATEGORY_ADDRESSABLE,
             "category_not_addressable": CATEGORY_NOT_ADDRESSABLE,
             "unknown_categories": unknown_categories,
