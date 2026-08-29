@@ -212,6 +212,43 @@ class TestTheReportRendersIt:
         assert "did not declare" in rendered
         assert "same as ungrounded" in rendered
 
+    def test_a_phase_that_never_reported_is_not_a_phase_that_found_nothing(self) -> None:
+        """``Runbook entries produced: 0`` was rendered for both.
+
+        ``grounding: undeclared`` carries a partial signal that something is
+        missing. The COUNT carries none — a phase that errored and a phase that
+        ran and produced no technique were the same zero — so it is withheld and
+        the absence is stated instead.
+        """
+        rendered = self._render(
+            {
+                "grounding": "undeclared",
+                "is_grounded": False,
+                "research_reported": False,
+                "providers": None,
+                "runbook_entries": None,
+            }
+        )
+        assert "produced no record for this run" in rendered
+        assert "not the same as a research phase that ran and found nothing" in rendered
+        assert "whose count this run did not record" in rendered
+        assert "0 runbook entr(ies)" not in rendered
+        assert "not recorded" in rendered, "the provider list is absent too, not empty"
+
+    def test_a_phase_that_ran_and_produced_nothing_still_says_zero(self) -> None:
+        """The other side of the same distinction: 0 IS a measurement."""
+        rendered = self._render(
+            {
+                "grounding": "training_data",
+                "is_grounded": False,
+                "research_reported": True,
+                "providers": ["anthropic"],
+                "runbook_entries": 0,
+            }
+        )
+        assert "the 0 runbook entr(ies)" in rendered
+        assert "produced no record for this run" not in rendered
+
     def test_an_empty_stamp_renders_nothing(self) -> None:
         """A directly invoked ReportAgent has no research phase to describe."""
         assert self._render({}) == ""
@@ -243,3 +280,25 @@ class TestTheOrchestratorSummary:
             summary = self._summary(phase)
             assert summary["grounding"] == ResearchGrounding.UNDECLARED.value
             assert summary["is_grounded"] is False
+
+    def test_a_phase_that_did_not_run_reports_no_count(self) -> None:
+        """The producer's half of item 7: no result means no count, not zero.
+
+        ``grounding: undeclared`` already said something was missing. The COUNT
+        said nothing — a phase that errored and a phase that ran and produced no
+        technique were the same ``0`` — so it is withheld and the absence is
+        stated in ``research_reported``.
+        """
+        for phase in ({}, {"status": "error"}, {"result": None}):
+            summary = self._summary(phase)
+            assert summary["research_reported"] is False, phase
+            assert summary["runbook_entries"] is None, phase
+            assert summary["providers"] is None, phase
+            assert summary["is_grounded"] is False, phase
+
+    def test_a_phase_that_ran_reports_its_count_even_when_zero(self) -> None:
+        """The other half: ``0`` from a phase that ran IS a measurement."""
+        summary = self._summary({"result": {"grounding": "training_data", "runbook": []}})
+        assert summary["research_reported"] is True
+        assert summary["runbook_entries"] == 0
+        assert summary["providers"] == []

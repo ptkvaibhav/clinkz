@@ -1216,7 +1216,15 @@ class _PDFReport:
                 "is a LEAD that must still be proven by one of this engine's own oracles - "
                 "but it does bound what the research phase could suggest looking for."
             )
-        if grounding.get("runbook_entries") is not None:
+        if grounding.get("research_reported") is False:
+            self._para(
+                "The research phase produced no record for this run - it did not run, "
+                "errored, or was skipped. That is a different fact from a phase that ran "
+                "and produced no technique, and the entry count below is withheld rather "
+                "than rendered as a zero.",
+                self.note,
+            )
+        elif grounding.get("runbook_entries") is not None:
             self._para(
                 f"Runbook entries produced: {self._text(grounding.get('runbook_entries'))}",
                 self.note,
