@@ -110,8 +110,23 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   Delegates all tool work.
 - **Recon (v2)** — Anthropic (`LLM_PROVIDER_RECON=anthropic`). Full TCP scan → LLM
   analyses ports → service/version detection → LLM extracts tech stack →
-  web-specific recon → LLM synthesizes → `ReconResult`. Tools always via
-  `ToolResolver.find_tool(capability=...)`.
+  web-specific recon → **package identity** → LLM synthesizes → `ReconResult`.
+  Tools always via `ToolResolver.find_tool(capability=...)`.
+  **`agents/_package_identity.py` is the third component source, and it names
+  PACKAGES where the other two name SERVERS.** `whatweb` reads headers and page
+  markers, `nmap -sV` resolves a banner through its signature database, and
+  neither has ever emitted a row called `lodash` — so the five dependency-SCA
+  entries in `component_cves.py` had no possible producer and their zeros were
+  never an observation about a target. It reads npm lockfiles and exact
+  manifest pins from a supplied `--source` tree (`LOCKFILE` / `MANIFEST`) and
+  the license/coordinate strings baked into the bundles the target itself
+  served (`ARTIFACT_STRING`), declaring through the same
+  `detected_components()` contract the fingerprinters answer — a second
+  inventory path is the `hasattr(r, "technologies")` seam again, so the
+  producer declares rather than the consumer guessing. A dependency **range**
+  is deliberately not read: `^4.17.20` is what was asked for, not what arrived,
+  and reading its floor as an observation is the fabrication the whole path
+  refuses.
 - **Scan (v2)** — Anthropic. LLM plans strategy → service-specific methods
   (HTTP/FTP/SSH/SMB/DB) → LLM reviews output → coverage check → expand via fallback
   chains (`katana→gospider→hakrawler` crawl; `ffuf→gobuster→feroxbuster` fuzz).
@@ -192,6 +207,9 @@ sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
   [`docs/methodology/`](docs/methodology/README.md); the five Phase-3 classes and
   the control each confirms against →
   [`docs/methodology/phase3-new-classes.md`](docs/methodology/phase3-new-classes.md);
+  what a real affected-range predicate would cost, and which Band A shapes have
+  an oracle waiting with no catalogue entry to feed it →
+  [`docs/methodology/sca-catalogue-breadth.md`](docs/methodology/sca-catalogue-breadth.md);
   chaining + business logic + the benchmark profile →
   [`docs/methodology/chaining-and-business-logic.md`](docs/methodology/chaining-and-business-logic.md).**
 - **Chaining (`src/clinkz/chaining/`)** — a first-class capability, not a
@@ -524,6 +542,10 @@ src/clinkz/
 │                     #   PDF deliverable — THIRD renderer of the same redacted
 │                     #   structure; control arms are its top-level section),
 │                     #   _route_discovery,
+│                     #   _package_identity (which PACKAGES is this built from? —
+│                     #   npm lockfile/manifest + served-bundle version strings;
+│                     #   the third component source, declaring through the SAME
+│                     #   detected_components() contract — pure, offline-testable),
 │                     #   _js_api_mining (what does the frontend CALL?), _api_schema
 │                     #   (what does the live target ACCEPT? — safe methods only),
 │                     #   _json_body (addressing a field INSIDE a structure),
@@ -604,7 +626,8 @@ src/clinkz/
                       #   dispatch their own control; + MultiPrincipalRequirement:
                       #   how many identities a class needs before it may CONFIRM),
                       #   target,
-                      #   recon (+ VersionProvenance: how a version was OBSERVED),
+                      #   recon (+ VersionProvenance: how a version was OBSERVED;
+                      #   + inventory_summary: the deliverable's own VIEW of it),
                       #   scan, methodology,
                       #   research,
                       #   finding, report
@@ -702,6 +725,32 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   keeps, the attempt cost, and how many fingerprints produced more than one
   order. Exits non-zero if the new window loses a confirmation the engine is
   known to have made.
+- `python scripts/cve_reservation_corpus.py [--outputs-root <dir>] [--json]` —
+  **offline** replay of what the dependency→CVE slot reservation would have cost
+  every stored bundle. Sends nothing. Answers the two questions the reservation
+  had to earn: a run that matched nothing plans **byte-identically**, and where
+  it does apply the displaced Tier-1 count is stated. Neither input is stored
+  whole — `report.hosts[].services` is empty on every bundle and `trace.jsonl`
+  truncates the recon handoff at 500 chars — so the inventory is recovered by
+  the strongest surviving route (report → handoff → the REAL fingerprint parsers
+  over recorded stdout) and **the route is printed beside every number**; a
+  bundle no route reaches is `UNRECOVERABLE`, never `0 components`, and a bundle
+  whose `passes_recorded` is 0 has no baseline rather than a baseline of zero.
+  Carries a **positive control** — the same bundles with the observed Apache
+  version substituted for one the catalogue matches — because a corpus of zeros
+  is evidence only once the instrument has registered a hit; a control that
+  reserves nothing exits non-zero and says the zeros prove nothing. A second
+  **package-identity control** covers the ingestion path, and its weaker form is
+  stated rather than blurred: the Apache arm SUBSTITUTES a version into an
+  observation the bundle really made, while this one INJECTS rows no stored
+  bundle could ever have observed, because none records a served bundle body or
+  a supplied lockfile. It asserts three claims separately — ingestion reaches
+  the matcher, a lead-only match reserves nothing, and a lockfile-provenance
+  match is ordered ahead of a banner one — the last written against the two
+  provenance values BY NAME, because checking that the list is sorted by
+  `version_provenance_rank` re-derives the expectation from the sorter's own key
+  and passes with the rank table inverted. A run where no bundle carried both
+  provenances exits non-zero: the claim passed having compared nothing.
 - `python -m clinkz corpus-replay [--rebuild]` — **offline** parser regression gate:
   re-parses every recorded `tool_invocations/` stdout and diffs against
   `tests/fixtures/corpus_replay_baseline.json`; exits non-zero on drift. Sends
@@ -1411,16 +1460,32 @@ LESSONS #17).
   a consumer parsing `nmap:service` back out to guess the evidence kind is the
   `getattr`-with-a-default pattern again). A `Server:` banner is a string the
   target chose and a back-ported fix defeats it; a lockfile entry or an artifact
-  hash is one it cannot easily lie about. `match_components` orders confirmable
+  hash is one it cannot easily lie about. `ARTIFACT_STRING` — the version baked
+  into a bundle the target served — is its own rank between `MANIFEST` and
+  `BANNER` and not a second spelling of the latter: both die to a back-port, but
+  a `Server:` header is composed per request and one `ServerTokens` line from
+  saying nothing, while a `/*! jQuery v3.4.1 */` comment is in the shipped bytes
+  and names the package's own release. `match_components` orders confirmable
   first, then by provenance, THEN by published severity — ahead of severity
   deliberately, because the ordering decides what is TESTED and ranking a
   banner-backed CRITICAL over a lockfile-backed MEDIUM spends the scarce slots
   on the weakest evidence in the system and calls it prioritisation.
-  `undeclared` ranks last, like `undeclared` research grounding. Every producer
-  in the tree declares `BANNER` today and says why in its own docstring; an
-  AST guard (`tests/test_tools/test_component_provenance_declared.py`) fails a
-  construction site that declares nothing, so a future lockfile reader cannot be
-  silently demoted to the weakest rank.
+  `undeclared` ranks last, like `undeclared` research grounding. Every
+  fingerprinting TOOL declares `BANNER` and says why in its own docstring;
+  `agents/_package_identity.py` is the producer that declares the three stronger
+  values, which is what made `dedupe_components`' provenance tie-break stop
+  being a no-op. An AST guard
+  (`tests/test_tools/test_component_provenance_declared.py`) fails a
+  construction site that declares nothing, so a new reader cannot be silently
+  demoted to the weakest rank.
+  **The inventory itself is now in the deliverable**
+  (`report.component_inventory`, rendered as *Component inventory* in the
+  Markdown and the PDF): provenance decides which match is TESTED, so it is a
+  bound that decides coverage and belongs beside `plan_coverage` and
+  `crawl_coverage`. It also lifts a replay ceiling — `hosts[].services` is empty
+  on all 70 stored bundles carrying `plan_coverage`, so no stored report has
+  ever carried an inventory and every offline replay had to reconstruct one from
+  recorded tool stdout.
   **The provenance rides the task into the finding** (`ComponentCVEContext` on
   `ExploitTask`, stamped onto findings at the `_execute_task` seam). The CVE is
   still context and nothing here can create, promote or rescue a finding — but

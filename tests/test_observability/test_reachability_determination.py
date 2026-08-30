@@ -220,6 +220,7 @@ def test_an_absent_exploit_result_reports_no_exploit_producer(
 ) -> None:
     _register_with_a_pass()
     state = OrchestratorAgent._engagement_reachability(
+        {"status": "complete", "result": {"package_identity_inputs": 3}},
         {"status": "complete", "result": {"service_scans": []}},
         exploit_phase,
         ToolResolver(),
@@ -232,6 +233,7 @@ def test_an_absent_exploit_result_reports_no_exploit_producer(
 def test_a_delivered_exploit_result_reports_the_exploit_producer() -> None:
     _register_with_a_pass()
     state = OrchestratorAgent._engagement_reachability(
+        {"status": "complete", "result": {"package_identity_inputs": 3}},
         {"status": "complete", "result": {"service_scans": []}},
         {"status": "complete", "result": {"total_tests_run": 12, "plan": {"tasks": []}}},
         ToolResolver(),
@@ -244,6 +246,7 @@ def test_a_partial_result_from_a_killed_phase_still_counts_as_delivered() -> Non
     """A stop is a reason to stop asking, not a reason to discard what arrived."""
     _register_with_a_pass()
     state = OrchestratorAgent._engagement_reachability(
+        {"status": "complete", "result": {"package_identity_inputs": 3}},
         {"status": "complete", "result": {"service_scans": []}},
         {"status": "halted", "agent": "exploit", "result": {"total_tests_run": 4}},
         ToolResolver(),
@@ -265,6 +268,7 @@ def test_no_register_installed_is_not_a_plan_with_no_candidates() -> None:
     """
     set_active_plan_alarms(None)
     state = OrchestratorAgent._engagement_reachability(
+        {"status": "complete", "result": {"package_identity_inputs": 3}},
         {"status": "complete", "result": {"service_scans": []}},
         {"status": "complete", "result": {"total_tests_run": 9}},
         ToolResolver(),
@@ -282,6 +286,7 @@ def test_a_register_that_recorded_no_pass_has_said_nothing_about_the_plan() -> N
     """
     set_active_plan_alarms(PlanAlarmRegister())
     state = OrchestratorAgent._engagement_reachability(
+        {"status": "complete", "result": {"package_identity_inputs": 3}},
         {"status": "complete", "result": {"service_scans": []}},
         {"status": "complete", "result": {"total_tests_run": 9}},
         ToolResolver(),
@@ -292,6 +297,7 @@ def test_a_register_that_recorded_no_pass_has_said_nothing_about_the_plan() -> N
 def test_a_register_with_a_recorded_pass_reports_the_plan_producer() -> None:
     _register_with_a_pass()
     state = OrchestratorAgent._engagement_reachability(
+        {"status": "complete", "result": {"package_identity_inputs": 3}},
         {"status": "complete", "result": {"service_scans": []}},
         {"status": "complete", "result": {"total_tests_run": 9}},
         ToolResolver(),
@@ -304,6 +310,7 @@ def test_an_absent_scan_result_reports_no_scan_producer() -> None:
     """Same rule, same reason: "the scan discovered no HTTP endpoint" is a claim."""
     _register_with_a_pass()
     state = OrchestratorAgent._engagement_reachability(
+        {"status": "complete", "result": {"package_identity_inputs": 3}},
         {"status": "error", "error": "boom"},
         {"status": "complete", "result": {"total_tests_run": 9}},
         ToolResolver(),
@@ -327,6 +334,7 @@ def test_the_end_to_end_shape_of_the_defect() -> None:
         )
     ledger.resolve_reachability(
         OrchestratorAgent._engagement_reachability(
+            {"status": "complete", "result": {"package_identity_inputs": 3}},
             {"status": "complete", "result": {"service_scans": []}},
             {"status": "error", "error": "All providers exhausted"},
             ToolResolver(),
@@ -475,3 +483,66 @@ def test_a_completed_run_still_renders_its_reachability_section() -> None:
     rendered = "\n".join(lines)
     assert "Built, but not reachable on this target" in rendered
     assert "### Reachability not determined" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# The recon producer, gated for the same reason as the other three
+# ---------------------------------------------------------------------------
+
+
+def test_an_absent_recon_result_reports_no_recon_producer() -> None:
+    """A recon phase that errored made no observation about served bundles.
+
+    ``package_identity_inputs`` defaults to 0 in exactly the way a real
+    measurement of zero looks, so a predicate reading it off a phase that never
+    delivered would write "this target served no bundle and this engagement
+    supplied no source tree" — a sentence about the client's application, out
+    of a phase that produced nothing.
+    """
+    state = OrchestratorAgent._engagement_reachability(
+        {"status": "error", "error": "boom"},
+        {"status": "complete", "result": {"service_scans": []}},
+        {"status": "complete", "result": {"total_tests_run": 9}},
+        ToolResolver(),
+    )
+    assert ReachabilitySource.RECON_PHASE not in state.reported_sources
+    assert state.package_identity_inputs == 0
+    assert state.unreported_reason(ReachabilitySource.RECON_PHASE)
+
+
+def test_a_delivered_recon_result_reports_the_recon_producer() -> None:
+    """A recon phase that delivered licenses the package-identity predicate."""
+    state = OrchestratorAgent._engagement_reachability(
+        {"status": "complete", "result": {"package_identity_inputs": 4}},
+        {"status": "complete", "result": {"service_scans": []}},
+        {"status": "complete", "result": {"total_tests_run": 9}},
+        ToolResolver(),
+    )
+    assert ReachabilitySource.RECON_PHASE in state.reported_sources
+    assert state.package_identity_inputs == 4
+    assert state.unreported_reason(ReachabilitySource.RECON_PHASE) == ""
+
+
+def test_the_input_count_is_read_from_the_producer_not_the_service_list() -> None:
+    """A target can serve HTTP and reference no same-origin bundle.
+
+    Re-deriving the count from the discovered services would report inputs this
+    producer never read, which is how a reader that found nothing becomes
+    indistinguishable from a target that offered nothing.
+    """
+    state = OrchestratorAgent._engagement_reachability(
+        {"status": "complete", "result": {"package_identity_inputs": 0}},
+        {
+            "status": "complete",
+            "result": {
+                "service_scans": [
+                    {"result": {"endpoints": [{"url": "http://t/"}, {"url": "http://t/a"}]}}
+                ]
+            },
+        },
+        {"status": "complete", "result": {"total_tests_run": 9}},
+        ToolResolver(),
+    )
+    assert ReachabilitySource.RECON_PHASE in state.reported_sources
+    assert state.http_endpoints_discovered == 2
+    assert state.package_identity_inputs == 0

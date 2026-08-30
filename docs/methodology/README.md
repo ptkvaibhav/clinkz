@@ -92,6 +92,7 @@ oracle set.
 | D1 Phase-3 consistency + the honest per-level baseline | [d1-consistency-and-baseline.md](d1-consistency-and-baseline.md) |
 | Classes whose verdict asks no model (and the measurements that removed the call) | [deterministic-verdict-classes.md](deterministic-verdict-classes.md) |
 | Phase-3 plan ranking: the fingerprint decides the set, the cap guards the tail | [plan-ranking.md](plan-ranking.md) |
+| SCA catalogue breadth: what a real affected-range predicate would cost | [sca-catalogue-breadth.md](sca-catalogue-breadth.md) |
 
 The gray-box discovery engine (Δ-capability model, capability classes, capability
 learning, cross-language, cross-service) lives under `docs/discovery-engine-*.md`.

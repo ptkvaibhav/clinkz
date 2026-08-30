@@ -23,6 +23,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from clinkz.agents._package_identity import (
+    MAX_BUNDLE_BYTES,
+    MAX_BUNDLES,
+    PackageIdentityOutput,
+    build_inventory,
+    packages_from_source_tree,
+)
+from clinkz.agents._route_discovery import bundle_urls_from_shell
 from clinkz.agents.base import BaseAgent
 from clinkz.llm.base import LLMClient
 from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
@@ -86,6 +94,12 @@ class ReconAgent(BaseAgent):
             **kwargs,
         )
         self._resolver: ToolResolver = resolver if resolver is not None else ToolResolver()
+        #: ``(url, body)`` for every shell this run fetched, filled by
+        #: :meth:`_step_web_recon` and read by :meth:`_step_package_identity`.
+        #: The shell is where a SPA declares its bundles, and step 5 already
+        #: holds it — carrying it forward costs nothing, re-fetching it would
+        #: cost the client's target a second request.
+        self._served_page_bodies: list[tuple[str, str]] = []
 
     # ------------------------------------------------------------------
     # BaseAgent interface
@@ -213,6 +227,24 @@ class ReconAgent(BaseAgent):
         else:
             self._logger.info("Step 5: Skipped (no HTTP services)")
 
+        # Step 5b: Package identity (CODE + bounded bundle GETs — deterministic)
+        #
+        # After web recon, because the shells it fetched are this step's input;
+        # before synthesis, so the inventory the summary is written over is the
+        # whole inventory. It runs whether or not step 5 did: a gray-box
+        # engagement can supply a lockfile for a target with no HTTP service.
+        self._logger.info("Step 5b: Package identity")
+        with self._record_step(
+            "package_identity",
+            inputs={"shells_fetched": len(self._served_page_bodies)},
+            replay_info={"method_name": "_step_package_identity"},
+        ):
+            package_identity = await self._step_package_identity()
+        self._logger.info(
+            "Step 5b complete: %d package component(s)",
+            len(package_identity.detected_components()),
+        )
+
         # Step 6: LLM synthesizes final recon summary (REASONING checkpoint)
         self._logger.info("Step 6: LLM synthesis")
         summary = await self._llm_synthesize(ports, services, web_info, tech_stack)
@@ -220,7 +252,9 @@ class ReconAgent(BaseAgent):
 
         # Step 7: Structure output (CODE — deterministic)
         self._logger.info("Step 7: Building result")
-        result = self._build_result(target, ports, services, web_info, tech_stack, summary)
+        result = self._build_result(
+            target, ports, services, web_info, tech_stack, summary, package_identity
+        )
         self._logger.info("ReconAgent v2 complete for %s", target)
 
         return {
@@ -541,6 +575,7 @@ class ReconAgent(BaseAgent):
         Returns:
             WebReconResult with fingerprint, WAF, and header data.
         """
+        self._served_page_bodies = []
         http_services = [s for s in services.services if s.is_http]
         if not http_services:
             return WebReconResult()
@@ -687,6 +722,19 @@ class ReconAgent(BaseAgent):
                     if body:
                         body_techs = self._fingerprint_from_body(body)
                         technologies_found.extend(body_techs)
+                        # Kept for step 5b. The shell's own ``<script src>``
+                        # tags are the only route to a served bundle, and this
+                        # GET is the one place in the pipeline that holds the
+                        # shell. Re-fetching it there would spend a second
+                        # request against the client's target for bytes this
+                        # method already has.
+                        #
+                        # Truncated because this is held for the rest of the
+                        # run, unlike ``body`` which is scoped to this
+                        # iteration. Script tags are declared in the document
+                        # head; the cap costs the tail of a page, never the
+                        # bundle list.
+                        self._served_page_bodies.append((url, body[:MAX_BUNDLE_BYTES]))
                     self._logger.info("Collected headers from %s", url)
                 else:
                     self._logger.warning("No http_request tool available for header collection")
@@ -784,6 +832,140 @@ class ReconAgent(BaseAgent):
         return list(set(techs))
 
     # ------------------------------------------------------------------
+    # Step 5b: Package identity
+    # ------------------------------------------------------------------
+
+    async def _step_package_identity(self) -> PackageIdentityOutput:
+        """The third component source: which PACKAGES is this application built from?
+
+        The two fingerprinters upstream of this name servers.
+        :mod:`clinkz.knowledge.component_cves` has carried five entries against
+        npm packages since it was written, and nothing in this engine could
+        produce a component any of them matched — so their zeros were never an
+        observation about a target. This step is what makes them producible.
+
+        Two inputs, both bounded:
+
+        * the gray-box source tree, when the engagement supplied one. A
+          ``package-lock.json`` / ``yarn.lock`` entry is a version the target
+          did not choose and cannot edit from a config file, which is why it
+          outranks everything a banner says.
+        * the JavaScript bundles the target itself served, read for the license
+          and coordinate strings a published build bakes in.
+
+        Failure is contained the same way the fingerprint seam contains it: a
+        raise here is a ledger row saying the inventory is empty BECAUSE this
+        component failed, never a silent zero that reads like an application
+        with no dependencies.
+
+        Returns:
+            The producer's declared output. Its ``detected_components()`` is the
+            only way the caller reads it — the same fingerprint contract
+            ``whatweb`` and ``nmap`` answer, so the seam gains a source without
+            gaining a branch.
+        """
+        try:
+            tree_rows, tree_report = packages_from_source_tree(
+                getattr(self.scope, "source_dir", None)
+            )
+            bundle_bodies = await self._fetch_bundle_bodies()
+            output = build_inventory(
+                tree_components=tree_rows,
+                tree_report=tree_report,
+                bundle_bodies=bundle_bodies,
+            )
+        except Exception as exc:  # noqa: BLE001 — recon must not die on a bad tree
+            self._logger.warning("Package identity failed: %s", exc)
+            record_contribution(
+                name="recon.package_identity",
+                kind=ComponentKind.PARSER_SEAM,
+                items=0,
+                ok=False,
+                note=(
+                    f"package identity raised {type(exc).__name__}: {str(exc)[:200]} — no "
+                    "package or version reached the CVE path from this source"
+                ),
+            )
+            return PackageIdentityOutput(tool_name="package_identity", success=False)
+
+        report = output.report
+        record_contribution(
+            name="recon.package_identity",
+            kind=ComponentKind.PARSER_SEAM,
+            items=report.components_emitted,
+            note=report.detail,
+            # "Correctly found nothing" is the fifth fact, and this producer can
+            # prove which one it is: a black-box engagement against a server-
+            # rendered app has no lockfile and no bundle, and reporting that as
+            # a defect would put a permanent false alarm in front of the
+            # operator. Candidates found and none emitted is the ffuf shape and
+            # deliberately reaches none of this — it stays a SILENT alarm.
+            not_applicable=report.correctly_empty_reason,
+        )
+        if report.components_emitted:
+            self._logger.info(
+                "Package identity: %d component(s) — %s",
+                report.components_emitted,
+                report.detail,
+            )
+        return output
+
+    async def _fetch_bundle_bodies(self) -> list[tuple[str, str]]:
+        """Fetch the same-origin ``.js`` bundles the served shells reference.
+
+        Bundle URLs come from :meth:`StaticBundleDiscoverer._bundle_urls`, the
+        route discoverer's own extractor, rather than a second ``<script src>``
+        regex written here. Two spellings of one rule is how the fingerprint
+        seam ended up reading ``technologies`` and ``tech``.
+
+        Bounded at :data:`MAX_BUNDLES` across all shells and
+        :data:`MAX_BUNDLE_BYTES` per body. Every fetch goes through the resolved
+        ``http_request`` tool, so scope validation, the rate limiter and the
+        action log all apply exactly as they do to any other recon request.
+
+        Returns:
+            ``(url, body)`` per bundle fetched. A bundle that answered with an
+            empty body is still returned — it is an input this producer
+            examined, and dropping it would let a target that serves nothing
+            look like a target that was never asked.
+        """
+        if not self._served_page_bodies:
+            return []
+        http_match = self._resolver.find_tool("http_request")
+        if not (http_match and http_match.available and http_match.tool_class):
+            self._logger.warning("No http_request tool available for bundle reads")
+            return []
+
+        wanted: list[str] = []
+        seen: set[str] = set()
+        for page_url, page_body in self._served_page_bodies:
+            for bundle_url in bundle_urls_from_shell(page_body, page_url):
+                if bundle_url in seen:
+                    continue
+                seen.add(bundle_url)
+                wanted.append(bundle_url)
+                if len(wanted) >= MAX_BUNDLES:
+                    break
+            if len(wanted) >= MAX_BUNDLES:
+                break
+
+        bodies: list[tuple[str, str]] = []
+        for bundle_url in wanted:
+            try:
+                tool = http_match.tool_class(
+                    scope=self.scope, engagement_id=self.engagement_id, stage="recon"
+                )
+                args = tool.validate_input(
+                    {"url": bundle_url, "method": "GET", "follow_redirects": True}
+                )
+                parsed = tool.parse_output(await tool.execute(args))
+                body = getattr(parsed, "response_body", "") or ""
+                bodies.append((bundle_url, body[:MAX_BUNDLE_BYTES]))
+            except Exception as exc:  # noqa: BLE001 — one bad bundle is not a failed step
+                self._logger.warning("Bundle read of %s failed: %s", bundle_url, exc)
+        return bodies
+
+    # ------------------------------------------------------------------
     # Step 6: LLM Synthesize
     # ------------------------------------------------------------------
 
@@ -857,6 +1039,7 @@ class ReconAgent(BaseAgent):
         web_info: WebReconResult | None,
         tech_stack: TechStack,
         summary: str,
+        package_identity: PackageIdentityOutput | None = None,
     ) -> ReconResult:
         """Assemble all data into the final ReconResult.
 
@@ -869,6 +1052,9 @@ class ReconAgent(BaseAgent):
             web_info: Web recon results (or None).
             tech_stack: Extracted technology stack.
             summary: LLM synthesis summary.
+            package_identity: The package-identity producer's declared output,
+                or ``None`` when the step did not run (a directly-invoked agent,
+                an older caller). Read ONLY through ``detected_components()``.
 
         Returns:
             ReconResult ready for consumption by Orchestrator/downstream agents.
@@ -879,8 +1065,32 @@ class ReconAgent(BaseAgent):
         # actually had a version, so an unversioned duplicate never displaces a
         # versioned one — a downstream CVE lookup keys on this, and "nginx, no
         # version" is not an answer when another tool said "nginx 1.24.0".
+        #
+        # Package identity comes LAST in the list and wins anyway where it is
+        # stronger: ``dedupe_components`` breaks a tie on provenance rank, not
+        # on position, so a lockfile entry displaces a banner naming the same
+        # product on the same port regardless of collection order. That rule was
+        # a no-op while every producer declared ``BANNER``; this is the source
+        # that makes it do work.
+        package_rows: list[DetectedComponent] = []
+        if package_identity is not None:
+            if type(package_identity).declares_components():
+                package_rows = package_identity.detected_components()
+            else:
+                record_dead_seam(
+                    name="recon.package_identity",
+                    kind=ComponentKind.PARSER_SEAM,
+                    note=(
+                        f"{type(package_identity).__name__} declares no component contract — "
+                        "no package or version can reach the CVE path from this source"
+                    ),
+                )
         inventory = dedupe_components(
-            [*services.components, *(web_info.components if web_info else [])]
+            [
+                *services.components,
+                *(web_info.components if web_info else []),
+                *package_rows,
+            ]
         )
         return ReconResult(
             target=target,
@@ -890,4 +1100,7 @@ class ReconAgent(BaseAgent):
             tech_stack=tech_stack,
             llm_summary=summary,
             components=inventory,
+            package_identity_inputs=(
+                package_identity.report.inputs_examined if package_identity is not None else 0
+            ),
         )

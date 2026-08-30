@@ -192,6 +192,65 @@ If a future version of the trace needs to embed more data inline, do it
 on a new category — never bloat the existing summary lines past 500
 chars, or `clinkz trace inspect` becomes unreadable on a real run.
 
+## The stored-bundle recovery ceiling (read before writing another offline replay)
+
+Every offline replay over `outputs/` inherits this. It is recorded here as well
+as in `scripts/cve_reservation_corpus.py` because the next replay author will
+copy an existing script, and the ceiling is not visible from the code they copy.
+
+Measured 2026-08-30 over 4,151 stored report bundles:
+
+| Fact | Number |
+|---|---|
+| Bundles carrying `plan_coverage` (the population a plan-shaped replay can use) | **70** |
+| Of those, with a non-empty `hosts[].services` | **0** |
+| Bundles elsewhere in the corpus WITH a populated service list | **30** |
+| Of the 70, with a `trace.jsonl` at all | **20** |
+| Of the 70, from which an inventory is recoverable by any route | **11** |
+
+Three consequences, in the order they bite:
+
+1. **`hosts[].services` is empty on every bundle a replay can use — but not on
+   every bundle.** Thirty bundles elsewhere carry a populated service list, and
+   the two populations do not overlap. So checking "does any stored bundle carry
+   this?" and concluding the route is available is wrong. The strongest recovery
+   route exists in the corpus and never where a replay can reach it.
+2. **`trace.jsonl` truncates every `data_summary` at 500 characters**, so the
+   recon→orchestrator handoff — the exact value `_harvest_components` reads — is
+   cut off mid-`raw_output` on every bundle whose recon found anything. It
+   parses only for runs that scanned nothing.
+3. **Net: 11 of 70**, all by re-running the real parsers over recorded tool
+   stdout. A component this engine did not fingerprint with a recorded tool
+   cannot be recovered from any stored bundle at all — which includes everything
+   `agents/_package_identity.py` produces, since no bundle stores a served
+   bundle body or a supplied lockfile.
+
+**The forward fix is shipped and does not help these bundles.** `report.json`
+now carries `component_inventory` — name, version, provenance, observing source
+— so a replay written against bundles produced from 2026-08-30 onward reads the
+inventory directly instead of reconstructing it. Bundles written before that
+keep the ceiling permanently.
+
+**What to do when the corpus cannot carry your control.** A zero from an
+instrument with no input is indistinguishable from a zero from an instrument
+that works, so a control is not optional — but the two available kinds are not
+equally strong and the difference must be stated, not blurred:
+
+* **Substitution** — change one field of an observation the bundle really made
+  (`apply_positive_control`: the observed Apache version becomes one the
+  catalogue matches). The endpoint set, the plan and the rest of the row stay
+  the bundle's own.
+* **Injection** — add a row no stored bundle could ever have observed
+  (`apply_package_control`). Admissible only when the question is about the
+  INSTRUMENT rather than the bundle, and every number it produces must be
+  labelled so it can never be read as something an engagement observed.
+
+And write the claim literally. `cve_reservation_corpus.py` first asserted its
+provenance ordering by checking the match list was sorted by
+`version_provenance_rank` — which is a tautology, because that is the key
+`match_components` sorts on: the check passed with the rank table inverted.
+Asserting the two provenance values by name is what gave it teeth.
+
 ## A bound that decides coverage belongs in the DELIVERABLE, not just the log
 
 `observability/plan_alarms.py`.

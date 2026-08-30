@@ -839,6 +839,7 @@ class OrchestratorAgent:
                 # that away.
                 ledger.resolve_reachability(
                     self._engagement_reachability(
+                        recon_result,
                         concurrent_results.get("scan", {}),
                         exploit_data,
                         resolver,
@@ -910,6 +911,12 @@ class OrchestratorAgent:
                         # ``--source`` was supplied, so a tree that could not be
                         # ingested is stated rather than silently absent.
                         "graybox_source": self._graybox_source,
+                        # What software this run OBSERVED, with the provenance of
+                        # every version. Handed over as recon's own rows rather
+                        # than re-derived from ``hosts[].services`` — which has
+                        # been empty on every bundle ever written, which is why
+                        # no stored report has ever carried an inventory.
+                        "components": (recon_result.get("result") or {}).get("components") or [],
                         # The link-by-link view of every CONFIRMED chain. The
                         # chains themselves are already in ``findings`` — emitted
                         # through the same chokepoint — so this renders the
@@ -2205,6 +2212,7 @@ class OrchestratorAgent:
 
     @staticmethod
     def _engagement_reachability(
+        recon_phase: dict[str, Any],
         scan_phase: dict[str, Any],
         exploit_phase: dict[str, Any],
         resolver: ToolResolver,
@@ -2238,7 +2246,9 @@ class OrchestratorAgent:
 
         The scan phase is gated the same way, for the same reason: "the scan
         discovered no HTTP endpoint" is a statement about the target, and a scan
-        that errored made no such observation. The resolver needs no gate — it is
+        that errored made no such observation. So is the recon phase, whose
+        package-identity input count licenses the sentence "this target served
+        no bundle and this engagement supplied no source tree". The resolver needs no gate — it is
         engine state, present whatever the phases did — and is declared reported
         so the mapping has no silent special case.
 
@@ -2251,6 +2261,10 @@ class OrchestratorAgent:
         chains = {capability: resolver.available_chain(capability) for capability in TOOL_CHAINS}
 
         reported = {ReachabilitySource.ENGINE}
+
+        recon_result = recon_phase.get("result") or {}
+        if OrchestratorAgent._phase_delivered(recon_phase):
+            reported.add(ReachabilitySource.RECON_PHASE)
 
         scan_result = scan_phase.get("result") or {}
         endpoints = 0
@@ -2279,6 +2293,11 @@ class OrchestratorAgent:
                 plan_summary.get("classes_with_candidates") or []
             ),
             http_endpoints_discovered=endpoints,
+            # The producer's own count of artifacts it read. Not re-derived from
+            # the service list: a target can serve HTTP and reference no
+            # same-origin bundle, and those two numbers disagreeing is exactly
+            # the case the predicate has to tell apart.
+            package_identity_inputs=int(recon_result.get("package_identity_inputs") or 0),
             requested_capabilities=requested,
             available_chain_by_capability=chains,
             exploit_plan_tasks=len(tasks),
