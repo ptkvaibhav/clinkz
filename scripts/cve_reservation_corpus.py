@@ -387,7 +387,8 @@ def _target_url_for(match: ComponentCVEMatch, endpoints: list[Endpoint]) -> str:
 
 #: The control observation. A published CVE in this engine's own catalogue whose
 #: effect one of its own oracles can witness, chosen so a hit is unambiguous:
-#: ``=2.4.49`` is a single-point range, so nothing near it matches by accident.
+#: ``[2.4.49,2.4.50)`` spans exactly one release, so nothing near it matches by
+#: accident — 2.4.48 and 2.4.50 both fall outside it.
 _CONTROL_NAME = "Apache"
 _CONTROL_VERSION = "2.4.49"
 

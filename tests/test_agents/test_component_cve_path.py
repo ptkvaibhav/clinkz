@@ -22,9 +22,14 @@ from typing import Any
 import pytest
 
 from clinkz.agents.exploit import DISPATCHABLE_TEST_METHODS, ExploitAgent
+from clinkz.discovery.versions import parse_version, version_satisfies
 from clinkz.knowledge.component_cves import (
+    BACKPORT_CAVEAT,
+    BACKPORT_DEFEASIBLE_PROVENANCE,
     KNOWN_COMPONENT_CVES,
+    ComponentCVEMatch,
     KnownComponentCVE,
+    MatchDisposition,
     match_components,
 )
 from clinkz.models.finding import (
@@ -34,7 +39,12 @@ from clinkz.models.finding import (
     Finding,
     Severity,
 )
-from clinkz.models.recon import DetectedComponent, ReconResult, dedupe_components
+from clinkz.models.recon import (
+    DetectedComponent,
+    ReconResult,
+    VersionProvenance,
+    dedupe_components,
+)
 from clinkz.models.scan import Endpoint, HTTPScanResult, ScanResult, ServiceScanResult
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.observability.ledger import (
@@ -242,6 +252,165 @@ def test_no_catalogue_entry_matches_an_arbitrary_component() -> None:
         "a fully-patched, ordinary stack must produce no CVE match at all — "
         f"got {[m.cve.cve_id for m in match_components(noise)]}"
     )
+
+
+#: Bounded entries allowed a CLOSED upper bound, each with the reason its
+#: advisory genuinely names a last-affected version rather than a fixed one.
+#: Empty on purpose: every entry in the catalogue today is derived from an
+#: advisory that states the version the fix landed in.
+_CLOSED_UPPER_BOUND_ALLOWED: dict[str, str] = {}
+
+
+def test_every_bounded_entry_uses_a_half_open_upper_bound() -> None:
+    """The decrement-by-one guard, over a domain computed from the catalogue.
+
+    A closed upper bound obliges its author to name the last version released
+    before the fix — a fact the advisory does not state. Guess it low and the
+    predicate under-matches, which produces a MISSED finding: silent, and
+    unreachable by every control arm this engine has. The half-open form is
+    derived from the one number the advisory does give.
+
+    This is why ``[1.2.0,3.4.9]`` (jQuery CVE-2020-11022, advisory ``< 3.5.0``)
+    is gone: it silently excluded ``3.4.95``.
+    """
+    for entry in KNOWN_COMPONENT_CVES:
+        if not entry.affected.startswith(("[", "(")):
+            continue
+        if entry.cve_id in _CLOSED_UPPER_BOUND_ALLOWED:
+            assert _CLOSED_UPPER_BOUND_ALLOWED[entry.cve_id].strip(), (
+                f"{entry.cve_id} is allow-listed with no reason"
+            )
+            continue
+        assert entry.affected.endswith(")"), (
+            f"{entry.cve_id} has a CLOSED upper bound ({entry.affected!r}). Write it as "
+            "[introduced,fixed) — the advisory's own form — or allow-list it with the "
+            "reason its advisory names a last-affected version."
+        )
+
+
+def test_a_version_between_the_last_release_and_the_fix_is_still_in_range() -> None:
+    """The property that a hand-decremented upper bound breaks, on real entries.
+
+    For every half-open entry, a version below the fix with a patch number no
+    author would have guessed must still match. jQuery ``3.4.95`` is the case
+    the old ``[1.2.0,3.4.9]`` silently dropped.
+    """
+    for entry in KNOWN_COMPONENT_CVES:
+        if not (entry.affected.startswith("[") and entry.affected.endswith(")")):
+            continue
+        low, high = entry.affected[1:-1].split(",", 1)
+        major, minor, patch = parse_version(high.strip()) or (0, 0, 0)
+        below = f"{major}.{minor}.{patch - 1}" if patch else f"{major}.{minor - 1}.95"
+        if not version_satisfies(below, f"[{low.strip()},{high.strip()})"):
+            continue  # below the introduced bound — nothing to assert for this entry
+        assert version_satisfies(below, entry.affected), (
+            f"{entry.cve_id}: {below} is inside {entry.affected} by construction"
+        )
+        assert not version_satisfies(high.strip(), entry.affected), (
+            f"{entry.cve_id}: the fixed version {high.strip()} must be OUT of {entry.affected}"
+        )
+
+
+def test_the_apache_entries_still_match_exactly_what_they_matched_before() -> None:
+    """The single-point entries moved to half-open form and did not drift.
+
+    ``=2.4.49`` became ``[2.4.49,2.4.50)``: 2.4.49 still hits, 2.4.67 still
+    misses, and the distribution spelling — which the exact form could not
+    match — now does.
+    """
+
+    def _hits(version: str) -> set[str]:
+        return {
+            m.cve.cve_id
+            for m in match_components([DetectedComponent(name="Apache", version=version, port=80)])
+        }
+
+    assert _hits("2.4.49") == {"CVE-2021-41773"}
+    assert _hits("2.4.50") == {"CVE-2021-42013"}
+    assert _hits("2.4.67") == set()
+    assert _hits("2.4.48") == set()
+    assert _hits("2.4.51") == set()
+    assert _hits("2.4.49-1ubuntu3.2") == {"CVE-2021-41773"}
+
+
+# ---------------------------------------------------------------------------
+# Back-ports: provenance gates the CLAIM, never the TEST
+# ---------------------------------------------------------------------------
+
+
+def test_a_banner_derived_match_is_still_dispatched() -> None:
+    """The decision, recorded. A back-ported host gets TESTED, not skipped.
+
+    Refusing to dispatch below lockfile-grade provenance would delete this
+    engine's only published-CVE coverage of the component class it most often
+    observes by banner, and buy nothing: the oracle is the gate, so a patched
+    host in the affected range is tested, observed to do nothing, and stays a
+    lead. The honesty rule lives at ``_persist_finding``, not here.
+    """
+    match = match_components(
+        [
+            DetectedComponent(
+                name="Apache",
+                version="2.4.49",
+                port=80,
+                source="nmap",
+                provenance=VersionProvenance.BANNER,
+            )
+        ]
+    )[0]
+    assert match.backport_defeasible is True
+    assert match.disposition is MatchDisposition.DISPATCH
+
+
+def test_a_defeasible_match_says_so_in_the_observation_a_client_reads() -> None:
+    """Where provenance DOES decide: the wording of the claim."""
+    banner = match_components(
+        [
+            DetectedComponent(
+                name="jquery",
+                version="3.4.1",
+                source="whatweb",
+                provenance=VersionProvenance.BANNER,
+            )
+        ]
+    )[0]
+    assert banner.disposition is MatchDisposition.LEAD
+    assert BACKPORT_CAVEAT in banner.matched_on
+
+    lockfile = match_components(
+        [
+            DetectedComponent(
+                name="jquery",
+                version="3.4.1",
+                source="package-lock.json",
+                provenance=VersionProvenance.LOCKFILE,
+            )
+        ]
+    )[0]
+    assert lockfile.backport_defeasible is False
+    assert BACKPORT_CAVEAT not in lockfile.matched_on
+
+
+def test_the_defeasible_set_is_exactly_the_target_composed_provenances() -> None:
+    """A provenance added later must be classified deliberately, not by default."""
+    resolved = {
+        VersionProvenance.LOCKFILE,
+        VersionProvenance.ARTIFACT_HASH,
+        VersionProvenance.MANIFEST,
+    }
+    assert BACKPORT_DEFEASIBLE_PROVENANCE == set(VersionProvenance) - resolved
+
+
+def test_disposition_is_a_closed_vocabulary_of_two() -> None:
+    """A third outcome does not exist: a match is a task or it is a lead."""
+    assert {d.value for d in MatchDisposition} == {"dispatch", "lead"}
+    for entry in KNOWN_COMPONENT_CVES:
+        component = DetectedComponent(name="x", version="1.0.0")
+        match = ComponentCVEMatch(component=component, cve=entry)
+        expected = (
+            MatchDisposition.DISPATCH if entry.confirming_test_method else MatchDisposition.LEAD
+        )
+        assert match.disposition is expected, entry.cve_id
 
 
 def test_every_catalogue_entry_states_its_proving_observation() -> None:

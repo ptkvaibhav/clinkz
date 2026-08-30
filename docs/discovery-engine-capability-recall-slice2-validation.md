@@ -17,6 +17,11 @@ the finding (the live P1–P6 proof still confirms).**
 
 ---
 
+> **Note (2026-08-30).** The `version_satisfies` grammar recorded in this table has since
+> gained half-open intervals and prerelease precedence. This document is the as-built
+> record for slice 2 and is left as measured; the current grammar is in
+> [`methodology/sca-catalogue-breadth.md`](./methodology/sca-catalogue-breadth.md) §1.
+
 ## 1. What slice 2 builds (the READ side)
 
 | Piece | Where | What it does |

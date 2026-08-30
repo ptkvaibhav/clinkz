@@ -1421,7 +1421,36 @@ LESSONS #17).
   from confirming observations only and never gates emission. The older
   technique-success loop is retired (read-only for the report's history).
 - **A CVE match on a version string is a LEAD, never a finding**
-  (`knowledge/component_cves.py`). The dependency→CVE path runs
+  (`knowledge/component_cves.py`). **Affected ranges are half-open**
+  (`discovery/versions.py`): `[introduced, fixed)` is the primitive, because it
+  is derivable from the one number an advisory states, while a closed bound
+  obliges the author to name the last release before the fix — and a guess that
+  is low by one produces a MISSED finding, which is silence, which is what a
+  correct run against a patched target also looks like. No control arm here can
+  see that; every other error this engine makes announces itself. The artifact
+  was already in the catalogue: jQuery CVE-2020-11022 (advisory `< 3.5.0`) was
+  carried as `[1.2.0,3.4.9]`, silently excluding `3.4.95`. Prerelease
+  precedence is SemVer §11 and build metadata is excluded per §10 — stated,
+  not tolerated by accident — and three boundary decisions are recorded at the
+  site, each resolving toward the VISIBLE error: an inclusive lower bound
+  admits every prerelease and distro repackaging of its core (`2.4.49-1ubuntu3.2`
+  is inside `[2.4.49,2.4.50)`; the open `(X,Y)` is the escape hatch, so the
+  widening is in the grammar rather than in a convention an author must
+  remember), a prerelease of the FIXED version is still in range, and the
+  resulting overlap of adjacent ranges on their shared boundary's prereleases is
+  pinned rather than hidden. Pinned as PROPERTIES over a generated universe —
+  total order, boundary side, `[a,c) == [a,b) ⊎ [b,c)` — never a table of cases,
+  which only asserts the inputs its author thought of.
+  **Back-ports: provenance gates the CLAIM, never the TEST**
+  (`ComponentCVEMatch.disposition`). Dispatching only on lockfile-grade
+  provenance was considered and refused: a dispatch is a hypothesis handed to
+  our own oracle, so a back-ported host in range is tested, observed to do
+  nothing, and stays a lead — while refusing it would delete the only
+  published-CVE coverage of the components most often observed by banner and
+  buy no honesty `_persist_finding` does not already enforce. An unconfirmable
+  match has no oracle behind it, so THAT is where provenance speaks: the lead
+  carries `BACKPORT_CAVEAT` verbatim, and provenance still orders the scarce
+  reserved slots. The dependency→CVE path runs
   fingerprint → component+version inventory (`ReconResult.components`) → known
   CVE → **our own oracle on the live target**. It reached the reader only after
   the Exploit handoff was unwrapped: the orchestrator passed the recon phase
