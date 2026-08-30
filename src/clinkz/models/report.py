@@ -302,6 +302,21 @@ class PentestReport(BaseModel):
     #: which a larger cap does not fix. Rendered even when the plan fit.
     plan_coverage: dict[str, object] = Field(default_factory=dict)
     crawl_coverage: dict[str, object] = Field(default_factory=dict)
+    #: What software this engagement OBSERVED, and how strong each observation
+    #: was — one row per component, carrying the version, the producer that saw
+    #: it, and its :class:`~clinkz.models.recon.VersionProvenance`.
+    #:
+    #: It is here for two reasons and the second is the one that made it
+    #: urgent. First, provenance decides which known-CVE match claims a reserved
+    #: plan slot, and a bound that decides coverage belongs in the deliverable
+    #: rather than only in the log — the same rule ``plan_coverage`` and
+    #: ``crawl_coverage`` follow. Second, ``hosts[].services`` has been an empty
+    #: list on every bundle ever written, so no stored report has carried the
+    #: inventory at all: an offline replay could not recover what a run
+    #: observed except by re-parsing recorded tool stdout, and a bundle with no
+    #: trace could not be reached at all. A report that states its own inventory
+    #: is what makes the next replay a measurement instead of a reconstruction.
+    component_inventory: dict[str, object] = Field(default_factory=dict)
 
     @property
     def finding_counts(self) -> dict[str, int]:

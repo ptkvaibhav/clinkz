@@ -116,6 +116,11 @@ class ReachabilitySource(StrEnum):
     EXPLOIT_PLAN = "exploit_plan"
     #: The scan phase's result dict — the discovered HTTP surface.
     SCAN_PHASE = "scan_phase"
+    #: The recon phase's result dict — what the target served and what the
+    #: engagement handed over. A recon phase that errored observed neither, and
+    #: "this target ships no packages" is a claim about the client's
+    #: application that only a recon phase which RAN can license.
+    RECON_PHASE = "recon_phase"
     #: State the engine holds regardless of which phases ran: the resolver's own
     #: record of what was asked for and what each chain resolved to. It is always
     #: available, and it is listed here anyway so the mapping has no special case
@@ -153,6 +158,12 @@ class ReachabilityKey(StrEnum):
     CONTROL_ARM_KILLED_A_CANDIDATE = "control_arm_killed_a_candidate"
     #: The planner produced at least one Tier-2/3 research technique task.
     TIER23_TECHNIQUE_PLANNED = "tier23_technique_planned"
+    #: Recon had something a package identity could be read OUT of: a supplied
+    #: source tree, or at least one served shell whose bundles could be
+    #: fetched. Zero of both is a real property of the engagement — a black-box
+    #: run against a server-rendered application — and not a defect in the
+    #: reader.
+    PACKAGE_IDENTITY_INPUT_AVAILABLE = "package_identity_input_available"
 
 
 @dataclass(frozen=True)
@@ -179,6 +190,9 @@ class EngagementReachability:
     #: Capability → the tool chain filtered to what was actually available, in
     #: declared preference order. Read for BOTH halves of the tool predicate.
     available_chain_by_capability: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: Inputs recon held that a package identity could be read out of: a
+    #: supplied source tree counts as one, plus every served shell fetched.
+    package_identity_inputs: int = 0
     exploit_plan_tasks: int = 0
     exploit_tasks_dispatched: int = 0
     exploit_candidate_findings: int = 0
@@ -213,6 +227,10 @@ _UNREPORTED_REASONS: dict[ReachabilitySource, str] = {
     ReachabilitySource.EXPLOIT_PLAN: (
         "no exploit plan was recorded, so whether the plan held a candidate for this "
         "class is not determined — it is not a statement about the target"
+    ),
+    ReachabilitySource.RECON_PHASE: (
+        "the recon phase delivered no result, so neither the target's served bundles nor "
+        "any supplied source tree was read and reachability is not determined"
     ),
     ReachabilitySource.SCAN_PHASE: (
         "the scan phase delivered no result, so what surface this target exposes was "
@@ -372,6 +390,14 @@ PREDICATES: dict[ReachabilityKey, ReachabilityPredicate] = {
         lambda state: state.tier23_tasks_planned,
         "the plan held no Tier-2/3 research technique task",
     ),
+    ReachabilityKey.PACKAGE_IDENTITY_INPUT_AVAILABLE: _counter_predicate(
+        ReachabilityKey.PACKAGE_IDENTITY_INPUT_AVAILABLE,
+        ReachabilitySource.RECON_PHASE,
+        lambda state: state.package_identity_inputs,
+        "the engagement supplied no source tree and the target served no page "
+        "referencing a same-origin bundle, so there was no artifact to read a "
+        "package name and version out of",
+    ),
 }
 
 
@@ -429,6 +455,11 @@ STATIC_EXPLOIT_COMPONENTS: tuple[DeclaredComponent, ...] = (
         name="exploit.tier23_technique",
         kind=ComponentKind.METHODOLOGY,
         reachability=ReachabilityKey.TIER23_TECHNIQUE_PLANNED,
+    ),
+    DeclaredComponent(
+        name="recon.package_identity",
+        kind=ComponentKind.PARSER_SEAM,
+        reachability=ReachabilityKey.PACKAGE_IDENTITY_INPUT_AVAILABLE,
     ),
     DeclaredComponent(
         name="chain_planner",

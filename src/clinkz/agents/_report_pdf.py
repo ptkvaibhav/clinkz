@@ -1088,6 +1088,7 @@ class _PDFReport:
         self._provider_routing()
         self._research_grounding()
         self._component_contribution()
+        self._component_inventory()
         self._plan_coverage()
         self._crawl_coverage()
         self._scope_refusals()
@@ -1324,6 +1325,64 @@ class _PDFReport:
                 "class's observed surface while lower-relevance tasks survived. A larger "
                 "cap does not fix this; it is an ordering defect and is reported separately "
                 "for that reason.",
+                self.note,
+            )
+
+    def _component_inventory(self) -> None:
+        """What was observed, ordered by how strongly it was observed.
+
+        The input side of the known-CVE path. Provenance decides which match
+        claims a reserved plan slot, so this table's order IS the order the
+        scarce slots were spent in - which is what separates this from a
+        template scanner reporting "the banner said 2.4.49".
+        """
+        inventory = self.report.component_inventory or {}
+        self._heading("Component inventory", self.h3)
+        rows = inventory.get("components") or []
+        if not isinstance(rows, list) or not rows:
+            self._para(
+                "No fingerprinting tool named a software component on this target, and no "
+                "source tree or served bundle carried a package identity. Rendered even "
+                "when empty: a run whose fingerprinter failed and a target that exposes "
+                "nothing identifiable otherwise produce the same silence."
+            )
+            return
+        self._para(
+            f"{self._text(inventory.get('total', len(rows)))} component(s) observed, "
+            f"{self._text(inventory.get('versioned', 0))} carrying a version. Only a "
+            "versioned component can match a version-bounded CVE, so the second number is "
+            "the size of the dependency surface this run could test against."
+        )
+        self._para(
+            "Ordered strongest-provenance first, which is the order reserved plan slots "
+            "are spent in. A <b>banner</b> is a string the target chose and a back-ported "
+            "fix defeats it; a <b>lockfile</b> entry names what was actually resolved. A "
+            "version match is never a finding here - it points one of this engine's own "
+            "oracles at the live target, and only that oracle can confirm.",
+            self.note,
+        )
+        table: list[list[str]] = [["Component", "Version", "Provenance", "Observed by"]]
+        for row in rows[:40]:
+            if not isinstance(row, dict):
+                continue
+            port = row.get("port") or 0
+            observed = self._text(row.get("source") or "unrecorded")
+            if port:
+                observed += f" (port {self._text(port)})"
+            table.append(
+                [
+                    self._text(row.get("name", "")),
+                    self._text(row.get("version") or "none observed"),
+                    self._text(row.get("provenance", "undeclared")),
+                    observed,
+                ]
+            )
+        self._grid(table, [120, 70, 80, 170])
+        if len(rows) > 40:
+            self._para(
+                f"({len(rows) - 40} further component(s) not listed here; the full "
+                "inventory is in report.json under "
+                "<font face='Courier'>component_inventory</font>.)",
                 self.note,
             )
 

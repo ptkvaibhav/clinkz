@@ -506,6 +506,22 @@ def _structural_key(ep: Endpoint) -> str:
 # ---------------------------------------------------------------------------
 
 
+def bundle_urls_from_shell(html: str, base_url: str) -> list[str]:
+    """Same-origin ``.js`` script URLs a served shell references, in order.
+
+    Module-level because it has a second caller:
+    :meth:`~clinkz.agents.recon.ReconAgent._fetch_bundle_bodies` needs exactly
+    this list to read package identity out of the bundles a target serves. A
+    private static method reached across modules, or a second ``<script src>``
+    regex written beside it, is how one rule becomes two spellings — which is
+    the defect that left the fingerprint seam reading ``technologies`` in one
+    place and ``tech`` in another.
+    """
+    return StaticBundleDiscoverer._dedupe_js_urls(
+        (m.group(1) for m in _SCRIPT_SRC_RE.finditer(html)), base_url
+    )
+
+
 class StaticBundleDiscoverer:
     """Recover routes from a SPA's static JavaScript bundles.
 
@@ -584,9 +600,7 @@ class StaticBundleDiscoverer:
     @staticmethod
     def _bundle_urls(html: str, base_url: str) -> list[str]:
         """Same-origin ``.js`` script URLs referenced by the shell, in order."""
-        return StaticBundleDiscoverer._dedupe_js_urls(
-            (m.group(1) for m in _SCRIPT_SRC_RE.finditer(html)), base_url
-        )
+        return bundle_urls_from_shell(html, base_url)
 
     @staticmethod
     def _chunk_urls(js: str, base_url: str) -> list[str]:

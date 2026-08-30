@@ -62,6 +62,7 @@ from clinkz.models.finding import (
     Severity,
     UnprovenExploitLead,
 )
+from clinkz.models.recon import DetectedComponent, inventory_summary
 from clinkz.models.report import (
     ExecutiveSummary,
     NotTestedCategory,
@@ -559,6 +560,14 @@ class ReportAgent(BaseAgent):
             llm_spend=spend_summary(),
             plan_coverage=plan_alarm_summary(),
             crawl_coverage=crawl_budget_summary(),
+            # What this run OBSERVED, with the provenance of every version.
+            # Built here from recon's own rows rather than from
+            # ``hosts[].services``, which has been empty on every bundle ever
+            # written — so the inventory that decides which known-CVE match
+            # claims a reserved plan slot has never once reached a deliverable.
+            component_inventory=inventory_summary(
+                self._parse_components(input_data.get("components"))
+            ),
             research_grounding=dict(input_data.get("research_grounding") or {}),
         )
 
@@ -964,6 +973,7 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_component_ledger(lines, report)
             ReportAgent._render_provider_degradation(lines, report)
             ReportAgent._render_scope_refusals(lines, report)
+            ReportAgent._render_component_inventory(lines, report)
             ReportAgent._render_plan_coverage(lines, report)
             ReportAgent._render_crawl_coverage(lines, report)
             ReportAgent._render_research_grounding(lines, report)
@@ -1006,6 +1016,7 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_component_ledger(lines, report)
         ReportAgent._render_provider_degradation(lines, report)
         ReportAgent._render_scope_refusals(lines, report)
+        ReportAgent._render_component_inventory(lines, report)
         ReportAgent._render_plan_coverage(lines, report)
         ReportAgent._render_crawl_coverage(lines, report)
         ReportAgent._render_research_grounding(lines, report)
@@ -1061,6 +1072,99 @@ class ReportAgent(BaseAgent):
                     "",
                 ]
             )
+
+    @staticmethod
+    def _parse_components(raw: object) -> list[DetectedComponent]:
+        """The recon inventory, from the dict form the orchestrator hands over.
+
+        A malformed row is dropped rather than fatal — this is the report agent,
+        and a bad component row must never be the reason a client gets no
+        document. Every surviving row keeps the provenance its producer
+        declared; nothing here infers one, because inferring a provenance from a
+        ``source`` string is the consumer-guesses-the-producer pattern this
+        field exists to end.
+        """
+        components: list[DetectedComponent] = []
+        for entry in raw or []:
+            if isinstance(entry, DetectedComponent):
+                components.append(entry)
+            elif isinstance(entry, dict):
+                try:
+                    components.append(DetectedComponent.model_validate(entry))
+                except Exception:  # noqa: BLE001 - a malformed row is dropped, never fatal
+                    continue
+        return components
+
+    @staticmethod
+    def _render_component_inventory(lines: list[str], report: PentestReport) -> None:
+        """Render what was observed, ordered by how strongly it was observed.
+
+        This is the input side of the known-CVE path, and it is rendered for the
+        same reason ``plan_coverage`` and ``crawl_coverage`` are: **provenance
+        decides coverage**. ``match_components`` orders confirmable-first, then
+        by version provenance, then by published severity — ahead of severity
+        deliberately — and the survivors claim the reserved plan slots. So the
+        order of this table is the order the scarce slots were spent in, and a
+        reader who wants to know why a CRITICAL was not tested can see that it
+        rested on a banner while a MEDIUM rested on a lockfile.
+
+        ``versioned`` is stated apart from the total because an unversioned
+        component matches nothing version-bounded: a long inventory with few
+        versions is a small CVE surface, and the total alone hides that.
+
+        Rendered only when something was observed. An empty table would say
+        nothing a black-box run against an unfingerprintable target has not
+        already said in *What was NOT tested*.
+        """
+        inventory = report.component_inventory
+        if not inventory:
+            return
+        rows = inventory.get("components") or []
+        if not isinstance(rows, list) or not rows:
+            return
+        total = inventory.get("total", len(rows))
+        versioned = inventory.get("versioned", 0)
+        by_provenance = inventory.get("by_provenance") or {}
+
+        lines.extend(["## Component inventory", ""])
+        lines.append(
+            f"{total} component(s) observed, {versioned} carrying a version. Only a "
+            "versioned component can match a version-bounded CVE, so the second number "
+            "is the size of the dependency surface this run could test against."
+        )
+        lines.append("")
+        if isinstance(by_provenance, dict) and by_provenance:
+            lines.append(
+                "By how the version was observed: "
+                + ", ".join(f"{name} {count}" for name, count in by_provenance.items())
+                + "."
+            )
+            lines.append("")
+        lines.append(
+            "Ordered strongest-provenance first, which is the order the known-CVE "
+            "matcher spends its reserved plan slots in. A `banner` is a string the "
+            "target chose and a back-ported fix defeats it; a `lockfile` entry names "
+            "what was actually resolved."
+        )
+        lines.extend(
+            [
+                "",
+                "| Component | Version | Provenance | Observed by |",
+                "|---|---|---|---|",
+            ]
+        )
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            port = row.get("port") or 0
+            observed = str(row.get("source") or "unrecorded")
+            if port:
+                observed += f" (port {port})"
+            lines.append(
+                f"| {row.get('name', '')} | {row.get('version') or '_none observed_'} "
+                f"| {row.get('provenance', 'undeclared')} | {observed} |"
+            )
+        lines.append("")
 
     @staticmethod
     def _render_crawl_coverage(lines: list[str], report: PentestReport) -> None:

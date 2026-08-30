@@ -38,6 +38,17 @@ class VersionProvenance(StrEnum):
     the plan's scarce slots should reflect that rather than treating both as
     "a version string".
 
+    An **artifact string** sits between the two, and it is its own rank rather
+    than a second spelling of ``BANNER`` because the two fail differently. Both
+    are defeated by a back-ported fix. But a ``Server:`` header is composed per
+    request, is one ``ServerTokens`` line away from saying nothing at all, and
+    usually names a distribution's repackaging rather than the project's own
+    release; the ``/*! jQuery v3.4.1 */`` comment inside a served bundle is baked
+    into the bytes at build time, names the package's own version, and cannot be
+    changed without editing the artifact. It is still a string the target shipped,
+    so it ranks below every source naming a RESOLVED dependency and above the
+    header, which is the one an operator can rewrite by accident.
+
     ``UNDECLARED`` is the value a producer that says nothing gets, and it ranks
     LAST — the same rule ``ResearchGrounding.undeclared`` follows, for the same
     reason: an unstated provenance is not a strong one, and defaulting it
@@ -47,6 +58,7 @@ class VersionProvenance(StrEnum):
     LOCKFILE = "lockfile"
     ARTIFACT_HASH = "artifact_hash"
     MANIFEST = "manifest"
+    ARTIFACT_STRING = "artifact_string"
     BANNER = "banner"
     UNDECLARED = "undeclared"
 
@@ -59,8 +71,9 @@ _VERSION_PROVENANCE_RANK: dict[str, int] = {
     VersionProvenance.LOCKFILE.value: 0,
     VersionProvenance.ARTIFACT_HASH.value: 1,
     VersionProvenance.MANIFEST.value: 2,
-    VersionProvenance.BANNER.value: 3,
-    VersionProvenance.UNDECLARED.value: 4,
+    VersionProvenance.ARTIFACT_STRING.value: 3,
+    VersionProvenance.BANNER.value: 4,
+    VersionProvenance.UNDECLARED.value: 5,
 }
 
 
@@ -196,8 +209,12 @@ def dedupe_components(components: list[DetectedComponent]) -> list[DetectedCompo
     ``Server:`` banner naming the same product are not equally good answers to
     "what version is installed", and keeping whichever was collected first makes
     the inventory a function of tool ordering. Equal provenance keeps the
-    incumbent, so today — where every producer declares ``BANNER`` — this is a
-    no-op and the collected order still decides.
+    incumbent, so between two banner-derived observations the collected order
+    still decides. It stopped being a no-op when a second kind of producer
+    arrived: :mod:`clinkz.agents._package_identity` declares ``LOCKFILE`` /
+    ``MANIFEST`` / ``ARTIFACT_STRING``, so a lockfile entry for a package now
+    displaces the version a served bundle's own banner comment claimed for it,
+    whichever order the two were collected in.
 
     Order is preserved on first appearance, so the result is deterministic.
 
@@ -229,6 +246,62 @@ def dedupe_components(components: list[DetectedComponent]) -> list[DetectedCompo
         ):
             by_key[key] = component
     return [by_key[key] for key in order]
+
+
+def inventory_summary(components: list[DetectedComponent]) -> dict[str, Any]:
+    """The component inventory as the deliverable carries it.
+
+    Pure, and deliberately not a second inventory: it is a VIEW of
+    ``ReconResult.components``, so the counts it prints sum to the rows it
+    prints and a consumer can never read it as a separate population.
+
+    Ordered by provenance strength and then by name, because that is the order
+    the known-CVE matcher spends its reserved plan slots in. A reader comparing
+    "what did you observe" against "what did you test" should not have to
+    re-sort the first list to see why the second is what it is.
+
+    ``versioned`` is stated apart from the total for the reason
+    :func:`~clinkz.knowledge.component_cves.match_components` needs it: an
+    unversioned component matches nothing version-bounded, so a large inventory
+    with few versions is a small CVE surface, and a total alone hides that.
+
+    Args:
+        components: The deduplicated inventory, in the engine's own order.
+
+    Returns:
+        ``{"total", "versioned", "by_provenance", "components": [...]}``. Empty
+        dict for an empty inventory, so a black-box run against a target with no
+        fingerprintable banner renders nothing rather than an empty table.
+    """
+    if not components:
+        return {}
+    ordered = sorted(
+        components,
+        key=lambda c: (
+            version_provenance_rank(c.provenance),
+            c.name.lower(),
+            c.version,
+        ),
+    )
+    by_provenance: dict[str, int] = {}
+    for component in ordered:
+        key = str(component.provenance)
+        by_provenance[key] = by_provenance.get(key, 0) + 1
+    return {
+        "total": len(ordered),
+        "versioned": sum(1 for c in ordered if c.version),
+        "by_provenance": by_provenance,
+        "components": [
+            {
+                "name": c.name,
+                "version": c.version,
+                "provenance": str(c.provenance),
+                "source": c.source,
+                "port": c.port,
+            }
+            for c in ordered
+        ],
+    }
 
 
 class WebReconResult(BaseModel):
@@ -265,3 +338,12 @@ class ReconResult(BaseModel):
     #: software is running is an observation, and which of it is vulnerable is a
     #: separate question answered later, by a different agent, against evidence.
     components: list[DetectedComponent] = Field(default_factory=list)
+    #: How many artifacts the package-identity producer actually READ — supplied
+    #: lockfiles/manifests plus served bundles. DECLARED by the producer rather
+    #: than re-derived downstream from the service list, because those are not
+    #: the same number and only one of them is a measurement: a target can serve
+    #: HTTP and reference no same-origin bundle at all. The reachability
+    #: predicate reads this to separate "nothing was there to read" (a true
+    #: property of a black-box engagement against a server-rendered app) from
+    #: "the reader found nothing in what it read".
+    package_identity_inputs: int = 0
