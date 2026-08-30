@@ -241,6 +241,13 @@ class CapabilityRecall(BaseModel):
 
 ### 2.4 Version predicates + `technology_relations`-powered inheritance/transfer
 
+> **Superseded 2026-08-30 (grammar only).** The predicate grammar below gained **half-open
+> intervals** `[X,Y)` (plus `(X,Y)` / `(X,Y]`) and SemVer §11 prerelease precedence, because a
+> closed upper bound obliges its author to guess the last release before the fix and a guess
+> low by one under-matches *silently*. Everything else in this section — conservative
+> widening, `*` for an unobservable version, recall-ranks-never-emits — is unchanged. See
+> [`methodology/sca-catalogue-breadth.md`](./methodology/sca-catalogue-breadth.md) §1.
+
 **Version predicates** are a tiny deterministic grammar — `<X`, `<=X`, `=X`, `[X,Y]`, `*` — with a
 `version_satisfies(observed: str, predicate: str) -> bool` matcher built on the tuple-compare idiom
 already in `source_ingest.py` (`_LOG4J_SAFE_VERSION: tuple[int,int,int]`). No LLM. A recall fires

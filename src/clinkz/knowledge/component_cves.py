@@ -35,11 +35,49 @@ The catalog is deliberately small and general. It carries no benchmark's
 vocabulary — every entry is a published CVE against a widely-deployed component,
 and an entry earns its place by being matchable from a banner a fingerprinter
 actually reports.
+
+Affected ranges are **half-open**
+--------------------------------
+Every bounded entry is written ``[introduced, fixed)`` — the form the advisory
+itself states, because the advisory names the version the fix landed in and does
+not name the last version released before it. Writing the closed form obliges
+the author to supply that second fact from memory, and getting it wrong
+under-matches by one release, which produces a MISSED finding rather than a
+false one: invisible by construction, and unreachable by every control arm in
+this engine. The rule and its property tests live in
+:mod:`clinkz.discovery.versions`; the artifact it was introduced to remove is
+still visible in this file's own history — jQuery CVE-2020-11022 (advisory
+``>= 1.2, < 3.5.0``) was carried as ``[1.2.0,3.4.9]``, a hand-guessed "last
+vulnerable version" that silently excluded ``3.4.95``.
+
+Back-ports: provenance gates the CLAIM, never the TEST
+------------------------------------------------------
+A distribution routinely back-ports a security fix without moving the version,
+so ``Apache/2.4.49`` from a ``Server:`` header may be patched and a banner
+cannot tell you. The obvious response — refuse to dispatch unless the version
+came from a lockfile — is the wrong one, and the reason is the shape of this
+whole module: **a dispatch is a hypothesis handed to our own oracle, not a
+claim.** A back-ported host in the affected range gets tested, the oracle
+observes nothing, and the match stays a lead. Nothing false is emitted, because
+the oracle is the gate; refusing the dispatch would instead delete the engine's
+only published-CVE coverage of the component class most often observed by
+banner, and buy no honesty that ``_persist_finding`` does not already enforce.
+
+Where provenance DOES decide is the other outcome. An unconfirmable match
+becomes a lead — a sentence in the deliverable, resting entirely on the version
+string, with no oracle behind it to catch a back-port. So a lead whose version
+came from a string the target composed says so, verbatim
+(:data:`BACKPORT_CAVEAT`), and provenance orders the scarce reserved plan slots
+(:func:`match_components`) so lockfile-grade evidence is what gets tested when
+the ceiling bites. The disposition is recorded per match
+(:attr:`ComponentCVEMatch.disposition`) rather than left to emerge from a
+conditional somewhere downstream.
 """
 
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 
 from pydantic import BaseModel
 
@@ -56,9 +94,12 @@ class KnownComponentCVE(BaseModel):
             NAME. A regex rather than a literal because fingerprinters spell the
             same product several ways ("Apache", "Apache httpd", "Apache/2.4.49").
         affected: Version predicate over :mod:`clinkz.discovery.versions`'
-            grammar (``<X``, ``[X,Y]``, ``=X``, ``*``). ``*`` means "every
-            version this catalog knows of" and is used only where the
-            vulnerability is not version-bounded.
+            grammar. A bounded entry is written **half-open**,
+            ``[introduced,fixed)`` — the advisory's own form, and the only one
+            that does not oblige the author to guess the last release before the
+            fix (see the module docstring). ``<X`` is its unbounded-below
+            spelling. ``*`` means "every version this catalog knows of" and is
+            used only where the vulnerability is not version-bounded.
         title: Human summary for the lead or the finding's context line.
         severity: CVSS band, as published. Used for lead ordering ONLY — it never
             becomes a finding's severity, because the finding's severity comes
@@ -80,6 +121,47 @@ class KnownComponentCVE(BaseModel):
     confirming_test_method: str = ""
     proving_observation: str = ""
     reference: str = ""
+
+
+class MatchDisposition(StrEnum):
+    """What a match is allowed to become. A closed vocabulary of exactly two.
+
+    There is deliberately no third value. A version match either becomes a task
+    for an oracle that can witness the CVE's defining effect, or it becomes a
+    lead that says what would have proven it — the two outcomes the module
+    docstring's emission rule allows.
+    """
+
+    #: An oracle exists for this CVE's effect: hand it the hypothesis and let it
+    #: decide. The oracle is the gate, so an in-range-but-patched host costs a
+    #: plan slot and emits nothing.
+    DISPATCH = "dispatch"
+    #: No oracle for this effect. The match is a claim about a version string
+    #: and nothing more, so it renders as an ``UnprovenExploitLead``.
+    LEAD = "lead"
+
+
+#: Provenances a back-ported fix defeats without moving the version number.
+#:
+#: All three are strings the target composed — a ``Server:`` header, a version
+#: comment baked into a served bundle, or an observation whose producer declared
+#: nothing. None of them names a RESOLVED dependency, which is what a lockfile,
+#: an artifact hash or an exact manifest pin does. Read only to qualify a LEAD's
+#: wording; it never gates a dispatch (see the module docstring).
+BACKPORT_DEFEASIBLE_PROVENANCE: frozenset[VersionProvenance] = frozenset(
+    {
+        VersionProvenance.ARTIFACT_STRING,
+        VersionProvenance.BANNER,
+        VersionProvenance.UNDECLARED,
+    }
+)
+
+#: Appended verbatim to a defeasible match's observation, so the sentence a
+#: client reads carries the weakness of the evidence it rests on.
+BACKPORT_CAVEAT = (
+    "this version was read from a string the target composed, and a back-ported "
+    "fix defeats it without moving the number"
+)
 
 
 class ComponentCVEMatch(BaseModel):
@@ -106,6 +188,26 @@ class ComponentCVEMatch(BaseModel):
         """How the version this match rests on was observed."""
         return self.component.provenance
 
+    @property
+    def backport_defeasible(self) -> bool:
+        """Whether a back-ported fix could defeat this match's version evidence.
+
+        True for every provenance that is a string the target composed. It
+        qualifies the wording of a LEAD and orders the reserved plan slots; it
+        never decides whether the match is tested.
+        """
+        return self.provenance in BACKPORT_DEFEASIBLE_PROVENANCE
+
+    @property
+    def disposition(self) -> MatchDisposition:
+        """What this match may become — recorded here, not inferred downstream.
+
+        Confirmability is the whole test, and provenance is deliberately absent
+        from it: an oracle refusing a back-ported host is the honest outcome,
+        while never running it is a silent coverage loss.
+        """
+        return MatchDisposition.DISPATCH if self.is_confirmable else MatchDisposition.LEAD
+
 
 #: The catalogue.
 #:
@@ -120,7 +222,7 @@ KNOWN_COMPONENT_CVES: tuple[KnownComponentCVE, ...] = (
     KnownComponentCVE(
         cve_id="CVE-2021-41773",
         component=r"apache(\s+http\w*)?$|^httpd$",
-        affected="=2.4.49",
+        affected="[2.4.49,2.4.50)",
         title="Apache HTTP Server path traversal / file disclosure",
         severity="critical",
         confirming_test_method="_test_lfi",
@@ -133,7 +235,7 @@ KNOWN_COMPONENT_CVES: tuple[KnownComponentCVE, ...] = (
     KnownComponentCVE(
         cve_id="CVE-2021-42013",
         component=r"apache(\s+http\w*)?$|^httpd$",
-        affected="=2.4.50",
+        affected="[2.4.50,2.4.51)",
         title="Apache HTTP Server path traversal — incomplete fix for CVE-2021-41773",
         severity="critical",
         confirming_test_method="_test_lfi",
@@ -146,7 +248,7 @@ KNOWN_COMPONENT_CVES: tuple[KnownComponentCVE, ...] = (
     KnownComponentCVE(
         cve_id="CVE-2021-44228",
         component=r"log4j|solr|elasticsearch|logstash",
-        affected="[2.0,2.14.1]",
+        affected="[2.0,2.15.0)",
         title="Log4Shell — JNDI lookup in a logged value",
         severity="critical",
         confirming_test_method="_test_log4shell",
@@ -195,7 +297,7 @@ KNOWN_COMPONENT_CVES: tuple[KnownComponentCVE, ...] = (
     KnownComponentCVE(
         cve_id="CVE-2020-11022",
         component=r"^jquery$",
-        affected="[1.2.0,3.4.9]",
+        affected="[1.2.0,3.5.0)",
         title="jQuery cross-site scripting via HTML from untrusted sources",
         severity="medium",
         proving_observation=(
@@ -314,6 +416,9 @@ def match_components(
                     + f" (version provenance: {component.provenance.value})"
                     + f"; {entry.cve_id} affects {entry.affected}"
                 )
+                if component.provenance in BACKPORT_DEFEASIBLE_PROVENANCE:
+                    matched_on += f" — {BACKPORT_CAVEAT}"
+
             matches.append(ComponentCVEMatch(component=component, cve=entry, matched_on=matched_on))
 
     matches.sort(
@@ -329,8 +434,11 @@ def match_components(
 
 
 __all__ = [
+    "BACKPORT_CAVEAT",
+    "BACKPORT_DEFEASIBLE_PROVENANCE",
     "KNOWN_COMPONENT_CVES",
     "ComponentCVEMatch",
     "KnownComponentCVE",
+    "MatchDisposition",
     "match_components",
 ]

@@ -62,6 +62,9 @@ from clinkz.discovery.topology import (
 )
 from clinkz.discovery.topology_recall import recall_cross_service_edges
 from clinkz.discovery.versions import (
+    SemVer,
+    compare_versions,
+    parse_semver,
     parse_version,
     predicate_point_version,
     version_satisfies,
@@ -106,6 +109,9 @@ __all__ = [
     "generate_hypotheses",
     "match_primitives",
     "normalize_tech_identity",
+    "SemVer",
+    "compare_versions",
+    "parse_semver",
     "parse_version",
     "predicate_point_version",
     "primitive_by_class",
