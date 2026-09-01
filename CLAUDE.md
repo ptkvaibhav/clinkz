@@ -550,7 +550,9 @@ src/clinkz/
 │                     #   (what does the live target ACCEPT? — safe methods only),
 │                     #   _json_body (addressing a field INSIDE a structure),
 │                     #   _url_safety (may we fetch it?), _url_shape (in what order?),
-│                     #   _origin (THE scheme+host fence — one helper, six call sites),
+│                     #   _origin (THE scheme+host fence — one helper, six call sites;
+│                     #   + OriginIdentity: which origins are ONE SERVICE, from
+│                     #   observed resolutions — vhosting fails safe),
 │                     #   _plan_ranking (phase 3: which types is this parameter
 │                     #   worth attempting? — the fingerprint decides the SET,
 │                     #   the cap guards the unsupported tail; pure, replayable),
@@ -1562,6 +1564,43 @@ LESSONS #17).
   twice in one week by two code paths — that is a missing abstraction, not two
   mistakes, because the host comparison is the obvious half and each new call
   site re-derives only the obvious half.
+- **"Is this the same string" is the right question for a FENCE and the wrong
+  one for a finding's IDENTITY** (`agents/_origin.py::OriginIdentity`). One
+  Juice Shop container answered as `http://clinkz-juiceshop:3000` and as
+  `http://172.20.0.2:3000` — the crawler resolves the host itself and reports
+  the address it connected to, so a hostname goes into the plan and an address
+  comes out of the very next component — and the header class emitted a missing
+  CSP and a missing Referrer-Policy against each: **four findings for two issues
+  on one service**. The alias is OBSERVED, never inferred: curl's
+  `%{remote_ip}` at the HTTP chokepoint is the only code that knows what address
+  it reached, so the producer declares (`HTTPClientOutput.resolved_address`) and
+  the consumer reads — and `exploit._observed` is the ONE seam every response
+  returns through, because eight call sites built a byte-identical response
+  block and a ninth would have been the one that did not observe. **Name-based
+  virtual hosting fails SAFE**: an address seen under more than one NAME is
+  ambiguous and every origin on it keys on itself, because over-merging HIDES a
+  finding and emitting one twice does not. **Unobserved ⇒ an origin is its own
+  identity**, so a run that resolves nothing behaves exactly as before. The same
+  defect one layer down gave `/rest/basket/:id` and `/rest/basket/:p3` from one
+  crossing: the parameter name is whichever discoverer found the route, so the
+  IDOR key is the **dispatched request** (`(service, crossing path)`), not the
+  name.
+- **A phase stopped at its own wall clock is not a run that did not happen**
+  (`agents/report.py::_run_completion`). `"timeout"` sat in the same set as
+  `"error"`, so three identical envelope runs disagreed on the honesty banner:
+  the research phase overran the orchestrator's grace window once and that
+  report rendered "THIS RUN DID NOT COMPLETE" over the same findings the other
+  two rendered clean. **A banner that fires on a third of good runs is one a
+  reader learns to skip.** The split is on an engine fact, not on a list of
+  which phases may time out — `_phase_stop_result` carries the agent's delivered
+  result through a stop, so a timeout WITH a result is a phase that did its work
+  and ran out of clock, while a timeout with NOTHING is indistinguishable from a
+  phase that never ran and still trips the banner. Behind it, the research
+  budget is now a real deadline rather than a checkpoint gate
+  (`research._within_budget`): it used to bound only where a new STEP began, so
+  one slow in-flight call carried the phase into the force-kill that DISCARDS
+  its return value — the trap already documented for Scan, reached by another
+  route.
 - **A mock at a tool or parser seam returns the REAL output model.** Gated by
   `tests/test_tools/test_mock_shape_audit.py`: a test-local `ToolOutput`
   subclass is refused unless allow-listed *with a reason*, and the only entries
@@ -1658,6 +1697,21 @@ LESSONS #17).
   `solved_by_testing: null`**, not zero: defaulting to "subtract nothing"
   silently restores the inflated number. `--record-floor` derives one offline
   from a stored bundle and sends nothing.
+  **And a solve we cannot point at a finding for is not something we can tell a
+  client we did.** `solved_by_testing` is what our traffic tripped; a solve is
+  the TARGET's verdict and a finding is ours, and the two are not the same
+  claim. All three envelope runs earned three solves and emitted a finding for
+  two — `basketAccess` and `redirect`; `forgedFeedback` is a **write** crossing
+  carrying another user's `UserId` in a POST body, which no dispatched class
+  claims. `attribute_solves` splits them into `solved_attributable` and
+  `solved_target_confirmed_only`, **naming** the unattributed keys and why. The
+  link is by the challenge's own CATEGORY, through a `CATEGORY_CLASSES` map held
+  to the guard-domain law against `CATEGORY_ADDRESSABLE` and against
+  `DISPATCHABLE_TEST_METHODS` — deliberately NOT a claim that a particular
+  finding solved a particular challenge, since neither record carries that and
+  inventing it is the consumer-guesses-the-producer move this codebase keeps
+  paying for. The negative is the half that matters: a solve whose category
+  matches no emitted finding is one we cannot show our work for.
   **"Any other kind of run" is four kinds, and three of them were found in the
   bundle the stored floor was taken from.** A floor is what authenticating and
   crawling trip **as those principals**, so it is KEYED by the credential set
