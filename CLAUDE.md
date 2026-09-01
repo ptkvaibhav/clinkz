@@ -567,7 +567,9 @@ src/clinkz/
 │                     #   + privilege_order: which identity a crossing runs FROM,
 │                     #   declared by the operator, never read off a role label),
 │                     #   _idor_oracle (the four-arm access-control oracle: whose
-│                     #   object is this? — pure, offline-testable),
+│                     #   object is this? — ref(A) ANCHORED to the caller's own
+│                     #   identity, attribution read off the OBJECT's owning
+│                     #   field; pure, offline-testable),
 │                     #   _control_arm (the never-sent control + attribution + WHICH
 │                     #   arm produced a status: what an oracle must clear before it
 │                     #   may confirm — offline-testable),
@@ -719,6 +721,17 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
   `_test_javascript_attacks` at all three exploitable ladder levels — wrong
   remediation, wrong declared yield, wrong class in the re-grade. A title that
   resolves is authoritative.
+- `python scripts/regrade_idor_arms.py <engagement id> --caller-token-fp <fp>
+  --owner-token-fp <fp> --caller-identity <v,v> --owner-identity <v,v> [--json]`
+  — **offline** re-grade of a stored bundle's confirmed IDOR findings through
+  the ANCHORED oracle. Sends nothing; reads `trace.jsonl` plus the recorded
+  `tool_invocations/` bodies, and tells principals apart by the bearer
+  fingerprint the engine's own redactor already wrote, so the replay never holds
+  a live token. Three verdicts, and the third is the point: **SURVIVES** ·
+  **REFUTED** · **REDISPATCH_REQUIRED**, the last for a case whose corrected
+  arms were never dispatched against the corrected reference. Reporting that as
+  a pass is the acceptance-criterion mistake itself; reporting it as a failure
+  claims a measurement nobody made.
 - `python scripts/plan_variance_corpus.py [--outputs-root <dir>] [--json]` —
   **offline** replay of every recorded phase-3 ranking against the deterministic
   ranking layer. Sends nothing; reads only `outputs/*/trace.jsonl`, which already
@@ -904,9 +917,9 @@ LESSONS #17).
   deliverable — and an 80-character cap bounds volume, not sensitivity: on a
   client engagement that value is a real customer's email or postal address, in a
   document that gets emailed. `attributing_fields` renders
-  `field=<name> owner_fp=<hash> caller_fp=<hash|absent>`: equal to the owner's
-  own authorized read, different from (or absent in) the caller's, which is the
-  whole claim. The field NAME survives because it is schema, not data, and is
+  `field=<name> owner_fp=<hash> caller_fp=<hash|absent>`: the owning value the
+  crossing carried, against what the caller's own anchored record holds under
+  that field (or `absent`), which is the whole claim. The field NAME survives because it is schema, not data, and is
   what a remediation has to name. Same trade as `AuthArtifact.principal` — the
   claim survives, the value never lands.
 - **A bound that decides coverage is reported in the DELIVERABLE, not just the
@@ -1168,6 +1181,67 @@ LESSONS #17).
   holds until the twenty-fifth class is written. A direct invocation holds no
   principals and is in the single-role tier: that is the honest answer, not an
   exemption.
+- **`ref(A)` is a reference the CALLER owns, or the class abstains — and
+  attribution comes off the OBJECT, never off a comparison**
+  (`agents/_idor_oracle.py`, **detail →
+  [`docs/methodology/idor.md`](docs/methodology/idor.md)**). Two more defects in
+  one class, both of which a target-confirmed scoreboard solve certified as
+  working. The **self arm carried the CRAWL's value**, which is a fact about
+  whichever session was crawling: the crawl saw `id=1`, A was `jim` — user
+  **2** — phase 3 incremented to `2`, so `self` read admin's basket and
+  `crossing` read A's own. Every downstream arm cleared, because every one of
+  them is a comparison and *a comparison does not know which side it is standing
+  on*. `ref(A)` is now DISCOVERED first (`anchor_self_reference` +
+  `_idor_anchor`): candidates are probed **as A** and the anchor is the first
+  record naming A as its owner, where A's identity comes from
+  `Principal.identity_tokens()` — the supplied username and the identity claims
+  of the bearer token the target issued US, never a response. Unanchorable ⇒
+  ABSTAIN (`self_reference_not_anchored_to_the_caller`), and
+  `ref(self) != ref(crossing)` is asserted both before dispatch and on what was
+  actually sent, a mismatch being a LOUD refusal rather than a quiet abstain.
+  And the attribution route `identical_rendering` was **vacuous by construction
+  under this class's own direction rule**: A is the least-privileged identity so
+  B outranks it, and an outranking B reading A's record returns A's record —
+  "identical to B's read" then proves *B can also read this*, which is the
+  feature. Direction needs A least-privileged and attribution-by-`owner_read`
+  needs B not to outrank A; both cannot hold. The claim now rests on an OWNING
+  FIELD (`owner_claim`) — a field the application itself uses to name a record's
+  owner (`UserId`, `email`, `author`) carrying a value that is not the
+  caller's, or ANY field whose value is an identity we hold. `owner_read` is
+  still dispatched and is reported as `corroboration`. No owning field ⇒
+  ABSTAIN (`crossing_response_names_no_owning_principal`), which retires the
+  public-catalogue shape without a decoration-tolerant differ — **and costs
+  recall on an endpoint whose per-user records name no owner**, pinned as a
+  test named after the loss rather than left to surface as a silent gap.
+  Two consequences of `idor_normalise_body`'s digit folding fall out and are
+  fixed with it: *is this A's own object?* asks `names_the_caller` before the
+  fingerprint (two baskets differing only in `UserId` normalise equal), and
+  `reflection_explains` abstains below a four-character reference and is not
+  asked at all of a body carrying an owning field — substitution is global, so
+  rewriting `1` into `2` turns the owner's record into the caller's and reads
+  as a perfect echo.
+- **An anonymous 200 on `ref(B)` is DISQUALIFYING, full stop.** It was one input
+  to `materially_differs`, so `/rest/products/:id/reviews` — served 200
+  anonymously — confirmed on a per-caller `"liked":true` decoration of the SAME
+  review, same `_id`, 13 bytes. If an anonymous caller is served the resource
+  there is no boundary to cross, whatever else the bytes do. An anonymous arm
+  that was never DISPATCHED refused nothing and abstains
+  (`anonymous_control_arm_not_dispatched`), the rule `ControlVerdict` applies to
+  every other arm.
+- **An acceptance test that reads only an external grader cannot detect an
+  oracle that reached the right verdict by the wrong arm** (**detail →
+  [`.claude/skills/clinkz-dev/SKILL.md`](.claude/skills/clinkz-dev/SKILL.md)**,
+  beside the guard-domain and guard-pattern laws). IDOR's criterion was "a
+  target-confirmed scoreboard solve plus an emitted finding of the matching
+  class", and it passed three identical runs over the inverted arms above,
+  because **the scoreboard grades the OUTCOME and the oracle grades the
+  REASONING, and nothing compared them**. The criterion must assert the ARMS —
+  which request went out, as whom, carrying what, and what each is required to
+  show — all of them engine facts in the run's own trace. Pinned as
+  `IDOR_ACCEPTANCE_CLAIMS` /`idor_acceptance_failures` in
+  `tests/test_agents/test_idor_four_arm_oracle.py`, with the negative control
+  that matters: a verdict carrying every outcome signal there is and no anchored
+  arms behind it fails every claim.
 - **A crossing arm is evidence only when it runs UPHILL, and which way is up is
   the operator's to declare.** Two principals make the arm dispatchable; they do
   not make it meaningful. Every one of the four arms is satisfied by an

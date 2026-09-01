@@ -36,14 +36,35 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from clinkz.engagement.credential_shapes import jwt_identity_claims
+
 __all__ = [
     "ANONYMOUS",
+    "IDENTITY_CLAIM_NAMES",
     "PRIVILEGE_ORDER_UNDECLARED",
     "Principal",
     "PrivilegeOrder",
     "parse_role_sessions",
     "privilege_order",
 ]
+
+
+#: Claim names that say WHO a session token was issued to, in priority order.
+#:
+#: Read from a token WE hold, never from a target response, and only these
+#: names: a claim set also carries an issuer, an expiry and — on Juice Shop —
+#: the account's password hash, none of which identify a principal to an
+#: application's own records.
+IDENTITY_CLAIM_NAMES: tuple[str, ...] = (
+    "email",
+    "username",
+    "preferred_username",
+    "sub",
+    "user_id",
+    "userId",
+    "uid",
+    "id",
+)
 
 
 @dataclass(frozen=True)
@@ -72,6 +93,46 @@ class Principal:
     headers: dict[str, str] = field(default_factory=dict)
     primary: bool = False
     privilege: int | None = None
+
+    def identity_tokens(self) -> frozenset[str]:
+        """The values by which this principal is named in the target's own records.
+
+        Read from what WE hold — the operator-supplied username and the
+        identity claims of the session token the target issued US — and never
+        from a response body. That direction is the whole point: the oracle
+        uses these to decide whether a record it was served belongs to the
+        caller, so a value the host under test chose could otherwise make its
+        own record look like ours (or ours look like somebody else's), which is
+        the same primitive :func:`~clinkz.agents._idor_oracle.stable_fields`
+        is kept away from.
+
+        A bearer token is decoded through
+        :func:`~clinkz.engagement.credential_shapes.jwt_identity_claims`, the
+        one JWT decoder in the codebase. A session carried only as an opaque
+        cookie yields nothing beyond the username, which is the honest answer:
+        an opaque cookie asserts no identity we can read, and an endpoint whose
+        records name their owner by an id we cannot learn is one this class
+        abstains on rather than guesses at.
+
+        Returns:
+            Every identity value, stripped and de-duplicated. Empty values are
+            dropped — ``""`` would match every field an application leaves
+            blank, and Juice Shop's user records leave ``username`` blank.
+        """
+        tokens: set[str] = set()
+        if self.username.strip():
+            tokens.add(self.username.strip())
+        for key, value in self.headers.items():
+            if key.strip().lower() not in ("authorization", "x-auth-token", "x-authorization"):
+                continue
+            raw = str(value).strip()
+            # ``Bearer eyJ…`` and a bare ``eyJ…`` are both things an
+            # orchestrator hands over; the scheme is not part of the token.
+            token = raw.split(None, 1)[1].strip() if " " in raw else raw
+            for claim in jwt_identity_claims(token, IDENTITY_CLAIM_NAMES):
+                if claim.strip():
+                    tokens.add(claim.strip())
+        return frozenset(tokens)
 
     @property
     def carries_session(self) -> bool:

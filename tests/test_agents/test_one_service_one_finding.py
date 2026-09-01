@@ -89,7 +89,7 @@ class TestIDOROneCrossingOneFinding:
             synthesized_reference="2",
             indicator_observed="crossing confirmed",
             tier="multi_role",
-            attribution="identical_rendering",
+            attribution="owning_field_names_principal",
             absent_reference="900043392",
         )
 

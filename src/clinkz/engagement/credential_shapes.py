@@ -617,8 +617,8 @@ def find_shapes(text: str) -> list[ShapeHit]:
     return hits
 
 
-def jwt_identity_claim(token: str, names: Sequence[str]) -> str:
-    """The first identity claim in *token* matching *names*, or ``""``.
+def jwt_identity_claims(token: str, names: Sequence[str]) -> tuple[str, ...]:
+    """EVERY identity claim in *token* matching *names*, in priority order.
 
     JWT decoding lives here, in the one module that owns what a credential
     looks like, so a caller that needs the principal a token asserts does not
@@ -630,29 +630,44 @@ def jwt_identity_claim(token: str, names: Sequence[str]) -> str:
     carries the account's password hash, and a caller handed the whole claim
     set will eventually put it somewhere.
 
+    The plural form exists because a caller asking *who is this token for* is
+    usually asking in order to RECOGNISE that principal in somebody else's
+    document — and one token asserts the same account under several names
+    (``data.id`` 2 and ``data.email`` ``jim@juice-sh.op``), of which the
+    application's own records may carry either. Taking only the first would
+    make recognition depend on the order of the caller's name list, which is
+    exactly the kind of accident a boundary claim must not rest on.
+
     Args:
         token: The raw token.
         names: Claim names to look for, in priority order.
 
     Returns:
-        The claim value as a short string, or ``""`` when the token does not
-        decode or names none of them.
+        The claim values as short strings, de-duplicated, most-preferred first.
+        Empty when the token does not decode or names none of them.
     """
     payload = _decode_jwt_payload(token)
     if not isinstance(payload, dict):
-        return ""
-    for name in names:
-        value = _claim(payload, name)
-        if value:
-            return value
-    for nested in payload.values():
-        if not isinstance(nested, dict):
-            continue
+        return ()
+    found: list[str] = []
+    for source in (payload, *(v for v in payload.values() if isinstance(v, dict))):
         for name in names:
-            value = _claim(nested, name)
-            if value:
-                return value
-    return ""
+            value = _claim(source, name)
+            if value and value not in found:
+                found.append(value)
+    return tuple(found)
+
+
+def jwt_identity_claim(token: str, names: Sequence[str]) -> str:
+    """The first identity claim in *token* matching *names*, or ``""``.
+
+    The singular reader, for a caller that needs one name for a principal
+    rather than every name it goes by. Both read
+    :func:`jwt_identity_claims`, so there is still one decoder and one
+    traversal rule.
+    """
+    claims = jwt_identity_claims(token, names)
+    return claims[0] if claims else ""
 
 
 def jwt_payload_claim_names(token: str) -> list[str]:
@@ -685,6 +700,7 @@ __all__ = [
     "fingerprint",
     "fingerprint_jwt",
     "jwt_identity_claim",
+    "jwt_identity_claims",
     "jwt_payload_claim_names",
     "redact_header_value",
     "redact_shapes",

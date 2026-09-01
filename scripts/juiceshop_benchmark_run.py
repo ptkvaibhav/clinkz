@@ -553,6 +553,24 @@ def attribute_solves(
     category matches NO emitted finding is one this engine cannot show its work
     for.
 
+    **What "by category" therefore cannot see, measured.** It cannot tell one
+    finding of a class from another of the same class. The corrected IDOR oracle
+    (``agents/_idor_oracle.py``, the anchored arms) refutes run 3's
+    ``/rest/basket/:id`` finding and keeps its ``/api/Users/:p3`` one — and
+    ``basketAccess`` stays "attributable" throughout, because both resolve to
+    ``_test_idor`` and Broken Access Control maps to that class. The positive
+    reading survived a change that removed the finding it was actually about.
+
+    So the positive is a **category-level** claim and is worth exactly that:
+    *this engine emitted a finding of a class that could plausibly account for
+    this solve*. Making it endpoint-level would need the challenge to name the
+    request that tripped it, which Juice Shop's scoreboard does not carry.
+    Stated here rather than left for a reader to assume, because an
+    acceptance-shaped number that survives the removal of its own evidence is
+    the same failure mode as grading an oracle by an external scoreboard —
+    see the acceptance-criterion law in
+    ``.claude/skills/clinkz-dev/SKILL.md``.
+
     Args:
         solved_by_testing: Keys testing earned, or ``None`` when no floor
             applies. ``None`` propagates — an unmeasured floor cannot be split
