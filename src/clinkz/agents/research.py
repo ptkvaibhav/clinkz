@@ -17,6 +17,7 @@ It also exposes ``research_additional()`` for mid-engagement tech discovery.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -138,6 +139,57 @@ class ResearchAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Wall-clock budget
     # ------------------------------------------------------------------
+
+    def _budget_remaining(self) -> float | None:
+        """Seconds left of the armed budget, or ``None`` when none is armed."""
+        if self._deadline is None:
+            return None
+        return self._deadline - time.monotonic()
+
+    async def _within_budget(self, awaitable: Any, *, what: str) -> Any:
+        """Await *awaitable*, bounded by whatever is left of the phase budget.
+
+        The budget used to gate only the points where a new STEP began, so it
+        bounded when the phase could start more work rather than how long the
+        phase could take. One in-flight call answering slowly carried the phase
+        past its own deadline and into the orchestrator's force-kill, which
+        DISCARDS the agent's return value entirely — the same trap documented
+        for the scan phase, reached here by a different route. Run 3 of the
+        Juice Shop envelope died that way and runs 1 and 2 did not: three
+        identical runs, and the report's own run-completion banner disagreed
+        between them. A section built so a bad run cannot hide must not flip on
+        a good one.
+
+        On expiry the call is cancelled and ``None`` is returned. Every call
+        site already has the deterministic fallback it needs for a provider that
+        did not answer, and this is that same case arriving for a different
+        reason. The phase then reaches its next budget check and returns what it
+        has — which is what the orchestrator's grace window was always meant
+        to be a backstop FOR, rather than the normal exit from.
+
+        Args:
+            awaitable: The coroutine to run.
+            what: Name of the call, for the log.
+
+        Returns:
+            The call's result, or ``None`` when the budget ran out first.
+        """
+        remaining = self._budget_remaining()
+        if remaining is None:
+            return await awaitable
+        if remaining <= 0:
+            awaitable.close()
+            self._logger.warning("Research budget spent — %s not started.", what)
+            return None
+        try:
+            return await asyncio.wait_for(awaitable, timeout=remaining)
+        except (TimeoutError, asyncio.CancelledError):
+            self._logger.warning(
+                "Research budget reached with %s in flight — cancelled. The phase "
+                "returns what it has rather than being force-killed with nothing.",
+                what,
+            )
+            return None
 
     def _budget_exceeded(self) -> bool:
         """True once the run()-armed wall-clock deadline has passed.
@@ -412,7 +464,13 @@ class ResearchAgent(BaseAgent):
             # saying so. Recorded per call because a fallback mid-phase can
             # change it under a single result.
             try:
-                result_text = await researcher.research_technology(tech)
+                result_text = await self._within_budget(
+                    researcher.research_technology(tech),
+                    what=f"web research for {tech!r}",
+                )
+                if result_text is None:
+                    # The budget, not the provider. Stop launching more.
+                    break
                 self._record_research_grounding()
                 cve_matches = re.findall(r"CVE-\d{4}-\d{4,}", result_text)
                 cves_found.extend(cve_matches)
@@ -483,7 +541,13 @@ class ResearchAgent(BaseAgent):
             with llm_call_purpose(
                 LLMCallPurpose.PLANNING, site="research._llm_generate_search_queries"
             ):
-                response = await self.llm.generate_text(prompt)
+                response = await self._within_budget(
+                    self.llm.generate_text(prompt), what="search-query generation"
+                )
+            # A cancelled call is an empty answer, so the deterministic
+            # fallback below fires exactly as it does for a provider that
+            # returned nothing parseable.
+            response = response or ""
             json_start = response.find("[")
             json_end = response.rfind("]") + 1
             if json_start >= 0 and json_end > json_start:
@@ -568,7 +632,13 @@ class ResearchAgent(BaseAgent):
             with llm_call_purpose(
                 LLMCallPurpose.PLANNING, site="research._llm_synthesize_techniques"
             ):
-                response = await self.llm.generate_text(prompt)
+                response = await self._within_budget(
+                    self.llm.generate_text(prompt), what="technique synthesis"
+                )
+            # A cancelled call is an empty answer, so the deterministic
+            # fallback below fires exactly as it does for a provider that
+            # returned nothing parseable.
+            response = response or ""
             json_start = response.find("[")
             json_end = response.rfind("]") + 1
             if json_start >= 0 and json_end > json_start:
@@ -696,7 +766,13 @@ class ResearchAgent(BaseAgent):
 
         try:
             with llm_call_purpose(LLMCallPurpose.PLANNING, site="research._llm_adapt_techniques"):
-                response = await self.llm.generate_text(prompt)
+                response = await self._within_budget(
+                    self.llm.generate_text(prompt), what="technique adaptation"
+                )
+            # A cancelled call is an empty answer, so the deterministic
+            # fallback below fires exactly as it does for a provider that
+            # returned nothing parseable.
+            response = response or ""
             json_start = response.find("[")
             json_end = response.rfind("]") + 1
             if json_start >= 0 and json_end > json_start:
