@@ -468,6 +468,163 @@ CATEGORY_NOT_ADDRESSABLE: dict[str, str] = {
     "Insecure Deserialization": "no dispatched class",
 }
 
+#: The same categories, as the ``_test_*`` methods that could CLAIM a solve in
+#: them. ``CATEGORY_ADDRESSABLE`` says the same thing in prose for a human
+#: reader; this says it in the dispatcher's own vocabulary so the attribution
+#: split below can be computed rather than asserted. The two are held in sync in
+#: both directions by :func:`_assert_category_classes`, and every name is
+#: checked against ``DISPATCHABLE_TEST_METHODS`` — a typo here would make a
+#: category permanently unattributable, which reads exactly like an engine that
+#: never claims it.
+CATEGORY_CLASSES: dict[str, tuple[str, ...]] = {
+    "Injection": ("_test_sqli", "_test_nosqli", "_test_cmdi", "_test_ssti", "_test_xxe"),
+    "XSS": ("_test_xss_reflected", "_test_xss_stored", "_test_xss_dom"),
+    "Broken Access Control": ("_test_idor",),
+    "Broken Authentication": ("_test_brute_force", "_test_jwt", "_test_weak_session"),
+    "Sensitive Data Exposure": ("_test_secrets_exposure", "_test_lfi", "_test_idor"),
+    "Improper Input Validation": (
+        "_test_input_validation",
+        "_test_constraint_violation",
+        "_test_mass_assignment",
+        "_test_file_upload",
+    ),
+    "Cryptographic Issues": ("_test_crypto",),
+    "Security Misconfiguration": (
+        "_test_security_headers",
+        "_test_secrets_exposure",
+        "_test_csp",
+    ),
+    "Unvalidated Redirects": ("_test_open_redirect",),
+    "XXE": ("_test_xxe",),
+}
+
+
+def _assert_category_classes() -> None:
+    """Both directions of the map, plus every name against the dispatch table.
+
+    The guard-domain law: the domain is computed from ``CATEGORY_ADDRESSABLE``
+    rather than restated, so a category added there without classes here is a
+    loud failure instead of a category that can never be attributed.
+    """
+    from clinkz.agents.exploit import DISPATCHABLE_TEST_METHODS
+
+    declared = set(CATEGORY_CLASSES)
+    computed = set(CATEGORY_ADDRESSABLE)
+    missing = computed - declared
+    extra = declared - computed
+    if missing or extra:
+        raise AssertionError(
+            f"CATEGORY_CLASSES is out of sync with CATEGORY_ADDRESSABLE: "
+            f"missing={sorted(missing)} extra={sorted(extra)}"
+        )
+    for category, methods in CATEGORY_CLASSES.items():
+        unknown = sorted(set(methods) - set(DISPATCHABLE_TEST_METHODS))
+        if unknown:
+            raise AssertionError(
+                f"CATEGORY_CLASSES[{category!r}] names methods this engine does not "
+                f"dispatch: {unknown}"
+            )
+
+
+def attribute_solves(
+    solved_by_testing: list[str] | None,
+    challenge_index: dict[str, dict[str, Any]],
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    """Split the solves testing earned into attributable and target-confirmed-only.
+
+    ``solved_by_testing`` is already the honest count of what this engine's
+    traffic tripped — the floor has been subtracted. It is still not a list of
+    things we can SHOW a client, because a solve is the TARGET's verdict on our
+    traffic and a finding is ours. Run 3 of the envelope earned three solves and
+    emitted a finding for two: ``basketAccess`` (an IDOR crossing) and
+    ``redirect`` (an open redirect). ``forgedFeedback`` is a write crossing that
+    carries another user's ``UserId`` in a POST body — mass-assignment shaped,
+    and no dispatched class claims it. A solve we cannot point at a finding for
+    is not something we can tell a client we did.
+
+    The correspondence is by CATEGORY, which is the strongest link the two
+    records support: a challenge declares its category and a finding resolves to
+    a class, and ``CATEGORY_CLASSES`` maps between them. It is deliberately not
+    called proof that a particular finding solved a particular challenge —
+    nothing in either record carries that, and inventing it would be the same
+    consumer-guesses-the-producer move this codebase keeps paying for. What it
+    does support is the negative, which is the half that matters: a solve whose
+    category matches NO emitted finding is one this engine cannot show its work
+    for.
+
+    Args:
+        solved_by_testing: Keys testing earned, or ``None`` when no floor
+            applies. ``None`` propagates — an unmeasured floor cannot be split
+            any more than it can be counted.
+        challenge_index: The target's own challenge list, keyed by challenge key.
+        report: The parsed ``report_<id>.json``.
+
+    Returns:
+        The split, with the unattributed keys NAMED and their categories.
+    """
+    if solved_by_testing is None:
+        return {
+            "solved_attributable": None,
+            "solved_attributable_count": None,
+            "solved_target_confirmed_only": None,
+            "note": (
+                "No floor applies to this run, so solved_by_testing is unmeasured and "
+                "there is nothing to attribute."
+            ),
+        }
+
+    from clinkz.models.vuln_classes import for_finding
+
+    _assert_category_classes()
+
+    claimed: set[str] = set()
+    for finding in report.get("findings", []):
+        if finding.get("status") != "confirmed":
+            continue
+        resolved = for_finding(
+            str(finding.get("title") or ""), str(finding.get("description") or "")
+        )
+        if resolved is not None:
+            claimed.add(resolved.test_method)
+
+    attributable: list[str] = []
+    unattributed: list[dict[str, Any]] = []
+    for key in sorted(solved_by_testing):
+        category = str((challenge_index.get(key) or {}).get("category") or "")
+        methods = set(CATEGORY_CLASSES.get(category) or ())
+        matched = sorted(methods & claimed)
+        if matched:
+            attributable.append(key)
+        else:
+            unattributed.append(
+                {
+                    "key": key,
+                    "category": category or "(unknown)",
+                    "why": (
+                        "no dispatched class claims this category"
+                        if not methods
+                        else (
+                            "the classes that could claim this category emitted no "
+                            f"confirmed finding this run: {sorted(methods)}"
+                        )
+                    ),
+                }
+            )
+    return {
+        "solved_attributable": attributable,
+        "solved_attributable_count": len(attributable),
+        "solved_target_confirmed_only": unattributed,
+        "solved_target_confirmed_only_count": len(unattributed),
+        "attribution_rule": (
+            "a solve is attributable when this run emitted a confirmed finding whose "
+            "class is one that could claim the challenge's own category; the link is "
+            "by category, not a claim that a particular finding solved a particular "
+            "challenge"
+        ),
+    }
+
+
 #: Above this, Juice Shop challenges stop being reachable vulnerabilities and
 #: become multi-step puzzles gated on domain knowledge or out-of-band facts.
 MAX_ADDRESSABLE_DIFFICULTY = 3
@@ -1006,6 +1163,7 @@ def main() -> int:
     floor = read_floor()
     split = subtract_floor(newly, floor, credential_set=credential_set)
     by_testing = split.get("solved_by_testing")
+    attribution = attribute_solves(by_testing, after_by_key, report)
     testing_in_addressable = (
         [k for k in by_testing if k in addressable_keys] if by_testing is not None else None
     )
@@ -1072,6 +1230,17 @@ def main() -> int:
             f"    floor measured from                : "
             f"{', '.join(split.get('floor_sources') or []) or '(unknown)'}"
         )
+        # What we can SHOW, held apart from what the target merely confirmed.
+        # A solve is the target's verdict on our traffic; a finding is ours.
+        print(
+            f"    of which a finding claims          : "
+            f"{attribution['solved_attributable_count']} "
+            f"({', '.join(attribution['solved_attributable']) or 'none'})"
+        )
+        unattributed = attribution["solved_target_confirmed_only"] or []
+        print(f"    target-confirmed only, unclaimed   : {len(unattributed)}")
+        for row in unattributed:
+            print(f"      {row['key']:40s} [{row['category']}] — {row['why']}")
     print(f"  findings emitted (engagement-reported): {len(findings)}")
     print(f"  unproven leads                        : {len(report.get('unproven_leads') or [])}")
     print(f"  research leads                        : {len(report.get('research_leads') or [])}")
@@ -1163,6 +1332,10 @@ def main() -> int:
             "solved_by_testing": split.get("solved_by_testing"),
             "solved_by_testing_count": split.get("solved_by_testing_count"),
             "solved_by_testing_in_addressable": testing_in_addressable,
+            # Both are true and only one is a claim about this engine. A solve
+            # nothing emitted a finding for is a solve we cannot show a client
+            # our work for, so it is named rather than counted.
+            **attribution,
             "benchmark_floor": split,
             "missed_addressable": [
                 {
