@@ -7,7 +7,7 @@ import json
 import pytest
 
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
-from clinkz.tools.http_client import HTTPClientTool
+from clinkz.tools.http_client import HTTPClientOutput, HTTPClientTool
 
 SAMPLE_SCOPE = EngagementScope(
     name="test",
@@ -190,3 +190,62 @@ def test_parse_output_invalid_json() -> None:
     output = tool.parse_output("not json at all")
     assert output.success is False
     assert "JSON parse error" in output.error
+
+
+# ===========================================================================
+# The peer address — who did this request actually reach?
+# ===========================================================================
+#
+# A URL string names a host; whether two host spellings are one server is a fact
+# about RESOLUTION, and this client is the only code that observed it. Consumed
+# by ``OriginIdentity`` so a target reachable by hostname and by address emits
+# one finding per issue instead of two.
+
+
+_OLD_RECORDING = (
+    'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"a":1}\n__CURL_TIMING__0.123\n'
+)
+_NEW_RECORDING = (
+    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+    '{"a":1}\n__CURL_REMOTE__172.20.0.2\n__CURL_TIMING__0.123\n'
+)
+
+
+def test_a_recording_made_before_the_marker_parses_identically() -> None:
+    """The replay corpus re-parses recorded bytes, so this must not drift.
+
+    The marker is prepended rather than appended for exactly this reason: the
+    timing regex is anchored at end-of-output, and every stdout on disk was
+    written with timing last. An appended marker would have stopped those
+    recordings' timing from being stripped and landed it in the body, drifting
+    ``body_len`` and ``body_sha`` across the whole baseline.
+    """
+    parsed = json.loads(make_tool()._parse_curl_output(_OLD_RECORDING, 0.0))
+    assert parsed["response_body"] == '{"a":1}\n'
+    assert parsed["resolved_address"] == ""
+    assert parsed["status_code"] == 200
+
+
+def test_the_address_is_captured_and_kept_out_of_the_body() -> None:
+    parsed = json.loads(make_tool()._parse_curl_output(_NEW_RECORDING, 0.0))
+    assert parsed["resolved_address"] == "172.20.0.2"
+    assert parsed["response_body"] == '{"a":1}\n', "the marker is not body"
+    assert parsed["status_code"] == 200
+
+
+def test_a_curl_that_never_connected_reports_no_address() -> None:
+    """``%{remote_ip}`` is empty when there was no connection."""
+    raw = "HTTP/1.1 000 \r\n\r\n\n__CURL_REMOTE__\n__CURL_TIMING__0.001\n"
+    parsed = json.loads(make_tool()._parse_curl_output(raw, 0.0))
+    assert parsed["resolved_address"] == ""
+
+
+def test_the_address_reaches_the_output_model() -> None:
+    tool = make_tool()
+    envelope = tool._parse_curl_output(_NEW_RECORDING, 0.0)
+    assert tool.parse_output(envelope).resolved_address == "172.20.0.2"
+
+
+def test_the_model_defaults_to_no_address() -> None:
+    """The aiohttp path reports none, and absence must merge nothing."""
+    assert HTTPClientOutput(tool_name="http_client", success=True).resolved_address == ""
