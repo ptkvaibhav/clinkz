@@ -49,6 +49,16 @@ class HTTPClientOutput(ToolOutput):
     response_body: str = ""
     redirect_chain: list[str] = []
     response_time_ms: float = 0.0
+    #: The peer address this request actually reached, when the transport
+    #: reported one. This client is the only code that knows it: a URL string
+    #: names a host, and whether two host spellings are one server is a fact
+    #: about resolution rather than about the strings. Consumed by
+    #: :class:`~clinkz.agents._origin.OriginIdentity` so a target reachable by
+    #: hostname and by address emits one finding per issue instead of two.
+    #: Empty when the transport did not report one (the aiohttp path, and every
+    #: recording made before the marker existed); an unobserved address merges
+    #: nothing, so absence is byte-identical to the behaviour before it.
+    resolved_address: str = ""
 
 
 def _cookie_jar_path(engagement_id: str) -> str:
@@ -434,7 +444,15 @@ class HTTPClientTool(ToolBase):
             "-X",
             method,
             "-w",
-            "\n__CURL_TIMING__%{time_total}\n",  # timing info at end
+            # Two write-out markers, in this order and not the other. The
+            # timing regex is anchored at end-of-output and every stdout in
+            # the replay corpus was recorded with timing LAST, so appending
+            # the new marker after it would stop those recordings' timing
+            # from being stripped and land it in ``response_body`` --
+            # drifting body_len and body_sha across the whole baseline.
+            # Prepending is invisible to them: a recording carrying no
+            # ``__CURL_REMOTE__`` parses exactly as it did before.
+            "\n__CURL_REMOTE__%{remote_ip}\n__CURL_TIMING__%{time_total}\n",
         ]
 
         if follow_redirects:
@@ -524,6 +542,18 @@ class HTTPClientTool(ToolBase):
             elapsed_ms = curl_time_s * 1000
             raw = raw[: timing_match.start()]
 
+        # Then the peer address, which sits immediately before it. Optional by
+        # construction: every stdout recorded before this marker existed has
+        # none, and the replay corpus re-parses exactly those bytes -- so a
+        # missing marker yields an empty address and leaves the body untouched,
+        # never a parse failure. ``%{remote_ip}`` is empty on a curl that never
+        # connected, which is the same answer for the same reason.
+        resolved_address = ""
+        remote_match = re.search(r"__CURL_REMOTE__([^\r\n]*)\s*$", raw)
+        if remote_match:
+            resolved_address = remote_match.group(1).strip()
+            raw = raw[: remote_match.start()]
+
         # With -L (follow redirects), there may be multiple HTTP response blocks.
         # Split on HTTP status lines to find intermediate redirects and final response.
         # Pattern: "HTTP/<version> <status>" at start of a line
@@ -582,6 +612,7 @@ class HTTPClientTool(ToolBase):
         return json.dumps(
             {
                 "status_code": status_code,
+                "resolved_address": resolved_address,
                 "response_headers": resp_headers,
                 "response_body": resp_body,
                 "redirect_chain": redirect_chain,
@@ -697,6 +728,7 @@ class HTTPClientTool(ToolBase):
             raw_output=data.get("raw", raw_output),
             error=error,
             status_code=data.get("status_code", 0),
+            resolved_address=str(data.get("resolved_address") or ""),
             response_headers=data.get("response_headers", {}),
             response_body=data.get("response_body", ""),
             redirect_chain=data.get("redirect_chain", []),

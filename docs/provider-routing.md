@@ -228,6 +228,28 @@ would rather finish on a backup than halt on a transient quirk — the right rul
 for a quirk and the wrong one for an account, so a terminal account condition
 now disables that provider for the rest of the process.
 
+### Registered, not fixed: UNREACHABLE stays in the chain
+
+Observed on the 2026-08-31 Juice Shop envelope: the Gemini pre-flight returned
+`unreachable — probe exceeded 30s` and Gemini stayed in every fallback chain.
+That is the designed behaviour and it did not bite — no fallback occurred on any
+of the three runs, so nothing was routed to it — but it is worth writing down
+rather than rediscovering.
+
+`UNREACHABLE` is deliberately not `INVALID`. A busy provider must not be
+excluded at `t=0` on one slow probe: the chain retries, and a three-hour batch
+should not lose its backup tier to a 429 or a cold start. The cost of that
+choice is the shape named here: **a provider we have already watched fail to
+answer once remains a fallback candidate**, so a later rotation can be attempted
+to something we have direct evidence did not respond, paying the request and the
+wait to re-learn it.
+
+The two are different facts and the split is right. What is missing is that the
+probe's result is not carried forward at all — an `UNREACHABLE` verdict is
+discarded rather than, say, ordering that provider LAST in the tail it stays in,
+or being reconciled against the first real rotation. Neither is built. Recorded
+here so the next reader knows the gap is known and bounded, not overlooked.
+
 ## 7. Models
 
 | Role | Provider | Model |

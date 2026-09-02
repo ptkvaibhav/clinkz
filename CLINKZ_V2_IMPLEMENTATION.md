@@ -299,7 +299,10 @@ deliberately-vulnerable benchmark. Full detail →
 - **D · Client-ready report.** Authorization header, scope in *and* out,
   authentication proof, testing conduct, per-class remediation, and a generated
   **"What was NOT tested"** section built from the class registry and the run's
-  own action log.
+  own action log — including each class's own DECLARED coverage boundary
+  (`VulnClass.coverage_boundary`), the shapes it abstains on rather than infers,
+  rendered on a clean run because they are properties of the class rather than
+  of this target.
 
 ## On the horizon
 

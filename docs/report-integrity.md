@@ -201,11 +201,15 @@ Attribution does not need it. `attributing_fields` renders
 field=<name> owner_fp=<hash> caller_fp=<hash|absent>
 ```
 
-- `owner_fp` — equal on the crossing arm and B's own authorized read: *this is
-  B's record*.
-- `caller_fp` — different, or `absent`: *and it is not A's*.
+- `owner_fp` — the owning value the crossing response carried: *this record
+  names an owner*.
+- `caller_fp` — what the caller's own **anchored** record holds under that same
+  field, or `absent`: *and the owner is not us*.
 
-Together that is the whole claim. The field **name** survives because it is
+Together that is the whole claim. It used to read *equal to B's own authorized
+read, different from A's* — which was true of the line and false as an
+attribution, since an outranking B reads A's records too; see
+[`docs/methodology/idor.md`](methodology/idor.md). The field **name** survives because it is
 schema, not data — `billing.email` is the application's own vocabulary and is
 what a remediation has to name. The fingerprint is `credential_shapes.fingerprint`
 — per-process salted, so two lines in one bundle can be compared and nothing in

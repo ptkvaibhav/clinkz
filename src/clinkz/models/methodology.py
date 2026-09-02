@@ -1711,16 +1711,34 @@ class IDORMethodologyResult(BaseModel):
     #: ``multi_role`` or ``single_role`` — which tier the run was in, from
     #: :class:`~clinkz.models.vuln_classes.MultiPrincipalRequirement`.
     tier: str = ""
-    #: How the crossing response was attributed to the owning principal:
-    #: ``identical_rendering``, ``stable_fields``, or ``""`` for not attributed.
+    #: How the crossing response was attributed to an owner other than the
+    #: caller: ``owning_field_names_principal``, ``owning_field_not_caller``, or
+    #: ``""`` for not attributed. Read off the OBJECT — ``identical_rendering``
+    #: was the ground truth and is vacuous whenever B outranks A, which the
+    #: direction rule guarantees.
     attribution: str = ""
-    #: The fields that attributed it when the route was ``stable_fields``, as
+    #: The owning field, as
     #: ``field=<name> owner_fp=<hash> caller_fp=<hash|absent>``. Names and salted
     #: fingerprints, never values: an attributing value is a real customer's
-    #: email or address, and the claim — this field matched B's own read and did
-    #: not match A's — is made by the two fingerprints. Empty for an identical
-    #: rendering, which needs none.
+    #: email or address, and the claim — this field names an owner and the
+    #: caller's own record names somebody else — is made by the two
+    #: fingerprints.
     attributing_fields: tuple[str, ...] = ()
+    #: The schema path of the field by which the crossing record names its
+    #: owner. The half of the claim a remediation has to name.
+    owning_field: str = ""
+    #: What a SECOND principal's authorized read of the same reference added —
+    #: ``identical_rendering``, ``stable_fields``, or ``""``. Deliberately not
+    #: "the owner's read": the arm runs as B, a principal the engagement HOLDS,
+    #: while ref(B) is reached by incrementing the anchor — so it lands on
+    #: whoever's record it lands on, generally not B's. What it establishes is
+    #: that a second principal is served the same record, ruling out a
+    #: per-caller decoration. CORROBORATION: load-bearing in no branch.
+    corroboration: str = ""
+    #: The reference the CALLER was shown to own, and how. A crossing is graded
+    #: relative to this; without it the class abstains.
+    anchor_reference: str = ""
+    anchor_detail: str = ""
     #: The never-issued reference the control arm carried.
     absent_reference: str = ""
     #: One line per dispatched arm — what it carried, as whom, and what came

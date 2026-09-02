@@ -200,6 +200,73 @@ something CLAIMS on the coalesced value — a guard, a count in a deliverable, a
 verdict. Iterating an absent collection and an empty one are the same act; that
 is the idiom, and it is most of the 865.
 
+**The acceptance-criterion law (same family, third face).** A domain and a
+pattern both fail by excluding the thing they hunt. An acceptance criterion
+fails by measuring something *adjacent to* the thing it certifies.
+
+> IDOR's acceptance criterion was **"a target-confirmed scoreboard solve plus an
+> emitted finding of the matching class"**. On the 2026-08-31 Juice Shop
+> envelope it passed, three runs running, over an oracle whose arms were
+> **inverted**: the crawl saw `id=1`, principal A was jim — who is user **2** —
+> phase 3 incremented 1 to 2, so the `self` arm read admin's basket and the
+> `crossing` arm read A's own. Juice Shop marked `basketAccess` solved because
+> our traffic really did fetch basket 1; the finding said we had crossed into
+> basket 2, which is jim's. Every downstream arm cleared, because every one of
+> them is a comparison and **a comparison does not know which side it is
+> standing on**.
+
+> The criterion could not have caught it. **The scoreboard grades the OUTCOME
+> and the oracle grades the REASONING, and nothing compared them.** An external
+> grader says a thing happened; it says nothing about which arm made it happen,
+> and being right for the wrong reason is invisible from outside.
+
+So: **an acceptance test that reads only an external grader cannot detect an
+oracle that reached the right verdict by the wrong arm. The acceptance criterion
+must assert the ARMS, not the outcome.**
+
+The same three questions as the other two faces, asked of a criterion:
+
+1. **What does this measure that the thing under test does not control?** A
+   scoreboard, a CVE database, a challenge solve — these are outcome signals and
+   they are worth having. They are corroboration, and they are never the claim.
+2. **Could the component pass this while doing the wrong thing?** If yes, the
+   criterion is adjacent, not sufficient. Write the arms down: which request was
+   sent, as whom, carrying what, and what each one is required to show. Every
+   one of those is an engine fact recorded in the run's own trace.
+3. **Does a wrong answer look different from a right one HERE?** An acceptance
+   criterion that passes identically on a working oracle and a broken one is
+   measuring the target, not the engine.
+
+**The IDOR acceptance criterion, restated in that form** (pinned in
+`tests/test_agents/test_idor_four_arm_oracle.py`, and the shape to copy for any
+class whose verdict rests on more than one request):
+
+> A confirmed IDOR is accepted only when the run's own trace shows, for that
+> `(endpoint, parameter)`:
+> 1. `ref(A)` was ANCHORED — a reference the caller was observed to own, from a
+>    record naming the caller by an identity read out of the caller's own
+>    session material. Never a crawl-observed value.
+> 2. `ref(self) != ref(crossing)`, and `ref(self)` is the anchored reference.
+> 3. The crossing response carries an **owning field** naming a principal that
+>    is not the caller. The owner's own authorized read is CORROBORATION and is
+>    never the ground truth.
+> 4. The anonymous arm was **dispatched** against `ref(B)` and was **not** served
+>    the resource.
+> 5. The never-issued control was dispatched and refused.
+>
+> A scoreboard solve satisfies none of these and is reported beside them, never
+> instead of them.
+
+**A note on which way a criterion may be wrong.** Both halves of a spec can be
+individually reasonable and jointly contradictory, and that is worth hunting
+for explicitly: this class required A to be the LEAST privileged principal (so
+the crossing runs uphill) *and* attributed the crossing by matching B's own
+authorized read — but a B that outranks A reads A's records too, so the second
+test is satisfied by *B can also read this*, which is the feature. Direction and
+attribution-by-comparison cannot both hold. When two rules in one spec are each
+defensible, check whether the second is still discriminating **under the
+conditions the first imposes**.
+
 **Git protocol (every push):**
 - **Before the first edit: is this branch already merged?** `git fetch origin --prune && git merge-base --is-ancestor HEAD origin/main` — exit 0 means HEAD is an ancestor of `origin/main`, the branch is already merged, and **no work may land on it**; re-branch with `git checkout -B <new> origin/main` before touching a file. Twice in three sessions (`feat/idor-crossing-direction`, then `feat/absence-is-not-a-measurement`): both were noticed after the fact, both cost a re-branch, and the second would have put an entire SCA feature on a dead branch. A merged branch looks exactly like a fresh one — clean tree, plausible name, commits in the log — so nothing surfaces it until the push, which is why the check is worth nothing run afterwards. One command, before the first edit. **Same rule for the PR body: before editing one, confirm the PR is open** (`gh pr view <n> --json state`). A merged PR's body edits exactly like an open one's and says nothing back, so #128's description was updated after it merged with work it does not contain — the same trap, second face. A merged PR is the record of what landed, and prose is the only part of that record still writable.
 - Commit **per logical unit**; imperative `prefix(scope): summary` with **no trailing period**. Push to origin after each commit once gates pass. **No `--force`, no `--no-verify`.** **No attribution trailer** — this line used to ask for a `Co-Authored-By` one, which `.claude/settings.json` has suppressed at source since the session-link containment (`attribution: {commit: "", pr: "", sessionUrl: false}`). The point of that containment is that **nothing Claude-Code-generated lands in this repo's commit metadata**, so no recent commit carries the trailer and none should: a trailer added by hand is the one route past a suppression that has no other. Do not restore it.

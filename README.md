@@ -257,7 +257,7 @@ a key at the wrong level is refused by name rather than silently ignored.
 | Field | What it does | When you need it |
 |-------|--------------|------------------|
 | `role` | Labels the principal (`admin` / `user` / `anonymous` / anything meaningful). Required. | Always. **Two authenticating roles is what makes an access-control CONFIRMATION possible.** With one, the IDOR class can establish that a reference nobody owns behaves differently and that an anonymous caller is refused — and still cannot say the object belongs to somebody else, so it reports unproven leads rather than findings ([detail](docs/methodology/idor.md)). `anonymous` names the unauthenticated baseline. |
-| `username` / `password` | The credentials. `password` is a `SecretStr` and is registered for redaction on intake. | Any authenticating role. Omit both for `anonymous`. |
+| `username` / `password` | The credentials. `password` is a `SecretStr` and is registered for redaction on intake. | Any authenticating role. Omit both for `anonymous`. **`username` is also how the access-control classes recognise a role's own records in the target's data** — with a bearer-token login the identity claims are read from the token itself, but a cookie-only session asserts nothing readable, and a role whose identity cannot be read anchors nothing and abstains ([detail](docs/methodology/idor.md)). |
 | `login_url` | Where to authenticate **this role**. Overrides the login endpoint discovery found. | The app's login is not at a conventional path (`/login`, `/signin`, `/api/auth`, `/rest/user/login`), or it differs per role. Without it, an undiscoverable login means the engagement **aborts** rather than scanning blind — see below. |
 | `assert_url` | A URL known to behave differently authenticated vs anonymous. Tried **first** by the authenticated-state assertion. | The protected surface is named something unconventional, so the assertion's fallback guesses will not find it. |
 | `description` | Free-text note, echoed nowhere sensitive. | Documentation for whoever reads the file next. |
@@ -399,7 +399,11 @@ any halt), the findings with remediation, the unconfirmed leads in their own
 sections, and a **"What was NOT tested"** section covering excluded hosts,
 techniques the client did not authorize, classes with no client-side oracle
 (DOM-XSS, CSP enforceability), classes with no methodology (Insecure CAPTCHA,
-business logic, races), the actions the safety rails refused, and any coverage
+business logic, races), **shapes a class refuses to confirm on even when the
+engagement gave it everything it needs** (an IDOR crossing whose record names no
+owner is a lead, because "not mine, not nobody's, not public" is three negatives
+a shared record satisfies too), the actions the safety rails refused, and any
+coverage
 cut short. That section is generated from the class registry and the run's own
 action log, so it cannot drift out of date — a client reading "no findings" can
 see whether that means "we looked and it is sound" or "we could not look".

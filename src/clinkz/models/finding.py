@@ -533,6 +533,29 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # undeclared order costs the confirmation rather than producing one in
         # the direction that cannot be told apart from a feature.
         "privilege_order_undeclared_crossing_may_be_authorized",
+        # The access-control class could not establish which reference belongs
+        # to the CALLER. The self arm used to carry whatever value the crawl
+        # observed in the parameter — a fact about the crawler's session, not
+        # about the identity the arms are dispatched as — and on engagement
+        # 20fad9dc the crawl saw 1, the caller was user 2, and the increment
+        # landed on the caller's own record: the self arm read the other
+        # principal's object and the crossing arm read the caller's. Every arm
+        # downstream is a comparison and a comparison does not know which side
+        # it is standing on, so an unanchored crossing is refused rather than
+        # graded. Also carries the loud arms-inverted refusal, which is the same
+        # missing fact caught one step later.
+        "self_reference_not_anchored_to_the_caller",
+        # The anonymous arm — the one that establishes the object is not simply
+        # public — was never sent. An arm that was not dispatched refused
+        # nothing, the same rule every control arm is held to.
+        "anonymous_control_arm_not_dispatched",
+        # The crossing response names no owning principal other than the
+        # caller. An IDOR claim rests on the OBJECT saying whom it belongs to
+        # (``UserId``, ``email``, ``author``); a response that names nobody is a
+        # public catalogue record, and "differs from mine, from a never-issued
+        # reference and from what anonymous is served" is three negatives a
+        # shared record behind a login satisfies exactly as well.
+        "crossing_response_names_no_owning_principal",
         # Same version match, and this engine DOES have an oracle — which ran
         # against the live target and did not witness the effect. Recorded so
         # the difference between "we could not test this" and "we tested it and

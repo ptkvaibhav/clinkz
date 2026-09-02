@@ -179,6 +179,58 @@ class MultiPrincipalRequirement(BaseModel):
         return self
 
 
+class CoverageBoundary(BaseModel):
+    """A shape this class can never confirm, and why it abstains rather than infers.
+
+    Distinct from :class:`MultiPrincipalRequirement`, which is about what the
+    ENGAGEMENT lacked: this is about what the class refuses to claim even with
+    everything it needs. The IDOR oracle is the first: it reads attribution off
+    an OWNING FIELD in the crossing response — a field the application itself
+    uses to name a record's owner — and a per-user record that names no owner
+    cannot be attributed to anybody, so the class abstains.
+
+    That is a real coverage boundary. An endpoint serving per-user records with
+    no owner field is a shape this engine will not confirm on, and it produces
+    exactly the artifact a clean endpoint produces: nothing. It was pinned as a
+    test named after the loss and stated nowhere a client reads, which makes it
+    the same kind of silence every other honesty rule here exists to break — the
+    absence of a finding standing in for the absence of a flaw.
+
+    The boundary renders on a clean run too, like every other bound that decided
+    coverage: it is a property of the class, not of what this target happened to
+    have.
+
+    Attributes:
+        why_unconfirmed: The
+            :data:`~clinkz.models.finding.UNPROVEN_WHY_UNCONFIRMED` member the
+            abstain records. Required — it is what ties the client-facing
+            sentence to a reason the engine actually produces, so the prose
+            cannot drift into describing an abstain that never happens.
+        limitation: The boundary as a sentence a client can act on. Rendered
+            verbatim in *What was NOT tested*.
+    """
+
+    why_unconfirmed: str = ""
+    limitation: str = ""
+
+    @model_validator(mode="after")
+    def _boundary_is_complete(self) -> CoverageBoundary:
+        """Half a boundary is worse than none: a sentence with no registered
+        reason is a disclaimer, and a reason with no sentence discloses nothing.
+        """
+        if bool(self.why_unconfirmed) != bool(self.limitation):
+            raise ValueError(
+                "CoverageBoundary needs BOTH a registered why_unconfirmed and the "
+                "sentence a client reads, or neither"
+            )
+        return self
+
+    @property
+    def declared(self) -> bool:
+        """Whether this class declares a boundary at all."""
+        return bool(self.why_unconfirmed)
+
+
 class VulnClass(BaseModel):
     """One vulnerability class as a client sees it.
 
@@ -194,6 +246,9 @@ class VulnClass(BaseModel):
         limitation: Why the class is limited, when it is. Rendered verbatim in
             the report's "what was NOT tested" section — so it has to read as a
             sentence, not a code comment.
+        coverage_boundary: A shape this class refuses to confirm on even when
+            the engagement gave it everything it needs, and the registered
+            abstain reason that shape produces. See :class:`CoverageBoundary`.
         title_tokens: Lowercase substrings that identify this class in a
             finding's title. Used by :func:`for_finding` to attach remediation
             guidance to a finding the methodology emitted without any.
@@ -210,6 +265,7 @@ class VulnClass(BaseModel):
     control_arm: ControlArm = ControlArm()
     multi_principal: MultiPrincipalRequirement = MultiPrincipalRequirement()
     limitation: str = ""
+    coverage_boundary: CoverageBoundary = CoverageBoundary()
     title_tokens: tuple[str, ...] = ()
     remediation: str = ""
 
@@ -512,6 +568,26 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
             "declared the crossing is reported as a candidate rather than "
             "confirmed — the engine does not infer a hierarchy from a role's "
             "name."
+        ),
+        coverage_boundary=CoverageBoundary(
+            why_unconfirmed="crossing_response_names_no_owning_principal",
+            limitation=(
+                "Records that name no owner cannot be attributed, and this class "
+                "abstains rather than infers. An IDOR claim rests on the OBJECT "
+                "saying whom it belongs to — a field the application itself uses "
+                "to name a record's owner ('UserId', 'email', 'author') carrying a "
+                "value that is not the caller's. Where an endpoint serves per-user "
+                "records that name no owner, this engine reports a lead rather "
+                "than a finding, even when the crossing succeeded and every "
+                "control arm refused: 'differs from mine, from a never-issued "
+                "reference, and from what an anonymous caller is served' is three "
+                "negatives, and a shared record behind a login satisfies all three "
+                "exactly as well as another user's record does. That is a real "
+                "coverage boundary, not a formality — an access-control flaw on "
+                "such an endpoint produces the same artifact a sound one does, "
+                "which is nothing. Confirming it needs either an owning field in "
+                "the response or an oracle this engine does not have."
+            ),
         ),
         # No ``control_arm`` exemption. The four-arm oracle DISPATCHES a
         # never-sent control (``ref(∅)``) through the shared ``_run_control_arm``

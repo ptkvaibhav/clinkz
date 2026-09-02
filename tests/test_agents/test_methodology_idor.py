@@ -145,10 +145,10 @@ def _peer_records(reference: str, who: str) -> _HTTPResponse:
     something.
     """
     records = {
-        "1": "user: alice email: alice@x.example role: user dob: 1990-01-01 region: us",
+        "1": ("user: alice\nemail: alice@x.example\nrole: user\ndob: 1990-01-01\nregion: us\n"),
         "2": (
-            "user: bob email: bob@x.example role: user "
-            "dob: 1985-02-02 region: eu phone: +44-12345 city: london"
+            "user: bob\nemail: bob@x.example\nrole: user\n"
+            "dob: 1985-02-02\nregion: eu\nphone: +44-12345\ncity: london\n"
         ),
     }
     if reference not in records:
@@ -411,6 +411,38 @@ class TestPhase4ReferenceSynthesis:
         assert synth["reference"] == "1"
 
 
+async def _anchored_verify(
+    agent: ExploitAgent,
+    synth: dict[str, Any],
+    *,
+    page: PageAnalysis | None = None,
+    primitives: IDORPrimitives | None = None,
+    original_value: str = "1",
+) -> tuple[Any, Any, Any]:
+    """Anchor ``ref(A)`` through the real sweep, then run phase 5.
+
+    Phase 5 no longer takes the crawl's value as ``ref(A)``: the reference the
+    self arm carries has to be one the CALLER was shown to own, discovered from
+    the caller's own session. Every test here goes through the real
+    :meth:`~clinkz.agents.exploit.ExploitAgent._idor_anchor` rather than
+    supplying an anchor, because the 2026-08-31 defect was not in the grading —
+    it was in which reference each arm carried, and a test that hands over the
+    answer cannot see that.
+    """
+    page = page or _make_page()
+    prims = primitives or IDORPrimitives(id_format="numeric", authz_check_present=True)
+    anchor = await agent._idor_anchor(page, "id", original_value, prims)
+    return await agent._idor_phase5_verify(
+        page,
+        "id",
+        synth,
+        {"baseline_status": 200, "baseline_body": ""},
+        prims,
+        anchor.reference,
+        anchor=anchor,
+    )
+
+
 # ===========================================================================
 # Phase 5 — Verification
 # ===========================================================================
@@ -427,8 +459,8 @@ class TestPhase5Verification:
     @staticmethod
     def _peer_target(reference: str, who: str) -> _HTTPResponse:
         records = {
-            "1": "user: alice email: alice@x.example role: user dob: 1990-01-01",
-            "2": "user: bob email: bob@x.example role: user dob: 1985-02-02",
+            "1": "user: alice\nemail: alice@x.example\nrole: user\ndob: 1990-01-01\n",
+            "2": "user: bob\nemail: bob@x.example\nrole: user\ndob: 1985-02-02\n",
         }
         if reference not in records:
             return _HTTPResponse(status=404, body="not found", headers={})
@@ -441,13 +473,11 @@ class TestPhase5Verification:
         agent = _make_agent()
         agent._principals = (ALICE, BOB)
         _by_reference(agent, self._peer_target)
-        verdict, _arms, control = await agent._idor_phase5_verify(
-            _make_page(),
-            "id",
+        verdict, _arms, control = await _anchored_verify(
+            agent,
             {"reference": "2", "rationale": "peer"},
-            {"baseline_status": 200, "baseline_body": "user: alice"},
-            IDORPrimitives(id_format="numeric", authz_check_present=True),
-            "1",
+            primitives=IDORPrimitives(id_format="numeric", authz_check_present=True),
+            original_value="1",
         )
         assert verdict.confirmed is True, verdict.detail
         assert control is not None and control.satisfied
@@ -462,21 +492,23 @@ class TestPhase5Verification:
         """
         agent = _make_agent()
         agent._principals = (ALICE, BOB)
+        # The one body names alice, so ``ref(A)`` anchors and the verdict lands
+        # on the CONTROL rather than on the anchor — which is what this test is
+        # about. An endpoint answering identically for every reference answers
+        # identically for a reference nobody owns.
         _by_reference(
             agent,
             lambda _ref, who: (
                 _HTTPResponse(status=302, body="", headers={})
                 if who == ANONYMOUS
-                else _HTTPResponse(status=200, body="same exact body", headers={})
+                else _HTTPResponse(status=200, body="user: alice\nrole: user\n", headers={})
             ),
         )
-        verdict, _arms, _control = await agent._idor_phase5_verify(
-            _make_page(),
-            "id",
+        verdict, _arms, _control = await _anchored_verify(
+            agent,
             {"reference": "2", "rationale": "peer"},
-            {"baseline_status": 200, "baseline_body": "same exact body"},
-            IDORPrimitives(id_format="numeric", authz_check_present=True),
-            "1",
+            primitives=IDORPrimitives(id_format="numeric", authz_check_present=True),
+            original_value="1",
         )
         assert verdict.confirmed is False
         assert verdict.why_unconfirmed == "never_sent_control_did_not_refuse"
@@ -489,13 +521,11 @@ class TestPhase5Verification:
             agent,
             lambda _ref, _who: _HTTPResponse(status=403, body="forbidden", headers={}),
         )
-        verdict, _arms, control = await agent._idor_phase5_verify(
-            _make_page(),
-            "id",
+        verdict, _arms, control = await _anchored_verify(
+            agent,
             {"reference": "2", "rationale": "peer"},
-            {"baseline_status": 200, "baseline_body": "user: alice"},
-            IDORPrimitives(id_format="numeric", authz_check_present=True),
-            "1",
+            primitives=IDORPrimitives(id_format="numeric", authz_check_present=True),
+            original_value="1",
         )
         assert verdict.confirmed is False
         assert control is None, "no candidate resolved, so there was nothing to control"
@@ -878,19 +908,22 @@ class TestPhase5Honesty:
                 )
             ),
         )
-        verdict, _arms, control = await agent._idor_phase5_verify(
-            _make_page(),
-            "id",
+        verdict, _arms, control = await _anchored_verify(
+            agent,
             {"reference": "longreference123", "rationale": "synthesized"},
-            {"baseline_status": 200, "baseline_body": "Welcome x to your dashboard."},
-            IDORPrimitives(id_format="opaque", authz_check_present=True),
-            "x",
+            primitives=IDORPrimitives(id_format="opaque", authz_check_present=True),
+            original_value="x",
         )
         assert verdict.confirmed is False
-        assert "reflection sink" in verdict.detail
-        assert control is not None and control.satisfied, (
-            "the control refuses on a reflection sink — that is the point of this test"
-        )
+        # A reflection sink echoes our input and names no owner, so the ANCHOR
+        # refuses first: nothing this endpoint serves can be shown to be the
+        # caller's. The reflection guard itself is still live and is asserted
+        # directly on the pure table, where an anchor can be supplied — see
+        # ``test_idor_four_arm_oracle.py``. Two refusals, one outcome, and the
+        # earlier one is the more honest: the endpoint was never an
+        # access-control candidate at all.
+        assert verdict.anchored is False
+        assert control is None, "nothing is dispatched past an anchor that failed"
 
     @pytest.mark.asyncio
     async def test_an_error_page_is_killed_by_the_control(self) -> None:
@@ -901,7 +934,7 @@ class TestPhase5Honesty:
             lambda ref, _who: (
                 _HTTPResponse(
                     status=200,
-                    body="Account details: name=alice email=alice@x role=user balance=100.",
+                    body="Account details\nuser: alice\nemail: alice@x\nbalance: 100\n",
                     headers={},
                 )
                 if ref == "1"
@@ -912,13 +945,12 @@ class TestPhase5Honesty:
                 )
             ),
         )
-        verdict, _arms, control = await agent._idor_phase5_verify(
-            _make_page(),
-            "id",
+
+        verdict, _arms, control = await _anchored_verify(
+            agent,
             {"reference": "2", "rationale": "peer"},
-            {"baseline_status": 200, "baseline_body": "Account details: name=alice"},
-            IDORPrimitives(id_format="numeric", authz_check_present=True),
-            "1",
+            primitives=IDORPrimitives(id_format="numeric", authz_check_present=True),
+            original_value="1",
         )
         assert verdict.confirmed is False
         assert control is not None and not control.satisfied
@@ -936,20 +968,46 @@ class TestPhase5Honesty:
                 else _HTTPResponse(status=200, body="x" * 1730, headers={})
             ),
         )
-        verdict, _arms, control = await agent._idor_phase5_verify(
-            _make_page(),
-            "id",
+        verdict, _arms, control = await _anchored_verify(
+            agent,
             {"reference": "a3f8c2d1e9b74056", "rationale": "synthesized"},
-            {"baseline_status": 200, "baseline_body": "<table>" + ("y" * 33484) + "</table>"},
-            IDORPrimitives(id_format="opaque", authz_check_present=True),
-            "xss_s",
+            primitives=IDORPrimitives(id_format="opaque", authz_check_present=True),
+            original_value="xss_s",
         )
         assert verdict.confirmed is False
-        assert control is not None and not control.satisfied
+        assert verdict.anchored is False
+        assert control is None
 
     @pytest.mark.asyncio
     async def test_a_genuine_peer_resource_still_verifies(self) -> None:
         """The honesty guards must not suppress a true positive."""
+        agent = _make_agent()
+        agent._principals = (ALICE, BOB)
+        _by_reference(agent, _peer_records)
+        verdict, _arms, control = await _anchored_verify(
+            agent,
+            {"reference": "2", "rationale": "peer record"},
+            original_value="1",
+        )
+        assert verdict.confirmed is True, verdict.detail
+        assert control is not None and control.satisfied
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_names_no_owner_leads_and_that_costs_recall(self) -> None:
+        """The owning-field rule's price, pinned rather than left implicit.
+
+        Two per-user source listings, one served to each principal, differing
+        from each other, from a never-issued reference and from what an
+        anonymous caller gets. Under the old oracle that confirmed on
+        ``identical_rendering``. It cannot now: neither body names an owner, so
+        neither the anchor nor the claim can be made, and the class ABSTAINS.
+
+        That is a real recall loss on endpoints whose records carry no owner
+        field, and it is the direction chosen deliberately — ``identical_
+        rendering`` is satisfied by an outranking B reading A's record, so
+        keeping it meant confirming the feature. The loss is here, in a test
+        named after it, rather than discovered later as a silent gap.
+        """
         agent = _make_agent()
         agent._principals = (ALICE, BOB)
         bodies = {
@@ -966,16 +1024,15 @@ class TestPhase5Honesty:
                 else _HTTPResponse(status=200, body=bodies[ref], headers={})
             ),
         )
-        verdict, _arms, control = await agent._idor_phase5_verify(
-            _make_page(),
-            "id",
+        verdict, _arms, control = await _anchored_verify(
+            agent,
             {"reference": "beta_module", "rationale": "peer module"},
-            {"baseline_status": 200, "baseline_body": bodies["alpha_module"]},
-            IDORPrimitives(id_format="opaque", authz_check_present=True),
-            "alpha_module",
+            primitives=IDORPrimitives(id_format="opaque", authz_check_present=True),
+            original_value="alpha_module",
         )
-        assert verdict.confirmed is True, verdict.detail
-        assert control is not None and control.satisfied
+        assert verdict.confirmed is False
+        assert verdict.anchored is False
+        assert control is None
 
 
 # ===========================================================================
@@ -999,8 +1056,10 @@ class TestTheAuthzProbeIsAControlNotAPrecondition:
     @staticmethod
     def _records(reference: str, who: str) -> _HTTPResponse:
         records = {
-            "2": "name: alice email: alice@corp.example role: user dob: 1990-01-01 region: us",
-            "3": "name: bob email: bob@corp.example role: user dob: 1985-02-02 region: eu",
+            "2": (
+                "name: alice\nemail: alice@corp.example\nrole: user\ndob: 1990-01-01\nregion: us\n"
+            ),
+            "3": ("name: bob\nemail: bob@corp.example\nrole: user\ndob: 1985-02-02\nregion: eu\n"),
         }
         if reference not in records:
             return _HTTPResponse(status=404, body="no such record", headers={})
@@ -1014,17 +1073,16 @@ class TestTheAuthzProbeIsAControlNotAPrecondition:
         agent = _make_agent()
         agent._principals = (ALICE, BOB)
         _by_reference(agent, self._records)
-        verdict, _arms, _control = await agent._idor_phase5_verify(
-            _make_page(url="http://example.com/info.php?id=2"),
-            "id",
+        verdict, _arms, _control = await _anchored_verify(
+            agent,
             {"reference": "3", "rationale": "peer"},
-            {"baseline_status": 200, "baseline_body": "name: alice"},
-            IDORPrimitives(
+            primitives=IDORPrimitives(
                 id_format="numeric",
                 authz_check_present=authz_check_present,
                 unauth_status_observed=403 if authz_check_present else 200,
             ),
-            "2",
+            original_value="2",
+            page=_make_page(url="http://example.com/info.php?id=2"),
         )
         assert verdict.confirmed is True, verdict.detail
 
@@ -1045,18 +1103,23 @@ class TestTheAuthzProbeIsAControlNotAPrecondition:
                 if ref not in ("2", "3")
                 else _HTTPResponse(
                     status=200,
-                    body=f"name: person{ref} email: person{ref}@corp.example role: user",
+                    # ``2`` names alice, so ``ref(A)`` anchors and the verdict
+                    # lands on the PUBLIC gate rather than on the anchor.
+                    body=(
+                        "name: alice\nemail: alice@corp.example\nrole: user\n"
+                        if ref == "2"
+                        else "name: bob\nemail: bob@corp.example\nrole: user\n"
+                    ),
                     headers={},
                 )
             ),
         )
-        verdict, _arms, _control = await agent._idor_phase5_verify(
-            _make_page(url="http://example.com/info.php?id=2"),
-            "id",
+        verdict, _arms, _control = await _anchored_verify(
+            agent,
             {"reference": "3", "rationale": "peer"},
-            {"baseline_status": 200, "baseline_body": "name: person2"},
-            IDORPrimitives(id_format="numeric", authz_check_present=False),
-            "2",
+            primitives=IDORPrimitives(id_format="numeric", authz_check_present=False),
+            original_value="2",
+            page=_make_page(url="http://example.com/info.php?id=2"),
         )
         assert verdict.confirmed is False
         assert verdict.object_is_public is True

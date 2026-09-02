@@ -24,29 +24,100 @@ knows about is a disclaimer, not a rule. It is now a field
 
 | arm | carried as | what it must show |
 |---|---|---|
-| `self` | A, `ref(A)` | A's own object — the identity values the crossing arm must NOT have returned |
-| `crossing` | A, `ref(B)` | an object positively attributable to B |
+| `self` | A, the **anchored** `ref(A)` | A's own object, proven A's from A's own session |
+| `crossing` | A, `ref(B)` | a record naming an owning principal that is not A |
 | `nonexistent` | A, `ref(∅)` | must differ **materially** from `crossing` |
-| `anonymous` | no session, `ref(B)` | must NOT return it — if it does the object is public |
+| `anonymous` | no session, `ref(B)` | must be **dispatched** and must NOT return it |
 
 Plus a fifth observation that is **not a control**: `owner_read`, B's own
-authorized read of the same reference. That is what makes `ref(B)` attributable,
-and it is the arm a single-role engagement cannot dispatch.
+authorized read of the same reference. It is **corroboration** — see
+*Attribution* — and it is the arm a single-role engagement cannot dispatch.
 
 Decision order (`agents/_idor_oracle.py::decide_idor`), which is the order a
 reviewer would ask the questions in:
 
+0. Is `ref(A)` A's? Unanchored ⇒ **abstain** (see *Anchoring* below). Then the
+   dispatch assertion: `ref(self) != ref(crossing)` and `ref(self)` is the
+   anchored reference. A violation is a **loud refusal**, not a quiet abstain.
 1. Did the crossing arm resolve at all?
-2. Is the object PUBLIC (the anonymous arm was served it)? ⇒ **not applicable**,
-   no lead. A lead per public endpoint is a permanent false alarm, and a
-   permanent false alarm trains an operator to skim the section where a real one
-   will appear.
+2. Is the object PUBLIC? An anonymous 200 on `ref(B)` is **disqualifying, full
+   stop** ⇒ **not applicable**, no lead. A lead per public endpoint is a
+   permanent false alarm, and a permanent false alarm trains an operator to skim
+   the section where a real one will appear. An anonymous arm that was never
+   dispatched refused nothing and abstains.
 3. Did the control refuse (`ref(∅)` differs materially from `ref(B)`)? ⇒ a
    control-arm KILL, disclosed at the shared `_run_control_arm` seam.
 4. Is the crossing response A's own object read back? And is the difference from
    A's own just our reference **echoed**? (see *Reflection* below)
-5. Is it positively attributable to B? Without a second principal the answer is a
-   **lead**, never a finding.
+5. Does the OBJECT name an owner who is not A? No owning field ⇒ **abstain**.
+6. Which direction did the arm run in?
+
+## Anchoring — `ref(A)` is A's, or there is no crossing to grade
+
+The self arm used to carry whatever value the **crawl** observed in the
+parameter, and phase 4 produced `ref(B)` by varying it. A crawl-observed value
+is a fact about whichever session was crawling, and on the 2026-08-31 Juice Shop
+envelope those were different identities:
+
+| | recorded run 3 | what it actually was |
+|---|---|---|
+| crawl saw | `id=1` | admin's basket (`UserId: 1`) |
+| A | `jim` | **user 2** |
+| `self` arm | `GET /rest/basket/1` as jim | admin's record — the real crossing |
+| `crossing` arm | `GET /rest/basket/2` as jim | **jim's own record** |
+| `owner_read` | `GET /rest/basket/2` as admin | jim's record again |
+
+Every downstream arm cleared, because every one of them is a comparison and **a
+comparison does not know which side it is standing on**. The control refused
+(900043392 returned `data:null`), the anonymous arm was turned away (401), and
+`identical_rendering` matched — admin reading jim's basket returns jim's basket.
+Five findings shipped from that, on all four ladder-equivalent endpoints.
+
+So `ref(A)` is now **discovered first, from A's own session**
+(`anchor_self_reference`, dispatched by `_idor_anchor`): a bounded set of
+candidate references is probed **as A**, and the anchor is the first whose record
+names A as its owner. A's identity values come from
+`Principal.identity_tokens()` — the operator-supplied username and the identity
+claims of the bearer token the target issued **us**, decoded through the one JWT
+decoder in the codebase — and never from a response, so a target cannot nominate
+one of its records as ours.
+
+**Unanchorable ⇒ the class abstains**, with the reason
+`self_reference_not_anchored_to_the_caller` and an `UnprovenExploitLead` naming
+what is missing. A crossing you cannot anchor is not a crossing. That is the
+honest answer for a reference that is not user-owned at all (a product id), for
+an endpoint whose records do not name their owner, and for a session whose
+identity we cannot read.
+
+`ref(B)` is then varied from the **anchored** reference, and the assertion
+`ref(self) != ref(crossing)` runs both before dispatch and again on what was
+actually sent.
+
+**What the sweep costs.** At most `_IDOR_ANCHOR_CANDIDATE_LIMIT` (6) probes per
+candidate parameter, carried as A, and it stops at the FIRST record naming the
+caller — two requests on the Juice Shop basket. Bounded because an anchor that
+needs a wide sweep is one the endpoint does not support: an application that
+names a record's owner names it on the caller's own record, which sits within a
+step or two of whatever the crawl saw. A wider sweep would not find an anchor,
+it would find more strangers' records. Non-numeric formats get only the values
+the endpoint was already SEEN to accept — enumerating opaque identifiers is not
+discovery, it is noise aimed at a client's target.
+
+**The reflection guard needs a floor, for the same reason.** Substitution is
+global, so with `ref(B)="1"` and `ref(A)="2"` rewriting every `1` in
+`{"id":1,"UserId":1}` yields `{"id":2,"UserId":2}` — A's own record byte for
+byte, which reads as a perfect echo. `reflection_explains` therefore abstains
+below `_MIN_ECHOABLE_REFERENCE_LEN` (4) and is not asked at all of a body that
+carries an owning field: a record is not an echo of its own identifier. The
+short-reference sink is covered by phase 1's canary probe, which mints a token
+distinctive by construction.
+
+**And the same folding bites one step earlier.** `idor_normalise_body` folds
+digit runs, so *is this A's own object read back?* cannot be answered by a
+fingerprint on the commonest shape there is — two baskets differing only in
+`UserId`. That step asks `names_the_caller` first and falls back to the
+fingerprint only for a body that names no owner. The folding stays: it is what
+makes two renderings of ONE record compare equal, which is a different job.
 
 ## The inversion — `ref(∅)` was the precondition and is now the control
 
@@ -103,18 +174,102 @@ collected first: on a parameter whose baseline was `x` and whose crossing
 reference was `longreference123`, the first observed value produced a
 one-character control for a sixteen-character reference.
 
-## Attribution
+## Attribution — from the OBJECT, not from a comparison
 
-Two routes, in strength order (`attribution_between`):
+`identical_rendering` — the crossing response fingerprinting equal to B's own
+authorized read — used to BE the attribution, and it is **vacuous in exactly the
+direction the direction rule requires**. A is the least-privileged identity, so
+B outranks it; an outranking B reading A's record returns A's record, and
+"identical to B's read" is then satisfied by *B can also read this*, which is
+the feature B exists for. Direction needs A least-privileged; attribution-by-
+`owner_read` needs B not to outrank A. **Both cannot hold**, and it was the
+attribution half that was wrong.
 
-1. **`identical_rendering`** — the crossing arm and B's own read normalise to the
-   same fingerprint. One handler served one record to two principals.
-2. **`stable_fields`** — the renderings differ (an API envelope naming the
-   caller, chrome carrying A's own name) but ≥2 of B's field VALUES came back to
-   A **and are not values A's own record carries**. Subtracting A's record is the
-   load-bearing half: every field the template renders for everybody is in A's
-   record too, so the residue is what is specific to B. One shared value is a
-   property of the template, not of the principal.
+The claim now rests on an **owning field** (`owner_claim`): a field the
+application itself uses to name a record's owner, carrying a value that is not
+the caller's. `UserId: 1` in a body served to user 2 is unforgeable in a way a
+fingerprint comparison is not.
+
+Two routes, in strength order:
+
+1. **`owning_field_names_principal`** — the owning value **is an identity this
+   engagement holds**, and it is not the caller's (`email: admin@juice-sh.op` in
+   a body served to jim). The comparison is against what *we* hold, so no
+   response can satisfy it by choosing its own bytes.
+2. **`owning_field_not_caller`** — the field's NAME is one an application uses
+   to name an owner (`OWNER_FIELD_NAME_TOKENS`), its value is none of the
+   caller's identity values, and the caller's own **anchored** record carries a
+   *different* value under the same field. Absence is not difference: a field
+   the caller's record does not carry says nothing about whose the crossing
+   record is.
+
+**No owning field ⇒ abstain** (`crossing_response_names_no_owning_principal`).
+That is what retires the public-catalogue shape without a decoration-tolerant
+differ: a public record has no owning principal to name.
+
+**The price, stated rather than discovered later.** An endpoint whose per-user
+records carry no owner — a source listing, a document, a file served by
+sequential id — can no longer confirm. That is a real recall loss and it is the
+direction chosen deliberately: `identical_rendering` is satisfied by an
+outranking B reading A's record, so keeping it meant confirming the feature.
+The loss is pinned as
+`test_a_record_that_names_no_owner_leads_and_that_costs_recall`, in a test named
+after it, rather than left to surface as a silent gap. Closing it needs a new
+observation — something that establishes ownership without the record saying
+so — and not a weaker version of this one.
+
+**And a test is not where a client reads.** A pinned test tells this repository
+about the boundary and tells the deliverable nothing, while an access-control
+flaw on such an endpoint produces exactly the artifact a sound endpoint produces
+— nothing. So the boundary is DECLARED by the producer
+(`VulnClass.coverage_boundary`, a `CoverageBoundary` carrying the client-facing
+sentence and the registered `why_unconfirmed` the abstain actually emits, both
+required or neither) and rendered in *What was NOT tested* under its own
+category, `class_abstains`. On a clean run too, like every other bound that
+decided coverage: it is a property of the CLASS, not of what this target
+happened to have, and a limitation that only appears once it has already cost
+someone a finding is not a limitation they can plan around. It is deliberately
+NOT filed under `unauthenticated` or `no_client_side_oracle` — those are what
+the ENGAGEMENT lacked and a capability that was ABSENT, and a second credential
+or a browser fixes them. Neither fixes this one, so filing it there would tell a
+client to do something that cannot work.
+
+A field is admitted for reading two ways, and the second needs no vocabulary at
+all: its NAME is owner-shaped, **or** its VALUE is an identity we hold. DVWA's
+records have no `UserId` anywhere — `First name: bob` names bob because bob is a
+principal of this engagement, and nothing about the field's name was needed to
+know it. The name vocabulary is a field-**selection** list and can only ever
+withhold a confirmation, never license one: a name it does not know is a field
+that is not read, so the endpoint abstains.
+
+**`owner_read` is kept, dispatched and reported as `corroboration`.** It is
+worth reporting that a second principal agrees; no branch turns on it.
+
+**And it is not the OWNER's read, which the sentence used to claim.** B is a
+candidate owner — a principal the engagement HOLDS that A does not outrank —
+while `ref(B)` is reached by phase 3 incrementing the anchored `ref(A)`, so it
+lands on whoever owns that reference. The two have no reason to coincide, and
+on engagement `aba713f1` they did not: all three confirmed crossings ran this
+arm as `admin` while the owning field named user `3`, whom that engagement held
+no credential for. What the arm establishes is that a SECOND principal reading
+the same reference is served the same record, which rules out the per-caller
+decoration that defeated the reviews endpoint — a real observation under a wrong
+name. The verdict never turned on it, which is why the label could stay wrong;
+the sentence is what a client reads. Pinned as
+`TestTheCorroboratingArmIsNotTheOwnersRead`.
+
+### The public-record gate
+
+An anonymous 200 on `ref(B)` is **disqualifying, full stop** — not one input to
+a difference test. `/rest/products/:id/reviews` served 200 anonymously and still
+confirmed, because the anonymous body carried a per-caller `"liked":true`
+decoration on the **same review** (same `_id`), 13 bytes that made
+`materially_differs` True. If an anonymous caller is served the resource there
+is no boundary to cross, whatever else the bytes do.
+
+An anonymous arm that was never **dispatched** refused nothing and abstains
+(`anonymous_control_arm_not_dispatched`) — the same rule `ControlVerdict`
+applies to every other arm.
 
 ### The evidence carries names and fingerprints, never values
 
@@ -124,9 +279,10 @@ Two routes, in strength order (`attribution_between`):
 field=<name> owner_fp=<hash> caller_fp=<hash|absent>
 ```
 
-`owner_fp` is equal on the crossing arm and B's own authorized read (*this is B's
-record*); `caller_fp` differs, or is `absent` (*and it is not A's*). Together
-that is the whole claim, and it is the same claim the values were making.
+`owner_fp` is the fingerprint of the owning value the crossing response carried;
+`caller_fp` is what the caller's own anchored record carries under that field, or
+`absent`. Together that is the whole claim — *this record names an owner, and it
+is not us* — and it is the same claim the values were making.
 
 It used to render `field=value` out of the **owning principal's** record — the
 first target data this class has ever carried into a deliverable. Bounding each
@@ -143,9 +299,9 @@ in one bundle correlate and nothing in it replays or reverses. Same trade as
 
 A parameter that echoes its input defeats every other arm at once: `ref(∅)` is
 echoed too (so the control sees a different string and *refuses*, correctly), and
-B's read of the same reference echoes the same string back (so it reads as an
-identical rendering). Three arms agreeing on an artifact of one substitution is
-not three pieces of evidence. So reflection keeps its own guard,
+B's read of the same reference echoes the same string back (so the corroboration
+reads as an identical rendering). Three arms agreeing on an artifact of one
+substitution is not three pieces of evidence. So reflection keeps its own guard,
 `reflection_explains`, applied before attribution: substitute A's own reference
 back in for the echoed one and compare normalised bodies — the same test phase 1
 makes on a pure reflection sink, and the same echo guard the injection classes
@@ -157,8 +313,8 @@ response is a property of the handler", which `ref(∅)` reproduces exactly.
 
 ## The two tiers, enforced in two places
 
-**Tier 1 (multi-role) MAY CONFIRM.** ≥2 proven principals, positive attribution
-against B's own authorized read.
+**Tier 1 (multi-role) MAY CONFIRM.** ≥2 proven principals, an anchored `ref(A)`
+and an owning field naming somebody who is not the caller.
 
 **Tier 2 (single-role) MAY ONLY LEAD.** `why_unconfirmed =
 single_role_cannot_attribute`, registered in `UNPROVEN_WHY_UNCONFIRMED`. The lead
@@ -188,9 +344,9 @@ Two principals make a crossing arm dispatchable. They do not make it meaningful.
 
 Read the four-arm table again with an administrator as A. The crossing resolves;
 the never-issued reference refuses; an anonymous caller is turned away; the
-record is positively attributable to a customer. Every arm clears — and what was
-observed is an administrator reading a customer's record, which in most
-applications is the feature that administrator exists for. The oracle would emit
+record names a customer as its owner. Every arm clears — and what was observed
+is an administrator reading a customer's record, which in most applications is
+the feature that administrator exists for. The oracle would emit
 `high`/CONFIRMED on an application behaving exactly as designed.
 
 That is not a corner case. It is the commonest engagement shape there is: a

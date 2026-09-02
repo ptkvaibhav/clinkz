@@ -19,6 +19,7 @@ from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.models.scan import ParamLocation
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.state import StateStore
+from clinkz.tools.http_client import HTTPClientOutput
 from clinkz.tools.resolver import ToolResolver
 
 # asyncio_mode = "auto" (pyproject) auto-detects async tests; no marker needed,
@@ -183,12 +184,15 @@ async def test_http_post_json_builds_json_request(monkeypatch: pytest.MonkeyPatc
             return {}
 
         def parse_output(self, raw: Any) -> Any:
-            class _Parsed:
-                status_code = 201
-                response_body = '{"ok":true}'
-                response_headers: dict[str, str] = {}
-
-            return _Parsed()
+            # The REAL output model. A test-local stand-in only honours the
+            # fields its author remembered, so it passes against a consumer
+            # that reads a field the producer does not have.
+            return HTTPClientOutput(
+                tool_name="http_client",
+                success=True,
+                status_code=201,
+                response_body='{"ok":true}',
+            )
 
     monkeypatch.setattr("clinkz.tools.http_client.HTTPClientTool", _CapturingHTTP)
     agent = _make_agent()
@@ -225,12 +229,7 @@ async def test_http_post_json_unknown_method_falls_back_to_post(
             return {}
 
         def parse_output(self, raw: Any) -> Any:
-            class _Parsed:
-                status_code = 200
-                response_body = ""
-                response_headers: dict[str, str] = {}
-
-            return _Parsed()
+            return HTTPClientOutput(tool_name="http_client", success=True, status_code=200)
 
     monkeypatch.setattr("clinkz.tools.http_client.HTTPClientTool", _CapturingHTTP)
     agent = _make_agent()

@@ -128,7 +128,24 @@ def _active_model_stamp() -> list[dict[str, str | int]]:
 #: Phase result statuses that mean the phase did not produce its output. The
 #: orchestrator writes ``{"status": "error", ...}`` on an ERROR message and on a
 #: force-kill; ``"stopped"`` is an agent that ended itself early.
-_FAILED_PHASE_STATUSES: frozenset[str] = frozenset({"error", "failed", "timeout"})
+_FAILED_PHASE_STATUSES: frozenset[str] = frozenset({"error", "failed"})
+
+#: A phase the orchestrator force-killed at its own wall clock. Held APART from
+#: the failures above, because the two are different facts about a run and a
+#: reader acts on them differently: a failure is the phase breaking, a timeout is
+#: a bound the operator configured being reached, which is a coverage statement
+#: of the same kind as the plan cap and the crawl budget.
+#:
+#: Whether it also makes the run INCOMPLETE is decided by what the phase handed
+#: over, not by which phase it was. ``_phase_stop_result`` carries through
+#: whatever the agent already delivered, so a timeout WITH a result is a phase
+#: that did its work and ran out of clock; a timeout with NOTHING is
+#: indistinguishable from a phase that never ran, and that is the shape the
+#: banner exists to catch. Deciding it on an engine fact rather than on a list of
+#: which phases matter is deliberate: a hand-maintained list of exempt phases
+#: would be another guard domain to keep in sync, and the member it forgot would
+#: be the one that needed it.
+_TIMEOUT_PHASE_STATUS = "timeout"
 
 
 def _run_completion(
@@ -149,6 +166,18 @@ def _run_completion(
     target is clean — out of no evidence at all. Engagement ``2e21a200`` failed
     recon, scan AND exploit and said exactly that.
 
+    **A TIMEOUT is graded on what the phase delivered, not on which phase it
+    was.** Folding ``"timeout"`` in with ``"error"`` made the banner flip between
+    runs that were otherwise the same: across three identical Juice Shop
+    envelope runs the research phase overran its grace window once, and that one
+    report carried "THIS RUN DID NOT COMPLETE" over the same findings the other
+    two rendered clean. The banner exists so a bad run cannot hide, and a claim
+    that fires on a third of good runs is one a reader learns to skip. So a
+    timeout that carried a result is a completed phase that ran out of clock;
+    only a timeout that delivered NOTHING still trips the banner, because a
+    phase that handed nothing over cannot be told apart from one that never
+    ran.
+
     Args:
         phase_outcomes: ``{phase_name: result_dict}`` from the orchestrator.
         model_stamp: The run's own ``model_stamp`` rows.
@@ -163,13 +192,31 @@ def _run_completion(
         if isinstance(result, dict)
         and str(result.get("status", "")).lower() in _FAILED_PHASE_STATUSES
     )
+    # A timeout that delivered nothing is a phase that produced no work, which is
+    # what "did not complete" means. A timeout that delivered a result is not:
+    # the phase handed its work over and was then stopped at a configured bound.
+    timed_out_empty = sorted(
+        name
+        for name, result in phase_outcomes.items()
+        if isinstance(result, dict)
+        and str(result.get("status", "")).lower() == _TIMEOUT_PHASE_STATUS
+        and not result.get("result")
+    )
     starved = exhausted_stages(model_stamp)
-    if not failed and not starved:
+    if not failed and not timed_out_empty and not starved:
         return True, ""
     parts: list[str] = []
     if failed:
         parts.append(
             f"The {', '.join(failed)} phase{'s' if len(failed) > 1 else ''} did not complete."
+        )
+    if timed_out_empty:
+        plural = "s" if len(timed_out_empty) > 1 else ""
+        verb = "were" if len(timed_out_empty) > 1 else "was"
+        parts.append(
+            f"The {', '.join(timed_out_empty)} phase{plural} {verb} stopped at the "
+            f"engagement's wall clock before delivering any result, so nothing from "
+            f"{'them' if len(timed_out_empty) > 1 else 'it'} reached this report."
         )
     if starved:
         parts.append(
@@ -820,6 +867,30 @@ class ReportAgent(BaseAgent):
                     item=vuln_class.label,
                     category=NotTestedCategory.NOT_IMPLEMENTED,
                     reason=vuln_class.limitation,
+                )
+            )
+
+        # Shapes a class refuses to confirm on even when the engagement gave it
+        # everything it needs. The producer declares the boundary and the
+        # registered abstain reason it produces
+        # (:class:`~clinkz.models.vuln_classes.CoverageBoundary`); nothing here
+        # decides what the boundary is.
+        #
+        # Rendered on a clean run too, like every other bound that decided
+        # coverage. The IDOR one is why the category exists: an endpoint serving
+        # per-user records that name no owner produces exactly the artifact a
+        # sound endpoint produces — nothing — so leaving the boundary pinned in a
+        # test and out of the deliverable lets an absence of findings read as an
+        # absence of flaws, which is the silence every other rule in this section
+        # exists to break.
+        for vuln_class in VULN_CLASSES:
+            if not vuln_class.coverage_boundary.declared:
+                continue
+            items.append(
+                NotTestedItem(
+                    item=f"{vuln_class.label} — records this class cannot attribute",
+                    category=NotTestedCategory.CLASS_ABSTAINS,
+                    reason=vuln_class.coverage_boundary.limitation,
                 )
             )
 
@@ -1987,6 +2058,9 @@ class ReportAgent(BaseAgent):
             NotTestedCategory.DESTRUCTIVE_REFUSED: ("Refused by the production safety rails"),
             NotTestedCategory.ENGAGEMENT_HALTED: "Cut short when the engagement halted",
             NotTestedCategory.UNAUTHENTICATED: "Limited by the sessions available",
+            NotTestedCategory.CLASS_ABSTAINS: (
+                "Reported as a lead, not a finding — the class abstains"
+            ),
         }
         rendered: set[str] = set()
         for category, heading in headings.items():

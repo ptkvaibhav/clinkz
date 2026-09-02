@@ -5,6 +5,8 @@
 #   1. outputs_guard  — refuse any staged path under outputs/ (even `git add -f`)
 #   2. secret_guard   — refuse credential shapes and .env files
 #   3. gates          — ruff check + format --check on src/ tests/ (when code is staged)
+#   4. context_budget — always-loaded instruction files stay under budget
+#                       (ALWAYS runs: a doc-only commit is exactly what grows them)
 #
 # These encode failures that actually happened (a 44-artifact outputs/ leak to a
 # public repo; a CI format miss). Never bypass with --no-verify — CLAUDE.md's
@@ -19,6 +21,7 @@ fail=0
 "$PYTHON" "$HOOKS_DIR/outputs_guard.py" || fail=1
 "$PYTHON" "$HOOKS_DIR/secret_guard.py" || fail=1
 "$PYTHON" "$HOOKS_DIR/gates.py" || fail=1
+"$PYTHON" "$HOOKS_DIR/context_budget.py" --staged || fail=1
 
 if [ "$fail" -ne 0 ]; then
   echo "" >&2

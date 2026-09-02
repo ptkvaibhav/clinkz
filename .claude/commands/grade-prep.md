@@ -10,8 +10,8 @@ grade — it assembles what a grader needs. Report each section.
 2. **Diff stat vs main**: `git diff --stat origin/main...HEAD`.
 3. **Changed src files**: `git diff --name-only origin/main...HEAD -- src/`
    (and note tests: `git diff --name-only origin/main...HEAD -- tests/`).
-4. **Re-derive CI**: run `/gates` (the three gates as ci.yml runs them) and
-   report the three exit codes.
+4. **Re-derive CI**: run `/gates` (the four gates as ci.yml runs them) and
+   report the four exit codes.
 5. **Raw artifacts to attach**: list the `outputs/<id>/` run artifacts this
    branch's validation produced (use `/artifacts <id>` per run). They are
    local-only and must be **attached** to the grading submission, not committed —

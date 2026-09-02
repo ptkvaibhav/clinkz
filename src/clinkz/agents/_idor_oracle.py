@@ -23,8 +23,8 @@ CONTROL. Four arms, dispatched:
 ===============  =================  ==========================================
 arm              carried as         what it must show
 ===============  =================  ==========================================
-``self``         A, ``ref(A)``      A's own object — the identity values that
-                                    must NOT be what the crossing arm returned
+``self``         A, ``ref(A)``      A's own object, ANCHORED to A's identity —
+                                    never the value the crawl happened to see
 ``crossing``     A, ``ref(B)``      an object positively attributable to B
 ``nonexistent``  A, ``ref(∅)``      must differ materially from ``crossing``
 ``anonymous``    no session,        must NOT return it — if it does, the object
@@ -45,6 +45,44 @@ reported as undeclared and the crossing becomes a lead: guessing the hierarchy
 out of a role LABEL would manufacture exactly the false positive this rule
 exists to prevent, on the commonest client engagement there is — one supplied
 admin or service account.
+
+**``ref(A)`` is A's, or there is no crossing to grade.** The self arm used to
+carry whatever value the CRAWL observed in the parameter, and phase 3 produced
+``ref(B)`` by incrementing it. On the 2026-08-31 Juice Shop envelope the crawl
+saw ``1``, A was ``jim`` — who is user **2** — and the increment landed on
+``2``: the self arm read admin's basket and the crossing arm read A's own. Every
+downstream arm then cleared, because they are all comparisons and a comparison
+does not know which side it is standing on. A crawl-observed value is a fact
+about the CRAWLER's session, not about A, and the only reference this oracle may
+call ``ref(A)`` is one A is observed to own from A's own session
+(:func:`anchor_self_reference`). **Unanchorable ⇒ the class abstains**: a
+crossing you cannot anchor is not a crossing, and the arms are asserted distinct
+and correctly attributed before the verdict is read.
+
+**Attribution comes off the OBJECT, not off a comparison of two renderings.**
+``identical_rendering`` — the crossing response fingerprinting equal to B's own
+authorized read — was the ground truth, and it is vacuous in the direction the
+direction rule requires. A is the LEAST privileged identity and B therefore
+outranks it; an administrator reading A's record returns A's record, so
+"identical to B's read" is satisfied by *B can also read this*, which is the
+feature. Both halves of the spec cannot hold at once, and it was the attribution
+half that was wrong. The claim now rests on an **owning field** — a field the
+application itself uses to name a record's owner (``UserId``, ``email``,
+``author``), carrying a value that is not the caller's
+(:func:`owner_claim`). ``UserId: 1`` in a body served to user 2 is unforgeable
+in a way a fingerprint comparison is not. B's own read is kept, dispatched and
+reported, as **corroboration**. **No owning field ⇒ abstain**, which is also
+what retires the public-catalogue shape without a decoration-tolerant differ: a
+public record has no owning principal to name.
+
+**An anonymous 200 on ``ref(B)`` is disqualifying, full stop.** It used to be
+one input to :func:`materially_differs`, so a per-caller ``"liked":true``
+decoration on the same review — 13 bytes, same ``_id`` — made the anonymous arm
+"differ" and the crossing confirmed against a record anyone may read. If an
+anonymous caller is served the resource there is no boundary to cross, whatever
+else the bytes do. An anonymous arm that was never DISPATCHED proves nothing in
+either direction and abstains, the same rule
+:class:`~clinkz.agents._control_arm.ControlVerdict` applies to every other arm.
 
 **The decoy must round-trip like the payload.** ``ref(∅)`` is compared against
 ``ref(B)`` through the same handler, the same encoder and the same template. A
@@ -75,20 +113,32 @@ from clinkz.agents._principal import PRIVILEGE_ORDER_UNDECLARED
 from clinkz.engagement.credential_shapes import fingerprint
 
 __all__ = [
+    "ANCHOR_NOT_ESTABLISHED",
+    "ANONYMOUS_ARM_NOT_DISPATCHED",
     "ATTRIBUTION_IDENTICAL_RENDERING",
     "ATTRIBUTION_STABLE_FIELDS",
     "MIN_ATTRIBUTING_FIELDS",
+    "NO_OWNING_FIELD",
+    "OWNER_FIELD_NAME_TOKENS",
+    "OWNING_FIELD_NAMES_PRINCIPAL",
+    "OWNING_FIELD_NOT_CALLER",
     "TIER_MULTI_ROLE",
     "TIER_SINGLE_ROLE",
     "ArmObservation",
     "ArmRecorder",
     "IDORArm",
     "IDORVerdict",
+    "OwnerClaim",
+    "SelfAnchor",
+    "anchor_self_reference",
     "attribution_between",
     "decide_idor",
     "idor_body_fingerprint",
     "idor_normalise_body",
     "materially_differs",
+    "names_the_caller",
+    "owner_claim",
+    "owning_fields",
     "reflection_explains",
     "stable_fields",
     "synthesize_absent_reference",
@@ -426,6 +476,373 @@ def _path_segments(path: str) -> list[str]:
     return segments
 
 
+# ---------------------------------------------------------------------------
+# The owning field — who does the OBJECT say it belongs to?
+# ---------------------------------------------------------------------------
+
+#: Substrings that make a field name the application's own way of saying WHO
+#: OWNS a record.
+#:
+#: This is a field-SELECTION vocabulary and nothing more: it decides which of a
+#: body's fields is worth reading, never whether a crossing happened. That is
+#: what makes a hand-maintained list safe here, against the guard-domain law's
+#: usual objection — every direction it can be wrong in costs coverage. A name
+#: it does not know is a field that is not read, so the endpoint ABSTAINS; a
+#: name it knows that turns out to be uninteresting still has to carry a value
+#: differing from the caller's own record before it says anything. An omission
+#: can never license a confirmation, only withhold one.
+#:
+#: ``role`` and ``group`` are deliberately absent. They name what a principal
+#: IS, not which principal a record belongs to, and Juice Shop's user records
+#: carry ``role: "customer"`` on every customer — a value that differs from an
+#: admin caller's and identifies nobody.
+OWNER_FIELD_NAME_TOKENS: tuple[str, ...] = (
+    "userid",
+    "user_id",
+    "user",
+    "ownerid",
+    "owner_id",
+    "owner",
+    "accountid",
+    "account_id",
+    "customerid",
+    "customer_id",
+    "author",
+    "createdby",
+    "created_by",
+    "submittedby",
+    "submitted_by",
+    "email",
+    "username",
+    "principal",
+    "subject",
+)
+
+#: Everything that is not a letter or a digit in a field name, so ``UserId``,
+#: ``user_id`` and ``user-id`` are one name.
+_FIELD_NAME_NOISE: re.Pattern[str] = re.compile(r"[^a-z0-9]+")
+
+
+def _field_owns(path: str) -> bool:
+    """Whether *path*'s LEAF name is one an application uses to name an owner.
+
+    The leaf only. Matching the joined path would let a container called
+    ``user`` make every leaf beneath it an owning field, so ``user.createdAt``
+    would name an owner and carry a timestamp.
+    """
+    segments = [seg for seg in _path_segments(path) if seg]
+    if not segments:
+        return False
+    leaf = _FIELD_NAME_NOISE.sub("", segments[-1].strip("[]").lower())
+    # A list index (``[0]``) is a position, not a name; step back to the field
+    # it indexes, which is what ``data[0].author`` is really called.
+    if leaf.isdigit() and len(segments) > 1:
+        leaf = _FIELD_NAME_NOISE.sub("", segments[-2].strip("[]").lower())
+    if not leaf:
+        return False
+    return any(token.replace("_", "") in leaf for token in OWNER_FIELD_NAME_TOKENS)
+
+
+def owning_fields(
+    body: str,
+    *,
+    principal_values: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """The ``field -> value`` pairs by which *body* names its record's owner.
+
+    Two admissions, and the second is the one that does not depend on a
+    vocabulary at all:
+
+    1. **The field NAME is one an application uses to name an owner**
+       (:data:`OWNER_FIELD_NAME_TOKENS`). ``UserId: 1`` qualifies on its name,
+       which is why a single-digit value is not filtered out here: an
+       identifier is short and that is what identifiers are.
+    2. **The field VALUE is an identity WE hold.** ``First name: bob`` on a
+       target with no owner-shaped field anywhere names bob if bob is a
+       principal of this engagement — and nothing about the field's name was
+       needed to know it. This route is the one that cannot be wrong in the
+       dangerous direction, because the comparison is against
+       :meth:`~clinkz.agents._principal.Principal.identity_tokens`, read from
+       session material we hold rather than from the response.
+
+    Route 2 keeps a minimum length so a one-character value cannot name a
+    principal by coincidence, and deliberately does NOT apply
+    :data:`_GENERIC_VALUES`: ``admin`` is on that list and is also the username
+    of the principal every second engagement supplies. Genericness is a guess
+    about whether a value identifies anybody; an exact match against an identity
+    we hold is not a guess.
+
+    Args:
+        body: The response body, verbatim.
+        principal_values: Identity values of principals this engagement holds —
+            the caller's when anchoring, everyone's when attributing.
+
+    Returns:
+        Owning fields keyed by leaf path. **Empty when the body names no
+        owner**, which is the answer for a public catalogue record and is why a
+        public record cannot be crossed into: there is nobody it belongs to.
+    """
+    known = {v.strip() for v in principal_values if v.strip()}
+    owners: dict[str, str] = {}
+    for path, raw in stable_fields(body).items():
+        value = raw.strip()
+        if not value:
+            continue
+        if _field_owns(path):
+            owners[path] = value
+        elif value in known and len(value) >= _MIN_ATTRIBUTING_VALUE_LEN:
+            owners[path] = value
+    return owners
+
+
+#: The owning field's value IS a principal this engagement holds a session for,
+#: and it is not the caller. The strongest form available: the engine knows its
+#: own identities, so nothing the target sends can manufacture this.
+OWNING_FIELD_NAMES_PRINCIPAL = "owning_field_names_principal"
+
+#: The owning field carries a value that is none of the caller's identity values
+#: and is not what the caller's OWN anchored record carries under that same
+#: field. The object names an owner and the owner is not us.
+OWNING_FIELD_NOT_CALLER = "owning_field_not_caller"
+
+
+@dataclass(frozen=True)
+class OwnerClaim:
+    """Who the crossing response says its record belongs to.
+
+    Attributes:
+        route: :data:`OWNING_FIELD_NAMES_PRINCIPAL` or
+            :data:`OWNING_FIELD_NOT_CALLER`.
+        field: Schema path of the owning field, identifier segments
+            fingerprinted (:func:`_schema_path`).
+        principal: The held principal the value names, under
+            :data:`OWNING_FIELD_NAMES_PRINCIPAL`. Empty otherwise — an owner we
+            hold no session for is still an owner.
+        evidence: The rendered ``field=… owner_fp=… caller_fp=…`` line. Names
+            and salted fingerprints only, never a value.
+    """
+
+    route: str
+    field: str
+    principal: str = ""
+    evidence: str = ""
+
+
+def owner_claim(
+    *,
+    crossing_body: str,
+    self_body: str,
+    caller_identity: frozenset[str],
+    held_identities: dict[str, frozenset[str]],
+) -> OwnerClaim | None:
+    """Read the owning principal off the crossing RESPONSE, or return ``None``.
+
+    This is the ground truth an IDOR confirmation now rests on. It replaced
+    ``identical_rendering`` — the crossing response fingerprinting equal to B's
+    own authorized read — which is vacuous exactly where the direction rule puts
+    us: A is the least-privileged identity, B therefore outranks it, and B
+    reading A's record returns A's record. "Matches B's read" then proves *B can
+    also read this*, which in most applications is what B is for. Direction
+    needs A least-privileged and attribution-by-owner_read needs B not to
+    outrank A; both cannot hold, and it was the attribution half that was wrong.
+
+    Two routes, in strength order:
+
+    1. :data:`OWNING_FIELD_NAMES_PRINCIPAL` — the owning value is an identity
+       this engagement holds and it is not the caller's
+       (``email: admin@juice-sh.op`` in a body served to jim). Unforgeable: the
+       comparison is against what WE hold, so no response can satisfy it by
+       choosing its own bytes.
+    2. :data:`OWNING_FIELD_NOT_CALLER` — the owning value is none of the
+       caller's identity values AND differs from what the caller's own anchored
+       record carries under the same field (``UserId: 1`` where the caller's own
+       record says ``UserId: 2``). The caller's record is the reference point,
+       which is why the self arm must be ANCHORED before this may be asked.
+
+    Args:
+        crossing_body: What A was served for ``ref(B)``.
+        self_body: What A was served for its OWN anchored reference.
+        caller_identity: A's identity values, read from A's own session
+            (:meth:`~clinkz.agents._principal.Principal.identity_tokens`).
+        held_identities: Every OTHER principal's identity values, by label.
+
+    Returns:
+        The claim, or ``None`` when the body names no owner other than the
+        caller — an abstain, not a weaker finding.
+    """
+    everyone: set[str] = {v.strip() for v in caller_identity if v.strip()}
+    for tokens in held_identities.values():
+        everyone.update(v.strip() for v in tokens if v.strip())
+    owners = owning_fields(crossing_body, principal_values=frozenset(everyone))
+    if not owners:
+        return None
+    mine = {v.strip() for v in caller_identity if v.strip()}
+    caller_record = stable_fields(self_body)
+
+    # Route 1 first: a value checkable against our OWN identities beats one
+    # checkable only against the caller's record.
+    for path, value in sorted(owners.items()):
+        if value in mine:
+            continue
+        for label, tokens in sorted(held_identities.items()):
+            if value in tokens:
+                return OwnerClaim(
+                    route=OWNING_FIELD_NAMES_PRINCIPAL,
+                    field=_schema_path(path),
+                    principal=label,
+                    evidence=_attributing_field_line(path, value, caller_record.get(path)),
+                )
+
+    for path, value in sorted(owners.items()):
+        if value in mine:
+            continue
+        # Route 2 needs the application's OWN owner vocabulary. A field admitted
+        # only because its value named some principal has already been offered to
+        # route 1 and declined, so grading it here would be attribution by
+        # difference — which is ``stable_fields`` again, and is what the
+        # ``identical_rendering`` defect was.
+        if not _field_owns(path):
+            continue
+        # The caller's OWN record under the same field. ABSENT is not evidence:
+        # a field the caller's record does not carry says nothing about whom the
+        # crossing record belongs to, and reading absence as difference is how
+        # an envelope key present only on populated records would confirm.
+        ours = caller_record.get(path, "").strip()
+        if not ours or ours == value:
+            continue
+        return OwnerClaim(
+            route=OWNING_FIELD_NOT_CALLER,
+            field=_schema_path(path),
+            evidence=_attributing_field_line(path, value, ours),
+        )
+    return None
+
+
+def names_the_caller(body: str, caller_identity: frozenset[str]) -> str:
+    """The owning field by which *body* says it belongs to the CALLER, or ``""``.
+
+    The other half of :func:`owner_claim`, and the reason it is a separate
+    function: "is this my own record?" and "whose is it?" are the same question
+    asked in two directions, and the first one has to be answered **before** the
+    normalised fingerprint is consulted.
+
+    :func:`idor_normalise_body` folds every digit run to ``0``, which was
+    deliberate and cost nothing while attribution was a comparison of
+    renderings. It is not free any more: the commonest owning field there is is
+    a NUMBER (``UserId: 1``), so two records differing only in whose they are
+    normalise equal, and the "we just re-read A's own object" step would refuse
+    a genuine crossing. Asking the owner first fixes that without weakening the
+    fingerprint, which still does the job it is good at — telling one rendering
+    of a record from another.
+
+    Args:
+        body: The response body, verbatim.
+        caller_identity: The caller's identity values, from its own session.
+
+    Returns:
+        The schema path of the owning field carrying one of the caller's
+        identity values, or ``""``.
+    """
+    mine = {v.strip() for v in caller_identity if v.strip()}
+    if not mine:
+        return ""
+    for path, value in sorted(owning_fields(body, principal_values=frozenset(mine)).items()):
+        if value in mine:
+            return _schema_path(path)
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# ref(A) — the reference A actually owns
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SelfAnchor:
+    """Which reference is A's own, and how that was established.
+
+    Attributes:
+        anchored: Whether A's own reference was established at all. ``False``
+            means the class ABSTAINS: the self arm would otherwise carry a value
+            observed under somebody else's session, and every arm downstream is
+            a comparison that cannot tell which side it is standing on.
+        reference: The anchored ``ref(A)``.
+        field: The owning field that carried A's identity, for the evidence.
+        why: One sentence, for the trace and the lead.
+    """
+
+    anchored: bool
+    reference: str = ""
+    field: str = ""
+    why: str = ""
+
+
+def anchor_self_reference(
+    *,
+    candidates: tuple[tuple[str, str], ...],
+    caller_identity: frozenset[str],
+) -> SelfAnchor:
+    """Pick the reference A OWNS out of references probed AS A.
+
+    A record is A's when it names A as its owner — the same owning-field
+    vocabulary the crossing arm is graded on, pointed at the caller instead. The
+    comparison is against A's identity values, which come from A's own session
+    material and never from a response, so a target cannot nominate one of its
+    records as ours.
+
+    Args:
+        candidates: ``(reference, body)`` for each reference probed AS A, in
+            preference order. Only bodies A was actually served belong here: a
+            404's body names no owner and would anchor nothing anyway.
+        caller_identity: A's identity values.
+
+    Returns:
+        The anchor. ``anchored`` is False when no candidate names A — the honest
+        answer for a reference that is not user-owned at all (a product id), for
+        an endpoint whose records do not name their owner, and for a session
+        whose identity we cannot read (an opaque cookie and no username).
+    """
+    mine = {v.strip() for v in caller_identity if v.strip()}
+    if not mine:
+        return SelfAnchor(
+            anchored=False,
+            why=(
+                "the caller's own identity is unreadable from the session material we hold "
+                "(no supplied username, no identity claim in a bearer token), so no "
+                "reference can be shown to be the caller's"
+            ),
+        )
+    for reference, body in candidates:
+        if not reference or not body:
+            continue
+        for path, value in sorted(owning_fields(body, principal_values=frozenset(mine)).items()):
+            if value in mine:
+                return SelfAnchor(
+                    anchored=True,
+                    reference=reference,
+                    field=_schema_path(path),
+                    why=(
+                        f"reference {reference!r} returned a record naming the caller as its "
+                        f"owner under {_schema_path(path)}"
+                    ),
+                )
+    probed = len([c for c in candidates if c[1]])
+    return SelfAnchor(
+        anchored=False,
+        why=(
+            f"none of the {probed} reference(s) probed as the caller returned a record "
+            "naming the caller as its owner, so the caller's own reference could not be "
+            "established — a crossing that cannot be anchored is not a crossing"
+        ),
+    )
+
+
+#: Shortest reference :func:`reflection_explains` will accept as evidence of an
+#: echo. Four characters is long enough that a body containing it plausibly
+#: echoed it, and short enough to keep every opaque token and UUID in scope.
+_MIN_ECHOABLE_REFERENCE_LEN = 4
+
+
 def reflection_explains(crossing: ArmObservation, self_arm: ArmObservation) -> bool:
     """Whether the crossing arm's divergence is just our own reference echoed back.
 
@@ -447,8 +864,22 @@ def reflection_explains(crossing: ArmObservation, self_arm: ArmObservation) -> b
     normalised bodies is the same test ``_idor_reflection_only_divergence``
     makes in phase 1, and the echo guard the injection classes make on their own
     payloads.
+
+    **A SHORT reference cannot establish an echo**, and that is not a
+    refinement. Substitution is global: with ``ref(A)="2"`` and
+    ``ref(B)="1"``, rewriting every ``1`` in ``{"id":1,"UserId":1}`` produces
+    ``{"id":2,"UserId":2}`` — which IS A's record, byte for byte, so the guard
+    fires on the textbook sequential-integer crossing and calls the whole class
+    a reflection sink. What the test needs is a value distinctive enough that
+    finding it in the body means the body echoed it, and a one- or two-character
+    identifier is not that. :data:`_MIN_ECHOABLE_REFERENCE_LEN` is the floor;
+    below it the guard abstains, which costs nothing — a reflection sink whose
+    parameter takes a two-character value is caught by phase 1's dedicated
+    canary probe, which uses a minted token precisely so this cannot happen.
     """
     if not crossing.reference or not self_arm.reference:
+        return False
+    if len(crossing.reference) < _MIN_ECHOABLE_REFERENCE_LEN:
         return False
     if not crossing.body or not self_arm.body:
         return False
@@ -513,14 +944,30 @@ class IDORVerdict:
         tier: ``"multi_role"`` or ``"single_role"``. Declared by the registry
             (:class:`~clinkz.models.vuln_classes.MultiPrincipalRequirement`), not
             decided here; this records which one the run was in.
-        attribution: Which route attributed the crossing response to B, or ``""``.
+        attribution: The OWNING-FIELD route that attributed the crossing
+            response to somebody other than the caller
+            (:data:`OWNING_FIELD_NAMES_PRINCIPAL` /
+            :data:`OWNING_FIELD_NOT_CALLER`), or ``""``. This is the claim.
         attributing_fields: The fields that did it, as
             ``field=<name> owner_fp=<hash> caller_fp=<hash|absent>``. Names and
-            salted fingerprints only — see :func:`attribution_between`.
+            salted fingerprints only — see :func:`_attributing_field_line`.
         why_unconfirmed: The closed-vocabulary lead reason, or ``""``.
         detail: One sentence for the trace, the lead, and the evidence.
         arms_detail: Per-arm one-liners, rendered into the finding so a reviewer
             can re-derive the verdict rather than take it on trust.
+        anchored: Whether ``ref(A)`` was established from A's own identity
+            rather than taken from the crawl.
+        anchor_detail: How, or why not.
+        owning_field: The schema path of the field naming the owner.
+        corroboration: What B's own authorized read added
+            (:data:`ATTRIBUTION_IDENTICAL_RENDERING` /
+            :data:`ATTRIBUTION_STABLE_FIELDS`), or ``""``. **Never the ground
+            truth** — recorded because a second principal agreeing is worth
+            reporting, and load-bearing in no branch.
+        arms_inverted: The dispatch assertion failed — the self arm and the
+            crossing arm carried the same reference, or the self arm carried
+            something other than the anchored ``ref(A)``. A loud refusal, never
+            a quiet abstain: it means the run asked the wrong question.
     """
 
     confirmed: bool
@@ -532,11 +979,28 @@ class IDORVerdict:
     arms_detail: tuple[str, ...] = ()
     control_refused: bool = False
     object_is_public: bool = False
+    anchored: bool = False
+    anchor_detail: str = ""
+    owning_field: str = ""
+    corroboration: str = ""
+    arms_inverted: bool = False
 
 
 #: The tier names, so the registry, the agent and the tests spell them once.
 TIER_MULTI_ROLE = "multi_role"
 TIER_SINGLE_ROLE = "single_role"
+
+#: ``ref(A)`` could not be shown to be A's own. Registered in
+#: :data:`~clinkz.models.finding.UNPROVEN_WHY_UNCONFIRMED`.
+ANCHOR_NOT_ESTABLISHED = "self_reference_not_anchored_to_the_caller"
+
+#: The anonymous arm was never sent, so it refused nothing. An arm that was not
+#: dispatched proves nothing in either direction — the same rule
+#: :class:`~clinkz.agents._control_arm.ControlVerdict` applies to every control.
+ANONYMOUS_ARM_NOT_DISPATCHED = "anonymous_control_arm_not_dispatched"
+
+#: The crossing response names no owner other than the caller.
+NO_OWNING_FIELD = "crossing_response_names_no_owning_principal"
 
 
 def _arm_line(obs: ArmObservation | None, arm: IDORArm) -> str:
@@ -555,6 +1019,9 @@ def decide_idor(
     nonexistent: ArmObservation,
     anonymous: ArmObservation,
     owner_read: ArmObservation | None,
+    anchor: SelfAnchor,
+    caller_identity: frozenset[str],
+    held_identities: dict[str, frozenset[str]],
     principals_available: int,
     principals_required: int,
     single_role_why: str,
@@ -566,32 +1033,59 @@ def decide_idor(
     The order below is the order a reviewer would ask the questions in, and each
     step is a different fact about the target:
 
+    0. Is ``ref(A)`` A's? An unanchored self arm carries whatever the CRAWL saw
+       under somebody else's session, and every step after this is a comparison
+       that cannot tell which side it is standing on. Unanchored ⇒ abstain. Then
+       the dispatch assertion: the self and crossing arms must carry DIFFERENT
+       references and the self arm must carry the anchored one. A violation is a
+       loud refusal, because it means the run asked the wrong question.
     1. Did the crossing arm resolve at all? No ⇒ nothing happened.
-    2. Is the object PUBLIC (the anonymous arm was served it)? Yes ⇒ there is no
-       authorization boundary here, and this is not-applicable rather than
-       unproven — a lead per public endpoint would be a permanent false alarm.
+    2. Is the object PUBLIC? An anonymous caller — no session material at all —
+       being served the resource is DISQUALIFYING, full stop: if anonymous gets
+       it there is no boundary to cross, whatever else the bytes do. This used
+       to be one input to :func:`materially_differs`, so a per-caller
+       ``"liked":true`` decoration on the same review made the anonymous arm
+       "differ" and the crossing confirmed against a public record. An anonymous
+       arm that was never DISPATCHED refused nothing and abstains.
     3. Did the control refuse (``ref(∅)`` differs materially from ``ref(B)``)?
        No ⇒ the endpoint answers the same for any reference and the crossing
        response was never evidence. This is a control-arm KILL and discloses.
     4. Is the crossing response A's own object? Yes ⇒ we re-read A's record.
        And is the difference from A's own just our reference echoed back? A
        reflection sink defeats every other arm at once, so it gets its own step.
-    5. Is it positively attributable to B? Needs B's own authorized read, which
-       needs a second principal. Without one the answer is a LEAD, never a
-       finding: "not A's" is satisfied identically by a public catalogue record.
+    5. Does the OBJECT name an owner, and is that owner somebody other than the
+       caller? This is the claim (:func:`owner_claim`). No owning field ⇒
+       abstain: three negatives ("not A's, not nobody's, not everybody's") are
+       satisfied by a shared record behind a login exactly as well as by another
+       principal's record.
     6. Which DIRECTION did the arm run in? Every step above is satisfied by an
        administrator reading a customer's record, which is the application
        working. A crossing is evidence only when the caller holds no role that
        authorizes the read, so the arm must be dispatched from an identity that
-       does not outrank the owner — and whether it was is a fact about the
-       operator's declared hierarchy, not about the response.
+       does not outrank the owner — a fact about the operator's declared
+       hierarchy, not about the response.
+
+    **The tier rule sits between 5 and 6** and is unchanged: the registry
+    declares how many principals confirming needs, and a run holding fewer may
+    only lead. B's own authorized read is still dispatched, and is now
+    CORROBORATION rather than the ground truth — see :func:`owner_claim` for why
+    the two halves of the old spec could not both hold.
 
     Args:
-        self_arm: As A, ``ref(A)``.
+        self_arm: As A, the ANCHORED ``ref(A)``.
         crossing: As A, ``ref(B)``.
         nonexistent: As A, ``ref(∅)``.
         anonymous: No session, ``ref(B)``.
-        owner_read: As B, ``ref(B)``. ``None`` in the single-role tier.
+        owner_read: As B, ``ref(B)``. ``None`` in the single-role tier. B is a
+            principal the engagement HOLDS that A does not outrank — it is a
+            CANDIDATE owner, and on any run where ``ref(B)`` was reached by
+            incrementing the anchor it is generally not the actual owner. So
+            what this arm establishes is that a SECOND principal is served the
+            same record, which rules out a per-caller decoration; it is not the
+            owner's own read and the detail sentence does not call it one.
+        anchor: How ``ref(A)`` was established (:func:`anchor_self_reference`).
+        caller_identity: A's identity values, from A's own session.
+        held_identities: Every other principal's identity values, by label.
         principals_available: How many authenticated principals the run holds.
         principals_required: How many the registry says confirming needs.
         single_role_why: The registry's declared lead reason for having fewer.
@@ -604,8 +1098,10 @@ def decide_idor(
         privilege_why: What was undeclared, for the lead.
 
     Returns:
-        The verdict. ``confirmed`` is only ever True with every arm cleared,
-        ``principals_available >= principals_required`` AND a known direction.
+        The verdict. ``confirmed`` is only ever True with ``ref(A)`` anchored,
+        every arm cleared, an owning field naming somebody other than the
+        caller, ``principals_available >= principals_required`` AND a known
+        direction.
     """
     tier = TIER_MULTI_ROLE if principals_available >= principals_required else TIER_SINGLE_ROLE
     arms = tuple(
@@ -620,7 +1116,41 @@ def decide_idor(
     )
 
     def verdict(**kwargs: Any) -> IDORVerdict:
+        kwargs.setdefault("anchored", anchor.anchored)
+        kwargs.setdefault("anchor_detail", anchor.why)
         return IDORVerdict(tier=tier, arms_detail=arms, **kwargs)
+
+    # 0. The anchor. ``ref(A)`` must be a reference A OWNS, established from A's
+    #    own session — not the value the crawl happened to see under whichever
+    #    identity was crawling. Without it the self arm is another principal's
+    #    record and the "crossing" arm may be A's own, which is exactly what
+    #    engagement 20fad9dc shipped five times.
+    if not anchor.anchored:
+        return verdict(
+            confirmed=False,
+            why_unconfirmed=ANCHOR_NOT_ESTABLISHED,
+            detail=(
+                "the caller's own reference could not be established, so no arm can be "
+                f"attributed: {anchor.why}"
+            ),
+        )
+
+    # 0b. The dispatch assertion, re-derived here rather than trusted. If the
+    #     self arm is not carrying the anchored reference, or the two arms carry
+    #     the same one, the arms are inverted or collapsed and the run asked a
+    #     different question from the one it is about to answer.
+    if self_arm.reference != anchor.reference or self_arm.reference == crossing.reference:
+        return verdict(
+            confirmed=False,
+            arms_inverted=True,
+            why_unconfirmed=ANCHOR_NOT_ESTABLISHED,
+            detail=(
+                f"ARMS INVERTED: the self arm carried {self_arm.reference!r} and the "
+                f"crossing arm {crossing.reference!r}, while the caller's own anchored "
+                f"reference is {anchor.reference!r} — the arms do not answer the question "
+                "this oracle grades and the result is refused"
+            ),
+        )
 
     if not crossing.resolves():
         return verdict(
@@ -631,18 +1161,28 @@ def decide_idor(
             ),
         )
 
-    # 2. Public object. The anonymous arm carries NO session material at all, so
-    #    being served the same record means the target hands it to anyone. There
-    #    is no boundary to cross, and saying so is a statement about the endpoint
-    #    rather than about our coverage.
-    if anonymous.resolves() and not materially_differs(anonymous, crossing):
+    # 2. Public object. DISQUALIFYING rather than one input to a difference
+    #    test: on ``/rest/products/2/reviews`` an anonymous caller was served
+    #    the same review — same ``_id`` — decorated with a per-caller
+    #    ``"liked":true``, 13 bytes that made ``materially_differs`` True and
+    #    let a public record confirm. If anonymous gets it there is no boundary.
+    if not anonymous.dispatched:
+        return verdict(
+            confirmed=False,
+            why_unconfirmed=ANONYMOUS_ARM_NOT_DISPATCHED,
+            detail=(
+                "the anonymous arm was never dispatched, so nothing established that the "
+                "resource is not simply public — an arm that was not sent refused nothing"
+            ),
+        )
+    if anonymous.resolves():
         return verdict(
             confirmed=False,
             object_is_public=True,
             detail=(
-                "the anonymous arm — no session material at all — was served the same "
-                f"resource (status={anonymous.status}), so the object is public and "
-                "there is no authorization boundary to cross"
+                "the anonymous arm — no session material at all — was served the resource "
+                f"(status={anonymous.status}, {len(anonymous.body or '')} bytes), so the "
+                "object is public and there is no authorization boundary to cross"
             ),
         )
 
@@ -662,8 +1202,30 @@ def decide_idor(
             ),
         )
 
-    # 4. A's own object, read back.
-    if self_arm.resolves() and not materially_differs(self_arm, crossing):
+    # 4. A's own object, read back. The OWNING FIELD is asked first and the
+    #    fingerprint only when the body names no owner, because
+    #    ``idor_normalise_body`` folds digit runs and the commonest owning field
+    #    is a number: ``{"id":1,"UserId":1}`` and ``{"id":2,"UserId":2}``
+    #    normalise to the same string, so a fingerprint-only test refuses the
+    #    textbook crossing as "we re-read our own record". The folding stays —
+    #    it is what makes two renderings of ONE record compare equal — and the
+    #    question it cannot answer is asked of the owner instead.
+    caller_owns = names_the_caller(crossing.body or "", caller_identity)
+    if caller_owns:
+        return verdict(
+            confirmed=False,
+            control_refused=True,
+            detail=(
+                f"the record returned for {crossing.reference!r} names the caller as its "
+                f"owner under {caller_owns} — it is A's own object and no boundary was "
+                "crossed"
+            ),
+        )
+    if (
+        not owning_fields(crossing.body or "", principal_values=caller_identity)
+        and self_arm.resolves()
+        and not materially_differs(self_arm, crossing)
+    ):
         return verdict(
             confirmed=False,
             control_refused=True,
@@ -673,11 +1235,26 @@ def decide_idor(
             ),
         )
 
-    # 4b. Reflection. The crossing body differs from A's only by the reference
-    #     we injected, so the parameter echoed us rather than selecting an
-    #     object. Not a lead — this is not an access-control candidate at all,
-    #     the same verdict phase 1 gives a pure reflection sink.
-    if reflection_explains(crossing, self_arm):
+    # 5. The owning field. The claim rests HERE — on what the object says about
+    #    itself — and not on a comparison with B's read, which an outranking B
+    #    satisfies by being allowed to read A's records.
+    claim = owner_claim(
+        crossing_body=crossing.body or "",
+        self_body=self_arm.body or "",
+        caller_identity=caller_identity,
+        held_identities=held_identities,
+    )
+
+    # 4b. Reflection, asked only of a body that names NO owner. The crossing
+    #     body differs from A's only by the reference we injected, so the
+    #     parameter echoed us rather than selecting an object. Not a lead — this
+    #     is not an access-control candidate at all, the same verdict phase 1
+    #     gives a pure reflection sink. A response carrying an owning field is a
+    #     RECORD by the same reading that attributes it, and asking whether a
+    #     record is an echo of its own identifier is a question with a
+    #     misleading answer: substitution is global, so rewriting the owner's id
+    #     into the caller's turns the owner's record into the caller's.
+    if claim is None and reflection_explains(crossing, self_arm):
         return verdict(
             confirmed=False,
             control_refused=control_refused,
@@ -688,75 +1265,103 @@ def decide_idor(
             ),
         )
 
-    # 5. Attribution. Everything above is "not A's, not nobody's, not
-    #    everybody's" — three negatives that a shared record behind a login
-    #    satisfies exactly as well as another principal's record does.
-    if tier == TIER_SINGLE_ROLE or owner_read is None or not owner_read.resolves():
+    if claim is None:
         return verdict(
             confirmed=False,
             control_refused=True,
+            why_unconfirmed=NO_OWNING_FIELD,
+            detail=(
+                f"the response to {crossing.reference!r} differs from the caller's own "
+                "record, from a never-issued reference of the same shape and from what an "
+                "anonymous caller is served — but it names no owning principal other than "
+                "the caller, so there is nobody it can be said to belong to; three "
+                "negatives are satisfied by a shared record behind a login exactly as well "
+                "as by another principal's record"
+            ),
+        )
+
+    # B's own authorized read. CORROBORATION only: it is dispatched, recorded
+    # and reported, and no branch below turns on it.
+    corroboration = ""
+    if owner_read is not None and owner_read.resolves():
+        corroboration, _ = attribution_between(
+            owner_body=owner_read.body or "",
+            crossing_body=crossing.body or "",
+            self_body=self_arm.body or "",
+        )
+
+    fields = (claim.evidence,) if claim.evidence else ()
+
+    # The tier rule. Declared by the registry, counted here.
+    if tier == TIER_SINGLE_ROLE:
+        return verdict(
+            confirmed=False,
+            control_refused=True,
+            attribution=claim.route,
+            attributing_fields=fields,
+            owning_field=claim.field,
+            corroboration=corroboration,
             why_unconfirmed=single_role_why,
             detail=(
                 f"{principals_available} authenticated principal(s) available, "
-                f"{principals_required} required: the response differs from A's own, from a "
-                "never-issued reference and from what an anonymous caller is served — but "
-                "with no second principal's authorized read of the same object there is "
-                "nothing to attribute it TO, and a shared record behind a login satisfies "
-                "all three of those the same way another principal's record does"
+                f"{principals_required} required: reference {crossing.reference!r} returned "
+                f"a record naming {claim.field} as its owner, which is not the caller — but "
+                "with a single role there is no second authorized read to corroborate it "
+                "against, and this tier may only lead"
             ),
         )
 
-    route, values = attribution_between(
-        owner_body=owner_read.body or "",
-        crossing_body=crossing.body or "",
-        self_body=self_arm.body or "",
-    )
-    if not route:
-        return verdict(
-            confirmed=False,
-            control_refused=True,
-            detail=(
-                f"the crossing response is not attributable to {owner_read.principal}: it "
-                "matches neither that principal's own authorized read of the same reference "
-                "nor enough of its field values to identify the record"
-            ),
-        )
-
-    # 6. Direction. Everything above establishes that A was served B's record.
-    #    Whether that is a BROKEN boundary depends on which way the arm ran: no
-    #    role authorizes a customer to read another customer's basket, and most
-    #    applications do authorize an administrator to. The rank is the
-    #    operator's declaration, and without it the honest answer is that the
-    #    observation was made and its direction is unknown.
+    # 6. Direction.
     if not privilege_order_known:
         return verdict(
             confirmed=False,
             control_refused=True,
-            attribution=route,
-            attributing_fields=values,
+            attribution=claim.route,
+            attributing_fields=fields,
+            owning_field=claim.field,
+            corroboration=corroboration,
             why_unconfirmed=PRIVILEGE_ORDER_UNDECLARED,
             detail=(
-                f"as {self_arm.principal}, reference {crossing.reference!r} returned the "
-                f"record {owner_read.principal} is served by its own authorized read "
-                f"({route}) — but {privilege_why or 'the privilege order was not declared'}, "
+                f"as {self_arm.principal}, reference {crossing.reference!r} returned a "
+                f"record naming an owner other than the caller under {claim.field} "
+                f"({claim.route}) — but {privilege_why or 'the privilege order was not declared'}, "
                 "so this cannot be told apart from a more privileged caller legitimately "
                 "reading a less privileged one's record"
             ),
         )
 
+    named = f" ({claim.principal})" if claim.principal else ""
     return verdict(
         confirmed=True,
         control_refused=True,
-        attribution=route,
-        attributing_fields=values,
+        attribution=claim.route,
+        attributing_fields=fields,
+        owning_field=claim.field,
+        corroboration=corroboration,
         detail=(
-            f"as {self_arm.principal}, reference {crossing.reference!r} returned the record "
-            f"{owner_read.principal} is served by its own authorized read ({route}"
-            + (f": {', '.join(values[:4])}" if values else "")
-            + f"); the never-issued reference {nonexistent.reference!r} did not return it "
+            f"as {self_arm.principal}, whose own anchored reference is "
+            f"{anchor.reference!r}, reference {crossing.reference!r} returned a record "
+            f"naming a different owner under {claim.field}{named} ({claim.route}); the "
+            f"never-issued reference {nonexistent.reference!r} did not return it "
             f"(status={nonexistent.status}) and neither did an anonymous caller "
-            f"(status={anonymous.status}); the arm was dispatched from "
-            f"{self_arm.principal}, which does not outrank {owner_read.principal}"
+            f"(status={anonymous.status}); "
+            + (
+                # NOT "the owner's own read". The arm is dispatched as B, and B is
+                # a principal the engagement HOLDS that A does not outrank —
+                # while ref(B) comes from incrementing the anchored ref(A), so the
+                # record it lands on belongs to whoever owns it. On engagement
+                # aba713f1 all three crossings named user 3 under the owning field
+                # while this arm ran as admin. What it shows is that a second
+                # principal is served the same record, which rules out a
+                # per-caller decoration; naming that principal the owner claimed
+                # something the run's own arms contradict.
+                f"a second principal's authorized read of the same reference "
+                f"({owner_read.principal if owner_read is not None else 'B'}) returns "
+                f"the same record ({corroboration})"
+                if corroboration
+                else "a second principal's authorized read did not corroborate it, "
+                "which the claim does not rest on"
+            )
         ),
     )
 

@@ -7,8 +7,9 @@ Guards that encode failures which **actually happened**, not hypotheticals.
 | `outputs_guard.py` | any path under `outputs/` (even `git add -f`) | 44 run artifacts once reached a public repo and needed a full history rewrite to purge |
 | `secret_guard.py` | credential shapes (`sk-ant-…`, `AKIA…`, `gh[pousr]_…`, PRIVATE KEY blocks) and `.env` files | prevent secret leakage |
 | `gates.py` | `ruff check` / `ruff format --check` failures on `src/ tests/` (when code is staged) | PR #84 went red in CI on a format miss a local `ruff check` alone missed |
+| `context_budget.py` | an always-loaded instruction file over its character budget, or a domain member with no tier | `CLAUDE.md` reached 152,205 chars against a ~150k load limit that truncates **silently** — the gate discipline and the NEVER rules were the last 3,120 characters, i.e. first to be cut |
 
-## Three layers — and which of them can be bypassed
+## Five layers — and which of them can be bypassed
 
 Only the last one is fail-closed. State that plainly rather than assuming defence
 in depth: the first two were each defeated from a fresh clone (LESSONS #34).
@@ -25,7 +26,7 @@ in depth: the first two were each defeated from a fresh clone (LESSONS #34).
    which is exactly why this layer is a backstop, not a gate. It also only reads
    the index of `-C`'s target or the session's own repo.
 
-2. **Git pre-commit hook** — `.githooks/pre-commit` runs all three guards on
+2. **Git pre-commit hook** — `.githooks/pre-commit` runs all four guards on
    every commit, for human and agent alike. Activate it **once per clone**:
 
    ```bash
@@ -69,7 +70,33 @@ in depth: the first two were each defeated from a fresh clone (LESSONS #34).
    Findings name `<source>:<line>` and redact the identifier: a session URL echoed
    into a public Actions log is the same disclosure the guard exists to prevent.
 
+5. **CI `context-budget` job** — `.github/workflows/ci.yml`, running
+   [`context_budget.py`](context_budget.py). The fail-closed half of the
+   instruction-file bound. The other guards here protect the repository from what
+   a commit *adds*; this one protects the agent's own instructions from what they
+   *become*. `CLAUDE.md` grew to 152,205 characters against a ~150k load limit
+   whose failure mode is a silent cut — so the first symptom would have been rules
+   quietly not in effect, with nothing in the transcript naming which. **A bound
+   that degrades quietly is not a bound.**
+
+   Two properties earn it a job rather than a step: it needs no install (pure
+   stdlib, so it stays fast and reports independently, like `leak-guard`), and it
+   must run on **doc-only PRs**, which are exactly the PRs that grow an
+   instruction file and exactly the ones CLAUDE.md lets skip gates 1–2.
+
+   Its domain is **computed** — every tracked `CLAUDE.md` in the tree, so a new
+   always-loaded file cannot silently escape the budget — while only the tier
+   CLASSIFICATION is hand-maintained, and a domain member with no tier **fails**
+   rather than being skipped (the guard-domain law, CLAUDE.md invariant 67). It
+   measures decoded, newline-normalised **characters**, not bytes: at the split
+   `wc -c` said 155,526 where the loader saw 152,205, a 2.2% gap in the direction
+   that flatters the file.
+
+   Locally the pre-commit hook runs it with `--staged`, measuring the index rather
+   than the working tree — measuring the tree there would let a staged-but-unsaved
+   edit through.
+
 Never bypass a layer with `--no-verify` (forbidden by CLAUDE.md's pre-push gates).
-Fix the root cause instead. Regression coverage for the first three lives in
+Fix the root cause instead. Regression coverage for the first three and the fifth lives in
 [`tests/test_hooks/test_commit_guards.py`](../../tests/test_hooks/test_commit_guards.py);
 the fourth carries its own self-test, run as a step of the job it guards.
