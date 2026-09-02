@@ -73,17 +73,28 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from clinkz.agents.exploit import _MAX_COMPONENT_CVE_MATCHES  # noqa: E402
-from clinkz.knowledge.component_cves import ComponentCVEMatch, match_components  # noqa: E402
+from clinkz.agents.exploit import (  # noqa: E402
+    _MAX_COMPONENT_CVE_MATCHES,
+    ExploitAgent,
+)
+from clinkz.discovery.versions import parse_version, version_satisfies  # noqa: E402
+from clinkz.knowledge.component_cves import (  # noqa: E402
+    CARRIABLE_VECTORS,
+    KNOWN_COMPONENT_CVES,
+    ComponentCVEMatch,
+    MatchDisposition,
+    match_components,
+)
 from clinkz.models.recon import (  # noqa: E402
     DetectedComponent,
     VersionProvenance,
+    version_provenance_rank,
 )
 from clinkz.models.scan import Endpoint  # noqa: E402
 from clinkz.tools.nmap import NmapTool  # noqa: E402
@@ -358,31 +369,32 @@ def _endpoints_from_bundle(report: dict[str, Any], records: list[dict[str, Any]]
         cmd = payload.get("cmd")
         if isinstance(cmd, str):
             urls.update(re.findall(r"https?://[^\s'\"]+", cmd))
-    return [Endpoint(url=url, method="GET") for url in sorted(urls)]
+    # Parameter NAMES come off the recovered URL's own query string. That is a
+    # recovery, not an invention: the query is part of the URL the bundle
+    # recorded. It matters because the endpoint choice now requires a
+    # parameterised surface — every ``_test_*`` this source dispatches to
+    # carries its probe as a parameter value — so leaving ``params`` empty would
+    # make every bundle look like a target with nowhere to send anything, which
+    # is a fact about this recovery function rather than about the run.
+    endpoints: list[Endpoint] = []
+    for url in sorted(urls):
+        names = list(dict.fromkeys(parse_qs(urlparse(url).query, keep_blank_values=True)))
+        endpoints.append(Endpoint(url=url, method="GET", params=names))
+    return endpoints
 
 
 def _target_url_for(match: ComponentCVEMatch, endpoints: list[Endpoint]) -> str:
-    """``ExploitAgent._component_cve_target_url``, replayed verbatim.
+    """The agent's own endpoint choice — CALLED, not reimplemented.
 
-    Kept in step with the agent by construction: the same port constraint, the
-    same root preference, the same deterministic tie-break. A replay that scored
-    by a rule of its own would be measuring this script.
+    This used to be a verbatim copy of ``_component_cve_target_url``: the same
+    port constraint, the same root preference, the same tie-break, maintained by
+    hand in two files. The copy went stale the moment the agent stopped
+    preferring the root, and a replay scoring by a rule of its own measures the
+    script rather than the engine. The method is a ``@staticmethod``, so there
+    is no reason for the copy to exist.
     """
-    if not endpoints:
-        return ""
-    candidates = list(endpoints)
-    if match.component.port:
-        on_port = [
-            ep
-            for ep in candidates
-            if (urlparse(ep.url).port or (443 if urlparse(ep.url).scheme == "https" else 80))
-            == match.component.port
-        ]
-        if on_port:
-            candidates = on_port
-    roots = [ep for ep in candidates if urlparse(ep.url).path in ("", "/")]
-    pool = roots or candidates
-    return min(pool, key=lambda ep: (len(urlparse(ep.url).path), ep.url)).url
+    endpoint = ExploitAgent._component_cve_target_endpoint(match, endpoints)
+    return "" if endpoint is None else endpoint.url
 
 
 #: The control observation. A published CVE in this engine's own catalogue whose
@@ -444,7 +456,7 @@ def apply_positive_control(replay: BundleReplay) -> BundleReplay | None:
     dispatchable = [
         m
         for m in controlled.matches[:_MAX_COMPONENT_CVE_MATCHES]
-        if m.is_confirmable and _target_url_for(m, controlled.endpoints)
+        if m.can_dispatch and _target_url_for(m, controlled.endpoints)
     ]
     controlled.reserved = len(dispatchable)
     controlled.displaced = max(0, controlled.reserved - controlled.headroom)
@@ -536,7 +548,7 @@ def apply_package_control(replay: BundleReplay) -> BundleReplay | None:
     dispatchable = [
         m
         for m in controlled.matches[:_MAX_COMPONENT_CVE_MATCHES]
-        if m.is_confirmable and _target_url_for(m, controlled.endpoints)
+        if m.can_dispatch and _target_url_for(m, controlled.endpoints)
     ]
     controlled.reserved = len(dispatchable)
     controlled.displaced = max(0, controlled.reserved - controlled.headroom)
@@ -572,7 +584,7 @@ def package_control_verdicts(controlled: BundleReplay) -> dict[str, bool]:
     reserved_names = {
         m.component.name.lower()
         for m in controlled.matches[:_MAX_COMPONENT_CVE_MATCHES]
-        if m.is_confirmable and _target_url_for(m, controlled.endpoints)
+        if m.can_dispatch and _target_url_for(m, controlled.endpoints)
     }
 
     # Asserted LITERALLY, against the two provenance values by name, and NOT by
@@ -669,7 +681,7 @@ def replay_bundle(report_path: Path) -> BundleReplay | None:
     dispatchable = [
         m
         for m in replay.matches[:_MAX_COMPONENT_CVE_MATCHES]
-        if m.is_confirmable and _target_url_for(m, replay.endpoints)
+        if m.can_dispatch and _target_url_for(m, replay.endpoints)
     ]
     replay.reserved = len(dispatchable)
     # On a saturated plan every reserved slot is one the Tier-1 fill had taken,
@@ -693,6 +705,251 @@ def replay_corpus(outputs_root: Path) -> list[BundleReplay]:
             results.append(replayed)
     return results
 
+
+
+# ---------------------------------------------------------------------------
+# The per-ENTRY positive control
+# ---------------------------------------------------------------------------
+#
+# The bundle controls above answer "does the instrument register a hit at all".
+# They cannot answer "can THIS row ever fire", and the difference is the whole
+# reason a catalogue is allowed to grow: a row whose component pattern nothing
+# can match, or whose predicate excludes its own introduced version, is
+# unreachable catalogue. It costs nothing, it emits nothing, and every zero it
+# produces is indistinguishable from a target that does not run that component.
+# That was the exact state of the five npm rows before ``_package_identity``
+# existed, and it was invisible for as long as nobody asked the question per
+# row.
+#
+# So each entry is probed with an observation SYNTHESISED from its own
+# declaration and then put through the REAL matcher. The synthesis is a guess;
+# ``match_components`` is the oracle. An entry no synthesis can trigger is
+# reported as UNREACHABLE rather than skipped, because a skipped row and a
+# passing row print the same way.
+
+
+#: Regex metacharacters stripped when deriving a candidate literal from a
+#: component pattern. The derivation is deliberately crude — it only has to
+#: produce a CANDIDATE, and ``_name_matches`` decides whether it was right.
+_PATTERN_NOISE = re.compile(r"[\^$()?]|\\s\+|\\w\*|\\s\*")
+
+
+def _candidate_names(pattern: str) -> list[str]:
+    r"""Plausible component names for a catalogue pattern, best-effort.
+
+    Splits the alternation and strips the anchors and the small set of escapes
+    the catalogue actually uses, so ``r"^solr$|apache\s+solr"`` yields
+    ``["solr", "apachesolr"]`` and ``r"apache(\s+http\w*)?$|^httpd$"`` yields
+    ``["apache", "httpd"]``. Wrong guesses are harmless: every candidate is
+    checked against the real matcher, and an entry with no working candidate is
+    reported.
+    """
+    names: list[str] = []
+    for branch in pattern.split("|"):
+        literal = _PATTERN_NOISE.sub("", branch).strip()
+        if literal:
+            names.append(literal)
+        # A branch with an optional group also matches the part before it.
+        head = branch.split("(", 1)[0]
+        head_literal = _PATTERN_NOISE.sub("", head).strip()
+        if head_literal and head_literal not in names:
+            names.append(head_literal)
+    return names
+
+
+def _in_range_version(predicate: str) -> str:
+    """A version string that should satisfy *predicate*, or ``""``.
+
+    Reads the predicate's own bounds rather than a table: the introduced version
+    of an interval is inside it by construction (the inclusive lower bound
+    normalises to ``X-0``), and an upper-bounded predicate is probed just below
+    its bound. Verified by ``version_satisfies`` at the call site — this only
+    proposes.
+    """
+    predicate = (predicate or "").strip()
+    if not predicate or predicate == "*":
+        return "1.0.0"
+    if predicate[0] in "[(":
+        inner = predicate[1:-1]
+        low, _, high = inner.partition(",")
+        low, high = low.strip(), high.strip()
+        if predicate[0] == "[":
+            return low
+        # An OPEN lower bound excludes its own core, so step into the interval.
+        core = parse_version(low)
+        return f"{core[0]}.{core[1]}.{core[2] + 1}" if core else high
+    for op in ("<=", ">=", "<", ">", "="):
+        if predicate.startswith(op):
+            bound = predicate[len(op) :].strip()
+            core = parse_version(bound)
+            if core is None:
+                return ""
+            if op in ("<", "<="):
+                if op == "<=":
+                    return bound
+                return _version_below(core)
+            return bound
+    return predicate
+
+
+def _version_below(core: tuple[int, int, int]) -> str:
+    """The nearest version strictly below *core*, borrowing across segments.
+
+    The naive form — decrement the patch, else decrement the minor — emitted
+    ``3.-1.99`` for ``<3.0.0`` (jQuery CVE-2015-9251), which no parser accepts,
+    so the probe silently produced nothing and the row reported UNREACHABLE. The
+    control caught it, which is the control working: an entry whose probe cannot
+    be built is exactly as unverified as an entry nothing matches, and both had
+    to be visible rather than skipped.
+    """
+    major, minor, patch = core
+    if patch:
+        return f"{major}.{minor}.{patch - 1}"
+    if minor:
+        return f"{major}.{minor - 1}.99"
+    if major:
+        return f"{major - 1}.99.99"
+    # ``<0.0.0`` is satisfied only by a prerelease of 0.0.0 (SemVer 11).
+    return "0.0.0-0"
+
+
+@dataclass
+class EntryControl:
+    """One catalogue row, probed with an observation built from its own bounds."""
+
+    cve_id: str
+    component_pattern: str
+    affected: str
+    probe_name: str = ""
+    probe_version: str = ""
+    provenance: VersionProvenance = VersionProvenance.LOCKFILE
+    matched: bool = False
+    disposition: str = ""
+    expected_disposition: str = ""
+    reserved: int = 0
+
+    @property
+    def reachable(self) -> bool:
+        """Whether a synthesised in-range observation reaches this row at all."""
+        return self.matched
+
+    @property
+    def dispositions_agree(self) -> bool:
+        """Whether the row became what its own declaration says it may become."""
+        return self.disposition == self.expected_disposition
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cve_id": self.cve_id,
+            "affected": self.affected,
+            "probe": f"{self.probe_name} {self.probe_version}".strip(),
+            "provenance": self.provenance.value,
+            "matched": self.matched,
+            "disposition": self.disposition,
+            "expected_disposition": self.expected_disposition,
+            "reserved": self.reserved,
+        }
+
+
+#: An endpoint set every dispatchable row can be pointed at. Two endpoints, one
+#: of them parameterised, because the endpoint choice now REQUIRES a parameter
+#: to carry — a control built on a parameter-less root would report every row as
+#: unreservable and be measuring the fixture.
+def _control_endpoints() -> list[Endpoint]:
+    return [
+        Endpoint(url="http://control.invalid/", method="GET"),
+        Endpoint(url="http://control.invalid/app", method="GET", params=["q"]),
+    ]
+
+
+def run_entry_controls() -> list[EntryControl]:
+    """Probe every catalogue row with an in-range observation of its own component.
+
+    Pure and offline. For each entry: derive a candidate name from the component
+    pattern and a candidate version from the affected predicate, run the pair
+    through ``match_components`` — the same function an engagement calls — and
+    record whether the row fired and what it became.
+
+    The provenance used is the strongest one the row declares itself
+    identifiable by, because that is the only grade at which the row is even
+    claimed to be observable; probing an ``ejs`` entry with a banner would
+    measure the ``identifiable_by`` gate rather than the range.
+    """
+    endpoints = _control_endpoints()
+    controls: list[EntryControl] = []
+    for entry in KNOWN_COMPONENT_CVES:
+        allowed = entry.identifiable_by
+        provenance = (
+            VersionProvenance.LOCKFILE
+            if allowed is None
+            else min(allowed, key=version_provenance_rank)
+        )
+        expected = (
+            MatchDisposition.DISPATCH.value
+            if (entry.confirming_test_method and entry.vector in CARRIABLE_VECTORS)
+            else MatchDisposition.LEAD.value
+        )
+        control = EntryControl(
+            cve_id=entry.cve_id,
+            component_pattern=entry.component,
+            affected=entry.affected,
+            provenance=provenance,
+            expected_disposition=expected,
+        )
+        version = _in_range_version(entry.affected)
+        for name in _candidate_names(entry.component):
+            if not version or not version_satisfies(version, entry.affected):
+                break
+            observed = DetectedComponent(
+                name=name,
+                version=version,
+                source="entry_control:SYNTHESISED (never observed)",
+                provenance=provenance,
+            )
+            hits = [m for m in match_components([observed]) if m.cve.cve_id == entry.cve_id]
+            if not hits:
+                continue
+            match = hits[0]
+            control.probe_name = name
+            control.probe_version = version
+            control.matched = True
+            control.disposition = match.disposition.value
+            control.reserved = int(
+                match.can_dispatch and bool(_target_url_for(match, endpoints))
+            )
+            break
+        controls.append(control)
+    return controls
+
+
+def render_entry_controls(controls: list[EntryControl]) -> str:
+    """The per-entry control table — one row per catalogue entry, always printed."""
+    lines = [
+        "",
+        "PER-ENTRY POSITIVE CONTROL (synthesised in-range observation -> real matcher)",
+        "-" * 100,
+        f"{'CVE':<18} {'affected':<20} {'probe':<26} {'fired':<6} "
+        f"{'became':<9} {'expected':<9} resv",
+    ]
+    for c in sorted(controls, key=lambda x: x.cve_id):
+        probe = f"{c.probe_name} {c.probe_version}".strip() or "(none derivable)"
+        lines.append(
+            f"{c.cve_id:<18} {c.affected:<20} {probe:<26} "
+            f"{('yes' if c.matched else 'NO'):<6} "
+            f"{(c.disposition or '-'):<9} {c.expected_disposition:<9} {c.reserved}"
+        )
+    unreachable = [c.cve_id for c in controls if not c.reachable]
+    disagreeing = [c.cve_id for c in controls if c.reachable and not c.dispositions_agree]
+    lines.append("")
+    lines.append(f"  entries probed ....... {len(controls)}")
+    lines.append(f"  fired ................ {sum(1 for c in controls if c.matched)}")
+    lines.append(
+        f"  reserved a slot ...... {sum(c.reserved for c in controls)} "
+        "(dispatchable rows, pointed at a parameterised endpoint)"
+    )
+    lines.append(f"  UNREACHABLE .......... {len(unreachable)} {unreachable or ''}")
+    lines.append(f"  disposition mismatch . {len(disagreeing)} {disagreeing or ''}")
+    return "\n".join(lines)
 
 def _render(results: list[BundleReplay]) -> str:
     lines: list[str] = []
@@ -827,10 +1084,52 @@ def main() -> int:
         return 2
 
     results = replay_corpus(outputs_root)
+    # The per-entry control runs FIRST and unconditionally, because it is the
+    # only part of this driver that does not depend on what happens to be in
+    # ``outputs/``. Every bundle number below is a statement about stored runs;
+    # this one is a statement about the catalogue, and a catalogue row that
+    # cannot fire makes every zero underneath it unreadable.
+    entry_controls = run_entry_controls()
     if args.json:
-        print(json.dumps([r.to_dict() for r in results], indent=2))
+        print(
+            json.dumps(
+                {
+                    "entry_controls": [c.to_dict() for c in entry_controls],
+                    "bundles": [r.to_dict() for r in results],
+                },
+                indent=2,
+            )
+        )
     else:
+        print(render_entry_controls(entry_controls))
         print(_render(results))
+
+    unreachable = [c.cve_id for c in entry_controls if not c.reachable]
+    if unreachable:
+        print(
+            "ENTRY CONTROL FAILED: no synthesised in-range observation reaches "
+            f"{len(unreachable)} catalogue row(s) - {', '.join(unreachable)}. An entry "
+            "nothing can match is unreachable catalogue: it emits nothing and every zero "
+            "it produces is indistinguishable from a target that does not run it",
+            file=sys.stderr,
+        )
+        return 1
+    mismatched = [c.cve_id for c in entry_controls if not c.dispositions_agree]
+    if mismatched:
+        print(
+            "ENTRY CONTROL FAILED: these rows became something other than what their own "
+            f"declaration allows - {', '.join(mismatched)}",
+            file=sys.stderr,
+        )
+        return 1
+    if not any(c.reserved for c in entry_controls):
+        print(
+            "ENTRY CONTROL FAILED: not one catalogue row reserved a plan slot, so the "
+            "fourth plan source is lead-only by construction and the reservation "
+            "arithmetic below is untested",
+            file=sys.stderr,
+        )
+        return 1
 
     # A measurable bundle whose reservation is non-zero and whose plan was NOT
     # saturated should have been absorbed by headroom; anything else is a
@@ -844,17 +1143,47 @@ def main() -> int:
             return 1
 
     # A corpus of zeros is evidence only if the instrument can register a hit.
-    # A control that reserves nothing means the matcher, the endpoint recovery or
-    # the reservation arithmetic is dead, and every zero above is uninterpretable.
+    #
+    # What this control asserts CHANGED, and the change is the finding rather
+    # than a loosened test. It used to require the Apache substitution to
+    # RESERVE a slot. Both Apache rows are path-traversal CVEs; the file-read
+    # oracle carries its probe as a query-parameter value and never mutates the
+    # URL path, so the reserved slot was spent on a request the CVE is not
+    # reachable by. They are ``CVEVector.URL_PATH`` now and reserve nothing, so
+    # requiring a reservation here would be requiring the defect back.
+    #
+    # The substitution still has to register — a matcher that no longer FIRES on
+    # a known-affected version is dead, and every zero above uninterpretable —
+    # so the claim moves from "reserved" to "matched, and became exactly what
+    # its row declares". The dispatch half of the instrument is proved instead
+    # by ``run_entry_controls`` (per row, above) and by the package control's
+    # log4j arm (below), both of which do reserve.
     measurable = [r for r in results if r.measurable]
     controls = [c for c in (apply_positive_control(r) for r in measurable) if c is not None]
-    if measurable and not any(c.reserved for c in controls):
+    if measurable and not any(c.matches for c in controls):
         print(
-            "POSITIVE CONTROL FAILED: no bundle reserved a slot even with a "
-            "known-affected version substituted - the corpus zeros prove nothing",
+            "POSITIVE CONTROL FAILED: no bundle produced a single match even with a "
+            "known-affected version substituted - the matcher is dead and the corpus "
+            "zeros prove nothing",
             file=sys.stderr,
         )
         return 1
+    for controlled in controls:
+        wrong = [
+            m
+            for m in controlled.matches
+            if m.cve.cve_id in ("CVE-2021-41773", "CVE-2021-42013")
+            and m.disposition is not MatchDisposition.LEAD
+        ]
+        if wrong:
+            print(
+                f"POSITIVE CONTROL FAILED on {controlled.engagement_id}: an Apache "
+                "path-traversal row dispatched. Its vector is the URL path and no "
+                "component-derived task carries one, so a dispatch here spends a plan "
+                "slot on a probe the CVE cannot be reached by",
+                file=sys.stderr,
+            )
+            return 1
 
     # The same discipline for the ingestion path. A zero from a matcher with no
     # package input is indistinguishable from a zero from a matcher that works,

@@ -558,6 +558,15 @@ detail when you are about to change the code an invariant governs — not by def
     [`docs/methodology/auth-bypass.md`](docs/methodology/auth-bypass.md).**
 85. **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl`.
     `outputs/` is local-only by policy — never committed.
+86. **Naming an oracle is half a claim; the other half is whether we can DELIVER
+    the CVE's input to it** (`KnownComponentCVE.vector`, `CARRIABLE_VECTORS`).
+    Catalogue size is bounded by oracle coverage: an entry with no oracle behind
+    it is declared lead-only at WRITE time, never discovered to be lead-only at
+    run time. Three lead reasons, never merged — no oracle / vector not carried /
+    component unidentifiable. **Band C** (DoS, memory safety, local privesc,
+    unobservable-config-dependent, indistinguishable info leak) is PERMANENTLY
+    lead-only and the deliverable states that as a product property. **Detail →
+    [`docs/methodology/sca-catalogue-breadth.md`](docs/methodology/sca-catalogue-breadth.md).**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

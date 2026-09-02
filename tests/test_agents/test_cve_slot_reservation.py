@@ -36,6 +36,7 @@ from clinkz.agents.exploit import (
 )
 from clinkz.knowledge.component_cves import (
     ComponentCVEMatch,
+    CVEVector,
     KnownComponentCVE,
     match_components,
 )
@@ -61,6 +62,11 @@ _CATALOG: tuple[KnownComponentCVE, ...] = (
         # task is visible instead of colliding with a task the class floor
         # already planned for the same endpoint.
         confirming_test_method="_test_log4shell",
+        # Declared, because the model's DEFAULT vector is ENVIRONMENTAL — the
+        # fail-safe value, so a row nobody classified cannot spend a plan slot.
+        # A fixture that wants to test the reservation has to say what it is.
+        defining_effect="an outbound resolution carrying a nonce only this probe held",
+        vector=CVEVector.REQUEST_PARAM,
         proving_observation="an out-of-band callback carrying our nonce",
         reference="https://example.invalid/CVE-9999-0001",
     ),
@@ -71,6 +77,8 @@ _CATALOG: tuple[KnownComponentCVE, ...] = (
         title="Gadget remote file inclusion",
         severity="critical",
         confirming_test_method="_test_lfi",
+        defining_effect="file content absent from the benign baseline, returned in a response",
+        vector=CVEVector.REQUEST_PARAM,
         proving_observation="file content the application should not serve",
         reference="https://example.invalid/CVE-9999-0002",
     ),
@@ -165,6 +173,7 @@ def test_confirmability_still_outranks_provenance() -> None:
             title="Gadget deserialization",
             severity="critical",
             confirming_test_method="",
+            vector=CVEVector.REQUEST_PARAM,
             proving_observation="code execution on the host",
         ),
     )
@@ -186,7 +195,7 @@ def test_confirmability_still_outranks_provenance() -> None:
         catalog=catalog,
     )
     assert [m.cve.cve_id for m in matches] == ["CVE-9999-0001", "CVE-9999-0003"]
-    assert matches[0].is_confirmable and not matches[1].is_confirmable
+    assert matches[0].can_dispatch and not matches[1].can_dispatch
 
 
 def test_the_matched_on_string_states_the_provenance() -> None:
