@@ -1778,14 +1778,36 @@ LESSONS #17).
   two — `basketAccess` and `redirect`; `forgedFeedback` is a **write** crossing
   carrying another user's `UserId` in a POST body, which no dispatched class
   claims. `attribute_solves` splits them into `solved_attributable` and
-  `solved_target_confirmed_only`, **naming** the unattributed keys and why. The
-  link is by the challenge's own CATEGORY, through a `CATEGORY_CLASSES` map held
-  to the guard-domain law against `CATEGORY_ADDRESSABLE` and against
-  `DISPATCHABLE_TEST_METHODS` — deliberately NOT a claim that a particular
-  finding solved a particular challenge, since neither record carries that and
-  inventing it is the consumer-guesses-the-producer move this codebase keeps
-  paying for. The negative is the half that matters: a solve whose category
-  matches no emitted finding is one we cannot show our work for.
+  `solved_target_confirmed_only`, **naming** the unattributed keys and why.
+  **The binding is to a FINDING, not to a class.** A category-level link is
+  satisfied by any sibling of the class: run 3 emitted `_test_idor` findings at
+  `/rest/basket/:id` AND at `/api/Users/:p3`, so `basketAccess` read as
+  attributable from either — and the corrected anchored oracle, which refutes
+  the first and keeps the second, left the positive reading standing on
+  evidence that had been removed. A positive reading that outlives its own
+  evidence is a phantom wearing a category label, and it is the same failure as
+  grading an oracle by an external scoreboard. So a solve is attributable when
+  a specific surviving confirmed finding clears BOTH halves: its class could
+  claim the challenge's own category (`CATEGORY_CLASSES`, held to the
+  guard-domain law against `CATEGORY_ADDRESSABLE` and against
+  `DISPATCHABLE_TEST_METHODS`), and it was DISPATCHED against the surface the
+  challenge NAMES (`CHALLENGE_SURFACES`, compared as a path shape that
+  normalises away the origin, the query string and an identifier segment —
+  `:id` / `:p3` / `2` are three spellings of one route). The finding is named
+  beside the solve, so removing it removes the claim. Juice Shop's records carry
+  a category and a sentence and never a route, so the route is declared with the
+  sentence that sources it verbatim; a **stale** entry naming a challenge the
+  target does not ship is a loud failure, while an **undeclared** challenge is
+  unattributable by construction — the safe direction, because a missing entry
+  costs a number and a category-level match costs the number's meaning. It is
+  still NOT a claim that a particular finding solved a particular challenge: the
+  scoreboard does not record the request that tripped it, and inventing that is
+  the consumer-guesses-the-producer move this codebase keeps paying for.
+  Collection-vs-item is the finest distinction the records support — a finding's
+  target carries no method — and it is load-bearing: `forgedFeedback` is a WRITE
+  on `/api/Feedbacks` and run 3's read crossing at `/api/Feedbacks/2` does not
+  reach it. The negative is the half that matters: a solve no surviving finding
+  can be bound to is one we cannot show our work for.
   **"Any other kind of run" is four kinds, and three of them were found in the
   bundle the stored floor was taken from.** A floor is what authenticating and
   crawling trip **as those principals**, so it is KEYED by the credential set

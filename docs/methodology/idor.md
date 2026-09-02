@@ -218,6 +218,22 @@ after it, rather than left to surface as a silent gap. Closing it needs a new
 observation — something that establishes ownership without the record saying
 so — and not a weaker version of this one.
 
+**And a test is not where a client reads.** A pinned test tells this repository
+about the boundary and tells the deliverable nothing, while an access-control
+flaw on such an endpoint produces exactly the artifact a sound endpoint produces
+— nothing. So the boundary is DECLARED by the producer
+(`VulnClass.coverage_boundary`, a `CoverageBoundary` carrying the client-facing
+sentence and the registered `why_unconfirmed` the abstain actually emits, both
+required or neither) and rendered in *What was NOT tested* under its own
+category, `class_abstains`. On a clean run too, like every other bound that
+decided coverage: it is a property of the CLASS, not of what this target
+happened to have, and a limitation that only appears once it has already cost
+someone a finding is not a limitation they can plan around. It is deliberately
+NOT filed under `unauthenticated` or `no_client_side_oracle` — those are what
+the ENGAGEMENT lacked and a capability that was ABSENT, and a second credential
+or a browser fixes them. Neither fixes this one, so filing it there would tell a
+client to do something that cannot work.
+
 A field is admitted for reading two ways, and the second needs no vocabulary at
 all: its NAME is owner-shaped, **or** its VALUE is an identity we hold. DVWA's
 records have no `UserId` anywhere — `First name: bob` names bob because bob is a
@@ -228,6 +244,19 @@ that is not read, so the endpoint abstains.
 
 **`owner_read` is kept, dispatched and reported as `corroboration`.** It is
 worth reporting that a second principal agrees; no branch turns on it.
+
+**And it is not the OWNER's read, which the sentence used to claim.** B is a
+candidate owner — a principal the engagement HOLDS that A does not outrank —
+while `ref(B)` is reached by phase 3 incrementing the anchored `ref(A)`, so it
+lands on whoever owns that reference. The two have no reason to coincide, and
+on engagement `aba713f1` they did not: all three confirmed crossings ran this
+arm as `admin` while the owning field named user `3`, whom that engagement held
+no credential for. What the arm establishes is that a SECOND principal reading
+the same reference is served the same record, which rules out the per-caller
+decoration that defeated the reviews endpoint — a real observation under a wrong
+name. The verdict never turned on it, which is why the label could stay wrong;
+the sentence is what a client reads. Pinned as
+`TestTheCorroboratingArmIsNotTheOwnersRead`.
 
 ### The public-record gate
 

@@ -409,6 +409,69 @@ class TestTheFourArmsMustAllClear:
         assert verdict.why_unconfirmed == NO_OWNING_FIELD
 
 
+class TestTheCorroboratingArmIsNotTheOwnersRead:
+    """B is a CANDIDATE owner, and the sentence must not call it the owner.
+
+    Found live on engagement ``aba713f1`` (2026-09-02). All three confirmed
+    crossings rendered "the owner's own authorized read corroborates it" while
+    the arm ran as ``admin`` and the owning field named user ``3`` — a principal
+    that engagement held no credential for.
+
+    It is structural, not a coincidence of that run. ``ref(B)`` is reached by
+    phase 3 INCREMENTING the anchored ``ref(A)``, so it lands on whoever owns
+    that reference; and B is drawn from the principals the engagement HOLDS that
+    A does not outrank, which for the commonest supply — one admin beside one
+    customer — is the admin. The two have no reason to coincide.
+
+    The verdict never turned on it (``corroboration`` is load-bearing in no
+    branch), which is exactly why it survived: the only thing wrong was the
+    sentence, and the sentence is what a client reads.
+    """
+
+    def test_the_sentence_names_a_second_principal_not_the_owner(self) -> None:
+        """The observation is unchanged; only the claim about whose read it was."""
+        verdict = decide_idor(**_four_arms())
+        assert verdict.confirmed is True
+        assert verdict.corroboration == ATTRIBUTION_IDENTICAL_RENDERING
+        assert "second principal's authorized read" in verdict.detail
+        assert "the owner's own authorized read" not in verdict.detail
+
+    def test_the_principal_that_actually_ran_the_arm_is_named(self) -> None:
+        """A reader can check it against the ``Arm owner_read:`` line."""
+        verdict = decide_idor(
+            **_four_arms(
+                owner_read=_arm(
+                    IDORArm.OWNER_READ, B_RECORD, reference="2", principal="admin@example.test"
+                )
+            )
+        )
+        assert "admin@example.test" in verdict.detail
+
+    def test_the_negative_sentence_drops_the_claim_too(self) -> None:
+        """B failing to corroborate costs the corroboration, not the finding —
+        and says so without calling B the owner."""
+        verdict = decide_idor(
+            **_four_arms(
+                owner_read=_arm(IDORArm.OWNER_READ, "", status=403, reference="2", principal="bob"),
+            )
+        )
+        assert verdict.confirmed is True
+        assert verdict.corroboration == ""
+        assert "second principal's authorized read did not corroborate" in verdict.detail
+        assert "the owner's own authorized read" not in verdict.detail
+
+    def test_it_stays_corroboration_and_decides_nothing(self) -> None:
+        """The whole reason the label could be wrong for this long."""
+        with_arm = decide_idor(**_four_arms())
+        without = decide_idor(
+            **_four_arms(
+                owner_read=_arm(IDORArm.OWNER_READ, "", status=403, reference="2", principal="bob")
+            )
+        )
+        assert with_arm.confirmed == without.confirmed is True
+        assert with_arm.attribution == without.attribution
+
+
 class TestTheTwoTiers:
     def test_a_single_role_run_may_only_lead(self) -> None:
         """Every control cleared and it is STILL not a finding. PART 3's whole rule."""

@@ -1727,9 +1727,13 @@ class IDORMethodologyResult(BaseModel):
     #: The schema path of the field by which the crossing record names its
     #: owner. The half of the claim a remediation has to name.
     owning_field: str = ""
-    #: What the owner's own authorized read added — ``identical_rendering``,
-    #: ``stable_fields``, or ``""``. CORROBORATION: reported because a second
-    #: principal agreeing is worth reporting, load-bearing in no branch.
+    #: What a SECOND principal's authorized read of the same reference added —
+    #: ``identical_rendering``, ``stable_fields``, or ``""``. Deliberately not
+    #: "the owner's read": the arm runs as B, a principal the engagement HOLDS,
+    #: while ref(B) is reached by incrementing the anchor — so it lands on
+    #: whoever's record it lands on, generally not B's. What it establishes is
+    #: that a second principal is served the same record, ruling out a
+    #: per-caller decoration. CORROBORATION: load-bearing in no branch.
     corroboration: str = ""
     #: The reference the CALLER was shown to own, and how. A crossing is graded
     #: relative to this; without it the class abstains.

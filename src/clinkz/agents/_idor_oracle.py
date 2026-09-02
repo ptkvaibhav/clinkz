@@ -1076,7 +1076,13 @@ def decide_idor(
         crossing: As A, ``ref(B)``.
         nonexistent: As A, ``ref(∅)``.
         anonymous: No session, ``ref(B)``.
-        owner_read: As B, ``ref(B)``. ``None`` in the single-role tier.
+        owner_read: As B, ``ref(B)``. ``None`` in the single-role tier. B is a
+            principal the engagement HOLDS that A does not outrank — it is a
+            CANDIDATE owner, and on any run where ``ref(B)`` was reached by
+            incrementing the anchor it is generally not the actual owner. So
+            what this arm establishes is that a SECOND principal is served the
+            same record, which rules out a per-caller decoration; it is not the
+            owner's own read and the detail sentence does not call it one.
         anchor: How ``ref(A)`` was established (:func:`anchor_self_reference`).
         caller_identity: A's identity values, from A's own session.
         held_identities: Every other principal's identity values, by label.
@@ -1340,10 +1346,21 @@ def decide_idor(
             f"(status={nonexistent.status}) and neither did an anonymous caller "
             f"(status={anonymous.status}); "
             + (
-                f"the owner's own authorized read corroborates it ({corroboration})"
+                # NOT "the owner's own read". The arm is dispatched as B, and B is
+                # a principal the engagement HOLDS that A does not outrank —
+                # while ref(B) comes from incrementing the anchored ref(A), so the
+                # record it lands on belongs to whoever owns it. On engagement
+                # aba713f1 all three crossings named user 3 under the owning field
+                # while this arm ran as admin. What it shows is that a second
+                # principal is served the same record, which rules out a
+                # per-caller decoration; naming that principal the owner claimed
+                # something the run's own arms contradict.
+                f"a second principal's authorized read of the same reference "
+                f"({owner_read.principal if owner_read is not None else 'B'}) returns "
+                f"the same record ({corroboration})"
                 if corroboration
-                else "the owner's own authorized read did not corroborate it, which the "
-                "claim does not rest on"
+                else "a second principal's authorized read did not corroborate it, "
+                "which the claim does not rest on"
             )
         ),
     )
