@@ -30,6 +30,24 @@ jobs:
       - name: Refuse credential material and .env files
         run: python3 .claude/hooks/secret_guard.py --tree HEAD
 
+  # The context-budget layer. CLAUDE.md reached 152,205 characters against a
+  # ~150k load limit, a bound that degrades by truncating SILENTLY — so the
+  # first symptom is rules quietly not in effect. This job is the fail-closed
+  # half of that guard: the local hook is skippable (`--no-verify`, an
+  # un-bootstrapped clone), this is not. Like leak-guard it shares no setup with
+  # lint-and-test (no install, pure stdlib) so it stays fast, reports
+  # independently, and runs on doc-only PRs — which are exactly the PRs that
+  # grow an instruction file.
+  context-budget:
+    name: Context budget (always-loaded instruction files)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instruction files stay under their character budget
+        run: python3 .claude/hooks/context_budget.py
+
   lint-and-test:
     runs-on: ubuntu-latest
 

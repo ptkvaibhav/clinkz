@@ -643,3 +643,175 @@ and it is sound" or "we could not look".
 | `safety/destructive.py` | the default-deny classifier |
 | `safety/governor.py` | rate, concurrency, kill switch, blocking, window |
 | `safety/action_log.py` | `outputs/<id>/actions.jsonl` |
+
+---
+
+## Operating rules relocated from CLAUDE.md (2026-09-02)
+
+The summary bullets CLAUDE.md carried until the context-budget split. They
+are the same subject as the rest of this file; kept verbatim so the wording
+that survived review is the wording on record.
+
+The layer that makes a run against a **non-benchmark** target possible. **Full
+detail → `docs/productization-engagement-safety.md`.**
+
+- **The gate** (`engagement/gate.py::open_engagement`) is the FIRST statement of
+  `OrchestratorAgent.run()` — before docker, before state, before a packet. No
+  `AuthorizationRecord` (authorizing party + role + contact, authorization
+  reference, permitted techniques, emergency contact; every field required, no
+  partially-populated shape) ⇒ refusal, with no flag to skip it. An
+  `EngagementWindow` is a hard stop re-checked on every request.
+- **Credentials are never on `EngagementScope`** — the scope is `model_dump()`-ed
+  into the state store, so keeping the `CredentialSet` off it is structural, not
+  disciplinary. `SecretStr` passwords; git-tracked credential files are refused
+  outright; `engagement/secrets.py` is the redaction chokepoint every artifact
+  writer runs through — **including the report**, which used to be the one
+  writer that did not (short-secret limit stated, not hidden).
+- **Redaction removes what a secret IS and what it LOOKS LIKE.** Value-only
+  redaction cannot remove credential material the engagement *captures* rather
+  than the operator *supplies* — a session token the target issued was never
+  registered. `engagement/credential_shapes.py` is the **one shape vocabulary**
+  (JWT gated on a decoding header, `Authorization`/`Cookie`/`Set-Cookie` values,
+  vendor keys, PEM blocks), always on, registry or not. A token becomes a
+  **fingerprint** — salted hash prefix + `alg`/`iss`/`sub` + claim NAMES — which
+  correlates within a bundle and replays nowhere. Cookie NAMES survive, cookie
+  VALUES do not. `redact_structure` is **key-aware**, because a `Set-Cookie`
+  value has no intrinsic shape and only the key identifies it.
+- **`engagement/artifact_scan.py` is the disclosure gate**, run automatically
+  after every writer has flushed: it re-reads `outputs/<id>/` off disk and
+  refuses to certify the bundle on the strength of the logic that wrote it. **A
+  guarantee asserted by the same logic that produces it is not checked at all** —
+  the previous check searched for *configured* secret values and truthfully
+  reported zero leaks about the wrong question. Definite shapes FAIL the run
+  loudly (`DO NOT SHARE`); the entropy heuristic is advisory-only and lives ONLY
+  in the gate — an entropy rule on the write path would shred evidence made of
+  alarming-looking strings, and a gate that cried wolf would be ignored. The scan
+  report never reproduces what it found. `clinkz artifact-scan <id>` re-runs it
+  over any bundle and exits non-zero.
+- **A guard's ROOT is part of its verdict, so the gate covers two regions.** It
+  reported CLEAN over 3,123 files while a live JWT sat one directory up, in
+  `outputs/d8_auth_bypass_live_validation.json` — true, and about a region chosen
+  so as to exclude where the leak landed (the same shape as a tree-scanning leak
+  guard that cannot see a PR's own text). `REGION_BUNDLE` is `outputs/<id>/`;
+  `REGION_COMPANION` is everything else under the outputs root that no
+  engagement's gate covers — loose driver files, `outputs/_juiceshop_benchmark/`
+  and friends. **One verdict, two regions**, because the operator's question is
+  "may I share this directory"; findings carry their region and render apart,
+  because "the directory around your bundle is not shareable" is a different
+  instruction from "your bundle leaked". A directory named like an engagement id
+  is somebody else's bundle and is never swept in. Every `summary_line` states
+  its coverage — a CLEAN that does not say what it looked at is how this
+  survived.
+- **Every file the gate does not read is NAMED, and an unexplained one FAILS.**
+  A silently skipped file is the mechanism behind every guard here that
+  certified a region it never looked at. `_SKIP_ALLOWED` is an allow-list keyed
+  by suffix, each entry carrying *the reason that suffix is not read*, and
+  anything skipped without one — unreadable, unparseable, over the size cap — is
+  a `SkippedFile` with an empty reason that makes `clean` False. Counts sit in
+  `summary_line` beside the scanned ones. The reasons are **disclosures, not
+  absolutions**: `.db` is skipped because there is no SQLite reader here, not
+  because a SQLite file is safe — its TEXT columns are plaintext in page data,
+  and the reason string says so. Over a real bundle this surfaced 20 state
+  databases that had been inside a CLEAN verdict unread.
+- **A PDF is read through TWO channels, because each is blind to the other.**
+  Page text is in Flate-compressed content streams (a byte scan of the file
+  finds nothing); document metadata is in a separate `/Info` dictionary that
+  never appears in page text. Measured both ways, not assumed. Both are pulled
+  via `pypdf` — the only dependency declared here that anything imports — into
+  one blob with `[metadata]` / `[page N]` markers so a line number still names
+  the channel. `.pdf` used to sit in the skip list, so every PDF was certified
+  unopened; a PDF that cannot be parsed is now an unexplained skip, not a clean
+  file.
+- **The engine's redaction reaches only where the engine writes.** A `scripts/`
+  driver tees the HTTP chokepoint and serialises the exchanges itself, so it
+  wrote past every writer: a complete RS256 session JWT plus the lab password in
+  plaintext, while `report.json` from the same run was clean. Driver artifacts go
+  through `scripts/_artifact_io.py` — a CALL SITE of `redact_structure`, never a
+  second redactor — and a hardcoded lab password is a **third intake route** that
+  registers on the way in like the other two. Enforced structurally by
+  `tests/test_engagement/test_driver_artifact_writes.py`, which reads every
+  `scripts/*.py` and refuses a raw `write_text`/`write_bytes` unless allow-listed
+  with a reason: drivers are exactly what a `src/`-and-`tests/` grep misses.
+- **The credential the client gave us goes first.** The default-credential
+  sweep ran unconditionally ahead of the supplied credential: 52 requests of
+  `admin/admin`, `root/root`, `admin/password`, `test/test` across six routes,
+  landing in the client's authentication logs as credential stuffing — from an
+  authorized test, before that test did the thing it was authorized to do.
+  Guessing is what you do when you have not been handed a key, so
+  `_should_sweep_default_credentials()` is `not credentials.authenticating` and
+  nothing else. There is deliberately no "…or the supplied credential failed"
+  branch: that path ABORTS (below), so the sweep is not merely deferred past a
+  failure but unreachable after one — falling back to guessing passwords the
+  moment the client's own credential is rejected is the same log entry this
+  removes.
+- **A login URL is proven by response SHAPE, never by a status code.** A
+  single-page application serves its shell for every path it does not recognise,
+  so `/login.php` answers **200 with 9903 bytes of Angular** on a Node target
+  that has never had a PHP file — and a `status < 400` HEAD probe accepted it,
+  which is how six credential POSTs landed on `/login.php` at a Node app.
+  `_serves_a_login_form` GETs the body (a HEAD cannot see this) and requires the
+  marker no catch-all produces by accident: an `<input type="password">` beside
+  an identity-shaped field. Nothing proven ⇒ **`None`**, not the root URL: the
+  "fall back to the root as the login page" strategy is deleted, because a root
+  URL is not a login page, it is where a credential POST goes when nobody proved
+  anything. A JSON login API serves no form and is found by
+  `detect_auth_mechanism`, which is the component that knows how to ask.
+- **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`).
+  The same URL is fetched with the session and deliberately without it
+  (`HTTPClientTool`'s `no_session` — the shared cookie jar would otherwise make
+  the "anonymous" control carry our own session), and only a boundary
+  discriminator is accepted: login redirect, status class, login form, session
+  marker, identity echo. **A body-length delta is a correlate and is refused.**
+  Credentials supplied + assertion failed ⇒ the engagement aborts loudly.
+  `SessionSentinel` rides the governor's response observers, because the code
+  that lost the session is the code that will not notice.
+- **Only a session-bearing response is evidence about the session.** The HTTP
+  chokepoint is the only code that knows whether a request carried the session,
+  so it passes `session_bearing` through `observe_response`; a session-free
+  response is ignored in BOTH directions (it neither counts as a loss nor resets
+  a streak). Without it the sentinel reads the engine's own anonymous control —
+  whose 401 *is the proof the session works* — as proof the session broke.
+  **The raised flag is a hypothesis; `assert_authenticated` is the oracle**: the
+  Orchestrator re-proves the session before re-authenticating, records a false
+  alarm when it survives, and counts `reauthentications` on **success only** (it
+  used to count the attempt, before anything was tried). Consecutive-counting
+  alone cannot survive a concurrent phase — any interleaved 200 resets it — so a
+  scattered-loss `escalation` ceiling also earns one check.
+- **The rails are absent by default** — `get_active_governor()` is `None` unless
+  an engagement installed one and every hook no-ops, so direct methodology
+  invocation (smoke suites, replays, drivers) is byte-identical. The governor
+  (`safety/governor.py`) owns rate (5 req/s), concurrency (4), the kill switch
+  (`clinkz abort` → `outputs/<id>/HALT`), blocking detection, the window, and the
+  action log. **It never raises from the data path** — it returns a refusal the
+  callers already handle; `_run_phase` polls `halted` and winds down so the
+  report is still produced.
+- **`safety/destructive.py` is the one destructive vocabulary**, consulted by
+  both `is_state_changing_url` (navigation) and `is_destructive_form_submission`
+  (submission), over path + method + field names + label text. The predecessor's
+  rules are preserved verbatim, so it can only refuse MORE. **A parameter VALUE
+  is read for semantics only when it looks like an identifier the APP chose**
+  (`_PLAIN_VALUE`) — our own payloads carry `drop`/`rm`/`passwd`, and reading
+  them back as application semantics would refuse the engine's own probes and
+  silently reduce an authorized engagement to a crawler.
+- **`_run_subprocess` gets the halt check ONLY** — it is reached from inside the
+  HTTP chokepoint, so a second slot per request would deadlock the semaphore and
+  double-count every rate token. Self-flooding tools are paced by their own flags
+  (`ffuf -rate`).
+- **The permitted-technique list gates dispatch**, refused before the page fetch,
+  and every withheld class is named in the report.
+- **`models/vuln_classes.py` is the client-facing class registry** (label,
+  capability, limitation, remediation), asserted in sync with the Exploit Agent's
+  dispatch table: a class it dispatches but the registry has never heard of is
+  BOTH invisible in the report and ungated by authorization. `DISCOVERY_CLASSES`
+  and `COMPOSITION_CLASSES` (`attack_chain`) emit findings without a dispatch
+  entry — they are never *planned against an endpoint* — so they are held apart
+  from that sync assertion and gated by registry KEY instead. **That sync
+  assertion's domain is `DISPATCHABLE_TEST_METHODS`**, the table the dispatcher
+  itself reads; it used to be `_CLASS_PATH_TOKENS` — a *ranking signal* map
+  holding 27 of the 30 — so the two classes with no registry entry at all were
+  outside the check that exists to find them. **A dispatch-table entry that can
+  never emit is a capability claim**, so `_test_tier2_technique` /
+  `_test_tier3_technique` are registered `NOT_IMPLEMENTED`
+  (`_apply_technique` has three exits, all `return []`: it sends no request and
+  constructs no `Finding`), which is what puts them in *What was NOT tested* and
+  makes every dispatched technique task a ledger row instead of silence.
