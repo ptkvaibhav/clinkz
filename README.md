@@ -399,7 +399,11 @@ any halt), the findings with remediation, the unconfirmed leads in their own
 sections, and a **"What was NOT tested"** section covering excluded hosts,
 techniques the client did not authorize, classes with no client-side oracle
 (DOM-XSS, CSP enforceability), classes with no methodology (Insecure CAPTCHA,
-business logic, races), the actions the safety rails refused, and any coverage
+business logic, races), **shapes a class refuses to confirm on even when the
+engagement gave it everything it needs** (an IDOR crossing whose record names no
+owner is a lead, because "not mine, not nobody's, not public" is three negatives
+a shared record satisfies too), the actions the safety rails refused, and any
+coverage
 cut short. That section is generated from the class registry and the run's own
 action log, so it cannot drift out of date — a client reading "no findings" can
 see whether that means "we looked and it is sound" or "we could not look".

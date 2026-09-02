@@ -870,6 +870,30 @@ class ReportAgent(BaseAgent):
                 )
             )
 
+        # Shapes a class refuses to confirm on even when the engagement gave it
+        # everything it needs. The producer declares the boundary and the
+        # registered abstain reason it produces
+        # (:class:`~clinkz.models.vuln_classes.CoverageBoundary`); nothing here
+        # decides what the boundary is.
+        #
+        # Rendered on a clean run too, like every other bound that decided
+        # coverage. The IDOR one is why the category exists: an endpoint serving
+        # per-user records that name no owner produces exactly the artifact a
+        # sound endpoint produces — nothing — so leaving the boundary pinned in a
+        # test and out of the deliverable lets an absence of findings read as an
+        # absence of flaws, which is the silence every other rule in this section
+        # exists to break.
+        for vuln_class in VULN_CLASSES:
+            if not vuln_class.coverage_boundary.declared:
+                continue
+            items.append(
+                NotTestedItem(
+                    item=f"{vuln_class.label} — records this class cannot attribute",
+                    category=NotTestedCategory.CLASS_ABSTAINS,
+                    reason=vuln_class.coverage_boundary.limitation,
+                )
+            )
+
         # What the safety rails actually refused, from this run's action log.
         tally = RefusalTally.from_records(ActionLog.read(engagement_id))
         for category, count in sorted(tally.by_category.items()):
@@ -2034,6 +2058,9 @@ class ReportAgent(BaseAgent):
             NotTestedCategory.DESTRUCTIVE_REFUSED: ("Refused by the production safety rails"),
             NotTestedCategory.ENGAGEMENT_HALTED: "Cut short when the engagement halted",
             NotTestedCategory.UNAUTHENTICATED: "Limited by the sessions available",
+            NotTestedCategory.CLASS_ABSTAINS: (
+                "Reported as a lead, not a finding — the class abstains"
+            ),
         }
         rendered: set[str] = set()
         for category, heading in headings.items():

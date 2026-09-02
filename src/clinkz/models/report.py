@@ -140,6 +140,14 @@ class NotTestedCategory(StrEnum):
             and could not be read, so the engagement ran black-box. Its own
             category because the failure is invisible otherwise: a gray-box run
             that fell back produces exactly the artifacts of a black-box run.
+        CLASS_ABSTAINS: A shape the class refuses to confirm on even with
+            everything the engagement could give it — declared by the producer
+            as :class:`~clinkz.models.vuln_classes.CoverageBoundary` and tied to
+            a registered abstain reason. Distinct from UNAUTHENTICATED, which is
+            about what the ENGAGEMENT lacked, and from NO_CLIENT_SIDE_ORACLE,
+            which is about a capability that was absent. This one is a boundary
+            of the METHOD, and it renders on a clean run because it is a
+            property of the class rather than of this target.
     """
 
     OUT_OF_SCOPE = "out_of_scope"
@@ -151,6 +159,7 @@ class NotTestedCategory(StrEnum):
     ENGAGEMENT_HALTED = "engagement_halted"
     UNAUTHENTICATED = "unauthenticated"
     SOURCE_NOT_INGESTED = "source_not_ingested"
+    CLASS_ABSTAINS = "class_abstains"
 
 
 class NotTestedItem(BaseModel):

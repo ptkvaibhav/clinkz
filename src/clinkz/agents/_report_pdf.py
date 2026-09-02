@@ -159,6 +159,7 @@ _NOT_TESTED_HEADINGS: dict[NotTestedCategory, str] = {
     NotTestedCategory.DESTRUCTIVE_REFUSED: "Refused by the production safety rails",
     NotTestedCategory.ENGAGEMENT_HALTED: "Cut short when the engagement halted",
     NotTestedCategory.UNAUTHENTICATED: "Limited by the sessions available",
+    NotTestedCategory.CLASS_ABSTAINS: "Reported as a lead, not a finding - the class abstains",
 }
 
 
