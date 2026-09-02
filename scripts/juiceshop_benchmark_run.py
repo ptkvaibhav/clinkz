@@ -54,6 +54,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -526,6 +527,106 @@ def _assert_category_classes() -> None:
             )
 
 
+#: The surface each challenge NAMES, and the challenge's own words that name it.
+#:
+#: A category tells you what KIND of flaw a challenge is about. It cannot tell
+#: one finding of a class from another of the same class, and that gap is not
+#: hypothetical: run 3 of the variance envelope emitted ``_test_idor`` findings
+#: at ``/rest/basket/:id`` AND at ``/api/Users/:p3``, and ``basketAccess`` read
+#: as attributable from either — so removing the basket finding, the one the
+#: challenge is actually about, left the positive reading standing on a sibling.
+#: A positive reading that outlives its own evidence is a phantom wearing a
+#: category label.
+#:
+#: So the binding is to the FINDING: a solve is attributable when a specific
+#: surviving confirmed finding was DISPATCHED against the surface the challenge
+#: names. Juice Shop's challenge records carry a category and a sentence, never
+#: a route, so the route is declared here — with the sentence that sources it,
+#: verbatim, so a reader can check the claim rather than trust it.
+#:
+#: **An undeclared challenge is unattributable, by construction.** That is the
+#: safe direction and it is deliberate: a missing entry under-reports what this
+#: engine can show, which costs a number, while a category-level match
+#: over-reports, which costs the number's meaning. Declaring one is a line of
+#: this table plus the sentence that justifies it.
+CHALLENGE_SURFACES: dict[str, tuple[tuple[str, ...], str]] = {
+    "basketAccessChallenge": (
+        ("/rest/basket/*",),
+        '"View another user\'s shopping basket." A basket is served at '
+        "/rest/basket/<id>; a crossing anywhere else is a crossing on some other "
+        "object.",
+    ),
+    "forgedFeedbackChallenge": (
+        ("/api/feedbacks",),
+        '"Post some feedback in another user\'s name." Feedback is written to the '
+        "COLLECTION, /api/Feedbacks. The item route /api/Feedbacks/<id> is "
+        "deliberately NOT listed: run 3 emitted a read crossing there, and a read "
+        "crossing on an item is not the write this challenge names. "
+        "Collection-vs-item is the finest distinction these records support, "
+        "because a finding\'s target carries no method.",
+    ),
+    "redirectChallenge": (
+        ("/redirect",),
+        '"Enforce a redirect to a page you are not supposed to redirect to." The '
+        "application's only redirector is /redirect?to=.",
+    ),
+    "loginAdminChallenge": (
+        ("/rest/user/login",),
+        '"Log in with the administrator\'s user account." A login is proven at '
+        "the login handler, /rest/user/login.",
+    ),
+    "loginJimChallenge": (
+        ("/rest/user/login",),
+        '"Log in with Jim\'s user account." Same handler as loginAdmin; which '
+        "principal was reached is the finding's business, not the surface's.",
+    ),
+}
+
+
+def surface_shape(url: str) -> str:
+    """The PATH shape a request was dispatched against, host and query dropped.
+
+    Three things are normalised away, each because it varies without the surface
+    varying:
+
+    * the **origin**, because one service answers under more than one name — the
+      same Juice Shop container is ``clinkz-juiceshop:3000`` and ``172.20.0.2:3000``
+      in one run's findings, which is why ``_origin.OriginIdentity`` exists;
+    * the **query string**, because ``/redirect?to=http`` and ``/redirect`` are
+      the same route;
+    * an **identifier segment**, whether it arrived as a template placeholder
+      (``:id``, ``:p3`` — the name is whichever discoverer found the route, so
+      two spellings of one route are routine) or as the concrete value the arm
+      actually sent (``/rest/basket/2``).
+
+    Returns:
+        A leading-slash path with identifier segments replaced by ``*``.
+    """
+    split = urllib.parse.urlsplit(url if "//" in url else f"//{url}")
+    segments = []
+    for segment in (split.path or "/").split("/"):
+        if not segment:
+            continue
+        segments.append("*" if segment.startswith(":") or segment.isdigit() else segment.lower())
+    return "/" + "/".join(segments)
+
+
+def _assert_challenge_surfaces(challenge_index: dict[str, dict[str, Any]]) -> None:
+    """A declared surface for a challenge the target does not ship is stale.
+
+    Only this direction is an error. ``computed - declared`` is the ordinary
+    case — most of Juice Shop's 113 challenges have no entry here — and it fails
+    safe as an unattributable solve rather than as a build break.
+    """
+    stale = sorted(set(CHALLENGE_SURFACES) - set(challenge_index))
+    if stale:
+        raise AssertionError(
+            f"CHALLENGE_SURFACES names challenge(s) this target does not ship: {stale}. "
+            f"An entry that outlived what it described attributes nothing and hides "
+            f"that it attributes nothing."
+        )
+
+
 def attribute_solves(
     solved_by_testing: list[str] | None,
     challenge_index: dict[str, dict[str, Any]],
@@ -543,33 +644,37 @@ def attribute_solves(
     and no dispatched class claims it. A solve we cannot point at a finding for
     is not something we can tell a client we did.
 
-    The correspondence is by CATEGORY, which is the strongest link the two
-    records support: a challenge declares its category and a finding resolves to
-    a class, and ``CATEGORY_CLASSES`` maps between them. It is deliberately not
-    called proof that a particular finding solved a particular challenge —
-    nothing in either record carries that, and inventing it would be the same
+    **The binding is to a FINDING, not to a class.** A solve is attributable
+    when some surviving confirmed finding satisfies BOTH halves:
+
+    1. its class is one that could claim the challenge's own category
+       (:data:`CATEGORY_CLASSES`), and
+    2. it was DISPATCHED against the surface the challenge names
+       (:data:`CHALLENGE_SURFACES`, compared as a path shape).
+
+    The second half is what the earlier category-only rule was missing, and the
+    gap was live rather than theoretical. Run 3 emitted ``_test_idor`` findings
+    at ``/rest/basket/:id`` and at ``/api/Users/:p3``; the corrected anchored
+    oracle refutes the first and keeps the second, and ``basketAccess`` stayed
+    "attributable" across that change because Broken Access Control maps to
+    ``_test_idor`` and a sibling of the class survived. The positive reading
+    outlived the finding it was actually about — an acceptance-shaped number
+    standing on evidence that had been removed, which is the same failure mode
+    as grading an oracle by an external scoreboard (the acceptance-criterion law
+    in ``.claude/skills/clinkz-dev/SKILL.md``).
+
+    It is still deliberately **not** called proof that a particular finding
+    solved a particular challenge: nothing in either record carries the request
+    that tripped the scoreboard, and inventing it would be the same
     consumer-guesses-the-producer move this codebase keeps paying for. What it
-    does support is the negative, which is the half that matters: a solve whose
-    category matches NO emitted finding is one this engine cannot show its work
-    for.
+    now supports is a claim a reader can check — *this engine emitted a confirmed
+    finding of a class that could account for this solve, on the surface this
+    challenge is about* — and the finding is NAMED beside the solve so removing
+    it removes the claim.
 
-    **What "by category" therefore cannot see, measured.** It cannot tell one
-    finding of a class from another of the same class. The corrected IDOR oracle
-    (``agents/_idor_oracle.py``, the anchored arms) refutes run 3's
-    ``/rest/basket/:id`` finding and keeps its ``/api/Users/:p3`` one — and
-    ``basketAccess`` stays "attributable" throughout, because both resolve to
-    ``_test_idor`` and Broken Access Control maps to that class. The positive
-    reading survived a change that removed the finding it was actually about.
-
-    So the positive is a **category-level** claim and is worth exactly that:
-    *this engine emitted a finding of a class that could plausibly account for
-    this solve*. Making it endpoint-level would need the challenge to name the
-    request that tripped it, which Juice Shop's scoreboard does not carry.
-    Stated here rather than left for a reader to assume, because an
-    acceptance-shaped number that survives the removal of its own evidence is
-    the same failure mode as grading an oracle by an external scoreboard —
-    see the acceptance-criterion law in
-    ``.claude/skills/clinkz-dev/SKILL.md``.
+    A challenge with no declared surface is target-confirmed-only whatever was
+    emitted. That under-reports, which is the direction that costs a number
+    rather than the number's meaning, and the fix is one table entry.
 
     Args:
         solved_by_testing: Keys testing earned, or ``None`` when no floor
@@ -579,12 +684,14 @@ def attribute_solves(
         report: The parsed ``report_<id>.json``.
 
     Returns:
-        The split, with the unattributed keys NAMED and their categories.
+        The split: the attributable keys, the FINDING bound to each, and the
+        unattributed keys with the reason each could not be bound.
     """
     if solved_by_testing is None:
         return {
             "solved_attributable": None,
             "solved_attributable_count": None,
+            "solved_attributable_evidence": None,
             "solved_target_confirmed_only": None,
             "note": (
                 "No floor applies to this run, so solved_by_testing is unmeasured and "
@@ -595,50 +702,91 @@ def attribute_solves(
     from clinkz.models.vuln_classes import for_finding
 
     _assert_category_classes()
+    _assert_challenge_surfaces(challenge_index)
 
-    claimed: set[str] = set()
+    # Every confirmed finding, as (class, dispatched surface shape, title, target).
+    # The class comes from the producer's own title resolution and the surface
+    # from the finding's own target, so neither is guessed here.
+    confirmed: list[tuple[str, str, str, str]] = []
     for finding in report.get("findings", []):
         if finding.get("status") != "confirmed":
             continue
         resolved = for_finding(
             str(finding.get("title") or ""), str(finding.get("description") or "")
         )
-        if resolved is not None:
-            claimed.add(resolved.test_method)
+        if resolved is None:
+            continue
+        target = str(finding.get("target") or "")
+        confirmed.append(
+            (resolved.test_method, surface_shape(target), str(finding.get("title") or ""), target)
+        )
 
     attributable: list[str] = []
+    evidence: list[dict[str, Any]] = []
     unattributed: list[dict[str, Any]] = []
     for key in sorted(solved_by_testing):
         category = str((challenge_index.get(key) or {}).get("category") or "")
         methods = set(CATEGORY_CLASSES.get(category) or ())
-        matched = sorted(methods & claimed)
-        if matched:
+        declared = CHALLENGE_SURFACES.get(key)
+        surfaces = set(declared[0]) if declared else set()
+
+        of_class = [row for row in confirmed if row[0] in methods]
+        bound = [row for row in of_class if row[1] in surfaces]
+        if bound:
             attributable.append(key)
-        else:
-            unattributed.append(
+            evidence.append(
                 {
                     "key": key,
                     "category": category or "(unknown)",
-                    "why": (
-                        "no dispatched class claims this category"
-                        if not methods
-                        else (
-                            "the classes that could claim this category emitted no "
-                            f"confirmed finding this run: {sorted(methods)}"
-                        )
-                    ),
+                    "challenge_surface": sorted(surfaces),
+                    "surface_source": declared[1] if declared else "",
+                    "findings": [
+                        {"title": title, "target": target, "class": method, "surface": shape}
+                        for method, shape, title, target in sorted(bound)
+                    ],
                 }
             )
+            continue
+
+        if not methods:
+            why = "no dispatched class claims this category"
+        elif not surfaces:
+            why = (
+                "no surface is declared for this challenge, so no finding can be bound "
+                "to it; a category-level match is not evidence about this challenge "
+                f"(the classes that could claim {category!r} are {sorted(methods)})"
+            )
+        elif not of_class:
+            why = (
+                "the classes that could claim this category emitted no confirmed "
+                f"finding this run: {sorted(methods)}"
+            )
+        else:
+            why = (
+                f"a confirmed finding of the right class exists but none was dispatched "
+                f"against this challenge's surface {sorted(surfaces)} — emitted on "
+                f"{sorted({shape for _, shape, _, _ in of_class})}"
+            )
+        unattributed.append({"key": key, "category": category or "(unknown)", "why": why})
+
     return {
         "solved_attributable": attributable,
         "solved_attributable_count": len(attributable),
+        "solved_attributable_evidence": evidence,
         "solved_target_confirmed_only": unattributed,
         "solved_target_confirmed_only_count": len(unattributed),
+        "challenge_surfaces": {
+            key: {"surfaces": list(paths), "source": source}
+            for key, (paths, source) in sorted(CHALLENGE_SURFACES.items())
+        },
         "attribution_rule": (
             "a solve is attributable when this run emitted a confirmed finding whose "
-            "class is one that could claim the challenge's own category; the link is "
-            "by category, not a claim that a particular finding solved a particular "
-            "challenge"
+            "class could claim the challenge's own category AND which was dispatched "
+            "against the surface that challenge names; the finding is named beside the "
+            "solve, so removing it removes the claim. It is still not a claim that a "
+            "particular finding solved a particular challenge — the scoreboard does not "
+            "record the request that tripped it. A challenge with no declared surface is "
+            "target-confirmed-only whatever was emitted."
         ),
     }
 
@@ -1049,6 +1197,12 @@ def main() -> int:
     else:
         challenges = recreate_and_verify_zero()
 
+    # Both hand-maintained tables, against the live target, before an hour of
+    # testing rather than after it. A stale surface entry attributes nothing and
+    # looks exactly like a table that simply did not match this run.
+    _assert_category_classes()
+    _assert_challenge_surfaces({str(c.get("key")): c for c in challenges})
+
     target_set, unknown_categories = addressable(challenges)
     if unknown_categories:
         print(
@@ -1255,6 +1409,13 @@ def main() -> int:
             f"{attribution['solved_attributable_count']} "
             f"({', '.join(attribution['solved_attributable']) or 'none'})"
         )
+        # The finding, named. A category label cannot be checked by a reader and
+        # survives the removal of the finding it stood on; a title and a
+        # dispatched surface can be checked against the findings list below.
+        for row in attribution["solved_attributable_evidence"] or []:
+            for hit in row["findings"]:
+                print(f"      {row['key']:40s} <- {hit['class']} @ {hit['surface']}")
+                print(f"      {'':40s}    {hit['title']}")
         unattributed = attribution["solved_target_confirmed_only"] or []
         print(f"    target-confirmed only, unclaimed   : {len(unattributed)}")
         for row in unattributed:
