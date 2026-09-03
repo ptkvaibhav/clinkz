@@ -174,3 +174,95 @@ class TestSuppliedCredentialsGoFirst:
         establish = source.index("await self._establish_authenticated_state(")
         assert sweep < establish, "the sweep must be decided before authentication runs"
         assert "self._should_sweep_default_credentials()" in source
+
+
+# ---------------------------------------------------------------------------
+# The crawler linked it, and six path names hid it
+# ---------------------------------------------------------------------------
+
+#: A login page at a path no list of login names contains. Meridian's, verbatim.
+UNCONVENTIONAL_LOGIN_PATH = "/portal/gateway"
+
+
+class TestLoginUrlIsRankedByShapeNotName:
+    """``_find_login_url`` used six path names as an ELIGIBILITY filter.
+
+    A URL that matched none of ``("/login", "/admin", "/wp-login", "/manager",
+    "/signin", "/auth")`` was discarded before its shape was ever read — so an
+    application could link its own login page from its landing page, have the
+    crawler find it, hand it to this method, and still come back "no login
+    surface proven". Renaming the same page ``/login`` found it instantly.
+
+    Path names still order the work, because each shape test costs a request.
+    They no longer decide what is allowed to be tested.
+    """
+
+    async def test_a_crawled_login_page_with_an_unconventional_path_is_found(
+        self, monkeypatch: Any
+    ) -> None:
+        agent = _orchestrator()
+        agent._login_shape_cache = {}
+        monkeypatch.setattr(
+            OrchestratorAgent,
+            "_serves_a_login_form",
+            _serve({UNCONVENTIONAL_LOGIN_PATH: LOGIN_PAGE}),
+            raising=True,
+        )
+        # Exactly what a crawl hands over: the landing page, a public page, and
+        # the login page — none of whose names contain a login hint.
+        scan_result = {
+            "endpoints": [
+                {"url": "http://app:3000/"},
+                {"url": "http://app:3000/pricing"},
+                {"url": f"http://app:3000{UNCONVENTIONAL_LOGIN_PATH}"},
+            ]
+        }
+        found = await agent._find_login_url({}, "", scan_result=scan_result)
+        assert found == f"http://app:3000{UNCONVENTIONAL_LOGIN_PATH}", (
+            "the crawler surfaced the login page and a list of six path names "
+            f"discarded it — got {found!r}"
+        )
+
+    async def test_the_same_page_named_login_is_still_found(self, monkeypatch: Any) -> None:
+        """The control: only the NAME differs, and the verdict must not."""
+        agent = _orchestrator()
+        agent._login_shape_cache = {}
+        monkeypatch.setattr(
+            OrchestratorAgent,
+            "_serves_a_login_form",
+            _serve({"/login": LOGIN_PAGE}),
+            raising=True,
+        )
+        scan_result = {"endpoints": [{"url": "http://app:3000/login"}]}
+        found = await agent._find_login_url({}, "", scan_result=scan_result)
+        assert found == "http://app:3000/login"
+
+    async def test_a_login_shaped_name_is_tried_before_an_unconventional_one(
+        self, monkeypatch: Any
+    ) -> None:
+        """Names order the work; they do not gate it. Each test is a request."""
+        agent = _orchestrator()
+        agent._login_shape_cache = {}
+        order: list[str] = []
+
+        async def _probe(self: OrchestratorAgent, url: str) -> bool:
+            order.append(url)
+            return False
+
+        monkeypatch.setattr(OrchestratorAgent, "_serves_a_login_form", _probe, raising=True)
+        scan_result = {
+            "endpoints": [
+                {"url": "http://app:3000/portal/gateway"},
+                {"url": "http://app:3000/signin"},
+            ]
+        }
+        await agent._find_login_url({}, "", scan_result=scan_result)
+        assert order.index("http://app:3000/signin") < order.index("http://app:3000/portal/gateway")
+
+    async def test_a_shapeless_crawl_result_still_yields_none(self, monkeypatch: Any) -> None:
+        """Collecting every URL must not become "return the first one"."""
+        agent = _orchestrator()
+        agent._login_shape_cache = {}
+        monkeypatch.setattr(OrchestratorAgent, "_serves_a_login_form", _serve({}), raising=True)
+        scan_result = {"endpoints": [{"url": f"http://app:3000/p{i}"} for i in range(5)]}
+        assert await agent._find_login_url({}, "", scan_result=scan_result) is None

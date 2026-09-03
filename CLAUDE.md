@@ -144,11 +144,22 @@ The hard rules:
 - **The credential the client gave us goes first** — the default-credential sweep
   is `not credentials.authenticating` and nothing else; there is deliberately no
   "…or the supplied credential failed" branch.
-- **A login URL is proven by response SHAPE, never by a status code.** Nothing
+- **A login URL is proven by response SHAPE, never by a status code and never by
+  a path NAME.** Names order the shape probing; they never gate it. Nothing
   proven ⇒ `None`, never the root URL.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`) —
   only a boundary discriminator is accepted; a body-length delta is refused.
   Credentials supplied + assertion failed ⇒ the engagement aborts loudly.
+- **A login succeeds on POSITIVE evidence only** — session material, or a
+  redirect that ACTUALLY occurred (`redirect_chain` non-empty). A 4xx is never
+  success; a different final path is not a redirect; a success carrying no
+  session material is refused at the seam that claimed it. **A 415 is USED**: the
+  response names the encoding, and the same credentials are re-POSTed to the same
+  action under it (`ENCODABLE_CONTENT_TYPES`; prose is never parsed).
+- **The operator's declarations OVERRIDE discovery, never seed it** —
+  `login_url` / `login_api_url` / `login_field` / `login_content_type` /
+  `assert_url` on `RoleCredential`. A declaration that is discarded is worse than
+  no declaration, because the operator believes the engine knows.
 - **Only a session-bearing response is evidence about the session**; the raised
   flag is a hypothesis and `assert_authenticated` is the oracle.
 - **The rails are absent by default** — `get_active_governor()` is `None` unless
@@ -567,6 +578,23 @@ detail when you are about to change the code an invariant governs — not by def
     unobservable-config-dependent, indistinguishable info leak) is PERMANENTLY
     lead-only and the deliverable states that as a product property. **Detail →
     [`docs/methodology/sca-catalogue-breadth.md`](docs/methodology/sca-catalogue-breadth.md).**
+87. **A redirect boundary is gated by the REDIRECT, never by the spelling of its
+    destination.** Anonymous 3xx + authenticated 2xx on the same URL IS the
+    boundary — the two requests differ in exactly one thing. The destination's
+    name, a password input served there, and a return parameter whose VALUE names
+    the path we asked for are corroboration: recorded, never required. The same
+    rule binds login DISCOVERY — names order the shape probing, they do not gate
+    it. Pinned by serving ONE application at two paths and asserting the SAME
+    verdict; `established` alone is not enough, because a name oracle can reach
+    the right answer by a weaker arm. **Detail →
+    [`docs/methodology/authentication-shapes.md`](docs/methodology/authentication-shapes.md).**
+88. **An error may not assert a negative about a comparison that was never
+    made.** Three auth failures wore one message — nothing dispatched,
+    dispatched and refused, and the assertion ran and found nothing. Only the
+    third may say no URL behaved differently, and only it lists the URLs with
+    both statuses; the second names the URL we actually POSTed to
+    (`AuthResult.posted_to`), which is not the login URL whenever a form `action`
+    pointed elsewhere. The remedies are filtered the same way.
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

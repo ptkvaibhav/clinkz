@@ -6,6 +6,7 @@ version: "3.9"
 #   tools       — Container with all security tools (nmap, nuclei, ffuf, etc.)
 #   juiceshop   — OWASP Juice Shop (intentionally vulnerable web app for testing)
 #   dvwa        — Damn Vulnerable Web Application
+#   meridian    — Meridian Portal (third auth shape: JSON login -> session cookie)
 #
 # Usage:
 #   docker compose -f docker/docker-compose.yml up -d
@@ -72,6 +73,34 @@ services:
         condition: service_healthy
     ports:
       - "8080:80"
+    networks:
+      - pentest-targets
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Test target: Meridian Portal — the THIRD authentication shape.
+  #
+  # DVWA is form+cookie, Juice Shop is JSON+bearer. Meridian is JSON login at a
+  # non-obvious path, identity field "account", a session COOKIE on the JSON
+  # response, and protected routes that answer anonymously with 302 to the login
+  # page rather than 401/403. Built to reproduce authentication failures the
+  # first two shapes cannot express; not intentionally vulnerable.
+  #
+  # MERIDIAN_LOGIN_PATH moves the login page. Running the same application at
+  # /portal/gateway and at /login is how you tell an oracle that reads the SHAPE
+  # of a redirect from one that reads the SPELLING of its destination:
+  #   MERIDIAN_LOGIN_PATH=/login docker compose ... up -d --force-recreate meridian
+  # ---------------------------------------------------------------------------
+  meridian:
+    build:
+      context: ./meridian
+      dockerfile: Dockerfile
+    image: clinkz-meridian:latest
+    container_name: clinkz-meridian
+    environment:
+      - MERIDIAN_LOGIN_PATH=${MERIDIAN_LOGIN_PATH:-/portal/gateway}
+    ports:
+      - "8090:8090"
     networks:
       - pentest-targets
     restart: unless-stopped

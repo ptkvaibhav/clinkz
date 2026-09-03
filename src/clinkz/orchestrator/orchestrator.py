@@ -161,6 +161,14 @@ _SCAN_PHASE_GRACE = 180
 # Maximum cross-phase re-spins per engagement (e.g., Exploit asks for more recon).
 MAX_CROSS_PHASE_RESPINS = 3
 
+#: How many candidate URLs :meth:`OrchestratorAgent._find_login_url` will test
+#: the SHAPE of. Shape testing costs one GET each, and the candidate list is
+#: every URL recon and the crawler produced, so it needs a bound — but the bound
+#: is announced when it bites (invariant 14: a bound that decides coverage is
+#: reported, not logged and forgotten), and an operator whose login page falls
+#: outside it declares ``login_url`` on the role.
+LOGIN_SHAPE_PROBE_BUDGET = 40
+
 #: Role name a session established by the DEFAULT-CREDENTIAL sweep is filed
 #: under. Distinct from any supplied role on purpose: "a credential the client
 #: handed us" and "a credential this engine guessed" are different provenance,
@@ -334,6 +342,7 @@ class OrchestratorAgent:
         # Cache for _probe_url results to avoid repeated slow HTTP HEAD requests
         self._probe_cache: dict[str, int | None] = {}
         self._login_shape_cache: dict[str, bool] = {}
+        self.LOGIN_SHAPE_PROBE_BUDGET = LOGIN_SHAPE_PROBE_BUDGET
 
         # ---- Productization P1 --------------------------------------------
         # Operator-supplied credentials, one entry per role. Held here and NEVER
@@ -2490,19 +2499,34 @@ class OrchestratorAgent:
         technology: str,
         scan_result: dict[str, Any] | None = None,
     ) -> str | None:
-        """Find a login URL using a multi-strategy fallback chain.
+        """Find a login URL by RESPONSE SHAPE, using path names only to order the work.
 
-        Strategies (tried in order, first hit wins):
-        1. Explicit ``login_urls`` dict keyed by technology.
-        2. Structured URL fields in recon/scan results containing login paths.
-        3. Free-text search of recon ``summary`` for URLs with login keywords.
-        4. Discovered targets/endpoints in the state store with login in path.
-        5. Probe common login paths on each scope target and keep only one whose
-           RESPONSE SHAPE is a login form (:meth:`_serves_a_login_form`).
+        The chain used to be six name filters. Every URL recon or the crawler
+        produced was tested against ``("/login", "/admin", "/wp-login",
+        "/manager", "/signin", "/auth")`` and discarded if it matched none — so
+        an application whose login page is at ``/portal/gateway`` could be
+        linked from its own landing page, crawled, and handed to this method,
+        and still come back "no login surface proven". The same application at
+        ``/login`` was found immediately. That is a name oracle, and it is the
+        same defect as the redirect discriminator's, one layer up.
 
-        There is no sixth strategy. Returning the root URL "as the login page"
-        was one, and a root URL is not a login page — it is where a credential
-        POST goes when nobody proved anything.
+        So the strategies now COLLECT candidates and a single shape test
+        decides:
+
+        1. Explicit ``login_urls`` from recon — a producer's declaration, taken
+           as given, the one entry that does not need confirming.
+        2. Structured URL fields in recon/scan, free text in the summaries, and
+           the state store's discovered endpoints — all of them, not just the
+           name-matching ones.
+        3. Conventional paths constructed on each scope base.
+
+        Candidates whose path is login-shaped are tested FIRST, because they are
+        likelier and every test is a request. Being login-shaped is no longer
+        what makes a candidate ELIGIBLE — only what makes it early.
+
+        There is still no strategy that returns the root URL "as the login
+        page": a root URL is not a login page, it is where a credential POST
+        goes when nobody proved anything.
 
         Args:
             recon_result: Recon phase result dict.
@@ -2510,21 +2534,29 @@ class OrchestratorAgent:
             scan_result: Optional scan phase result dict for additional URL sources.
 
         Returns:
-            Login URL string, or None if not found.
+            Login URL string whose shape was confirmed, or None.
         """
         login_path_hints = ("/login", "/admin", "/wp-login", "/manager", "/signin", "/auth")
 
-        # --- Strategy 1: explicit login_urls dict ---
+        # --- A declaration by the recon producer, taken as given ---
         login_urls = recon_result.get("login_urls", {})
         if isinstance(login_urls, dict):
             if technology and technology in login_urls:
                 return login_urls[technology]
-            # Return any URL from the dict
             for _tech, url in login_urls.items():
                 if url:
                     return url
 
-        # --- Strategy 2: structured URL fields in recon + scan results ---
+        candidates: list[str] = []
+
+        def offer(value: Any) -> None:
+            """Collect a candidate URL. No name filter — that is the whole point."""
+            url = value.get("url", "") if isinstance(value, dict) else value
+            if isinstance(url, str) and url.startswith(("http://", "https://")):
+                if url not in candidates:
+                    candidates.append(url)
+
+        # --- Structured URL fields in recon + scan results ---
         sources = [recon_result]
         if scan_result:
             sources.append(scan_result)
@@ -2533,39 +2565,24 @@ class OrchestratorAgent:
                 items = source.get(key)
                 if isinstance(items, list):
                     for item in items:
-                        url = ""
-                        if isinstance(item, dict):
-                            url = item.get("url", "")
-                        elif isinstance(item, str):
-                            url = item
-                        if url and any(p in url.lower() for p in login_path_hints):
-                            return url
+                        offer(item)
 
-        # --- Strategy 3: regex search of free-text summary for URLs ---
+        # --- Free-text URLs in the summaries ---
         for source in sources:
             summary = source.get("summary", "")
             if isinstance(summary, str) and summary:
-                # Find URLs in free text
-                url_matches = re.findall(r'https?://[^\s<>"\']+', summary)
-                for candidate in url_matches:
-                    if any(p in candidate.lower() for p in login_path_hints):
-                        return candidate
+                for candidate in re.findall(r'https?://[^\s<>"\']+', summary):
+                    offer(candidate)
 
-        # --- Strategy 4: search state store targets/endpoints ---
+        # --- The state store's discovered endpoints ---
         if self._state and self._engagement_id:
             try:
-                targets = await self._state.get_targets(self._engagement_id)
-                for t in targets:
-                    ip = t.get("ip", "")
-                    for hostname in t.get("hostnames", []):
-                        if any(p in str(hostname).lower() for p in login_path_hints):
-                            return str(hostname)
-                    if any(p in str(ip).lower() for p in login_path_hints):
-                        return str(ip)
-            except Exception:
-                pass
+                for endpoint in await self._state.get_endpoints(self._engagement_id):
+                    offer(endpoint)
+            except Exception as exc:
+                self._logger.debug("Could not read endpoints for login discovery: %s", exc)
 
-        # --- Strategy 5: construct and probe common login paths ---
+        # --- Conventional paths on each scope base ---
         base_url = recon_result.get("base_url") or recon_result.get("url")
         probe_bases: list[str] = []
         if base_url:
@@ -2584,16 +2601,35 @@ class OrchestratorAgent:
         probe_paths = ["/login", "/signin", "/auth", "/admin", "/login.php", "/wp-login.php"]
         for base in probe_bases:
             for path in probe_paths:
-                probe_url = f"{base.rstrip('/')}{path}"
-                if await self._serves_a_login_form(probe_url):
-                    self._logger.info("Probed login URL CONFIRMED by shape: %s", probe_url)
-                    return probe_url
+                offer(f"{base.rstrip('/')}{path}")
 
-        # No sixth strategy. Nothing here proved a login surface, and inventing
-        # one is how a credential sweep ends up POSTing at a route the target
-        # has never had.
+        # Login-shaped names first — likelier, and each test costs a request.
+        # Eligibility is the shape test below; this only decides the order.
+        ordered = sorted(
+            candidates,
+            key=lambda url: 0 if any(p in url.lower() for p in login_path_hints) else 1,
+        )
+
+        for candidate in ordered[: self.LOGIN_SHAPE_PROBE_BUDGET]:
+            if await self._serves_a_login_form(candidate):
+                self._logger.info("Login URL CONFIRMED by shape: %s", candidate)
+                return candidate
+
+        if len(ordered) > self.LOGIN_SHAPE_PROBE_BUDGET:
+            # A bound that decides coverage is never silent, even here: an
+            # operator whose login page sat at candidate 41 must be able to see
+            # that it was never tested rather than conclude it was rejected.
+            self._logger.warning(
+                "Login-shape probing stopped at its budget of %d candidates; %d were "
+                "not tested. Declare the login URL on the role if it is among them.",
+                self.LOGIN_SHAPE_PROBE_BUDGET,
+                len(ordered) - self.LOGIN_SHAPE_PROBE_BUDGET,
+            )
+
         self._logger.info(
-            "No login surface proven under %s — returning none rather than guessing one",
+            "No login surface proven among %d candidates under %s — returning none "
+            "rather than guessing one",
+            len(ordered),
             ", ".join(probe_bases) or "(no base url)",
         )
         return None
@@ -3009,7 +3045,19 @@ class OrchestratorAgent:
 
         login_url = cred.login_url or default_login_url
         authenticator = WebAuthenticator(scope=self._scope, engagement_id=self._engagement_id)
-        result = await authenticator.authenticate(login_url, cred.username, cred.secret())
+        # Every declaration the operator made travels to the authenticator. They
+        # OVERRIDE discovery rather than seeding it: an operator who names their
+        # JSON login route, identity field or content type has told us something
+        # no probe can find out, and the previous code took the login URL,
+        # discarded it, and iterated six canned routes instead.
+        result = await authenticator.authenticate(
+            login_url,
+            cred.username,
+            cred.secret(),
+            api_login_url=cred.login_api_url,
+            identity_field=cred.login_field,
+            content_type=cred.login_content_type,
+        )
 
         if not result.success:
             self._logger.error(
@@ -3019,14 +3067,25 @@ class OrchestratorAgent:
                 result.status_code,
                 result.error or "no error reported",
             )
+            # ``why_unproven`` must not say the assertion found nothing — the
+            # assertion never ran. What it says instead is which step ended the
+            # attempt, and ``posted_to`` records where the credential actually
+            # went, which is not ``login_url`` whenever a form action redirected
+            # it somewhere else.
             self._role_sessions[cred.role] = {
                 "established": False,
                 "username": cred.username,
                 "cookies": {},
                 "headers": {},
+                "login_url": login_url,
+                "posted_to": result.posted_to,
                 "assertion": AuthAssertion(
                     established=False,
-                    why_unproven=f"Login did not succeed at {login_url}",
+                    why_unproven=(
+                        result.failure_stage
+                        or result.error
+                        or f"the login flow at {login_url} reported no session and no reason"
+                    ),
                 ),
             }
             return
@@ -3068,6 +3127,8 @@ class OrchestratorAgent:
             "username": cred.username,
             "cookies": result.session_cookies,
             "headers": headers,
+            "login_url": login_url,
+            "posted_to": result.posted_to,
             "assertion": assertion,
         }
         if assertion.established and cred.role == (
@@ -3116,7 +3177,32 @@ class OrchestratorAgent:
         return assertion
 
     def _auth_failure_message(self, base_url: str, detection: Any) -> str:
-        """The loud abort message for an unprovable session."""
+        """The loud abort message for an unprovable session — split by what happened.
+
+        Three failures wore one message, and all three of its remedies were
+        wrong on a live run at once. The credentials had never been offered to
+        the application, the assertion had never run — ``attempted`` was empty —
+        and the message nonetheless said "the application has no URL that
+        behaves differently when authenticated among the ones tried", which is a
+        negative asserted about a comparison nobody made. An operator acting on
+        it would have gone looking for a protected URL to declare, for a session
+        that failed three steps earlier.
+
+        So the per-role line now reports which of three things happened:
+
+        * **Nothing was dispatched.** No credential POST left the engine. The
+          message says so, and does not mention discriminators.
+        * **A credential POST was dispatched and refused.** The message names
+          the URL it actually went to — which is not the login URL whenever a
+          form ``action`` pointed elsewhere, and an operator cannot tell those
+          apart from "login failed at <the login page>".
+        * **The assertion ran and found no discriminator.** Only here is it true
+          that no URL behaved differently, and only here are the URLs and their
+          two status codes listed — because only here do they exist.
+
+        The remedies are filtered the same way: the "supply an authenticated-only
+        URL" line appears only for a run that actually reached the assertion.
+        """
         lines = [
             "ABORTING: credentials were supplied but authenticated state could not be proven.",
             "",
@@ -3130,20 +3216,72 @@ class OrchestratorAgent:
             "",
             "Per role:",
         ]
+
+        any_reached_assertion = False
+        any_dispatched = False
         for role, session in self._role_sessions.items():
             assertion: AuthAssertion = session["assertion"]
-            lines.append(f"  [{role}] {assertion.why_unproven or 'not established'}")
-            for attempt in assertion.attempted[:6]:
-                lines.append(f"      tried {attempt}")
-        lines += [
-            "",
-            "Fix one of:",
-            "  - the credentials are wrong, or the account is locked",
-            '  - the login URL is wrong (set "login_url" on the role in the credential file)',
-            "  - the application has no URL that behaves differently when "
-            "authenticated among the ones tried; supply a known "
-            "authenticated-only URL",
-        ]
+            login_url = session.get("login_url", "")
+            posted_to = session.get("posted_to", "")
+
+            if assertion.attempted:
+                # The assertion ran. This is the ONLY case in which "no URL
+                # behaved differently" is a statement about something observed.
+                any_reached_assertion = True
+                any_dispatched = True
+                lines.append(
+                    f"  [{role}] the session was established and the assertion RAN, but no "
+                    "candidate URL behaved differently with and without it."
+                )
+                lines.append("      compared (authenticated vs anonymous):")
+                for attempt in assertion.attempted[:8]:
+                    lines.append(f"        {attempt}")
+                if len(assertion.attempted) > 8:
+                    lines.append(f"        ... and {len(assertion.attempted) - 8} more")
+            elif not posted_to:
+                # Nothing ever left the engine carrying these credentials.
+                lines.append(
+                    f"  [{role}] NO credential was ever offered to the application — the "
+                    "attempt ended before any login request was dispatched."
+                )
+                lines.append(f"      reason: {assertion.why_unproven or 'not stated'}")
+                if login_url:
+                    lines.append(f"      the login URL we would have used: {login_url}")
+            else:
+                any_dispatched = True
+                lines.append(
+                    f"  [{role}] a credential POST WAS dispatched and did not produce a "
+                    "session; the assertion was never reached, so nothing was compared."
+                )
+                lines.append(f"      posted to: {posted_to}")
+                if login_url and posted_to != login_url:
+                    lines.append(
+                        f"      note: that is not {login_url} — the login page's form "
+                        "action pointed elsewhere, and it is the action that received "
+                        "the credentials."
+                    )
+                lines.append(f"      reason: {assertion.why_unproven or 'not stated'}")
+
+        lines += ["", "Fix one of:"]
+        if any_dispatched:
+            lines.append("  - the credentials are wrong, or the account is locked")
+        lines.append(
+            '  - the login URL is wrong (set "login_url" on the role in the credential file)'
+        )
+        if not any_dispatched:
+            lines += [
+                '  - the login route was never found; declare it with "login_url", and '
+                '"login_api_url" when the JSON login route differs from the login page',
+                '  - the identity field is not "email"/"username"; declare it with "login_field"',
+                "  - the login expects a content type we did not send; declare it with "
+                '"login_content_type"',
+            ]
+        if any_reached_assertion:
+            # Only sayable because the comparison above actually happened.
+            lines.append(
+                "  - the application has no URL among those compared that behaves "
+                'differently when authenticated; supply one with "assert_url"'
+            )
         return "\n".join(lines)
 
     async def _reauthenticate_running_agents(self) -> None:

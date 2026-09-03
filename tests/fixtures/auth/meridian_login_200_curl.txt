@@ -1,0 +1,8 @@
+HTTP/1.1 200 OK
+Server: Meridian/1.0 
+Date: Thu, 01 Jan 2026 00:00:00 GMT
+Content-Type: application/json
+Content-Length: 92
+Set-Cookie: meridian_portal=00000000000000000000000000000001; Path=/; HttpOnly; SameSite=Lax
+
+{"status": "ok", "account": "acct-4417", "display_name": "D. Whitfield", "tier": "operator"}

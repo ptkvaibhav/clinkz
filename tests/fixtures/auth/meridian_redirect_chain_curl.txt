@@ -1,0 +1,14 @@
+HTTP/1.1 302 Found
+Server: Meridian/1.0 
+Date: Thu, 01 Jan 2026 00:00:00 GMT
+Content-Type: text/html; charset=utf-8
+Content-Length: 0
+Location: /portal/gateway?next=%2Fapi%2Forders
+
+HTTP/1.1 200 OK
+Server: Meridian/1.0 
+Date: Thu, 01 Jan 2026 00:00:00 GMT
+Content-Type: text/html; charset=utf-8
+Content-Length: 697
+
+<!doctype html><html lang=en><head><meta charset=utf-8><title>Sign in Â· Meridian</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:2rem auto;max-width:44rem;color:#1c2733}h1{font-size:1.35rem}a{color:#0b5c8a}</style></head><body><h1>Meridian Portal</h1><p>Sign in to reach your statements and order history.</p><form method=post action="/portal/v3/session-open"><p><label>Account number<br><input type=text name=account autocomplete=username></label></p><p><label>Password<br><input type=password name=password autocomplete=current-password></label></p><p><input type=submit name=submit value='Sign in'></p></form><p><a href=/pricing>Pricing</a> Â· <a href=/>Home</a></p></body></html>

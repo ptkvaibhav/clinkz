@@ -4,10 +4,13 @@
 > carries the incident that produced it. When the two disagree, CLAUDE.md
 > is the operating instruction and this is the record of why.
 
-The 85 invariants, in their original order, with the forensic detail that
-CLAUDE.md's one-line form drops. Numbering is positional within this file and
-is **not** a stable id — cite an invariant by its rule text, never by its
-number, the same way `.claude/LESSONS.md` ids are historical-not-positional.
+The invariants, in their original order, with the forensic detail that
+CLAUDE.md's one-line form drops. Numbering follows CLAUDE.md's, and an id is
+**historical, not positional** — an invariant keeps its number when others are
+added, so cite one by its rule text where you can, the same way
+`.claude/LESSONS.md` ids are historical-not-positional. A few invariants carry
+their forensic detail in a dedicated `docs/methodology/` file instead of a
+section here, and say so in CLAUDE.md: 86 (SCA catalogue breadth) is one.
 
 ## Architecture, comms, and tool discovery
 
@@ -1529,3 +1532,65 @@ fingerprint matches one we hold). The payload is never a supplied identity.
 **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl` (tool
 calls, LLM calls, agent steps, handoffs, methodology-phase events). `outputs/`
 is local-only by policy — never committed.
+
+### 87. A redirect boundary is gated by the REDIRECT, never by the spelling of its destination
+
+**Anonymous 3xx + authenticated 2xx on the same URL IS the boundary** — the two
+requests differ in exactly one thing, and that thing is the session. Seven
+substrings (`login`, `signin`, `sign-in`, `sign_in`, `auth`, `sso`,
+`session/new`) used to decide it, so **the commonest denial shape in production
+web applications was invisible whenever the login page was called something
+else**. The decisive test: serve one application at `/portal/gateway` and at
+`/login`, change nothing else, and the verdict flips. That is a name oracle, and
+invariant 64 already says the alias is OBSERVED, never inferred.
+
+The destination's NAME, a password input served there, and a query parameter
+whose **value** names the path we requested are **corroboration** — gathered,
+reported, never required. The parameter's own name is not consulted: `next`,
+`return_to`, `r` and `ReturnUrl` are the same idea, and matching on the value
+reads the application instead of a list we would have to maintain.
+
+The same rule binds login DISCOVERY one layer up: `_find_login_url` filtered
+crawl results through six path names and could not surface a login page the
+crawler had linked from the landing page. Names now ORDER the shape probing —
+each probe is a request — and never gate it.
+
+`looks_unauthenticated` deliberately keeps the name check: it is a mid-run
+heuristic that raises a flag for an oracle to CHECK, never a verdict, and firing
+it on any 3xx would flood it with the ordinary redirects a scan walks through
+all day (invariant 77).
+
+Pinned by asserting the two spellings reach the SAME verdict on
+`(established, discriminator, authenticated_status, anonymous_status)`.
+`established` alone is not enough: under the old gate `/portal/gateway` still
+reached `established=True` — by `session_marker`, a body keyword — while
+`/login` proved it by the actual boundary. **Detail →**
+[`docs/methodology/authentication-shapes.md`](methodology/authentication-shapes.md).
+
+### 88. An error may not assert a negative about a comparison that was never made
+
+Three different authentication failures wore one message, and on the live run
+that exposed it all three of its remedies were wrong at once. `attempted` was
+empty — **the assertion never ran** and the credentials had never been offered
+to the application — and the message nonetheless said *"the application has no
+URL that behaves differently when authenticated among the ones tried"*. An
+operator acting on it would have gone looking for a protected URL to declare for
+a session that failed three steps earlier.
+
+The three cases are now reported separately: **nothing was dispatched** (which
+step ended it, and the URL we would have used), **a credential POST was
+dispatched and refused** (the URL it ACTUALLY went to — `AuthResult.posted_to`,
+which is not the login URL whenever a form `action` pointed elsewhere), and
+**the assertion ran and found no discriminator** (every URL compared, with both
+status codes). The remedies are filtered the same way: `assert_url` is offered
+only to a run that reached the assertion, and the discovery declarations only to
+one that did not.
+
+Related: a login succeeds on POSITIVE evidence only. `_check_login_success`
+returned True on a **415** because the form's `action` path differed from the
+login page's and it read that as "redirected away". No redirect had occurred —
+the chain was empty — and the server had just named the media type it wanted.
+A 4xx is now never success, the redirect test reads `redirect_chain`, and the
+415 is USED: the same credentials are re-POSTed to the same action under the
+type the response names. **Detail →**
+[`docs/methodology/authentication-shapes.md`](methodology/authentication-shapes.md).
