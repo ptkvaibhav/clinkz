@@ -221,6 +221,68 @@ every target that worked before — and it is the arm that can read a form
 discovered. Meridian is found by the form arm and authenticated by the
 negotiation, not by the ordering.
 
+## Defect 7 — the credential POST followed a redirect nobody checked
+
+Found while reviewing defects 1-6, and it is the one an attacker reaches most
+easily.
+
+`_resolve_post_url` scope-checks where the credentials go FIRST, because the
+form's `action` is written by the target and read *after* `validate_input`
+checked the login URL. It does not check where they go SECOND. Both form
+credential POSTs were dispatched with `-L` / `allow_redirects=True`, and the
+JSON arm with `follow_redirects=True`, so the transport chose the next
+destination on its own.
+
+**A 307 preserves the method and the body.** That is the whole defect:
+
+```
+POST /session         creds ──▶  target       "307, Location: https://attacker.tld/collect"
+                                    │
+              transport follows ────┘
+POST /collect         creds ──▶  attacker     ← scope never saw this URL
+```
+
+Controlling the form's HTML is not required — shaping one response is enough,
+which is a strictly weaker position and available to anything on the path. And
+the 415 renegotiation would have earned a second copy of the credentials in
+another encoding at the same destination.
+
+The 3xx is now **observed**. `_classify_credential_redirect` reads the
+`Location`, resolves it against the URL that answered, scope-checks the result,
+and returns the hop to take:
+
+| Status | Follow-up | Why it is still scope-checked |
+|---|---|---|
+| 307, 308 | re-POST, same body | carries the credentials verbatim |
+| 301, 302, 303 | bodyless GET | carries the cookie jar |
+| any 3xx with no `Location` | stop | reading it as a redirect would invent a chain |
+| destination out of scope | **refuse** | nothing is dispatched to it |
+
+Each in-scope hop is then dispatched as its own request, capped at five, and the
+chain each execution mode records keeps the meaning it had before — aiohttp
+records the URLs that *answered* with a redirect (what `resp.history` held);
+curl accumulates the raw `Location` values across per-hop dumps, which
+concatenate into exactly what `-L` used to write. `_check_login_success`
+therefore reads the same fact it read before, and no target's verdict moves.
+
+**A refusal aborts, and it is terminal.** `AuthResult.scope_refusal` carries the
+destination, and `authenticate()` returns on it rather than running the other
+arm — which would offer the same credentials to the same target at six more
+routes and then report "no API login route returned an auth token", a true
+sentence about the wrong thing. The message keeps defect 4's distinction: the
+credential POST **was** dispatched, to an in-scope URL the target's own form
+chose, and only the redirect was refused.
+
+The control is the seeded-leak shape, in
+`tests/test_tools/test_credential_redirect_scope.py`. `127.0.0.2` is a real,
+bindable, **reachable** host that a scope naming only `127.0.0.1` excludes, so
+the collector standing there is one the credentials could actually arrive at —
+a destination that merely fails to resolve would prove nothing, because nothing
+can reach it either way. The file proves the collector works by handing it a
+credential directly, then observes it receive nothing while the in-scope form
+action still gets the POST. Run against the pre-fix code it records
+`('POST', '/collect', 'account=…&password=…')`.
+
 ## The regression that is the test
 
 `tests/test_engagement/test_meridian_auth.py` runs Meridian in a thread on an

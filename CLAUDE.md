@@ -595,6 +595,18 @@ detail when you are about to change the code an invariant governs — not by def
     both statuses; the second names the URL we actually POSTed to
     (`AuthResult.posted_to`), which is not the login URL whenever a form `action`
     pointed elsewhere. The remedies are filtered the same way.
+89. **A credential POST goes where SCOPE allows, and a redirect is a second
+    choice nobody checked.** `-L`/`allow_redirects` let the transport pick the
+    destination, and a **307 preserves the method and body** — so shaping one
+    response, a weaker position than controlling the form's HTML, moved the
+    plaintext credentials off-scope. The 3xx is OBSERVED: `Location` resolved,
+    scope-checked, then dispatched to as a NEW request
+    (`tools/auth.py::_classify_credential_redirect`). Every status is checked,
+    not just the body-preserving pair, because a 302's GET carries the cookie
+    jar. An out-of-scope destination ABORTS and says so
+    (`AuthResult.scope_refusal`, TERMINAL across both arms) — a credential POST
+    that vanished into a redirect and one the application rejected read
+    identically downstream.
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

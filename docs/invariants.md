@@ -1594,3 +1594,44 @@ A 4xx is now never success, the redirect test reads `redirect_chain`, and the
 415 is USED: the same credentials are re-POSTed to the same action under the
 type the response names. **Detail →**
 [`docs/methodology/authentication-shapes.md`](methodology/authentication-shapes.md).
+
+### 89. A credential POST goes where scope allows, and a redirect is a second choice nobody checked
+
+`_resolve_post_url` closed the first hole: the form's `action` is written by the
+TARGET, read after `validate_input` scope-checked the login URL, and the POST
+that follows carries plaintext credentials over aiohttp/curl directly rather
+than through the scope-enforcing HTTP client. A page serving
+`<form action="https://attacker.tld/collect">` received them.
+
+It did not close the second, which is strictly easier to reach. Both form
+credential POSTs were dispatched with `-L` / `allow_redirects=True`, and the
+JSON arm with `follow_redirects=True`, so the transport followed the redirect
+itself. **A 307 preserves the method and the body.** An attacker who can shape
+one response — not the page, not the form's HTML, just the answer to the
+credential POST — therefore received a verbatim copy of the credentials at a
+destination no scope check had ever seen, and the 415 renegotiation would have
+earned a second copy in another encoding.
+
+So the redirect is observed rather than followed. Each 3xx comes back, its
+`Location` is resolved against the URL that answered, the result is
+scope-checked, and only then is a new request dispatched to it deliberately —
+a POST for 307/308, which preserve the body, and a bodyless GET for 301/302/303,
+which do not. **All five statuses are checked**, because the GET still carries
+the cookie jar and a session handed to a third party is the same class of
+disclosure one hop later.
+
+An out-of-scope destination **aborts and says so**. `AuthResult.scope_refusal`
+carries the destination and makes the refusal TERMINAL for the whole
+`authenticate()` call: without it the form arm's refusal would be followed by
+the JSON arm offering the same credentials to the same target at six more
+routes, and the run would report "no API login route returned an auth token" —
+true, and about the wrong thing. The message keeps invariant 88's distinction:
+the credential POST **was** dispatched, to an in-scope URL the target's own form
+chose, and it is only the redirect that was refused.
+
+The control is the seeded-leak discipline
+(`tests/test_tools/test_credential_redirect_scope.py`): a real out-of-scope
+collector on `127.0.0.2` that WOULD receive the credentials, proved live by
+handing it one directly, then observed to receive nothing at all while the
+in-scope action still gets the POST. Against the pre-fix code it records
+`('POST', '/collect', '…password…')`.
