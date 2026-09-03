@@ -17,6 +17,13 @@ Measured against the catalogue and the version grammar as they stand
 (2026-08-30, after the interval rewrite): **9 entries, 3 confirmable, 6
 lead-only, 9 distinct predicates, 30 dispatchable `_test_*` classes.**
 
+> **Superseded by §6–§10 (2026-09-02).** The depth pass measured whether those
+> "3 confirmable" rows could actually be REACHED, and two of them could not: the
+> Apache path-traversal entries named the right oracle and arrive by a route no
+> component-derived task sends. The catalogue is now **28 entries, 6 testable,
+> 22 lead-only**, with the vector declared per row and the disposition computed
+> from it. Read §6 before §3 — §3's table is the question, §6 is the answer.
+
 ---
 
 ## 1. The 2.4.67 miss was a grammar problem wearing a content problem's clothes
@@ -204,3 +211,322 @@ candidate graded as fixed — are closed and pinned as properties. The two that
 remain bound how much of NVD is *expressible*, and they refuse loudly: an
 advisory needing an OR of ranges cannot be written in this grammar, which is a
 visible gap rather than a silent wrong answer.
+
+---
+
+# The depth pass: an oracle you cannot reach is not coverage
+
+**2026-09-02.** §3 above asked which Band A shapes have an oracle waiting. The
+answer it gave was right about the oracles and wrong about the reach, and the
+difference cost two catalogue entries their dispatch. What follows is the
+measurement, the rule it produced, and the entries written under it.
+
+## 6. Part 1 — which bands can receive a match TODAY
+
+Measured, not read. Each Band A oracle was called against a `PageAnalysis` of a
+known shape with every network call recorded, and the component-derived task was
+built through the real plan seam (`_merge_component_cve_tasks`).
+
+### 6.1 The transverse fact: what a component-derived task actually carries
+
+```
+ExploitTask(test_method="_test_lfi", endpoint_url="http://10.0.0.1/",
+            endpoint_params=[], param_locations={}, carrier_constraints=[])
+```
+
+No params, no request shape, no carrier. `_fetch_page` then derives
+`input_params` from the served page's `<input name=…>` tags plus the URL query,
+and **every injection oracle iterates that list**. So before the fix below, a
+component-derived task's entire reach was whatever form inputs the site root
+happened to render.
+
+| Oracle | probes on a page with 0 params | with 2 params |
+|---|---|---|
+| `_test_lfi` | 0 | 6 |
+| `_test_ssrf` | 0 | 6 |
+| `_test_sqli` | 0 | 6 |
+| `_test_nosqli` | 0 | 6 |
+| `_test_xss_reflected` | 0 | 2 |
+| `_test_xss_stored` | 0 | 0 (needs a form, not a param) |
+| `_test_xss_dom` | 0 | 0 (needs P7) |
+| `_test_log4shell` | 0 | 0 (needs a healthy collaborator; P6 off by default) |
+
+### 6.2 Per-band verdicts
+
+Every Band A oracle is dispatchable and every one is classified by the
+never-sent-control partition — there is no unclassified class and no oracle
+missing its control arm:
+
+| Band | Oracle | Control arm | Reachable by a component-derived task? |
+|---|---|---|---|
+| **A1** traversal / file read | `_test_lfi` | MARKER (never-sent decoy) | **Only for a PARAMETER-carried file read.** Not for a URL-path traversal — see §6.3 |
+| **A2** log-sink JNDI egress | `_test_log4shell` | EXEMPT — P6 dispatches its own never-sent nonce | **Yes, when P6 is wired.** Parameter-scoped; returns without probing if the collaborator is absent, which is the honest black-box floor |
+| **A3** SSRF | `_test_ssrf` | MARKER | **Yes.** Parameter-scoped; probes any param, confirms in-band on reflected internal content or out-of-band via P6 |
+| **A4** SQLi / NoSQLi | `_test_sqli`, `_test_nosqli` | MARKER (both) | **Yes.** Parameter-scoped |
+| **A5** XSS | `_test_xss_reflected` / `_stored` / `_dom` | MARKER, MARKER, EXEMPT (P7) | **No — and it must stay a lead.** See §6.4 |
+
+### 6.3 A1: the finding. Two shipped entries named an oracle that cannot reach them
+
+`_test_lfi`, pointed at the endpoint the CVE source chose, with the most
+file-shaped parameter name there is:
+
+```
+GET http://10.0.0.1/  params={'file': ''}
+GET http://10.0.0.1/  params={'file': '../'}
+GET http://10.0.0.1/  params={'file': '/etc/passwd'}
+0 of 3 requests mutate the URL PATH.
+```
+
+CVE-2021-41773 is a traversal through an **aliased directory in the URL path**
+(`/cgi-bin/.%2e/%2e%2e/etc/passwd`). Those three probes cannot witness it. The
+second route, `_test_lfi_file_server`, is gated on `_is_file_server_path`, which
+is False for `/` and for `/cgi-bin/…` — it recognises `ftp`, `uploads`,
+`downloads` and five siblings.
+
+So both Apache rows declared `confirming_test_method="_test_lfi"`, spent a
+reserved plan slot, and — when nothing came back — recorded
+`version_match_oracle_ran_and_did_not_confirm`: *we tested it and saw nothing*,
+about a vector that was never sent.
+
+**This is the emission rule failing in the direction it was not watching.** The
+module refuses to let a version match become a finding. It did not refuse to let
+one become a *coverage claim*, and both are claims about work done.
+
+The fix is not to delete the rows. The oracle named is the RIGHT oracle — a file
+read is exactly what `_test_lfi` proves. What was missing is the carrier, so the
+rows keep their oracle, declare `CVEVector.URL_PATH`, and stop dispatching.
+`LEAD_VECTOR_NOT_CARRIED` is the sentence that says which:
+
+> This engine HAS an oracle for this CVE's defining effect and could not deliver
+> the CVE's input to it: a component-derived task carries its probe as a request
+> PARAMETER, and this CVE is reached by another route. Nothing was sent, so this
+> is not a statement that the host is clean.
+
+The gray-box discovery engine already builds that carrier
+(`ParamLocation.PATH` + `CARRIER_PATH_TRAVERSAL`, the Flink CVE-2020-17519
+route). Wiring it into the component-CVE source is a code change plus a live
+proof, and it is the named next capability — not a catalogue edit.
+
+### 6.4 A5: checked hardest, and it stays lead-only
+
+Two independent reasons, and the second is measured:
+
+1. **A library CVE names a sink; the observation is that the library is
+   present.** Whether any request-controlled value reaches that sink on *this*
+   application is the entire question, and the version string is silent on it.
+2. **On the target class where a bundled library actually lives — an SPA — the
+   XSS oracles cannot confirm anyway.** `_test_xss_reflected` grades a
+   reflection landing in JS/DOM context `likely`, which
+   `_NON_CONFIRMING_VERIFICATION_STRENGTHS` demotes to an
+   `UnprovenExploitLead`; `_test_xss_stored` issues no probe without a form
+   (0 requests with params alone); `_test_xss_dom` needs P7, which is off unless
+   a browser is wired.
+
+A dispatch would therefore spend a plan slot to produce the lead the row already
+is. The four jQuery rows (CVE-2020-11022, CVE-2020-11023, CVE-2015-9251,
+CVE-2019-11358) are lead-only **by decision**, not by omission.
+
+### 6.5 The targeting correction
+
+`_component_cve_target_url` preferred the site root, reasoning that a
+server-level defect is a property of the ORIGIN. Sound reasoning selecting for
+the wrong thing: the oracles carry parameter values, so a parameter-less root is
+an endpoint they send nothing to.
+
+The origin argument has not gone away — it has moved. A defect that is a property
+of the origin is one whose vector is the URL path, and those rows are
+`URL_PATH` leads now. What is left to dispatch is exactly the set for which a
+parameterised endpoint is right. So `_component_cve_target_endpoint` returns an
+`Endpoint`, prefers one carrying a parameter, and the task is built with that
+endpoint's params and its request shape through the declared
+`_endpoint_request_shape` seam. No parameterised surface ⇒ a stated lead, never
+an inert task.
+
+## 7. Part 2 — the entries, and what each one declares
+
+Every row declares its affected range (half-open), its `confirming_test_method`,
+the `defining_effect` that method proves **in the oracle's own terms**, its
+`vector`, and the provenance grades that can NAME it.
+
+### 7.1 On `identifiable_by`, and what it is not
+
+It is **not** provenance gating a test. §2's decision stands unchanged: a
+back-ported host in the affected range gets tested, the oracle observes nothing,
+and the match stays a lead. Every grade an entry lists dispatches identically.
+
+It is an **observability** declaration. `nmap -sV` and `whatweb` fingerprint
+servers; nothing that reads a banner can report `ejs`. A row reading `ejs 3.1.6`
+at BANNER strength is a mis-parse of something else, not a weaker sighting of
+ejs — so there is no observation of that component to test, and refusing to
+spend a probe on it is not a policy about evidence strength.
+
+### 7.2 Testable — an oracle witnesses the effect and we can carry the input
+
+| CVE | Component | Affected (half-open) | Oracle | Defining effect that oracle proves | Producer route | May DISPATCH at |
+|---|---|---|---|---|---|---|
+| CVE-2021-44228 | log4j / solr / elasticsearch / logstash | `[2.0,2.15.0)` | `_test_log4shell` (P6) | an outbound JNDI/DNS resolution carrying a nonce that existed only in the one probe sent | nmap `-sV`, httpx `-tech-detect`, whatweb; **and** `package_identity` lockfile | any |
+| CVE-2019-17558 | Apache Solr | `[5.0.0,8.4.0)` | `_test_ssti` | a template expression we supplied, EVALUATED server-side and returned as its computed result | nmap `-sV`, httpx `-tech-detect` | any |
+| CVE-2021-27905 | Apache Solr | `[5.0.0,8.8.2)` | `_test_ssrf` (P3/P6) | content from an address only the SERVER can reach, returned to a request whose parameter named it | nmap `-sV`, httpx `-tech-detect` | any |
+| CVE-2022-29078 | ejs | `<3.1.7` | `_test_ssti` | server-side template evaluation of our expression | `package_identity` lockfile / manifest | LOCKFILE, MANIFEST |
+| CVE-2021-21315 | systeminformation | `<5.3.1` | `_test_cmdi` | the output of a command we chose, with a separator-stripped control producing none | `package_identity` lockfile / manifest | LOCKFILE, MANIFEST |
+| CVE-2023-22578 | sequelize | `<6.28.1` | `_test_sqli` | the database evaluating an expression we supplied, absent from baseline and control | `package_identity` lockfile / manifest | LOCKFILE, MANIFEST |
+
+### 7.3 Oracle exists, input not deliverable — a real gap with a named fix
+
+| CVE | Component | Affected | Oracle named | Vector | What is missing |
+|---|---|---|---|---|---|
+| CVE-2021-41773 | Apache httpd | `[2.4.49,2.4.50)` | `_test_lfi` | `URL_PATH` | a path-segment carrier for a component-derived task |
+| CVE-2021-42013 | Apache httpd | `[2.4.50,2.4.51)` | `_test_lfi` | `URL_PATH` | same |
+| CVE-2020-17519 | Apache Flink | `[1.11.0,1.11.3)` | `_test_lfi` | `URL_PATH` | same. The discovery engine reaches this CVE today via `CARRIER_PATH_TRAVERSAL`; this plan source does not |
+| CVE-2017-12629 | Apache Solr | `<7.1.0` | `_test_xxe` | `REQUEST_BODY_DOCUMENT` | the XXE oracle sends an XML request BODY; this CVE arrives as an XML fragment inside a query parameter |
+
+### 7.4 No oracle for the effect
+
+| CVE | Component | Affected | Why it cannot confirm here |
+|---|---|---|---|
+| CVE-2022-22965 | spring / tomcat | `<5.3.18` | no RCE oracle for the Spring data-binding shape |
+| CVE-2020-28168 | axios | `<0.21.1` | the effect is WHICH ROUTE the request took; our SSRF oracle sees content coming back and cannot tell a proxied fetch from an unproxied one |
+| CVE-2023-26159 | follow-redirects | `<1.15.4` | same shape — the effect is the DESTINATION of an outbound request |
+| CVE-2019-10744 | lodash | `<4.17.12` | no prototype-pollution oracle |
+| CVE-2020-8203 | lodash | `<4.17.20` | no prototype-pollution oracle |
+| CVE-2021-23337 | lodash | `<4.17.21` | library presence is not evidence a template call site takes request input |
+| CVE-2018-3721 | lodash | `<4.17.5` | no prototype-pollution oracle |
+| CVE-2019-11358 | jQuery | `<3.4.0` | no prototype-pollution oracle |
+| CVE-2020-7699 | express-fileupload | `<1.1.10` | no prototype-pollution oracle |
+| CVE-2020-11022 | jQuery | `[1.2.0,3.5.0)` | §6.4 — sink reachability unevidenced, and the XSS oracles cannot confirm on an SPA |
+| CVE-2020-11023 | jQuery | `[1.0.3,3.5.0)` | §6.4 |
+| CVE-2015-9251 | jQuery | `<3.0.0` | §6.4, plus a precondition (a cross-domain ajax call to a host we can answer for) the version does not report |
+
+### 7.5 Band C — permanently lead-only
+
+No remote oracle can prove these, now or later. See §8.
+
+| CVE | Component | Affected | Why no future primitive changes it |
+|---|---|---|---|
+| CVE-2021-3749 | axios | `<0.21.2` | ReDoS. Proving it means degrading the client's service, which the safety rails refuse on every target |
+| CVE-2023-45857 | axios | `<1.6.0` | the XSRF token arrives at a THIRD PARTY; the observation has to be made where we are not |
+| CVE-2022-0155 | follow-redirects | `<1.14.8` | same — a credential arriving at a host it was not issued for |
+| CVE-2021-23364 | browserslist | `[4.0.0,4.16.5)` | ReDoS, and a build-time dependency: very unlikely to be reachable from any request at all |
+| CVE-2022-25851 | jpeg-js | `<0.4.4` | an infinite loop — a worker we would have to hang to observe |
+| CVE-2019-20372 | nginx | `<1.17.7` | conditional on an `error_page` directive we cannot observe from outside, and there is no smuggling oracle |
+
+### 7.6 Candidates DROPPED, and why — this sizes the gap
+
+**11 dropped**, in two buckets. Both refusals are loud by construction: an
+advisory in the first bucket cannot be written in this grammar at all.
+
+*Grammar — needs an OR of ranges or per-branch fixed versions (8):*
+
+| Advisory | The shape that defeats the grammar |
+|---|---|
+| CVE-2024-6387 (OpenSSH regreSSHion) | affects `< 4.4p1` **and** `[8.5p1, 9.8p1)` — two disjoint ranges |
+| CVE-2021-45046 (log4j) | 2.x fixed in 2.16.0, 2.12.x branch fixed in 2.12.2 |
+| CVE-2022-24999 (qs) | nine per-branch fixes (6.2.4, 6.3.3, 6.4.1, 6.5.3, 6.6.1, 6.7.3, 6.8.3, 6.9.7, 6.10.3) |
+| CVE-2021-44906 (minimist) | fixed in 0.2.4 **and** 1.2.6 |
+| CVE-2020-7598 (minimist) | fixed in 0.2.1 **and** 1.2.3 |
+| CVE-2022-25883 (semver) | fixed in 5.7.2, 6.3.1 **and** 7.5.2 |
+| CVE-2019-8331 (Bootstrap) | fixed in 3.4.1 **and** 4.3.1 |
+| CVE-2021-40822 (GeoServer SSRF) | "through 2.18.5 **and** 2.19.x through 2.19.2" |
+
+Writing any of these as a single interval collapses to the widest branch, which
+matches a host patched on a narrower one. Writing the narrow branch alone
+under-matches — and an under-match is **silence**, which is what a correct run
+against a clean target also looks like. So they are refused rather than
+approximated.
+
+*No producer route can name the component (3):*
+
+| Advisory | Why nothing in this engine names it |
+|---|---|
+| CVE-2022-42889 (Apache Commons Text, "Text4Shell") | `_package_identity` reads **npm formats only** — `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `package.json`. There is no `pom.xml` / `build.gradle` reader, so no Java library is producible |
+| CVE-2019-7609 (Kibana Timelion) | also two branches (5.6.15, 6.6.1), so it is in both buckets |
+| CVE-2019-10758 (mongo-express) | no fingerprinter reports mongo-express with a version |
+
+**The npm-only bound is the larger of the two gaps** and it is structural, not a
+content decision: every Java, Python, Ruby and PHP library CVE is unwritable
+until a manifest reader for that ecosystem exists.
+
+### 7.7 One stated limitation on the ranges themselves
+
+There is **no offline advisory feed in this repository**. Every interval above
+was written from the advisory as recalled, not derived from a feed the build can
+re-check. The `reference` field on each row states the advisory's own wording
+("Apache Solr 5.0.0 through 8.3.1; fixed 8.4.0") precisely enough that a reader
+can verify a row in one lookup, and the half-open form means a wrong number
+produces an over-match — a lead or a refused dispatch — rather than the silent
+under-match §1 exists to prevent. Ingesting OSV/GHSA so the ranges are derived
+rather than recalled is the obvious next step and is not done.
+
+## 8. Part 3 — verification by replay, with the control
+
+`python scripts/cve_reservation_corpus.py` — sends nothing, exit 0.
+
+**The zeros are unchanged.** 76 bundles carry `plan_coverage`, 11 yield a
+recoverable inventory, and every one of them reserves 0 and plans
+byte-identically. Apache 2.4.67 and PHP 8.5.6 remain the whole recovered
+inventory and no new entry matches either.
+
+**The per-entry positive control (new).** A zero from a matcher that fired and a
+zero from a row nothing can match are the same number, and only one is a
+measurement — so every row is probed with an observation synthesised from **its
+own** declaration and put through the real `match_components`:
+
+```
+  entries probed ....... 28
+  fired ................ 28
+  reserved a slot ...... 6
+  UNREACHABLE .......... 0
+  disposition mismatch . 0
+```
+
+The synthesis proposes; `match_components` decides. It found a real defect on
+its first run: jQuery CVE-2015-9251 (`<3.0.0`) probed as `3.-1.99`, because the
+decrement had no borrow — reported UNREACHABLE rather than skipped, which is the
+control working. Fixed (`_version_below`), and the row now fires at `2.99.99`.
+
+**The bundle control's claim changed, and that is the finding rather than a
+loosened test.** It required the Apache substitution to RESERVE a slot. Both
+Apache rows are `URL_PATH` now and reserve nothing, so requiring a reservation
+would be requiring the defect back. The claim moved to *matched, and became
+exactly what its row declares* — plus an explicit refusal if either Apache row
+ever dispatches again. The dispatch half of the instrument is proved by the
+per-entry control above and by the package control's log4j arm, both of which do
+reserve.
+
+**Drift removed.** `_target_url_for` was a hand-maintained copy of the agent's
+endpoint rule; it went stale the moment the agent stopped preferring the root. It
+now calls `ExploitAgent._component_cve_target_endpoint` directly.
+
+## 9. Part 4 — Band C in the deliverable
+
+`ReportAgent._render_version_match_disposition` renders **What a version match
+can become** on every run that fingerprinted anything, computed from
+`KNOWN_COMPONENT_CVES` so the numbers cannot drift from the rows they describe.
+
+Four dispositions, four different sentences: testable, no oracle, oracle-without-
+a-carrier, and Band C. The last is stated as a **product property**:
+
+> Denial of service, memory safety, local privilege escalation, a defect
+> conditional on a configuration we cannot observe, and an information leak whose
+> effect is visible only at a third party are permanently lead-only here. Proving
+> a resource-exhaustion claim means degrading your service, which this engine
+> refuses on every target under any authorization; proving a third-party leak
+> means observing the third party. These are reported as leads with the reason
+> stated, never as findings and never as a coverage gap we intend to close.
+
+That is the differentiator. A competitor prints these as findings; the reason
+they can print more rows is that they are not required to be able to prove any
+of them. `ENVIRONMENTAL` is also the model's DEFAULT vector — the fail-safe
+value, so a row nobody classified cannot dispatch — which makes it the value a
+row lands on by accident too. A Band C row therefore has to say
+`permanently lead-only` in the sentence a client reads, a claim an author cannot
+make by forgetting.
+
+## 10. Not done, deliberately
+
+* **The Vulhub end-to-end proof.** It needs a pinned affected version and is the
+  next item.
+* **The URL-path carrier**, which would move four rows from §7.3 to §7.2.
+* **OSV/GHSA ingestion**, which would replace §7.7's recalled ranges with
+  derived ones and close most of §7.6's grammar bucket at the same time.
+* **Non-npm manifest readers**, the larger half of §7.6.

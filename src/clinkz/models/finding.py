@@ -511,6 +511,25 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # unreachable. The version match is real and worth an operator's time;
         # the exploitation claim is not made at all.
         "version_match_only_no_oracle_for_this_cve",
+        # Same version match, and this engine HAS the oracle — it cannot deliver
+        # the CVE's input to it. A component-derived task carries its probe as a
+        # PARAMETER VALUE and nothing else, so a CVE reached through the URL
+        # path, a request header or a whole-body document is never actually
+        # sent. Split out from the reason above because the two have different
+        # fixes and only one of them is a gap in a class we already claim: the
+        # first waits on a new confirmation primitive, this one waits on a
+        # carrier. Both Apache traversal rows spent a reserved plan slot under
+        # the WRONG reason for two releases — the run reported "the oracle ran
+        # and did not confirm" about three query-parameter probes that never
+        # touched the path the CVE traverses.
+        "version_match_vector_not_carried_by_this_engine",
+        # Same version match, and nothing capable of NAMING that component is
+        # what reported it. ``nmap -sV`` and ``whatweb`` fingerprint servers, so
+        # a row reading ``ejs 3.1.6`` at banner strength is a mis-parse of
+        # something else rather than a weak sighting of ejs. Not a statement
+        # about evidence strength — provenance still never gates a test — but
+        # about whether there is an observation of this component at all.
+        "version_match_provenance_cannot_identify_this_component",
         # An access-control class proved everything EXCEPT ownership. The
         # response differs from the caller's own object, from a never-issued
         # reference of the same shape, and from what an anonymous caller is

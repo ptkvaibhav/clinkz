@@ -350,11 +350,17 @@ def test_the_catalogue_half_that_could_never_fire_now_can() -> None:
         bundle_bodies=[("http://t/v.js", "/*! jQuery v3.4.1 */")],
     )
     matches = match_components(out.detected_components())
-    assert {m.cve.cve_id for m in matches} == {"CVE-2021-23337", "CVE-2020-11022"}
-    # Neither is confirmable: this engine has no prototype-pollution oracle and
+    # CVE-2020-11023 is a second jQuery sink over the same range, added with the
+    # catalogue expansion: a bundled 3.4.1 is genuinely inside both.
+    assert {m.cve.cve_id for m in matches} == {
+        "CVE-2021-23337",
+        "CVE-2020-11022",
+        "CVE-2020-11023",
+    }
+    # None is dispatchable: this engine has no prototype-pollution oracle and
     # declines to claim its XSS oracle for a library-version match. So package
     # identity produces LEADS and reserves no plan slot, by construction.
-    assert not any(m.is_confirmable for m in matches)
+    assert not any(m.can_dispatch for m in matches)
 
 
 def test_the_inventory_summary_is_a_view_not_a_second_population() -> None:

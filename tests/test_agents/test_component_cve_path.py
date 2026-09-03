@@ -26,8 +26,14 @@ from clinkz.discovery.versions import parse_version, version_satisfies
 from clinkz.knowledge.component_cves import (
     BACKPORT_CAVEAT,
     BACKPORT_DEFEASIBLE_PROVENANCE,
+    BAND_C_VECTORS,
+    CARRIABLE_VECTORS,
     KNOWN_COMPONENT_CVES,
+    LEAD_NO_ORACLE,
+    LEAD_UNIDENTIFIABLE,
+    LEAD_VECTOR_NOT_CARRIED,
     ComponentCVEMatch,
+    CVEVector,
     KnownComponentCVE,
     MatchDisposition,
     match_components,
@@ -81,22 +87,30 @@ def _plan(*tasks: ExploitTask) -> ExploitPlan:
     )
 
 
-def _scan(*urls: str) -> ScanResult:
+def _scan(*urls: str, params: list[str] | None = None, port: int = 80) -> ScanResult:
     """A ScanResult with real endpoints, reached the way the agent reaches them.
 
     Endpoints live under ``service_scans[].result.endpoints``, not on
     ``ScanResult`` itself — building the real nesting keeps this test honest
     about the shape the production code actually walks.
+
+    ``params`` defaults to one query parameter on every endpoint because the
+    endpoint choice now REQUIRES a parameterised surface: every ``_test_*`` the
+    CVE source dispatches to carries its probe as a parameter value, so a
+    parameter-less endpoint is one the oracle sends nothing to. A fixture
+    without params would make every row look unreservable and would be testing
+    the fixture.
     """
+    names = ["q"] if params is None else params
     return ScanResult(
         target="10.0.0.1",
         service_scans=[
             ServiceScanResult(
-                port=80,
+                port=port,
                 service_type="http",
                 result=HTTPScanResult(
                     base_url="http://10.0.0.1/",
-                    endpoints=[Endpoint(url=u) for u in urls],
+                    endpoints=[Endpoint(url=u, params=list(names)) for u in urls],
                 ),
             )
         ],
@@ -346,13 +360,20 @@ def test_a_banner_derived_match_is_still_dispatched() -> None:
     observes by banner, and buy nothing: the oracle is the gate, so a patched
     host in the affected range is tested, observed to do nothing, and stays a
     lead. The honesty rule lives at ``_persist_finding``, not here.
+
+    The fixture is Solr rather than Apache httpd, and the swap is the point of
+    a different rule: the Apache rows are ``URL_PATH`` CVEs and no longer
+    dispatch at all, so asserting this claim on one would have quietly become an
+    assertion about the vector instead of about provenance. Solr 8.0.0 is
+    banner-observable and its Velocity SSTI arrives in a request parameter, so
+    the only thing this test can now be failing on is the provenance rule.
     """
     match = match_components(
         [
             DetectedComponent(
-                name="Apache",
-                version="2.4.49",
-                port=80,
+                name="Apache Solr",
+                version="8.0.0",
+                port=8983,
                 source="nmap",
                 provenance=VersionProvenance.BANNER,
             )
@@ -360,6 +381,116 @@ def test_a_banner_derived_match_is_still_dispatched() -> None:
     )[0]
     assert match.backport_defeasible is True
     assert match.disposition is MatchDisposition.DISPATCH
+
+
+def test_an_oracle_we_have_but_cannot_reach_is_a_lead_that_says_which() -> None:
+    """The measured gap, pinned: an oracle exists and the vector is not carried.
+
+    ``_test_lfi`` iterates ``page.input_params`` and sends its probe as a
+    parameter VALUE — three requests, none of them mutating the URL path. The
+    Apache traversal is reached by traversing an aliased directory IN the path.
+    So the row keeps its oracle (it is the right oracle) and stops dispatching,
+    and the lead says the vector was never carried rather than that the oracle
+    ran and saw nothing.
+    """
+    match = match_components(
+        [DetectedComponent(name="Apache", version="2.4.49", port=80, source="nmap")]
+    )[0]
+    assert match.cve.cve_id == "CVE-2021-41773"
+    assert match.is_confirmable is True, "the file-read oracle genuinely proves this effect"
+    assert match.vector_is_carriable is False, "and this plan source cannot deliver a URL path"
+    assert match.can_dispatch is False
+    assert match.disposition is MatchDisposition.LEAD
+    assert match.lead_reason == LEAD_VECTOR_NOT_CARRIED
+    assert match.lead_reason in UNPROVEN_WHY_UNCONFIRMED
+
+
+def test_a_component_no_producer_can_name_is_not_a_weak_sighting() -> None:
+    """``identifiable_by`` is an observability claim, never a policy gate.
+
+    ejs runs on the server, so nothing that reads a banner can report it. A row
+    reading ``ejs 3.1.6`` at banner strength is a mis-parse of something else,
+    and there is no observation of ejs to test — which is a different fact from
+    "the evidence is weak", and it gets a different reason.
+    """
+    lockfile = match_components(
+        [
+            DetectedComponent(
+                name="ejs",
+                version="3.1.6",
+                source="package-lock.json",
+                provenance=VersionProvenance.LOCKFILE,
+            )
+        ]
+    )[0]
+    assert lockfile.can_dispatch is True
+    assert lockfile.disposition is MatchDisposition.DISPATCH
+
+    banner = match_components(
+        [
+            DetectedComponent(
+                name="ejs",
+                version="3.1.6",
+                source="whatweb",
+                provenance=VersionProvenance.BANNER,
+            )
+        ]
+    )[0]
+    assert banner.component_is_identifiable is False
+    assert banner.can_dispatch is False
+    assert banner.lead_reason == LEAD_UNIDENTIFIABLE
+    assert banner.lead_reason in UNPROVEN_WHY_UNCONFIRMED
+
+
+def test_every_entry_naming_an_oracle_states_the_effect_that_oracle_proves() -> None:
+    """A named method without a stated effect cannot be checked against it.
+
+    The pairing is what went wrong on the Apache rows and the only durable guard
+    is that the row has to SAY what it expects the oracle to witness — a
+    sentence a reader can hold against ``_control_arm``'s partition without
+    opening the methodology.
+    """
+    for entry in KNOWN_COMPONENT_CVES:
+        if not entry.confirming_test_method:
+            continue
+        assert entry.defining_effect.strip(), (
+            f"{entry.cve_id} names {entry.confirming_test_method} and does not say what "
+            "that oracle is expected to witness"
+        )
+
+
+def test_only_a_carriable_vector_may_dispatch_over_the_whole_catalogue() -> None:
+    """The guard-domain law over a domain COMPUTED from the catalogue.
+
+    Not a list of rows to check — every row, every time. An entry naming an
+    oracle whose vector this plan source cannot carry must not be dispatchable,
+    because a dispatch is a claim that the work was attempted.
+    """
+    for entry in KNOWN_COMPONENT_CVES:
+        match = ComponentCVEMatch(
+            component=DetectedComponent(name="probe", version="1.0.0"), cve=entry
+        )
+        if entry.vector not in CARRIABLE_VECTORS:
+            assert match.can_dispatch is False, (
+                f"{entry.cve_id} declares vector {entry.vector.value}, which no "
+                "component-derived task carries, yet it dispatches"
+            )
+
+
+def test_the_carriable_set_is_exactly_what_a_component_task_can_send() -> None:
+    """Widening this set is a code change plus a live proof, never a row edit.
+
+    A component-derived ``ExploitTask`` is built with an endpoint, that
+    endpoint's params and its request shape. It carries no ``carrier_constraints``
+    and no ``ParamLocation.PATH`` substitution, so the parameter value is the
+    only channel it has. Pinned so that adding ``URL_PATH`` here without
+    building the carrier fails loudly.
+    """
+    assert CARRIABLE_VECTORS == {CVEVector.REQUEST_PARAM}
+    assert BAND_C_VECTORS == {CVEVector.ENVIRONMENTAL}
+    assert not (CARRIABLE_VECTORS & BAND_C_VECTORS), (
+        "a vector cannot be both the one channel we can send and permanently unprovable"
+    )
 
 
 def test_a_defeasible_match_says_so_in_the_observation_a_client_reads() -> None:
@@ -402,15 +533,54 @@ def test_the_defeasible_set_is_exactly_the_target_composed_provenances() -> None
 
 
 def test_disposition_is_a_closed_vocabulary_of_two() -> None:
-    """A third outcome does not exist: a match is a task or it is a lead."""
+    """A third outcome does not exist: a match is a task or it is a lead.
+
+    The two outcomes are unchanged; what decides between them is not. It used to
+    be ``confirming_test_method`` alone, which answered only whether an oracle
+    exists — the Apache rows named one and could not be reached by it. The
+    predicate is now ``can_dispatch``, and the reasons a match landed on LEAD
+    are carried separately by :attr:`lead_reason` rather than by inventing a
+    third disposition for each of them.
+    """
     assert {d.value for d in MatchDisposition} == {"dispatch", "lead"}
     for entry in KNOWN_COMPONENT_CVES:
-        component = DetectedComponent(name="x", version="1.0.0")
+        # Probed at the strongest provenance the row declares itself observable
+        # at. Probing everything at the default UNDECLARED would make every
+        # ``identifiable_by`` row a lead and the assertion would be measuring
+        # the fixture's provenance rather than the disposition rule.
+        allowed = entry.identifiable_by
+        provenance = VersionProvenance.LOCKFILE if allowed is None else sorted(allowed)[0]
+        component = DetectedComponent(name="x", version="1.0.0", provenance=provenance)
         match = ComponentCVEMatch(component=component, cve=entry)
         expected = (
-            MatchDisposition.DISPATCH if entry.confirming_test_method else MatchDisposition.LEAD
+            MatchDisposition.DISPATCH
+            if (
+                entry.confirming_test_method
+                and entry.vector in CARRIABLE_VECTORS
+                and match.component_is_identifiable
+            )
+            else MatchDisposition.LEAD
         )
         assert match.disposition is expected, entry.cve_id
+
+
+def test_every_lead_reason_is_in_the_closed_vocabulary_over_the_catalogue() -> None:
+    """Domain computed from the catalogue, classification hand-maintained.
+
+    A row whose ``lead_reason`` is not in ``UNPROVEN_WHY_UNCONFIRMED`` records a
+    lead under a reason the report cannot render, which is the silent half of
+    the same defect: the operator gets a lead with no actionable reason on it.
+    """
+    for entry in KNOWN_COMPONENT_CVES:
+        for provenance in VersionProvenance:
+            match = ComponentCVEMatch(
+                component=DetectedComponent(name="probe", version="1.0.0", provenance=provenance),
+                cve=entry,
+            )
+            assert match.lead_reason in UNPROVEN_WHY_UNCONFIRMED, (
+                f"{entry.cve_id} at {provenance.value} produces {match.lead_reason!r}, "
+                "which the report has no sentence for"
+            )
 
 
 def test_every_catalogue_entry_states_its_proving_observation() -> None:
@@ -418,6 +588,104 @@ def test_every_catalogue_entry_states_its_proving_observation() -> None:
     for entry in KNOWN_COMPONENT_CVES:
         assert entry.proving_observation.strip(), f"{entry.cve_id} has no proving_observation"
         assert entry.cve_id.startswith("CVE-")
+
+
+def test_every_lead_reason_has_a_sentence_the_dispatcher_can_render() -> None:
+    """The other half of the closed vocabulary: the reason must have prose.
+
+    ``_merge_component_cve_tasks`` looks the reason up in
+    ``_COMPONENT_CVE_LEAD_MISSING`` with a bare subscript, so a reason added to
+    the vocabulary and not to the table raises inside the plan seam. The
+    subscript is deliberate — a ``.get(reason, "")`` would emit a lead with an
+    empty ``missing_observation``, which is a lead an operator cannot act on
+    and the silent version of the same defect. This asserts both directions.
+    """
+    from clinkz.agents.exploit import _COMPONENT_CVE_LEAD_MISSING
+
+    reasons = {LEAD_NO_ORACLE, LEAD_UNIDENTIFIABLE, LEAD_VECTOR_NOT_CARRIED}
+    assert set(_COMPONENT_CVE_LEAD_MISSING) == reasons, (
+        "every lead reason needs a client-facing sentence, and every sentence a reason"
+    )
+    for reason, sentence in _COMPONENT_CVE_LEAD_MISSING.items():
+        assert reason in UNPROVEN_WHY_UNCONFIRMED, reason
+        assert sentence.strip(), reason
+
+
+def test_a_band_c_entry_says_it_is_permanent_rather_than_pending() -> None:
+    """The default vector is ENVIRONMENTAL, so the classification must be MEANT.
+
+    ``ENVIRONMENTAL`` is the model's default precisely so an unclassified row
+    cannot dispatch — the fail-safe direction. That makes it the value a row
+    also lands on by ACCIDENT, and the two readings are opposite: "no remote
+    oracle can ever prove this" versus "nobody got round to classifying it". A
+    Band C row therefore has to say ``permanently lead-only`` in the sentence a
+    client reads, which is a claim an author cannot make by forgetting.
+    """
+    band_c = [e for e in KNOWN_COMPONENT_CVES if e.vector in BAND_C_VECTORS]
+    assert band_c, "the catalogue carries Band C entries and the report renders them"
+    for entry in band_c:
+        assert "permanently lead-only" in entry.proving_observation.lower(), (
+            f"{entry.cve_id} is Band C. Say why it can never be proven remotely, or "
+            "give it the vector it actually has"
+        )
+        assert not entry.confirming_test_method, (
+            f"{entry.cve_id} is Band C and names an oracle. If an oracle can witness "
+            "it, it is not permanently unprovable"
+        )
+
+
+def test_the_band_c_product_property_reaches_the_deliverable() -> None:
+    """Part 4: the client is TOLD what a version match can become, on every run.
+
+    Rendered from the catalogue rather than written down, so the numbers cannot
+    drift from the rows they describe. Gated on an inventory existing — with
+    nothing fingerprinted there is nothing for the matcher to read and nothing
+    to say about it.
+    """
+    from datetime import UTC, datetime
+
+    from clinkz.agents.report import ReportAgent
+    from clinkz.models.report import PentestReport
+
+    now = datetime.now(UTC)
+    report = PentestReport(
+        engagement_id="band-c",
+        engagement_name="band-c",
+        target="10.0.0.1",
+        test_start=now,
+        test_end=now,
+        component_inventory={
+            "total": 1,
+            "versioned": 1,
+            "components": [{"name": "Apache", "version": "2.4.67", "provenance": "banner"}],
+        },
+    )
+    lines: list[str] = []
+    ReportAgent._render_version_match_disposition(lines, report)
+    rendered = "\n".join(lines)
+    assert "## What a version match can become" in rendered
+    assert "never becomes a finding on the strength of a version number" in rendered
+    assert "Band C" in rendered and "permanently lead-only" in rendered
+    testable = sum(
+        1
+        for e in KNOWN_COMPONENT_CVES
+        if e.confirming_test_method and e.vector in CARRIABLE_VECTORS
+    )
+    assert f"**{testable} are testable**" in rendered, "the count must come off the catalogue"
+
+    # And it says nothing at all when nothing was fingerprinted.
+    empty: list[str] = []
+    ReportAgent._render_version_match_disposition(
+        empty,
+        PentestReport(
+            engagement_id="e",
+            engagement_name="e",
+            target="t",
+            test_start=now,
+            test_end=now,
+        ),
+    )
+    assert empty == []
 
 
 # ---------------------------------------------------------------------------
@@ -438,19 +706,76 @@ def _recon(*components: DetectedComponent) -> ReconResult:
 
 
 def test_a_confirmable_cve_becomes_a_task_for_our_own_oracle() -> None:
+    """A row whose oracle exists AND whose vector we carry becomes a real task.
+
+    The fixture is Solr, not Apache httpd, and that is the correction rather
+    than a convenience: the Apache traversal rows name the right oracle and
+    arrive in the URL path, which no component-derived task sends, so they are
+    leads now. Solr's Velocity SSTI arrives in a request parameter — the one
+    channel this source has — so it is what a dispatch claim can honestly be
+    asserted on.
+    """
     agent = _agent()
     agent._max_plan_task_cap = lambda: 50  # type: ignore[method-assign]
     plan = agent._merge_component_cve_tasks(
         _plan(),
-        _recon(DetectedComponent(name="Apache httpd", version="2.4.49", port=80)),
-        _scan("http://10.0.0.1/", "http://10.0.0.1/deep/page"),
+        _recon(DetectedComponent(name="Apache Solr", version="8.0.0", port=80)),
+        _scan("http://10.0.0.1/deep/page", "http://10.0.0.1/app"),
     )
-    assert len(plan.tasks) == 1
-    task = plan.tasks[0]
-    assert task.test_method == "_test_lfi", "the CVE's effect is a file read — use that oracle"
-    assert task.endpoint_url == "http://10.0.0.1/", "a server-level defect targets the ORIGIN"
-    assert "CVE-2021-41773" in task.technique_name
+    # Solr 8.0.0 genuinely sits inside TWO published ranges — the Velocity SSTI
+    # and the ReplicationHandler SSRF — and both are real, so both are queued.
+    assert {t.test_method for t in plan.tasks} == {"_test_ssti", "_test_ssrf"}
+    assert {t.technique_name.split(" ")[0] for t in plan.tasks} == {
+        "CVE-2019-17558",
+        "CVE-2021-27905",
+    }
+    for task in plan.tasks:
+        assert task.endpoint_url == "http://10.0.0.1/app", (
+            "the shortest-path PARAMETERISED endpoint, deterministically, never crawl order"
+        )
+        assert task.endpoint_params == ["q"], (
+            "the endpoint's own params ride along; without them the methodology sends nothing"
+        )
     assert not agent._unproven_exploit_leads, "a queued task is not also a lead"
+
+
+def test_a_url_path_cve_is_a_lead_at_the_plan_seam_and_costs_no_slot() -> None:
+    """The other half of the same fixture change, asserted end to end."""
+    agent = _agent()
+    agent._max_plan_task_cap = lambda: 50  # type: ignore[method-assign]
+    agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
+    plan = agent._merge_component_cve_tasks(
+        _plan(),
+        _recon(DetectedComponent(name="Apache httpd", version="2.4.49", port=80)),
+        _scan("http://10.0.0.1/", "http://10.0.0.1/app"),
+    )
+    assert plan.tasks == [], "a vector we cannot carry must not spend a plan slot"
+    assert len(agent._unproven_exploit_leads) == 1
+    lead = agent._unproven_exploit_leads[0]
+    assert lead.why_unconfirmed == LEAD_VECTOR_NOT_CARRIED
+    assert "HAS an oracle" in lead.missing_observation
+    assert "not a statement that the host is clean" in lead.missing_observation
+
+
+def test_a_parameterless_surface_is_a_lead_not_a_task_that_sends_nothing() -> None:
+    """Nowhere to carry the vector is a stated outcome, not an inert task.
+
+    Measured: ``_test_ssti`` and every sibling iterate ``page.input_params``, so
+    against a parameter-less root they issue zero requests and return. Queuing
+    that task would report a class as tested on an endpoint it never probed.
+    """
+    agent = _agent()
+    agent._max_plan_task_cap = lambda: 50  # type: ignore[method-assign]
+    agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
+    plan = agent._merge_component_cve_tasks(
+        _plan(),
+        _recon(DetectedComponent(name="Apache Solr", version="8.0.0", port=80)),
+        _scan("http://10.0.0.1/", params=[]),
+    )
+    assert plan.tasks == []
+    leads = agent._unproven_exploit_leads
+    assert leads and all(x.why_unconfirmed == LEAD_VECTOR_NOT_CARRIED for x in leads)
+    assert "no parameterised surface" in leads[0].missing_observation
 
 
 def test_an_unconfirmable_cve_becomes_a_lead_and_never_a_task() -> None:
@@ -511,12 +836,14 @@ def test_no_discovered_surface_becomes_a_lead_not_a_guessed_url() -> None:
     agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
     plan = agent._merge_component_cve_tasks(
         _plan(),
-        _recon(DetectedComponent(name="Apache", version="2.4.49", port=80)),
+        _recon(DetectedComponent(name="Apache Solr", version="8.0.0", port=80)),
         _scan(),
     )
     assert plan.tasks == []
-    assert len(agent._unproven_exploit_leads) == 1
-    assert "no surface" in agent._unproven_exploit_leads[0].missing_observation.lower()
+    leads = agent._unproven_exploit_leads
+    assert leads, "an unpointable match must still be reported"
+    assert all(x.why_unconfirmed == LEAD_VECTOR_NOT_CARRIED for x in leads)
+    assert "no parameterised surface" in leads[0].missing_observation
 
 
 # ---------------------------------------------------------------------------
@@ -530,18 +857,20 @@ def test_an_oracle_that_ran_and_saw_nothing_says_exactly_that() -> None:
     agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
     agent._merge_component_cve_tasks(
         _plan(),
-        _recon(DetectedComponent(name="Apache", version="2.4.49", port=80)),
-        _scan("http://10.0.0.1/"),
+        _recon(DetectedComponent(name="Apache Solr", version="8.0.0", port=80)),
+        _scan("http://10.0.0.1/app"),
     )
     assert agent._component_cve_pending, "the queued match must be remembered"
 
     agent._record_unconfirmed_component_cves([])  # the methodology confirmed nothing
 
-    assert len(agent._unproven_exploit_leads) == 1
-    lead = agent._unproven_exploit_leads[0]
-    assert lead.why_unconfirmed == "version_match_oracle_ran_and_did_not_confirm"
-    assert "RAN" in lead.missing_observation
-    assert "version match stands; the exploitation does not" in lead.missing_observation
+    # Both Solr rows queued, so both report back — a queued match that goes
+    # quiet is the outcome this lead exists to make visible.
+    assert len(agent._unproven_exploit_leads) == 2
+    for lead in agent._unproven_exploit_leads:
+        assert lead.why_unconfirmed == "version_match_oracle_ran_and_did_not_confirm"
+        assert "RAN" in lead.missing_observation
+        assert "version match stands; the exploitation does not" in lead.missing_observation
 
 
 def test_a_confirmed_finding_leaves_the_cve_as_context_with_no_lead() -> None:
@@ -551,17 +880,17 @@ def test_a_confirmed_finding_leaves_the_cve_as_context_with_no_lead() -> None:
     agent._trace_methodology_phase = lambda **kw: None  # type: ignore[method-assign]
     agent._merge_component_cve_tasks(
         _plan(),
-        _recon(DetectedComponent(name="Apache", version="2.4.49", port=80)),
-        _scan("http://10.0.0.1/"),
+        _recon(DetectedComponent(name="Apache Solr", version="8.0.0", port=80)),
+        _scan("http://10.0.0.1/app"),
     )
     agent._record_unconfirmed_component_cves(
         [
             Finding(
-                title="Local File Inclusion in path",
+                title="Server-side template injection",
                 description="",
                 severity=Severity.HIGH,
-                target="http://10.0.0.1/",
-                evidence=["Request: ...", "Response: root:x:0:0:"],
+                target="http://10.0.0.1/app",
+                evidence=["Request: ...", "Response: 49"],
             )
         ]
     )

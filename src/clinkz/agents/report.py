@@ -46,6 +46,11 @@ from clinkz.agents._report_integrity import (
     testing_window,
 )
 from clinkz.engagement.secrets import redact, redact_structure
+from clinkz.knowledge.component_cves import (
+    BAND_C_VECTORS,
+    CARRIABLE_VECTORS,
+    KNOWN_COMPONENT_CVES,
+)
 from clinkz.llm.base import LLMClient
 from clinkz.llm.degradation import (
     degradation_summary,
@@ -1045,6 +1050,7 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_provider_degradation(lines, report)
             ReportAgent._render_scope_refusals(lines, report)
             ReportAgent._render_component_inventory(lines, report)
+            ReportAgent._render_version_match_disposition(lines, report)
             ReportAgent._render_plan_coverage(lines, report)
             ReportAgent._render_crawl_coverage(lines, report)
             ReportAgent._render_research_grounding(lines, report)
@@ -1088,6 +1094,7 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_provider_degradation(lines, report)
         ReportAgent._render_scope_refusals(lines, report)
         ReportAgent._render_component_inventory(lines, report)
+        ReportAgent._render_version_match_disposition(lines, report)
         ReportAgent._render_plan_coverage(lines, report)
         ReportAgent._render_crawl_coverage(lines, report)
         ReportAgent._render_research_grounding(lines, report)
@@ -1236,6 +1243,114 @@ class ReportAgent(BaseAgent):
                 f"| {row.get('provenance', 'undeclared')} | {observed} |"
             )
         lines.append("")
+
+    @staticmethod
+    def _render_version_match_disposition(lines: list[str], report: PentestReport) -> None:
+        """What a version match may become here — a product property, not a gap.
+
+        The section a competitor's report does not have, and it is the point of
+        the whole dependency→CVE path: **a version match is a claim about what
+        is installed, never an observation of an effect.** Every other tool in
+        this space prints a wall of "potentially affected" rows built from the
+        same feed, and the reason they can print more rows than this is that
+        they are not required to be able to prove any of them.
+
+        So the client is told, on every run that fingerprinted anything, what
+        this catalogue is bounded BY. Three sentences, and they are different
+        sentences on purpose:
+
+        * **Testable** — an oracle in this engine witnesses that CVE's defining
+          effect and the input can be delivered to it. A match here becomes a
+          real probe with its own control arm, and if the oracle sees nothing
+          the match stays a lead. It never becomes a finding on the strength of
+          a version number.
+        * **No oracle, or one we cannot reach** — a real coverage boundary with
+          a named fix. Stated, because "we did not test this" and "we tested
+          this and it was clean" are opposite sentences and only one of them is
+          true here.
+        * **Band C — permanently lead-only.** Denial of service, an information
+          leak observable only at a third party, a defect conditional on a
+          configuration we cannot see. No future confirmation primitive moves
+          these: proving a resource-exhaustion claim means degrading the
+          client's own service, which the safety rails refuse on every target,
+          and proving a third-party leak means standing where we are not. This
+          is not a backlog item and it is not an apology.
+
+        Computed from :data:`KNOWN_COMPONENT_CVES` rather than written down, so
+        it cannot drift from the catalogue it describes — the same rule as every
+        other guard here: the domain is computed, only the classification is
+        declared. Rendered beside the inventory because the inventory is what
+        the matcher reads; with nothing fingerprinted there is nothing to say.
+        """
+        inventory = report.component_inventory
+        if not inventory or not (inventory.get("components") or []):
+            return
+
+        testable = [
+            e
+            for e in KNOWN_COMPONENT_CVES
+            if e.confirming_test_method and e.vector in CARRIABLE_VECTORS
+        ]
+        band_c = [e for e in KNOWN_COMPONENT_CVES if e.vector in BAND_C_VECTORS]
+        no_oracle = [
+            e
+            for e in KNOWN_COMPONENT_CVES
+            if not e.confirming_test_method and e.vector not in BAND_C_VECTORS
+        ]
+        unreachable = [
+            e
+            for e in KNOWN_COMPONENT_CVES
+            if e.confirming_test_method and e.vector not in CARRIABLE_VECTORS
+        ]
+
+        lines.extend(["## What a version match can become", ""])
+        lines.append(
+            "A component's version is a claim about what is installed. It is not an "
+            "observation that anything is exploitable: a banner can be wrong, a "
+            "distribution can back-port a fix without moving the number, and the "
+            "vulnerable code path may be unreachable from any request. So a match in "
+            "this engine becomes one of exactly two things — a test run by one of our "
+            "own oracles, or a lead that states what would have proven it. It never "
+            "becomes a finding on the strength of a version number alone."
+        )
+        lines.append("")
+        lines.append(
+            f"Of the {len(KNOWN_COMPONENT_CVES)} published vulnerabilities this engine "
+            f"carries, **{len(testable)} are testable**: one of our oracles witnesses "
+            "that CVE's defining effect, dispatches its own control arm, and decides. "
+            "The catalogue is deliberately bounded by that — an entry with no oracle "
+            "behind it is written down as lead-only before it is ever run, rather than "
+            "discovered to be lead-only afterwards."
+        )
+        lines.append("")
+        lines.extend(
+            [
+                "| Disposition | Entries | What it means for this report |",
+                "|---|---|---|",
+                f"| Testable | {len(testable)} | A match is probed by our own oracle. "
+                "Confirmed only if that oracle witnesses the effect. |",
+                f"| No oracle for the effect | {len(no_oracle)} | Reported as a lead "
+                "naming the observation that would prove it. Not tested. |",
+                f"| Oracle exists, input not deliverable | {len(unreachable)} | A real "
+                "coverage boundary with a named fix. Not tested. |",
+                f"| Band C — permanently lead-only | {len(band_c)} | No remote oracle "
+                "can prove these, now or later. Always a lead. |",
+            ]
+        )
+        lines.append("")
+        if band_c:
+            lines.append(
+                "**On Band C.** Denial of service, memory safety, local privilege "
+                "escalation, a defect conditional on a configuration we cannot observe, "
+                "and an information leak whose effect is visible only at a third party "
+                "are permanently lead-only here. Proving a resource-exhaustion claim "
+                "means degrading your service, which this engine refuses on every "
+                "target under any authorization; proving a third-party leak means "
+                "observing the third party. These are reported as leads with the "
+                "reason stated, never as findings and never as a coverage gap we "
+                "intend to close."
+            )
+            lines.append("")
 
     @staticmethod
     def _render_crawl_coverage(lines: list[str], report: PentestReport) -> None:
