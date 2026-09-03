@@ -266,3 +266,99 @@ class TestLoginUrlIsRankedByShapeNotName:
         monkeypatch.setattr(OrchestratorAgent, "_serves_a_login_form", _serve({}), raising=True)
         scan_result = {"endpoints": [{"url": f"http://app:3000/p{i}"} for i in range(5)]}
         assert await agent._find_login_url({}, "", scan_result=scan_result) is None
+
+
+class TestTheLandingPageNamesTheLoginPage:
+    """Removing the name filter was necessary and not sufficient.
+
+    The authentication phase runs BEFORE the scan phase, so ``scan_result`` is
+    ``None`` at the call site that matters and there is no crawl to rank. An
+    application whose login page sits at an unconventional path therefore had no
+    candidate to rank at all, and a live run aborted having POSTed the
+    credentials at the site root (405).
+
+    The application says where its login is, in an anchor. Reading that is an
+    observation of the same kind as reading a form's ``action``.
+    """
+
+    #: Meridian's landing page, verbatim in shape: it links its own login page.
+    LANDING = (
+        "<!doctype html><html><body><h1>Meridian</h1>"
+        "<p><a href=/pricing>Pricing</a> · "
+        '<a href="/portal/gateway">Portal</a></p></body></html>'
+    )
+
+    async def test_a_linked_login_page_is_discovered_before_the_crawl_exists(
+        self, monkeypatch: Any
+    ) -> None:
+        agent = _orchestrator()
+        agent._login_shape_cache = {}
+
+        async def _linked(self: OrchestratorAgent, base: str) -> list[str]:
+            return ["http://app:3000/pricing", "http://app:3000/portal/gateway"]
+
+        monkeypatch.setattr(OrchestratorAgent, "_linked_urls", _linked, raising=True)
+        monkeypatch.setattr(
+            OrchestratorAgent,
+            "_serves_a_login_form",
+            _serve({UNCONVENTIONAL_LOGIN_PATH: LOGIN_PAGE}),
+            raising=True,
+        )
+        # scan_result=None — exactly how _establish_authenticated_state calls it.
+        found = await agent._find_login_url({}, "", scan_result=None)
+        assert found == "http://app:3000/portal/gateway", (
+            f"the landing page linked the login page and discovery still missed it — got {found!r}"
+        )
+
+    async def test_off_origin_and_non_navigational_links_are_not_collected(self) -> None:
+        """A page linking off-site links to somebody else's login page.
+
+        The scope check downstream would refuse it anyway; not collecting it
+        keeps the shape budget for candidates that could be right.
+        """
+        agent = _orchestrator()
+        agent._login_shape_cache = {}
+        body = (
+            '<a href="https://evil.example/login">Login</a>'
+            '<a href="/portal/gateway">Portal</a>'
+            '<a href="mailto:x@y.z">Mail</a><a href="#top">Top</a>'
+            '<a href="javascript:void(0)">JS</a>'
+        )
+        assert await self._extract(agent, body, "http://app:3000") == [
+            "http://app:3000/portal/gateway"
+        ]
+
+    @staticmethod
+    async def _extract(agent: OrchestratorAgent, body: str, base: str) -> list[str]:
+        """Drive ``_linked_urls`` with a served body, through the real parser."""
+        from unittest.mock import patch
+
+        class _Parsed:
+            status_code = 200
+            response_body = body
+
+        class _Http:
+            def __init__(self, **_kw: Any) -> None: ...
+            def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
+                return args
+
+            async def execute(self, _args: dict[str, Any]) -> str:
+                return ""
+
+            def parse_output(self, _raw: str) -> Any:
+                return _Parsed()
+
+        with patch("clinkz.tools.http_client.HTTPClientTool", _Http):
+            return await agent._linked_urls(base)
+
+    async def test_a_landing_page_with_no_login_link_yields_none(self, monkeypatch: Any) -> None:
+        """Collecting links must not become "return the first link"."""
+        agent = _orchestrator()
+        agent._login_shape_cache = {}
+
+        async def _linked(self: OrchestratorAgent, base: str) -> list[str]:
+            return ["http://app:3000/pricing", "http://app:3000/about"]
+
+        monkeypatch.setattr(OrchestratorAgent, "_linked_urls", _linked, raising=True)
+        monkeypatch.setattr(OrchestratorAgent, "_serves_a_login_form", _serve({}), raising=True)
+        assert await agent._find_login_url({}, "", scan_result=None) is None

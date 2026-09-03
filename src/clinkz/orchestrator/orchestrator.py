@@ -190,6 +190,12 @@ _GENERIC_SERVICE_NAMES: frozenset[str] = frozenset(
 #: input is the marker a single-page application's catch-all shell cannot
 #: produce by accident, and the identity field beside it is what separates a
 #: login from a password-change or a search box.
+#: Anchor hrefs on a landing page. The application names its own login page
+#: in a link, and reading that is an observation of the same kind as reading
+#: a form's action — the one candidate source that reaches a login page at a
+#: path no convention predicts, before the crawl has run.
+_HREF_RE = re.compile(r"""<a[^>]+href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.I)
+
 _LOGIN_PASSWORD_INPUT_RE: re.Pattern[str] = re.compile(
     r"""<input[^>]*\btype\s*=\s*["']?password\b""", re.IGNORECASE
 )
@@ -2582,7 +2588,6 @@ class OrchestratorAgent:
             except Exception as exc:
                 self._logger.debug("Could not read endpoints for login discovery: %s", exc)
 
-        # --- Conventional paths on each scope base ---
         base_url = recon_result.get("base_url") or recon_result.get("url")
         probe_bases: list[str] = []
         if base_url:
@@ -2596,6 +2601,24 @@ class OrchestratorAgent:
                 if candidate.rstrip("/") not in [b.rstrip("/") for b in probe_bases]:
                     probe_bases.append(candidate)
 
+        # --- What the landing page LINKS to ---
+        #
+        # The authentication phase runs BEFORE the scan phase, so there is no
+        # crawl result here: ``scan_result`` is None at the only call site that
+        # matters. Removing the name filter was therefore necessary and not
+        # sufficient — an application whose login page is at an unconventional
+        # path had no candidate to rank, and the run aborted having POSTed the
+        # credentials at the site root.
+        #
+        # The application says where its login is. Meridian's landing page
+        # carries <a href="/portal/gateway">Portal</a>, and reading that is an
+        # OBSERVATION about this target, the same kind as reading a form's
+        # action. One GET per base, same-origin hrefs only.
+        for base in probe_bases:
+            for href in await self._linked_urls(base):
+                offer(href)
+
+        # --- Conventional paths on each scope base ---
         # Stack-neutral paths first; the two extension-bearing ones are a
         # PHP guess and are tried last rather than first.
         probe_paths = ["/login", "/signin", "/auth", "/admin", "/login.php", "/wp-login.php"]
@@ -2633,6 +2656,68 @@ class OrchestratorAgent:
             ", ".join(probe_bases) or "(no base url)",
         )
         return None
+
+    async def _linked_urls(self, base: str) -> list[str]:
+        """Same-origin URLs the page at *base* links to.
+
+        The application is the authority on where its own login page is, and it
+        says so in an anchor. Reading that is an observation of the same kind as
+        reading a form's ``action`` — and it is the one candidate source that can
+        reach a login page at a path no convention predicts, at a point in the
+        run where the crawl has not happened yet.
+
+        Same-origin only, and capped. A page linking off-site is linking to
+        somebody else's login page, which is never the one we authenticate to;
+        the scope check downstream would refuse it anyway, and not collecting it
+        keeps the shape budget for candidates that could be right.
+
+        Args:
+            base: The origin to read.
+
+        Returns:
+            Absolute same-origin URLs, de-duplicated, in document order.
+        """
+        try:
+            from clinkz.tools.http_client import HTTPClientTool
+
+            http = HTTPClientTool(
+                scope=self._scope,
+                timeout=10,
+                engagement_id=self._engagement_id or "",
+            )
+            validated = http.validate_input({"url": base, "method": "GET"})
+            parsed = http.parse_output(await asyncio.wait_for(http.execute(validated), timeout=10))
+        except Exception as exc:
+            self._logger.debug("Could not read %s for linked login candidates: %s", base, exc)
+            return []
+
+        if not parsed.status_code or parsed.status_code >= 400:
+            return []
+
+        from urllib.parse import urlparse
+
+        origin = urlparse(base)
+        found: list[str] = []
+        for match in _HREF_RE.findall(parsed.response_body or ""):
+            # Three alternatives (double-quoted, single-quoted, bare); exactly
+            # one is non-empty per match.
+            href = next((group for group in match if group), "").strip()
+            if not href or href.startswith(("#", "mailto:", "javascript:", "tel:")):
+                continue
+            if href.startswith(("http://", "https://")):
+                if urlparse(href).netloc != origin.netloc:
+                    continue
+                absolute = href
+            elif href.startswith("/"):
+                absolute = f"{origin.scheme}://{origin.netloc}{href}"
+            else:
+                continue
+            absolute = absolute.split("#", 1)[0]
+            if absolute and absolute not in found:
+                found.append(absolute)
+            if len(found) >= self.LOGIN_SHAPE_PROBE_BUDGET:
+                break
+        return found
 
     async def _serves_a_login_form(self, url: str) -> bool:
         """Whether *url* serves a response whose SHAPE is a login form.
