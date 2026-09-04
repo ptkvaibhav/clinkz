@@ -67,6 +67,14 @@ services:
       # first page load, so recreating the container is the whole level switch —
       # nothing in src/ ever sets it. Override per run:
       #   DVWA_SECURITY_LEVEL=high docker compose ... up -d --force-recreate dvwa
+      #
+      # THIS LINE IS THE ONLY THING THAT PINS `low`. The digininja image defaults
+      # to `impossible`, so a container started outside compose runs the ladder's
+      # honesty control group — every module patched, every confirm a phantom by
+      # construction — and does it silently: the run completes and a clean report
+      # reads as an engine that found nothing. Read the level back rather than
+      # assuming it:
+      #   docker exec clinkz-dvwa sh -c 'echo $$DEFAULT_SECURITY_LEVEL'
       - DEFAULT_SECURITY_LEVEL=${DVWA_SECURITY_LEVEL:-low}
     depends_on:
       dvwa-db:

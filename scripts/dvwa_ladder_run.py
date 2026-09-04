@@ -24,6 +24,17 @@ Secondary gates, each of which the ladder still checks per level:
 
   * **impossible emits zero exploitation findings** — the honesty control group.
     A confirm at ``impossible`` is a phantom by construction.
+
+    Which is why the level a run actually executed at has to be READ, not
+    assumed. The digininja image defaults to ``impossible``; only
+    ``docker/docker-compose.yml`` pins one (``DEFAULT_SECURITY_LEVEL``), and
+    nothing in ``src/`` ever sets it. ``reset_and_set_level`` goes through
+    compose for exactly this reason, so the ladder is safe — but a container
+    someone started by hand (``docker run``, or ``docker start`` on one created
+    outside compose) runs the control group at every rung, and the failure is
+    silent: four clean levels, four honest-looking reports, and a summary that
+    reads as an engine that found nothing. Confirm with
+    ``docker exec clinkz-dvwa sh -c 'echo $DEFAULT_SECURITY_LEVEL'``.
   * **admin's stored password hash is unchanged** — the run damaged nothing.
   * **zero auth-bypass findings at every level** — D8's suppression side.
   * the disclosure gate certified the bundle, and the contribution ledger's
