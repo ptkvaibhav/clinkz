@@ -34,17 +34,16 @@ def _fixture(name: str) -> str:
 
 class TestParsingWhatCurlWrites:
     def test_a_single_block_yields_status_body_and_headers(self) -> None:
-        status, body, headers, chain = WebAuthenticator._parse_curl_exchange(
+        status, body, headers = WebAuthenticator._parse_curl_exchange(
             _fixture("meridian_login_415_curl.txt")
         )
         assert status == 415
-        assert chain == []
         assert headers["Content-Type"] == "application/json"
         assert '"content_type": "application/json"' in body
 
     def test_the_415_body_names_the_encoding_through_the_real_bytes(self) -> None:
         """End to end over the fixture: bytes -> parse -> negotiated type."""
-        status, body, headers, _chain = WebAuthenticator._parse_curl_exchange(
+        status, body, headers = WebAuthenticator._parse_curl_exchange(
             _fixture("meridian_login_415_curl.txt")
         )
         assert (
@@ -53,7 +52,7 @@ class TestParsingWhatCurlWrites:
 
     def test_the_415_is_not_read_as_a_successful_login(self) -> None:
         """The defect, over the real bytes and at the real form-action URL."""
-        status, body, _headers, chain = WebAuthenticator._parse_curl_exchange(
+        status, body, _headers = WebAuthenticator._parse_curl_exchange(
             _fixture("meridian_login_415_curl.txt")
         )
         assert not WebAuthenticator._check_login_success(
@@ -61,13 +60,13 @@ class TestParsingWhatCurlWrites:
             status_code=status,
             final_url="http://target/portal/v3/session-open",
             login_url="http://target/portal/gateway",
-            redirect_chain=chain,
+            redirect_chain=[],
             session_cookies={},
         )
 
     def test_the_200_yields_the_session_cookie_and_a_success(self) -> None:
         raw = _fixture("meridian_login_200_curl.txt")
-        status, body, _headers, chain = WebAuthenticator._parse_curl_exchange(raw)
+        status, body, _headers = WebAuthenticator._parse_curl_exchange(raw)
         cookies = WebAuthenticator._parse_set_cookies(raw)
         assert status == 200
         assert "meridian_portal" in cookies
@@ -76,32 +75,38 @@ class TestParsingWhatCurlWrites:
             status_code=status,
             final_url="http://target/portal/v3/session-open",
             login_url="http://target/portal/gateway",
-            redirect_chain=chain,
+            redirect_chain=[],
             session_cookies=cookies,
         )
 
-    def test_a_followed_redirect_reports_the_last_block_and_the_whole_chain(self) -> None:
-        """``-L`` concatenates blocks; the answer is the last one.
+    def test_a_multi_block_dump_reports_the_block_that_answered(self) -> None:
+        """Several blocks in one dump; the answer is the last one.
 
-        Reading the FIRST block's status here would report 302 for a request
-        that ended at 200, and reading the last block's headers is what makes
-        ``Accept-Post`` on a 415 findable at all.
+        A fixture captured under ``-L``, or — now that no credential exchange
+        uses ``-L`` — the per-hop dumps the authenticator joins. Reading the
+        FIRST block's status here would report 302 for a request that ended at
+        200, and reading the last block's headers is what makes ``Accept-Post``
+        on a 415 findable at all.
+
+        The ``Location`` values in this dump are deliberately NOT read back as a
+        redirect chain. They are raw header text — ``/portal/gateway?next=…``,
+        unresolved — and that was the curl arm's ``redirect_chain`` while the
+        aiohttp arm filled the same field with absolute URLs. One field, two
+        meanings, read by the success oracle.
         """
-        status, body, headers, chain = WebAuthenticator._parse_curl_exchange(
+        status, body, headers = WebAuthenticator._parse_curl_exchange(
             _fixture("meridian_redirect_chain_curl.txt")
         )
         assert status == 200, "the final block answered, not the 302 that led to it"
         assert headers["Content-Type"].startswith("text/html")
-        assert chain == ["/portal/gateway?next=%2Fapi%2Forders"]
         assert "<input type=password" in body
 
     @pytest.mark.parametrize("raw", ["", "   ", "not an http response at all"])
     def test_unparseable_output_is_data_not_a_crash(self, raw: str) -> None:
-        status, body, headers, chain = WebAuthenticator._parse_curl_exchange(raw)
+        status, body, headers = WebAuthenticator._parse_curl_exchange(raw)
         assert status == 0
         assert body == ""
         assert headers == {}
-        assert chain == []
 
 
 class TestTheFormActionIsScopeChecked:

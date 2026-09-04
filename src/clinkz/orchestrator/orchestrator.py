@@ -219,6 +219,19 @@ class _ToolHttpProbe:
     the shared cookie jar would otherwise make the "anonymous" control carry the
     engagement's own session, and the comparison would prove nothing while
     looking like it proved everything.
+
+    ``follow_redirects=True`` does NOT reach the transport. Handing ``-L`` /
+    ``allow_redirects`` down is handing the destination of the next request to
+    whoever shaped this one: the initial URL is scope-checked in
+    ``validate_input`` and the ``Location`` it names is not, so the two probes
+    that follow redirects — the login-candidate walk in
+    :func:`~clinkz.engagement.auth_state.detect_auth_mechanism` and the
+    destination read in ``_corroborate_destination`` — could be sent to any host
+    a target chose to name. They carry no credential body and, on this adapter,
+    no session material either; what they carry is the engagement's willingness
+    to make a request, and scope is the control that decides where. So each hop
+    is walked through :func:`~clinkz.tools.redirect_walk.walk_redirects` and
+    dispatched as its own validated request.
     """
 
     #: Per-probe timeout. Auth detection walks a candidate list, so the default
@@ -238,16 +251,61 @@ class _ToolHttpProbe:
         cookies: dict[str, str] | None = None,
         follow_redirects: bool = False,
     ) -> Any:
-        return await self._send(
-            {
-                "method": "GET",
-                "url": url,
-                "headers": headers or {},
-                "cookies": cookies or {},
-                "follow_redirects": follow_redirects,
-                "no_session": not (cookies or headers),
-            }
+        args = {
+            "method": "GET",
+            "url": url,
+            "headers": headers or {},
+            "cookies": cookies or {},
+            # Never handed down. The hops are walked here instead; see the class
+            # docstring.
+            "follow_redirects": False,
+            "no_session": not (cookies or headers),
+        }
+        if not follow_redirects:
+            return await self._send(args)
+        return await self._walk(args)
+
+    async def _walk(self, args: dict[str, Any]) -> Any:
+        """Follow this GET's redirects one scope-checked hop at a time."""
+        from clinkz.tools.redirect_walk import HopResponse, walk_redirects
+
+        async def _dispatch(hop_url: str, _carries_body: bool) -> HopResponse:
+            resp = await self._send({**args, "url": hop_url})
+            return HopResponse(status=resp.status, headers=resp.headers, payload=resp)
+
+        outcome = await walk_redirects(
+            start_url=args["url"],
+            dispatch=_dispatch,
+            in_scope=self._scope_gate,
+            label=f"the auth probe of {args['url']}",
         )
+        response = outcome.response.payload
+        if outcome.refusal is not None:
+            logger.warning(
+                "SCOPE REFUSAL: the auth probe of %s was answered %d redirecting to %s, "
+                "outside the engagement scope. Not following it.",
+                args["url"],
+                outcome.response.status,
+                outcome.refusal.url,
+            )
+            response.error = outcome.refusal.reason
+        return response
+
+    def _scope_gate(self, url: str) -> None:
+        """The engagement's own scope check, run before a hop is dispatched to.
+
+        Deliberately ``validate_input`` rather than a second copy of the
+        containment test: it is the same gate every other request in the
+        engagement passes, so a refused hop lands in the run's scope-refusal
+        record with the same stage and tool attribution as any other refusal.
+        A second implementation is what these three redirect classifiers already
+        cost once.
+
+        Raises:
+            ValueError: The destination is outside scope (or unusable as a URL,
+                which is the same answer: do not go there).
+        """
+        self._tool().validate_input({"method": "GET", "url": url})
 
     async def post_json(self, url: str, payload: dict[str, str]) -> Any:
         return await self._send(
@@ -261,16 +319,21 @@ class _ToolHttpProbe:
             }
         )
 
-    async def _send(self, args: dict[str, Any]) -> Any:
-        from clinkz.engagement.auth_state import ProbeResponse
+    def _tool(self) -> Any:
+        """The engagement's HTTP client, configured for an auth probe."""
         from clinkz.tools.http_client import HTTPClientTool
 
-        tool = HTTPClientTool(
+        return HTTPClientTool(
             scope=self._scope,
             engagement_id=self._engagement_id,
             stage="auth",
             timeout=self.PROBE_TIMEOUT,
         )
+
+    async def _send(self, args: dict[str, Any]) -> Any:
+        from clinkz.engagement.auth_state import ProbeResponse
+
+        tool = self._tool()
         try:
             validated = tool.validate_input(args)
             parsed = tool.parse_output(await tool.execute(validated))
@@ -2159,8 +2222,15 @@ class OrchestratorAgent:
 
         self._logger.info("Trying default credentials for: %s", ", ".join(technologies))
 
-        # Cache login URL lookups per target to avoid repeated 5s-timeout probes
-        login_url_cache: dict[str, str | None] = {}
+        # One login-URL lookup for the whole sweep. It used to be cached per
+        # technology, which was a cache over a function that never read the
+        # technology: the only branch that did was a ``login_urls`` map no
+        # producer writes.
+        login_url = await self._find_login_url(recon_result)
+        if not login_url:
+            self._logger.info("No login surface proven — skipping default cred check")
+            return
+
         # Track tested (url, user, pass) combos to skip duplicates across technologies
         tested_combos: set[tuple[str, str, str]] = set()
 
@@ -2173,14 +2243,6 @@ class OrchestratorAgent:
             # Get the seeded credentials
             creds = await self._cred_store.get(self._engagement_id, technology=tech)
             untested = [c for c in creds if c.valid is None]
-
-            # Find login URL once per technology (cached per target base)
-            cache_key = tech
-            if cache_key not in login_url_cache:
-                login_url_cache[cache_key] = await self._find_login_url(recon_result, tech)
-            login_url = login_url_cache[cache_key]
-            if not login_url:
-                continue
 
             for cred in untested:
                 combo = (login_url, cred.username, cred.password)
@@ -2499,99 +2561,66 @@ class OrchestratorAgent:
         except Exception as exc:
             self._logger.warning("Playbook matching failed: %s", exc)
 
-    async def _find_login_url(
-        self,
-        recon_result: dict[str, Any],
-        technology: str,
-        scan_result: dict[str, Any] | None = None,
-    ) -> str | None:
+    async def _find_login_url(self, recon_result: dict[str, Any]) -> str | None:
         """Find a login URL by RESPONSE SHAPE, using path names only to order the work.
 
-        The chain used to be six name filters. Every URL recon or the crawler
-        produced was tested against ``("/login", "/admin", "/wp-login",
-        "/manager", "/signin", "/auth")`` and discarded if it matched none — so
-        an application whose login page is at ``/portal/gateway`` could be
-        linked from its own landing page, crawled, and handed to this method,
-        and still come back "no login surface proven". The same application at
-        ``/login`` was found immediately. That is a name oracle, and it is the
-        same defect as the redirect discriminator's, one layer up.
+        The chain used to be six name filters. Every candidate was tested
+        against ``("/login", "/admin", "/wp-login", "/manager", "/signin",
+        "/auth")`` and discarded if it matched none — so an application whose
+        login page is at ``/portal/gateway`` could link it from its own landing
+        page, hand it to this method, and still come back "no login surface
+        proven". The same application at ``/login`` was found immediately. That
+        is a name oracle, and it is the same defect as the redirect
+        discriminator's, one layer up.
 
-        So the strategies now COLLECT candidates and a single shape test
-        decides:
-
-        1. Explicit ``login_urls`` from recon — a producer's declaration, taken
-           as given, the one entry that does not need confirming.
-        2. Structured URL fields in recon/scan, free text in the summaries, and
-           the state store's discovered endpoints — all of them, not just the
-           name-matching ones.
-        3. Conventional paths constructed on each scope base.
-
+        So the strategies COLLECT candidates and a single shape test decides.
         Candidates whose path is login-shaped are tested FIRST, because they are
-        likelier and every test is a request. Being login-shaped is no longer
-        what makes a candidate ELIGIBLE — only what makes it early.
+        likelier and every test is a request. Being login-shaped is not what
+        makes a candidate ELIGIBLE — only what makes it early.
 
-        There is still no strategy that returns the root URL "as the login
-        page": a root URL is not a login page, it is where a credential POST
-        goes when nobody proved anything.
+        **Every source here is a producer that has already run.** This runs
+        between recon and the concurrent phase, and it used to read five more:
+        a ``login_urls`` declaration no producer writes, four structured URL
+        keys (``hosts`` / ``results`` / ``endpoints`` / ``urls``) that are not on
+        a v2 ``ReconResult`` at any nesting level, a ``scan_result`` parameter
+        that was ``None`` at both call sites, and ``state.get_endpoints()``,
+        whose only writer is the Scan agent — which starts after this returns.
+        Five branches, none of which had ever executed, in the method whose
+        entire history is a name filter that hid a login page. Dead code in an
+        auth path is where a future refactor reintroduces one and nothing
+        catches it, because nothing exercises it. The ordering is NOT the thing
+        to change: the scan phase consumes the session this establishes, so
+        moving authentication after it would scan the application anonymously.
+
+        What is left has a live producer at this point in the run: recon's own
+        LLM summary, the landing page's anchors, and conventional paths on each
+        scope base. There is still no strategy that returns the root URL "as the
+        login page": a root URL is not a login page, it is where a credential
+        POST goes when nobody proved anything.
 
         Args:
             recon_result: Recon phase result dict.
-            technology: Technology name to look for (may be empty).
-            scan_result: Optional scan phase result dict for additional URL sources.
 
         Returns:
             Login URL string whose shape was confirmed, or None.
         """
         login_path_hints = ("/login", "/admin", "/wp-login", "/manager", "/signin", "/auth")
-
-        # --- A declaration by the recon producer, taken as given ---
-        login_urls = recon_result.get("login_urls", {})
-        if isinstance(login_urls, dict):
-            if technology and technology in login_urls:
-                return login_urls[technology]
-            for _tech, url in login_urls.items():
-                if url:
-                    return url
-
         candidates: list[str] = []
 
-        def offer(value: Any) -> None:
+        def offer(url: str) -> None:
             """Collect a candidate URL. No name filter — that is the whole point."""
-            url = value.get("url", "") if isinstance(value, dict) else value
-            if isinstance(url, str) and url.startswith(("http://", "https://")):
-                if url not in candidates:
-                    candidates.append(url)
+            if url.startswith(("http://", "https://")) and url not in candidates:
+                candidates.append(url)
 
-        # --- Structured URL fields in recon + scan results ---
-        sources = [recon_result]
-        if scan_result:
-            sources.append(scan_result)
-        for source in sources:
-            for key in ("hosts", "results", "endpoints", "urls"):
-                items = source.get(key)
-                if isinstance(items, list):
-                    for item in items:
-                        offer(item)
+        # --- Free-text URLs in recon's own summary ---
+        # Weak evidence — it is the synthesis LLM's prose — but it is prose
+        # ABOUT this target, and every candidate faces the same shape test.
+        summary = recon_result.get("summary", "")
+        if isinstance(summary, str) and summary:
+            for candidate in re.findall(r'https?://[^\s<>"\']+', summary):
+                offer(candidate)
 
-        # --- Free-text URLs in the summaries ---
-        for source in sources:
-            summary = source.get("summary", "")
-            if isinstance(summary, str) and summary:
-                for candidate in re.findall(r'https?://[^\s<>"\']+', summary):
-                    offer(candidate)
-
-        # --- The state store's discovered endpoints ---
-        if self._state and self._engagement_id:
-            try:
-                for endpoint in await self._state.get_endpoints(self._engagement_id):
-                    offer(endpoint)
-            except Exception as exc:
-                self._logger.debug("Could not read endpoints for login discovery: %s", exc)
-
-        base_url = recon_result.get("base_url") or recon_result.get("url")
         probe_bases: list[str] = []
-        if base_url:
-            probe_bases.append(base_url.rstrip("/"))
         if self._scope:
             for t in self._scope.targets:
                 if t.value.startswith(("http://", "https://")):
@@ -2604,11 +2633,10 @@ class OrchestratorAgent:
         # --- What the landing page LINKS to ---
         #
         # The authentication phase runs BEFORE the scan phase, so there is no
-        # crawl result here: ``scan_result`` is None at the only call site that
-        # matters. Removing the name filter was therefore necessary and not
-        # sufficient — an application whose login page is at an unconventional
-        # path had no candidate to rank, and the run aborted having POSTed the
-        # credentials at the site root.
+        # crawl to rank. Removing the name filter was therefore necessary and
+        # not sufficient — an application whose login page is at an
+        # unconventional path had no candidate at all, and a live run aborted
+        # having POSTed the credentials at the site root.
         #
         # The application says where its login is. Meridian's landing page
         # carries <a href="/portal/gateway">Portal</a>, and reading that is an
@@ -3002,7 +3030,7 @@ class OrchestratorAgent:
             return {}, "", {}
 
         probe = _ToolHttpProbe(self._scope, self._engagement_id or "")
-        discovered_login = await self._find_login_url(recon_result, "", scan_result=None)
+        discovered_login = await self._find_login_url(recon_result)
         detection = await detect_auth_mechanism(
             probe,
             base_url,

@@ -1,6 +1,6 @@
 # Authentication shapes — observing the login, never guessing its name
 
-> Invariants 87–88 in [`CLAUDE.md`](../../CLAUDE.md). The rules are there; the
+> Invariants 87–91 in [`CLAUDE.md`](../../CLAUDE.md). The rules are there; the
 > incident is here.
 
 ## The target that found it
@@ -135,10 +135,10 @@ where a real one will appear (invariant 77).
 
 ## Defect 3 — the same name filter, one layer up
 
-`_find_login_url` collected URLs from recon, the crawl, the summaries and the
-state store, then discarded every one that did not match six path names. So
-Meridian could link its login page from its own landing page, have the crawler
-find it, hand it to this method — and still come back "no login surface proven".
+`_find_login_url` collected URLs from a handful of sources and then discarded
+every one that did not match six path names. So Meridian could link its login
+page from its own landing page, hand it to this method — and still come back "no
+login surface proven".
 
 The strategies now **collect** candidates and a single shape test decides.
 Login-shaped names are tried **first**, because each shape test costs a request;
@@ -147,8 +147,8 @@ makes it *early*. `LOGIN_SHAPE_PROBE_BUDGET` bounds the walk and announces itsel
 when it bites, because a bound that decides coverage is never silent
 (invariant 14).
 
-Recon's explicit `login_urls` dict is still taken as given: it is a producer's
-declaration, and the one entry that does not need confirming.
+The sources it collected from were another matter — most of them had never
+produced anything, `login_urls` included. See defect 9.
 
 ## Defect 4 — one message for three different failures
 
@@ -247,9 +247,9 @@ which is a strictly weaker position and available to anything on the path. And
 the 415 renegotiation would have earned a second copy of the credentials in
 another encoding at the same destination.
 
-The 3xx is now **observed**. `_classify_credential_redirect` reads the
-`Location`, resolves it against the URL that answered, scope-checks the result,
-and returns the hop to take:
+The 3xx is now **observed**. The classifier reads the `Location`, resolves it
+against the URL that answered, scope-checks the result, and returns the hop to
+take:
 
 | Status | Follow-up | Why it is still scope-checked |
 |---|---|---|
@@ -258,12 +258,8 @@ and returns the hop to take:
 | any 3xx with no `Location` | stop | reading it as a redirect would invent a chain |
 | destination out of scope | **refuse** | nothing is dispatched to it |
 
-Each in-scope hop is then dispatched as its own request, capped at five, and the
-chain each execution mode records keeps the meaning it had before — aiohttp
-records the URLs that *answered* with a redirect (what `resp.history` held);
-curl accumulates the raw `Location` values across per-hop dumps, which
-concatenate into exactly what `-L` used to write. `_check_login_success`
-therefore reads the same fact it read before, and no target's verdict moves.
+Each in-scope hop is then dispatched as its own request, capped at five. What
+the two execution modes *recorded* about that walk is defect 8.
 
 **A refusal aborts, and it is terminal.** `AuthResult.scope_refusal` carries the
 destination, and `authenticate()` returns on it rather than running the other
@@ -282,6 +278,132 @@ can reach it either way. The file proves the collector works by handing it a
 credential directly, then observes it receive nothing while the in-scope form
 action still gets the POST. Run against the pre-fix code it records
 `('POST', '/collect', 'account=…&password=…')`.
+
+## Defect 8 — three classifiers, and the hops nobody counted
+
+Defect 7's fix landed as three copies of one rule, one per transport: the
+aiohttp form arm, the curl form arm, and the JSON arm over `HTTPClientTool`. The
+third site was found while reviewing the first two, which is the wrong way to
+find the third site. Three implementations that must agree is two chances to
+drift, in the seam that decides where plaintext credentials go.
+
+The rule now lives once, in `src/clinkz/tools/redirect_walk.py`. Writing it once
+surfaced three things the copies had each got slightly wrong.
+
+**The body decays one way.** Every arm recomputed the flag per hop:
+
+```python
+carries_credentials = hop.action == "resend"      # per hop, from scratch
+```
+
+So `POST → 302 → GET → 307` re-acquires the body. A third destination, named by
+the second response, receives the credentials the first response had already
+declined to carry. The walk's flag is monotonic — `carrying = carrying and
+hop.action == RESEND` — so once a hop is a bodyless GET, every later hop is.
+
+**The hops carrying no credential were never bound.** Three of them:
+
+| Exchange | Followed redirects via | What it carries |
+|---|---|---|
+| the login-page GET (`_execute_aiohttp` step 1) | aiohttp's default | the cookie jar; the form it parses |
+| `detect_auth_mechanism`'s candidate walk | `follow_redirects=True` → `-L` | nothing, and it is still a request |
+| `_corroborate_destination` | `follow_redirects=True` → `-L` | nothing, and the URL comes from the target's own `Location` |
+
+None of them carries a credential body, which is why they were missed. A request
+to a host nothing authorised is outside scope whatever it carries, and a hop
+that *did* carry the jar would be a session handed over. `_ToolHttpProbe` no
+longer passes `follow_redirects` down to the transport at all: it walks the hops
+itself and gates each destination through `validate_input`, the same scope check
+every other request in the engagement passes — so a refusal lands in the run's
+scope-refusal record with the usual attribution rather than in a second copy of
+the containment test.
+
+Fixing the login-page GET also removed a divergence that has nothing to do with
+scope. aiohttp followed it and curl did not, so a login page behind a redirect
+authenticated under `TOOL_EXEC_MODE=local` and failed under `docker`. And the
+form's relative `action` was resolved against the URL we ASKED for rather than
+the one that SERVED the form:
+
+```
+GET  /login          ──▶ 302, Location: /app/portal
+GET  /app/portal     ──▶ 200, <form method=post action="session">
+POST /session        ──▶ 404          ← resolved against /login
+POST /app/session    ──▶ 200          ← resolved against what answered
+```
+
+**`redirect_chain` had two meanings, and the success oracle reads it.** aiohttp
+filled it from `resp.history` — the URLs that *answered* with a redirect — and
+curl from the raw `Location` header values, unresolved. `_check_login_success`
+rule 2 asks whether a redirect landed somewhere other than the login page:
+
+| Shape | aiohttp chain | verdict | curl chain | verdict |
+|---|---|---|---|---|
+| `POST /session` → `302 /portal/gateway?error=1`, no cookie | `[…/session]` | **success** | `[/portal/gateway?error=1]` | rejected |
+| `POST /login.php` → `302 index.php`, cookie set | `[…/login.php]` | (cookie decides) | `[index.php]` | success |
+
+Row one is a **rejected credential scoring as a session**, and it is reachable
+on any application whose form `action` is not its login path — the same shape
+defect 1 was about. Row two shows the curl side comparing
+`urlparse("index.php").path` against `/login.php` and getting the right answer
+for no reason.
+
+The chain is now the **absolute destinations a redirect pointed to, in hop
+order** — which is what the classifier already computed and then discarded. Both
+transports produce the identical list for the identical target.
+`_parse_curl_exchange` no longer returns a location list at all, so the second
+meaning has nowhere to come back from.
+
+The control is defect 7's, extended in the same file. The out-of-scope collector
+now records the `Cookie` and `Authorization` headers it receives as well as the
+body, and is proved live by handing it a session directly — the same
+seeded-leak discipline applied to the other thing a followed redirect hands
+over. `TestRedirectChainHasOneMeaning` drives one rejecting login through both
+execution modes and asserts the success oracle is handed the same absolute chain
+by each.
+
+## Defect 9 — login discovery read four producers that had never produced
+
+Defect 3 removed the name filter from `_find_login_url` and defect 3's follow-up
+added the landing-page anchor reader, because the crawl does not exist yet at
+authentication time. What neither did was remove the sources that had been
+feeding the filter nothing:
+
+| Source | Producer | Runs before auth? |
+|---|---|---|
+| `recon_result["login_urls"]` | none — nothing in the tree writes it | — |
+| `hosts` / `results` / `endpoints` / `urls` keys | not on a v2 `ReconResult` at any nesting level | — |
+| `scan_result` parameter | passed `None` at both call sites | no |
+| `state.get_endpoints()` | `agents/scan.py`, the only `add_endpoint` caller | **no** |
+| `recon_result["summary"]` | the recon synthesis LLM | yes |
+| `_linked_urls(base)` | the landing page's own anchors | yes |
+
+Only the last two had ever contributed a candidate. In most code that is
+ordinary dead weight; here it is the method whose entire history is a name
+oracle, so a dead branch is exactly where one is reintroduced with nothing to
+catch it.
+
+The tests made that worse rather than better. `TestLoginUrlIsRankedByShapeNotName`
+pinned *names order the work, they do not gate it* — the right property — by
+feeding a `scan_result`, so it asserted the property against a path production
+cannot execute and counted as coverage of one it does. They now drive
+`_linked_urls`.
+
+The other option, moving authentication after the scan phase so the crawl
+exists, is not a pricing question: the scan phase **consumes** the session
+authentication establishes. Running it first scans an authenticated application
+anonymously, which is the empty report that reads as a clean bill of health.
+
+`technology` went with the `login_urls` branch — it was the only reader — and
+with it the per-technology cache over a function that never varied by
+technology.
+
+The guard is computed, not declared
+(`TestLoginDiscoveryReadsOnlyProducersThatHaveRun`): `run()`'s call sequence is
+read by AST walk to confirm authentication still precedes the concurrent phase,
+the endpoint table's writer set is computed from the tree, and only then is
+`_find_login_url` asserted to take no `scan_result` and call no
+`get_endpoints`. A second endpoint producer, or a reordered `run()`, fails the
+guard rather than silently widening it.
 
 ## The regression that is the test
 

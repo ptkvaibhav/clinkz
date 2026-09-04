@@ -41,12 +41,23 @@ plaintext credentials to a destination no scope check had ever seen.
 ``_resolve_post_url`` scope-checks where the credentials go FIRST, because the
 target's form ``action`` chose it; the redirect is a second choice, made by
 anything that can shape one response, which is a strictly weaker position than
-controlling the form's HTML. So the 3xx is now OBSERVED: its ``Location`` is
-resolved, scope-checked, and only then dispatched to as a new request
-(:meth:`WebAuthenticator._classify_credential_redirect`). A destination outside
-scope ABORTS the attempt and says so — ``AuthResult.scope_refusal`` — rather than
-being dropped, because a credential POST that vanished into a redirect and one
-the application rejected read identically to everything downstream.
+controlling the form's HTML. So the 3xx is OBSERVED: its ``Location`` is
+resolved, scope-checked, and only then dispatched to as a new request. A
+destination outside scope ABORTS the attempt and says so —
+``AuthResult.scope_refusal`` — rather than being dropped, because a credential
+POST that vanished into a redirect and one the application rejected read
+identically to everything downstream.
+
+**Every exchange here walks hops through the one primitive**
+(:mod:`clinkz.tools.redirect_walk`), and that includes the ones carrying no
+credential body: the login-page GET that starts each form arm. It runs before
+any credential exists, so nothing of ours can leak from it — but its response is
+the form we read the field names and the ``action`` out of, and a request to a
+host nothing authorised is outside scope whether or not it carries anything. It
+also removed a mode divergence: aiohttp followed that GET and curl did not, so a
+login page behind a redirect authenticated on the host and failed in the
+container.
+
 
 When TOOL_EXEC_MODE=docker, requests to Docker-internal IPs are executed
 via ``curl`` inside the container (same pattern as HTTPClientTool).
@@ -60,11 +71,18 @@ import logging
 import re
 from html.parser import HTMLParser
 from typing import Any, NamedTuple
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urlencode, urlparse
 
 from pydantic import BaseModel
 
 from clinkz.tools.base import ToolBase, ToolOutput
+from clinkz.tools.redirect_walk import (
+    HopResponse,
+    RedirectHop,
+    WalkOutcome,
+    classify_redirect,
+    walk_redirects,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,23 +131,6 @@ _TOKEN_JSON_PATHS: tuple[tuple[str, ...], ...] = (
     ("id_token",),
     ("idToken",),
 )
-
-#: Redirect statuses a credential POST can be answered with.
-_REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
-
-#: The two that PRESERVE the method and the body. A 307/308 answer to a
-#: credential POST re-sends the plaintext credentials verbatim to whatever the
-#: ``Location`` names — which is why a credential POST may not be dispatched
-#: with redirect-following on. The other three degrade the follow-up to a
-#: bodyless GET, so they cannot carry a credential, but their destination is
-#: scope-checked all the same: the follow-up carries the cookie jar.
-_BODY_PRESERVING_REDIRECTS: frozenset[int] = frozenset({307, 308})
-
-#: How many hops a credential exchange will walk before giving up and reporting
-#: the last response it actually got. A loop is a target misconfiguration, not a
-#: reason to keep offering credentials.
-_MAX_CREDENTIAL_REDIRECT_HOPS = 5
-
 
 # ---------------------------------------------------------------------------
 # Output models
@@ -218,27 +219,6 @@ class _EncodingOrder(NamedTuple):
     """
 
     arms: tuple[str, ...]
-    reason: str
-
-
-class _RedirectHop(NamedTuple):
-    """What to do with a 3xx answer to a credential request.
-
-    ``action`` is one of:
-
-    * ``stop`` — not a redirect, or no ``Location``. The response in hand is the
-      answer.
-    * ``resend`` — a 307/308. The method and body are preserved, so the next hop
-      carries the credentials again, and it goes to an in-scope destination.
-    * ``get`` — a 301/302/303. The follow-up is a bodyless GET, so no credential
-      travels with it; the destination is still scope-checked because the cookie
-      jar does.
-    * ``refuse`` — the destination is outside the engagement scope. Nothing is
-      dispatched to it, and ``reason`` says so in the operator's words.
-    """
-
-    action: str
-    url: str
     reason: str
 
 
@@ -967,14 +947,14 @@ class WebAuthenticator(ToolBase):
 
         http = HTTPClientTool(scope=self.scope, engagement_id=self._engagement_id)
         body = json.dumps(payload)
-        current = url
-        carries_credentials = True
-        status, response_body, headers = 0, "", {}
+        dispatched_to = url
 
-        for _hop in range(_MAX_CREDENTIAL_REDIRECT_HOPS + 1):
+        async def _dispatch(hop_url: str, carries_credentials: bool) -> HopResponse:
+            nonlocal dispatched_to
+            dispatched_to = hop_url
             request: dict[str, Any] = {
                 "method": "POST" if carries_credentials else "GET",
-                "url": current,
+                "url": hop_url,
                 "headers": {"Accept": "application/json"},
                 "follow_redirects": False,
             }
@@ -982,24 +962,28 @@ class WebAuthenticator(ToolBase):
                 request["headers"]["Content-Type"] = "application/json"
                 request["body"] = body
             parsed = http.parse_output(await http.execute(http.validate_input(request)))
-            status = parsed.status_code
-            response_body = parsed.response_body
-            headers = parsed.response_headers or {}
+            return HopResponse(
+                status=parsed.status_code,
+                headers=parsed.response_headers or {},
+                payload=parsed.response_body,
+            )
 
-            hop = self._classify_credential_redirect(status, headers, current)
-            if hop.action == "refuse":
-                raise CredentialRedirectRefusedError(current, hop.url, status, hop.reason)
-            if hop.action == "stop":
-                return status, response_body, headers
-            current = hop.url
-            carries_credentials = hop.action == "resend"
-
-        self._logger.warning(
-            "JSON credential exchange at %s did not settle within %d redirects",
-            url,
-            _MAX_CREDENTIAL_REDIRECT_HOPS,
+        outcome = await walk_redirects(
+            start_url=url,
+            dispatch=_dispatch,
+            in_scope=self._check_scope,
+            carries_body=True,
+            label=f"JSON credential exchange at {url}",
+            log=self._logger,
         )
-        return status, response_body, headers
+        if outcome.refusal is not None:
+            raise CredentialRedirectRefusedError(
+                dispatched_to,
+                outcome.refusal.url,
+                outcome.response.status,
+                outcome.refusal.reason,
+            )
+        return outcome.response.status, outcome.response.payload or "", outcome.response.headers
 
     @staticmethod
     def _extract_token(response_body: str) -> str:
@@ -1092,17 +1076,56 @@ class WebAuthenticator(ToolBase):
                     timeout=timeout,
                     cookie_jar=aiohttp.CookieJar(unsafe=True),
                 ) as session:
-                    # Step 1: GET the login page
-                    async with session.get(login_url, ssl=False) as get_resp:
-                        login_html = await get_resp.text(errors="replace")
-                        get_status = get_resp.status
-                        get_cookies = {c.key: c.value for c in session.cookie_jar}
+                    # Step 1: GET the login page.
+                    #
+                    # Walked, not followed. It carries no credential, but it is
+                    # a request whose destination the target picks, and the page
+                    # it lands on is where the field names and the form
+                    # ``action`` come from.
+                    async def _get_login_page(hop_url: str, _carries: bool) -> HopResponse:
+                        async with session.get(
+                            hop_url, ssl=False, allow_redirects=False
+                        ) as get_resp:
+                            return HopResponse(
+                                status=get_resp.status,
+                                headers=dict(get_resp.headers),
+                                landed_url=str(get_resp.url),
+                                payload=await get_resp.text(errors="replace"),
+                            )
+
+                    get_walk = await walk_redirects(
+                        start_url=login_url,
+                        dispatch=_get_login_page,
+                        in_scope=self._check_scope,
+                        label=f"the login page GET at {login_url}",
+                        log=self._logger,
+                    )
+                    if get_walk.refusal is not None:
+                        return self._refused_redirect_result(
+                            login_url=login_url,
+                            username=username,
+                            post_url="",
+                            status=get_walk.response.status,
+                            final_url=get_walk.response.landed_url or login_url,
+                            refusal=get_walk.refusal,
+                            session_cookies={c.key: c.value for c in session.cookie_jar},
+                        )
+                    login_html = get_walk.response.payload or ""
+                    get_status = get_walk.response.status
+                    # The URL that actually SERVED the form. A relative form
+                    # ``action`` resolves against this and not against the URL we
+                    # asked for: the two differ the moment the login page sits
+                    # behind a redirect, and resolving against the wrong one
+                    # POSTs the credentials at a path that does not exist.
+                    form_base = get_walk.chain[-1] if get_walk.chain else login_url
+                    get_cookies = {c.key: c.value for c in session.cookie_jar}
 
                     self._logger.info(
-                        "GET %s → %d (%d bytes), cookies received: %s",
+                        "GET %s → %d (%d bytes) served by %s, cookies received: %s",
                         login_url,
                         get_status,
                         len(login_html),
+                        form_base,
                         list(get_cookies.keys()),
                     )
 
@@ -1134,7 +1157,7 @@ class WebAuthenticator(ToolBase):
 
                     # Resolve the form action. The TARGET wrote this URL, so
                     # it is scope-checked before any credential reaches it.
-                    post_url = self._resolve_post_url(login_url, form.form_action)
+                    post_url = self._resolve_post_url(form_base, form.form_action)
 
                     self._logger.info(
                         "POST %s with %d fields (hidden: %d, creds: 2)",
@@ -1161,50 +1184,51 @@ class WebAuthenticator(ToolBase):
 
                     # The credential POST does NOT follow redirects. Each 3xx is
                     # observed, its destination scope-checked, and the next hop
-                    # dispatched deliberately — see
-                    # :meth:`_classify_credential_redirect`. ``redirect_chain``
-                    # keeps the meaning ``resp.history`` gave it (the URLs that
-                    # ANSWERED with a redirect), so the success oracle reads the
-                    # same fact it read before.
+                    # dispatched deliberately — the shared walk, so this arm and
+                    # the curl arm and the JSON arm cannot drift apart.
                     async def _post(
                         ctype: str,
-                    ) -> tuple[int, str, str, list[str], dict[str, str], _RedirectHop | None]:
+                    ) -> tuple[int, str, str, list[str], dict[str, str], RedirectHop | None]:
                         body, extra = self._encode_credential_body(post_data, ctype)
-                        url = post_url
-                        carries_credentials = True
-                        chain: list[str] = []
-                        for _hop in range(_MAX_CREDENTIAL_REDIRECT_HOPS + 1):
+
+                        async def _dispatch(hop_url: str, carries_credentials: bool) -> HopResponse:
                             if carries_credentials:
                                 request = session.post(
-                                    url,
+                                    hop_url,
                                     data=body,
                                     headers=extra,
                                     ssl=False,
                                     allow_redirects=False,
                                 )
                             else:
-                                request = session.get(url, ssl=False, allow_redirects=False)
+                                request = session.get(hop_url, ssl=False, allow_redirects=False)
                             async with request as resp:
-                                status = resp.status
-                                text = await resp.text(errors="replace")
-                                landed = str(resp.url)
-                                headers = dict(resp.headers)
+                                return HopResponse(
+                                    status=resp.status,
+                                    headers=dict(resp.headers),
+                                    landed_url=str(resp.url),
+                                    payload=await resp.text(errors="replace"),
+                                )
 
-                            hop = self._classify_credential_redirect(status, headers, landed)
-                            if hop.action == "refuse":
-                                return status, text, landed, chain, headers, hop
-                            if hop.action == "stop":
-                                return status, text, landed, chain, headers, None
-                            chain.append(landed)
-                            url = hop.url
-                            carries_credentials = hop.action == "resend"
-                        self._logger.warning(
-                            "Credential exchange at %s did not settle within %d redirects — "
-                            "reporting the last response rather than following further",
-                            post_url,
-                            _MAX_CREDENTIAL_REDIRECT_HOPS,
+                        walk = await walk_redirects(
+                            start_url=post_url,
+                            dispatch=_dispatch,
+                            in_scope=self._check_scope,
+                            carries_body=True,
+                            label=f"the credential exchange at {post_url}",
+                            log=self._logger,
                         )
-                        return status, text, landed, chain, headers, None
+                        return (
+                            walk.response.status,
+                            walk.response.payload or "",
+                            # The URL that ANSWERED the final response — which is
+                            # the last destination when hops were taken, and the
+                            # URL the refusal came from when one was refused.
+                            walk.response.landed_url or post_url,
+                            walk.chain,
+                            walk.response.headers,
+                            walk.refusal,
+                        )
 
                     (
                         post_status,
@@ -1403,18 +1427,57 @@ class WebAuthenticator(ToolBase):
         )
 
         try:
-            # Step 1: GET the login page, save cookies
-            get_cmd = [
-                "curl",
-                "-s",
-                "-S",
-                "-D",
-                "-",
-                "-c",
-                cookie_jar,
-                login_url,
-            ]
-            get_stdout, get_stderr, get_rc = await self._run_subprocess(get_cmd)
+            # Step 1: GET the login page, save cookies.
+            #
+            # No ``-L`` here either, and the hops are walked for the same reason
+            # the credential POST's are: the destination is the target's choice
+            # and the jar travels with it. This is also what makes the two
+            # execution modes agree — aiohttp followed this GET by default and
+            # curl did not, so a login page behind a redirect authenticated on
+            # the host and failed in the container.
+            get_dumps: list[str] = []
+            get_rc = 0
+            get_stderr = ""
+
+            async def _get_login_page(hop_url: str, _carries: bool) -> HopResponse:
+                nonlocal get_rc, get_stderr
+                # ``-c`` on every hop, ``-b`` only after the first. A login flow
+                # starts from a clean jar — the first request must not offer a
+                # session left over from an earlier attempt, which is why the
+                # original single GET wrote the jar and never read it — but a
+                # hop AFTER it has to carry what the login page just set, which
+                # is what ``-L`` did and what aiohttp's per-attempt session does.
+                cmd = ["curl", "-s", "-S", "-D", "-"]
+                if get_dumps:
+                    cmd += ["-b", cookie_jar]
+                cmd += ["-c", cookie_jar, hop_url]
+                stdout, stderr, rc = await self._run_subprocess(cmd)
+                get_dumps.append(stdout)
+                get_rc, get_stderr = rc, stderr
+                status, body, headers = self._parse_curl_exchange(stdout)
+                return HopResponse(status=status, headers=headers, landed_url=hop_url, payload=body)
+
+            get_walk = await walk_redirects(
+                start_url=login_url,
+                dispatch=_get_login_page,
+                in_scope=self._check_scope,
+                label=f"the login page GET at {login_url}",
+                log=self._logger,
+            )
+            get_stdout = "".join(get_dumps)
+            if get_walk.refusal is not None:
+                return self._refused_redirect_result(
+                    login_url=login_url,
+                    username=username,
+                    post_url="",
+                    status=get_walk.response.status,
+                    final_url=get_walk.response.landed_url or login_url,
+                    refusal=get_walk.refusal,
+                    session_cookies=self._parse_set_cookies(get_stdout),
+                )
+            # The URL that actually SERVED the form; a relative ``action``
+            # resolves against it, not against the URL we asked for.
+            form_base = get_walk.chain[-1] if get_walk.chain else login_url
 
             if get_rc != 0 and not get_stdout.strip():
                 return json.dumps(
@@ -1433,9 +1496,10 @@ class WebAuthenticator(ToolBase):
                     }
                 )
 
-            # Extract body from GET response (skip headers)
-            header_body_split = re.split(r"\r?\n\r?\n", get_stdout, maxsplit=1)
-            login_html = header_body_split[1] if len(header_body_split) > 1 else get_stdout
+            # The body of the block that ANSWERED. Splitting the whole dump on
+            # the first blank line would take the 3xx's empty body whenever the
+            # login page sat behind a redirect.
+            login_html = get_walk.response.payload or ""
 
             # Step 2: Parse form fields
             form = _parse_form_fields(login_html)
@@ -1452,7 +1516,7 @@ class WebAuthenticator(ToolBase):
 
             # Resolve the form action. The TARGET wrote this URL, so it is
             # scope-checked before any credential reaches it.
-            post_url = self._resolve_post_url(login_url, form.form_action)
+            post_url = self._resolve_post_url(form_base, form.form_action)
 
             # Step 4: POST with cookies from GET, under the encoding the page
             # declared (or the operator did), retrying under the one a 415
@@ -1470,59 +1534,52 @@ class WebAuthenticator(ToolBase):
             # No ``-L``. Curl following the redirect itself is curl choosing
             # the destination of a request carrying plaintext credentials, and
             # a 307 makes that choice for it. Each hop is dispatched here
-            # instead, after its destination has been scope-checked — see
-            # :meth:`_classify_credential_redirect`. Concatenating the per-hop
-            # dumps reproduces exactly what ``-L`` wrote, so
-            # ``_parse_curl_exchange`` still reads the answering block and the
-            # whole ``Location`` chain out of one string.
-            async def _post(ctype: str) -> tuple[str, _RedirectHop | None]:
+            # instead, through the shared walk, after its destination has been
+            # scope-checked. The per-hop dumps are kept because ``Set-Cookie``
+            # can land on any of them; the ANSWER is the last one.
+            async def _post(ctype: str) -> tuple[str, WalkOutcome]:
                 body, extra = self._encode_credential_body(post_fields, ctype)
-                url = post_url
-                carries_credentials = True
                 dumps: list[str] = []
-                for _hop in range(_MAX_CREDENTIAL_REDIRECT_HOPS + 1):
+
+                async def _dispatch(hop_url: str, carries_credentials: bool) -> HopResponse:
                     cmd = ["curl", "-s", "-S", "-D", "-"]
                     if carries_credentials:
                         cmd += ["-X", "POST"]
                         for header, value in extra.items():
                             cmd += ["-H", f"{header}: {value}"]
                         cmd += ["-d", body]
-                    cmd += ["-b", cookie_jar, "-c", cookie_jar, url]
+                    cmd += ["-b", cookie_jar, "-c", cookie_jar, hop_url]
                     stdout, _stderr, _rc = await self._run_subprocess(cmd)
                     dumps.append(stdout)
+                    status, resp_body, headers = self._parse_curl_exchange(stdout)
+                    return HopResponse(
+                        status=status, headers=headers, landed_url=hop_url, payload=resp_body
+                    )
 
-                    status, _body, headers, _chain = self._parse_curl_exchange(stdout)
-                    hop = self._classify_credential_redirect(status, headers, url)
-                    if hop.action == "refuse":
-                        return "".join(dumps), hop
-                    if hop.action == "stop":
-                        return "".join(dumps), None
-                    url = hop.url
-                    carries_credentials = hop.action == "resend"
-                self._logger.warning(
-                    "Credential exchange at %s did not settle within %d redirects — "
-                    "reporting the last response rather than following further",
-                    post_url,
-                    _MAX_CREDENTIAL_REDIRECT_HOPS,
+                walk = await walk_redirects(
+                    start_url=post_url,
+                    dispatch=_dispatch,
+                    in_scope=self._check_scope,
+                    carries_body=True,
+                    label=f"the credential exchange at {post_url}",
+                    log=self._logger,
                 )
-                return "".join(dumps), None
+                return "".join(dumps), walk
 
-            post_stdout, refusal = await _post(content_type)
-            (
-                post_status,
-                post_response_body,
-                post_headers,
-                location_matches,
-            ) = self._parse_curl_exchange(post_stdout)
+            post_stdout, walk = await _post(content_type)
+            post_status = walk.response.status
+            post_response_body = walk.response.payload or ""
+            post_headers = walk.response.headers
+            redirect_chain = walk.chain
 
-            if refusal is not None:
+            if walk.refusal is not None:
                 return self._refused_redirect_result(
                     login_url=login_url,
                     username=username,
                     post_url=post_url,
                     status=post_status,
-                    final_url=location_matches[-1].strip() if location_matches else post_url,
-                    refusal=refusal,
+                    final_url=walk.response.landed_url or post_url,
+                    refusal=walk.refusal,
                     session_cookies=self._parse_set_cookies(get_stdout + post_stdout),
                 )
 
@@ -1534,22 +1591,20 @@ class WebAuthenticator(ToolBase):
                     wanted,
                 )
                 negotiated = wanted
-                retry_stdout, refusal = await _post(wanted)
-                (
-                    post_status,
-                    post_response_body,
-                    post_headers,
-                    location_matches,
-                ) = self._parse_curl_exchange(retry_stdout)
+                retry_stdout, walk = await _post(wanted)
+                post_status = walk.response.status
+                post_response_body = walk.response.payload or ""
+                post_headers = walk.response.headers
+                redirect_chain = walk.chain
                 post_stdout = post_stdout + retry_stdout
-                if refusal is not None:
+                if walk.refusal is not None:
                     return self._refused_redirect_result(
                         login_url=login_url,
                         username=username,
                         post_url=post_url,
                         status=post_status,
-                        final_url=location_matches[-1].strip() if location_matches else post_url,
-                        refusal=refusal,
+                        final_url=walk.response.landed_url or post_url,
+                        refusal=walk.refusal,
                         session_cookies=self._parse_set_cookies(get_stdout + post_stdout),
                     )
             elif post_status == 415:
@@ -1559,7 +1614,7 @@ class WebAuthenticator(ToolBase):
                     post_url,
                 )
 
-            final_url = location_matches[-1].strip() if location_matches else post_url
+            final_url = walk.response.landed_url or post_url
 
             # Collect session cookies. Prefer parsing Set-Cookie headers from
             # the GET+POST responses — curl writes the jar inside the
@@ -1577,8 +1632,6 @@ class WebAuthenticator(ToolBase):
                 if not jar_cookies:
                     jar_cookies = self._read_cookie_jar(cookie_jar)
                 session_cookies = jar_cookies
-
-            redirect_chain = location_matches
 
             success = self._check_login_success(
                 post_response_body,
@@ -1677,6 +1730,17 @@ class WebAuthenticator(ToolBase):
            landing somewhere other than the login page. An application that
            answers a good credential with "go to your dashboard" said so in a
            ``Location`` header, and the chain is where that is recorded.
+
+           ``redirect_chain`` means one thing: **the absolute destinations a
+           redirect pointed to, in hop order**
+           (:func:`~clinkz.tools.redirect_walk.walk_redirects`). It used to mean
+           two, and this test is why that mattered. The aiohttp arm filled it
+           with the URLs that ANSWERED, so a POST to a form ``action`` answered
+           "302 back to /login?error=1" produced a chain holding the ACTION path
+           — different from the login path, read here as "redirected away,
+           therefore logged in". A rejected credential scored as a session. The
+           curl arm meanwhile filled it with raw ``Location`` values, unresolved,
+           so ``urlparse("index.php").path`` was compared against ``/login.php``.
         3. **An authenticated-page marker** in the body, on a 2xx.
 
         Two rules bound it, and both were written by a live failure:
@@ -1699,7 +1763,8 @@ class WebAuthenticator(ToolBase):
             status_code: HTTP status code of the final response.
             final_url: URL after all redirects.
             login_url: Original login URL.
-            redirect_chain: URLs a redirect actually travelled through.
+            redirect_chain: Absolute destinations a redirect actually pointed
+                to, in hop order. Empty when nothing redirected.
             session_cookies: Cookies the exchange set, if any.
 
         Returns:
@@ -1879,7 +1944,7 @@ class WebAuthenticator(ToolBase):
         status: int,
         headers: dict[str, str] | None,
         current_url: str,
-    ) -> _RedirectHop:
+    ) -> RedirectHop:
         """Decide the next hop of a credential exchange — scope-checked, deliberately.
 
         ``_resolve_post_url`` scope-checks where the credentials are FIRST sent,
@@ -1891,13 +1956,10 @@ class WebAuthenticator(ToolBase):
         POSTs dispatched with redirect-following on, so the transport did that
         move itself, silently, before any of this code ran.
 
-        The redirect is therefore observed rather than followed. The 3xx comes
-        back, its ``Location`` is resolved against the URL that answered, the
-        result is scope-checked, and only then is a NEW request dispatched to it
-        deliberately. A destination outside scope is refused — never dropped
-        quietly, because a credential POST that vanished into a redirect and a
-        credential POST the application rejected are the same thing to every
-        reader downstream.
+        The rule itself is :func:`~clinkz.tools.redirect_walk.classify_redirect`,
+        shared with every other exchange that must not follow blindly. This
+        method is the seam that binds it to THIS tool's scope gate, so a refusal
+        reaches the run's scope-refusal record attributed to the authenticator.
 
         Args:
             status: The status of the response in hand.
@@ -1906,38 +1968,9 @@ class WebAuthenticator(ToolBase):
                 relative ``Location`` resolves against.
 
         Returns:
-            The hop to take. See :class:`_RedirectHop`.
+            The hop to take. See :class:`~clinkz.tools.redirect_walk.RedirectHop`.
         """
-        if status not in _REDIRECT_STATUSES:
-            return _RedirectHop("stop", "", "")
-
-        location = ""
-        for key, value in (headers or {}).items():
-            if key.lower() == "location":
-                location = (value or "").strip()
-                break
-        if not location:
-            # A 3xx with nothing to redirect TO. The response in hand is all
-            # there is, and reading it as a redirect would invent a chain.
-            return _RedirectHop("stop", "", "")
-
-        destination = urljoin(current_url, location)
-        try:
-            self._check_scope(destination)
-        except ValueError:
-            return _RedirectHop(
-                "refuse",
-                destination,
-                (
-                    f"answered {status} redirecting to {destination}, which is outside "
-                    "the engagement scope — the redirect was NOT followed, so no "
-                    "credential was offered to that host"
-                ),
-            )
-
-        if status in _BODY_PRESERVING_REDIRECTS:
-            return _RedirectHop("resend", destination, "")
-        return _RedirectHop("get", destination, "")
+        return classify_redirect(status, headers, current_url, in_scope=self._check_scope)
 
     def _refused_redirect_result(
         self,
@@ -1947,27 +1980,34 @@ class WebAuthenticator(ToolBase):
         post_url: str,
         status: int,
         final_url: str,
-        refusal: _RedirectHop,
+        refusal: RedirectHop,
         session_cookies: dict[str, str],
     ) -> str:
-        """The ``execute()`` envelope for a credential POST redirected off-scope.
+        """The ``execute()`` envelope for a request redirected off-scope.
 
         It ABORTS the attempt and says so. The distinction the message has to
-        keep is the one invariant 88 is about: the credential POST **was**
-        dispatched — to ``post_url``, an in-scope URL the target's own form
-        chose — and it is only the redirect that was refused. Saying "no
-        credential was offered" would be false about the first request and
-        saying "the login failed" would be false about the second, so it says
+        keep is the one invariant 88 is about: when a credential POST was
+        dispatched, it **was** dispatched — to ``post_url``, an in-scope URL the
+        target's own form chose — and it is only the redirect that was refused.
+        Saying "no credential was offered" would be false about the first request
+        and saying "the login failed" would be false about the second, so it says
         exactly which request went where.
+
+        ``post_url`` empty is the other case, and it is a different sentence: the
+        refusal came from the login-page GET, before any credential body existed,
+        so nothing of ours was offered to anything. Reporting that as a refused
+        credential POST would assert a dispatch that never happened.
 
         ``scope_refusal`` makes it terminal upstream: ``authenticate()`` stops
         instead of running the next arm, which would offer the same credentials
         to the same target and report whatever that arm found instead.
         """
+        requested = post_url or final_url or login_url
+        what = f"the credential POST to {post_url}" if post_url else f"GET {requested}"
         self._logger.error(
-            "SCOPE REFUSAL: the credential POST to %s was answered %d redirecting to %s, "
-            "outside the engagement scope. Not following it.",
-            post_url,
+            "SCOPE REFUSAL: %s was answered %d redirecting to %s, outside the "
+            "engagement scope. Not following it.",
+            what,
             status,
             refusal.url,
         )
@@ -1982,49 +2022,50 @@ class WebAuthenticator(ToolBase):
                 "posted_to": post_url,
                 "scope_refusal": refusal.url,
                 "error": (
-                    f"credential POST to {post_url} redirected to {refusal.url}, "
-                    "which is outside the engagement scope"
+                    f"{what} redirected to {refusal.url}, which is outside the engagement scope"
                 ),
-                "failure_stage": f"the credential POST to {post_url} {refusal.reason}",
+                "failure_stage": f"{what} {refusal.reason}",
             }
         )
 
     @staticmethod
     def _parse_curl_exchange(
         raw_response: str,
-    ) -> tuple[int, str, dict[str, str], list[str]]:
-        """Split one ``curl -D - -L`` dump into its final status, body, headers, chain.
+    ) -> tuple[int, str, dict[str, str]]:
+        """Split one curl dump into the status, body and headers that ANSWERED.
 
         Curl with ``-D -`` writes every response's headers to stdout ahead of
-        the body, so a followed redirect leaves several ``HTTP/x.y NNN`` blocks
-        concatenated. The LAST block is the response that actually answered;
-        the ``Location`` headers across all of them are the chain that got
-        there.
+        the body, so a dump can hold several ``HTTP/x.y NNN`` blocks
+        concatenated — a fixture captured under ``-L``, or the per-hop dumps this
+        authenticator joins. The LAST block is the response that actually
+        answered.
 
-        The headers matter as much as the status now: a 415 states the media
-        type it wanted in ``Accept-Post``, and reading it out of the right
-        block is what makes :meth:`_negotiated_content_type` an observation
-        rather than a guess.
+        The headers matter as much as the status: a 415 states the media type it
+        wanted in ``Accept-Post``, and reading it out of the right block is what
+        makes :meth:`_negotiated_content_type` an observation rather than a
+        guess.
+
+        This deliberately does NOT return a redirect chain. It used to hand back
+        every ``Location`` header in the dump, raw and unresolved, and that list
+        was the curl arm's ``redirect_chain`` — a second meaning for a field the
+        aiohttp arm filled with the URLs that ANSWERED. The chain now comes from
+        :func:`~clinkz.tools.redirect_walk.walk_redirects`, which is the only
+        thing that knows where a hop was actually dispatched.
 
         Args:
             raw_response: Curl's stdout — headers and body, possibly several
                 blocks.
 
         Returns:
-            ``(status, body, headers_of_the_final_block, location_chain)``.
+            ``(status, body, headers)`` of the final block.
         """
-        locations = [
-            m.strip()
-            for m in re.findall(r"^Location:\s*(.+)$", raw_response, re.IGNORECASE | re.MULTILINE)
-        ]
-
         blocks = [
             b
             for b in re.split(r"(?=^HTTP/[\d.]+ \d+)", raw_response, flags=re.MULTILINE)
             if b.strip()
         ]
         if not blocks:
-            return 0, "", {}, locations
+            return 0, "", {}
 
         last_block = blocks[-1]
         parts = re.split(r"\r?\n\r?\n", last_block, maxsplit=1)
@@ -2043,7 +2084,7 @@ class WebAuthenticator(ToolBase):
             name, _, value = line.partition(":")
             headers[name.strip()] = value.strip()
 
-        return status, body, headers, locations
+        return status, body, headers
 
     @staticmethod
     def _parse_set_cookies(raw_response: str) -> dict[str, str]:

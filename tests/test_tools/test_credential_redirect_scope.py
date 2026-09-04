@@ -27,17 +27,14 @@ import socketserver
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 import pytest
 
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
-from clinkz.tools.auth import (
-    CredentialRedirectRefusedError,
-    WebAuthenticator,
-    _RedirectHop,
-)
+from clinkz.tools.auth import CredentialRedirectRefusedError, WebAuthenticator
+from clinkz.tools.redirect_walk import RedirectHop
 
 #: The engagement's target. In scope.
 _APP_HOST = "127.0.0.1"
@@ -56,6 +53,16 @@ _LOGIN_HTML = (
 )
 
 
+class _Seen(NamedTuple):
+    """One request a fixture server received, and what it was carrying."""
+
+    method: str
+    path: str
+    body: str
+    cookie: str
+    authorization: str
+
+
 class _Collector(BaseHTTPRequestHandler):
     """The out-of-scope host. Records everything, and must record nothing.
 
@@ -69,7 +76,19 @@ class _Collector(BaseHTTPRequestHandler):
     def _record(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
-        self.server.received.append((self.command, self.path, body))  # type: ignore[attr-defined]
+        # Session material is recorded alongside the body because it is the
+        # second thing a followed redirect hands over. A bodyless GET carries no
+        # credential and still carries the jar, and a cookie sent to a host the
+        # operator never authorised is a session handed over.
+        self.server.received.append(  # type: ignore[attr-defined]
+            _Seen(
+                self.command,
+                self.path,
+                body,
+                self.headers.get("Cookie", ""),
+                self.headers.get("Authorization", ""),
+            )
+        )
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", "2")
@@ -103,7 +122,9 @@ def _app_handler(collector_url: str, status: int) -> type[BaseHTTPRequestHandler
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
-            self.server.received.append((self.command, self.path, body))  # type: ignore[attr-defined]
+            self.server.received.append(  # type: ignore[attr-defined]
+                _Seen(self.command, self.path, body, self.headers.get("Cookie", ""), "")
+            )
             self.send_response(status)
             self.send_header("Location", collector_url)
             self.send_header("Content-Length", "0")
@@ -188,9 +209,9 @@ def test_the_collector_records_a_credential_handed_to_it(
         assert resp.status == 200
 
     assert len(collector.received) == 1  # type: ignore[attr-defined]
-    method, path, seen = collector.received[0]  # type: ignore[attr-defined]
-    assert (method, path) == ("POST", "/collect")
-    assert _PASSWORD in seen, "the collector can see a credential body"
+    seen = collector.received[0]  # type: ignore[attr-defined]
+    assert (seen.method, seen.path) == ("POST", "/collect")
+    assert _PASSWORD in seen.body, "the collector can see a credential body"
 
 
 def test_the_collector_is_out_of_scope_and_the_app_is_in_it(
@@ -232,9 +253,9 @@ async def test_a_body_preserving_redirect_off_scope_sends_no_credential(
 
     # The credentials DID reach the app's own action — that request was in
     # scope and is not what this refuses.
-    posted = [r for r in app.received if r[0] == "POST"]  # type: ignore[attr-defined]
+    posted = [r for r in app.received if r.method == "POST"]  # type: ignore[attr-defined]
     assert posted, "the credential POST to the in-scope action still happens"
-    assert _PASSWORD in posted[0][2]
+    assert _PASSWORD in posted[0].body
 
     assert not result.success
     assert result.scope_refusal == _url(collector, "/collect")
@@ -263,8 +284,10 @@ async def test_the_refusal_is_terminal_and_never_a_silent_drop(
         app.shutdown()
         app.server_close()
 
-    posted = [r for r in app.received if r[0] == "POST"]  # type: ignore[attr-defined]
-    assert len(posted) == 1, f"one credential POST, then the attempt ends: {[p[1] for p in posted]}"
+    posted = [r for r in app.received if r.method == "POST"]  # type: ignore[attr-defined]
+    assert len(posted) == 1, (
+        f"one credential POST, then the attempt ends: {[p.path for p in posted]}"
+    )
     assert result.scope_refusal
     assert "no API login route" not in result.error
 
@@ -292,9 +315,9 @@ async def test_an_in_scope_redirect_is_still_followed(
 
     assert not result.scope_refusal
     assert landing.received, "an in-scope 307 destination still receives the POST"  # type: ignore[attr-defined]
-    method, path, body = landing.received[0]  # type: ignore[attr-defined]
-    assert (method, path) == ("POST", "/collect")
-    assert _PASSWORD in body, "307 preserves the body, and we preserve it too"
+    seen = landing.received[0]  # type: ignore[attr-defined]
+    assert (seen.method, seen.path) == ("POST", "/collect")
+    assert _PASSWORD in seen.body, "307 preserves the body, and we preserve it too"
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +457,7 @@ class TestTheJsonArmRefusesTheSameWay:
             app.server_close()
 
         assert collector.received == []  # type: ignore[attr-defined]
-        posted = [r for r in app.received if r[0] == "POST"]  # type: ignore[attr-defined]
+        posted = [r for r in app.received if r.method == "POST"]  # type: ignore[attr-defined]
         assert len(posted) == 1, f"the walk continued past the refusal: {posted}"
         assert not result.success
         assert result.scope_refusal == _url(collector, "/collect")
@@ -450,7 +473,9 @@ def _json_app_handler(collector_url: str) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
-            self.server.received.append((self.command, self.path, body))  # type: ignore[attr-defined]
+            self.server.received.append(  # type: ignore[attr-defined]
+                _Seen(self.command, self.path, body, self.headers.get("Cookie", ""), "")
+            )
             self.send_response(307)
             self.send_header("Location", collector_url)
             self.send_header("Content-Length", "0")
@@ -489,7 +514,7 @@ class TestTheHopClassifier:
         hop = self._auth()._classify_credential_redirect(
             302, {"Content-Length": "0"}, "http://app.example.com/session"
         )
-        assert hop == _RedirectHop("stop", "", "")
+        assert hop == RedirectHop("stop", "", "")
 
     @pytest.mark.parametrize("status", [307, 308])
     def test_a_body_preserving_redirect_in_scope_resends(self, status: int) -> None:
@@ -546,3 +571,403 @@ def test_the_refusal_is_recorded_in_the_scope_refusal_log() -> None:
 
     assert [r.target for r in record.refusals()] == ["https://attacker.tld/collect"]
     assert json.dumps(record.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# The session-bearing hops. No credential body, and still not free to leave.
+# ---------------------------------------------------------------------------
+
+_SESSION_COOKIE = "portal_session=7f1c3a9b2e4d"
+
+
+def _login_get_redirect_handler(
+    destination: str, status: int = 302
+) -> type[BaseHTTPRequestHandler]:
+    """A login page that sets a cookie and redirects the GET to *destination*."""
+
+    class _App(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_GET(self) -> None:
+            self.server.received.append(  # type: ignore[attr-defined]
+                _Seen("GET", self.path, "", self.headers.get("Cookie", ""), "")
+            )
+            self.send_response(status)
+            self.send_header("Set-Cookie", f"{_SESSION_COOKIE}; Path=/")
+            self.send_header("Location", destination)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A002 — stdlib signature
+            return
+
+    return _App
+
+
+def test_the_collector_records_session_material_handed_to_it(
+    collector: ThreadingHTTPServer,
+) -> None:
+    """The positive control for the jar half.
+
+    "The collector received nothing" is only evidence if the collector would
+    have recorded a cookie had one arrived. This is the same seeded-leak
+    discipline the credential half already uses, applied to the other thing a
+    followed redirect hands over.
+    """
+    import urllib.request
+
+    request = urllib.request.Request(  # noqa: S310 — loopback, literal scheme
+        _url(collector, "/collect"),
+        headers={"Cookie": _SESSION_COOKIE, "Authorization": "Bearer tok-9931"},
+    )
+    with urllib.request.urlopen(request, timeout=5) as resp:  # noqa: S310
+        assert resp.status == 200
+
+    seen = collector.received[0]  # type: ignore[attr-defined]
+    assert seen.cookie == _SESSION_COOKIE, "the collector can see a session cookie"
+    assert seen.authorization == "Bearer tok-9931"
+
+
+class TestTheLoginPageGetIsWalkedToo:
+    """The GET that starts every form arm follows redirects, and carried no rule.
+
+    It is dispatched before any credential exists, so nothing of ours can be in
+    its body. What it carries is the cookie jar and the engagement's willingness
+    to make a request, and it is where the form — the field names, the hidden
+    CSRF token, the ``action`` the credentials are then POSTed to — is read
+    from. aiohttp followed it by default and curl did not, so the two execution
+    modes disagreed about a login page behind a redirect: authenticated on the
+    host, failed in the container.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_off_scope_login_page_redirect_sends_nothing(
+        self, collector: ThreadingHTTPServer, scope: EngagementScope
+    ) -> None:
+        app = _serve(_login_get_redirect_handler(_url(collector, "/collect")), _APP_HOST)
+        try:
+            result = await WebAuthenticator(scope=scope).authenticate(
+                _url(app, "/login"), _USERNAME, _PASSWORD
+            )
+        finally:
+            app.shutdown()
+            app.server_close()
+
+        assert collector.received == [], (  # type: ignore[attr-defined]
+            "the login-page GET followed a redirect off-scope"
+        )
+        assert result.scope_refusal == _url(collector, "/collect")
+        assert not result.success
+        # No credential POST was dispatched at all, and the message may not
+        # claim one was: three auth failures wore one message once already.
+        assert result.posted_to == ""
+        assert "credential POST" not in result.failure_stage
+        assert "outside the engagement scope" in result.failure_stage
+
+    @pytest.mark.asyncio
+    async def test_an_in_scope_login_page_redirect_is_followed_and_reads_the_form_there(
+        self, scope: EngagementScope
+    ) -> None:
+        """The guard refuses a destination, not the mechanism — and the base moves.
+
+        A relative form ``action`` resolves against the URL that SERVED the
+        form, which is the redirect's destination and not the URL we asked for.
+        Resolving against the URL we asked for POSTs the credentials at a path
+        the application does not have.
+        """
+        app = _serve(_RelocatedLogin, _APP_HOST)
+        try:
+            result = await WebAuthenticator(scope=scope).authenticate(
+                _url(app, "/login"), _USERNAME, _PASSWORD
+            )
+        finally:
+            app.shutdown()
+            app.server_close()
+
+        posted = [r for r in app.received if r.method == "POST"]  # type: ignore[attr-defined]
+        assert [p.path for p in posted] == ["/app/session"], (
+            "the relative action resolved against the URL we asked for, not the "
+            f"one that served the form: {[p.path for p in posted]}"
+        )
+        assert _PASSWORD in posted[0].body
+        assert result.posted_to == _url(app, "/app/session")
+
+
+class _RelocatedLogin(BaseHTTPRequestHandler):
+    """``/login`` redirects into ``/app/portal``, whose form action is relative."""
+
+    protocol_version = "HTTP/1.0"
+
+    _FORM = (
+        '<!doctype html><html><body><form method=post action="session">'
+        "<input type=text name=account><input type=password name=password>"
+        "</form></body></html>"
+    )
+
+    def do_GET(self) -> None:  # noqa: N802 — stdlib dispatch name
+        self.server.received.append(  # type: ignore[attr-defined]
+            _Seen("GET", self.path, "", self.headers.get("Cookie", ""), "")
+        )
+        if self.path == "/login":
+            self.send_response(302)
+            self.send_header("Location", "/app/portal")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = self._FORM.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:  # noqa: N802 — stdlib dispatch name
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+        self.server.received.append(  # type: ignore[attr-defined]
+            _Seen("POST", self.path, body, self.headers.get("Cookie", ""), "")
+        )
+        self.send_response(200)
+        self.send_header("Set-Cookie", f"{_SESSION_COOKIE}; Path=/")
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A002 — stdlib signature
+        return
+
+
+class TestTheAuthProbeRefusesTheSameWay:
+    """``_ToolHttpProbe`` handed ``follow_redirects`` straight to the transport.
+
+    Two probes use it — the login-candidate walk in ``detect_auth_mechanism``
+    and the destination read behind an established boundary — and both are
+    reached with a target-supplied URL. ``validate_input`` scope-checks the URL
+    it is given and nothing checks the ``Location`` that URL answers with, so
+    ``-L`` / ``allow_redirects`` sent the engagement wherever a target named.
+    """
+
+    @staticmethod
+    def _probe(scope: EngagementScope) -> Any:
+        from clinkz.orchestrator.orchestrator import _ToolHttpProbe
+
+        return _ToolHttpProbe(scope, "")
+
+    @pytest.mark.asyncio
+    async def test_a_session_bearing_probe_does_not_leave_for_an_off_scope_host(
+        self, collector: ThreadingHTTPServer, scope: EngagementScope
+    ) -> None:
+        app = _serve(_login_get_redirect_handler(_url(collector, "/collect")), _APP_HOST)
+        try:
+            response = await self._probe(scope).get(
+                _url(app, "/portal"),
+                cookies={"portal_session": "7f1c3a9b2e4d"},
+                follow_redirects=True,
+            )
+        finally:
+            app.shutdown()
+            app.server_close()
+
+        assert collector.received == [], (  # type: ignore[attr-defined]
+            "the engagement's session cookie left for an out-of-scope host"
+        )
+        assert response.status == 302, "the 3xx itself is still the answer in hand"
+        assert "outside the engagement scope" in response.error
+
+    @pytest.mark.asyncio
+    async def test_an_in_scope_redirect_is_still_walked(self, scope: EngagementScope) -> None:
+        """The refusal is about the destination; an in-scope hop still happens."""
+        landing = _serve(_Collector, _APP_HOST)
+        app = _serve(_login_get_redirect_handler(_url(landing, "/dashboard")), _APP_HOST)
+        try:
+            response = await self._probe(scope).get(_url(app, "/portal"), follow_redirects=True)
+        finally:
+            app.shutdown()
+            app.server_close()
+            landing.shutdown()
+            landing.server_close()
+
+        assert [r.path for r in landing.received] == ["/dashboard"]  # type: ignore[attr-defined]
+        assert response.status == 200
+        assert not response.error
+
+
+# ---------------------------------------------------------------------------
+# redirect_chain means one thing
+# ---------------------------------------------------------------------------
+
+
+class _RejectingLogin(BaseHTTPRequestHandler):
+    """A login that REJECTS, in the shape that scored as a success.
+
+    The form's ``action`` is not the login URL, the POST is answered ``302``
+    back to the login page, and no cookie is ever set. Under the aiohttp arm's
+    old ``redirect_chain`` — the URLs that ANSWERED — the chain held the ACTION
+    path, which differs from the login path, which
+    :meth:`WebAuthenticator._check_login_success` reads as "redirected away,
+    therefore logged in".
+    """
+
+    protocol_version = "HTTP/1.0"
+
+    _FORM = (
+        '<!doctype html><html><body><form method=post action="/session">'
+        "<input type=text name=account><input type=password name=password>"
+        "</form></body></html>"
+    )
+
+    def do_GET(self) -> None:  # noqa: N802 — stdlib dispatch name
+        body = self._FORM.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:  # noqa: N802 — stdlib dispatch name
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        self.server.received.append(_Seen("POST", self.path, "", "", ""))  # type: ignore[attr-defined]
+        self.send_response(302)
+        self.send_header("Location", "/portal/gateway?error=1")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A002 — stdlib signature
+        return
+
+
+class TestRedirectChainHasOneMeaning:
+    """One field, one fact: the absolute destinations a redirect pointed to.
+
+    It used to carry two, and which one you got depended on the transport.
+    aiohttp recorded the URLs that ANSWERED (``resp.history``); curl recorded
+    the raw ``Location`` header values, unresolved, so ``urlparse("index.php")``
+    was compared against ``/login.php``. ``_check_login_success`` reads this
+    field to decide whether a login succeeded.
+    """
+
+    @staticmethod
+    def _spy(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+        """Capture the ``redirect_chain`` the success oracle is handed."""
+        captured: list[list[str]] = []
+        original = WebAuthenticator._check_login_success
+
+        def _wrapped(
+            response_body: str,
+            status_code: int,
+            final_url: str,
+            login_url: str,
+            redirect_chain: list[str],
+            session_cookies: dict[str, str] | None = None,
+        ) -> bool:
+            captured.append(list(redirect_chain))
+            return original(
+                response_body,
+                status_code,
+                final_url,
+                login_url,
+                redirect_chain,
+                session_cookies,
+            )
+
+        monkeypatch.setattr(WebAuthenticator, "_check_login_success", staticmethod(_wrapped))
+        return captured
+
+    @staticmethod
+    def _dump(status: int, headers: dict[str, str], body: str = "") -> str:
+        head = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+        return f"HTTP/1.1 {status} X\r\n{head}\r\n{body}"
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_login_that_redirects_back_is_not_a_success(
+        self, scope: EngagementScope, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The false positive, verbatim: no cookie, no token, and a 302 home."""
+        captured = self._spy(monkeypatch)
+        app = _serve(_RejectingLogin, _APP_HOST)
+        try:
+            auth = WebAuthenticator(scope=scope)
+            raw = await auth.execute(
+                auth.validate_input(
+                    {
+                        "login_url": _url(app, "/portal/gateway"),
+                        "username": _USERNAME,
+                        "password": _PASSWORD,
+                    }
+                )
+            )
+            base = _url(app)
+        finally:
+            app.shutdown()
+            app.server_close()
+
+        assert captured[0] == [f"{base}/portal/gateway?error=1"], (
+            "the chain must be where the redirect POINTED, absolute — not the "
+            f"URL that answered it: {captured[0]}"
+        )
+        assert not auth.parse_output(raw).auth_result.success, (
+            "a rejected credential scored as a session"
+        )
+
+    @pytest.mark.asyncio
+    async def test_both_execution_modes_hand_the_oracle_the_same_chain(
+        self, scope: EngagementScope, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A target that authenticates in one mode and not the other is a defect."""
+        from clinkz.config import settings
+
+        captured = self._spy(monkeypatch)
+        app = _serve(_RejectingLogin, _APP_HOST)
+        try:
+            base = _url(app)
+            auth = WebAuthenticator(scope=scope)
+            await auth.execute(
+                auth.validate_input(
+                    {
+                        "login_url": f"{base}/portal/gateway",
+                        "username": _USERNAME,
+                        "password": _PASSWORD,
+                    }
+                )
+            )
+        finally:
+            app.shutdown()
+            app.server_close()
+        local_chain = captured[0]
+
+        # The same target, through the curl arm, serving the same bytes.
+        monkeypatch.setattr(settings, "tool_exec_mode", "docker")
+
+        async def _fake_subprocess(cmd: list[str], **_kw: Any) -> tuple[str, str, int]:
+            url = cmd[-1]
+            if "POST" in cmd:
+                return (
+                    self._dump(302, {"Location": "/portal/gateway?error=1"}),
+                    "",
+                    0,
+                )
+            if url.endswith("?error=1"):
+                return self._dump(200, {"Content-Type": "text/html"}, "denied"), "", 0
+            return (
+                self._dump(200, {"Content-Type": "text/html"}, _RejectingLogin._FORM),
+                "",
+                0,
+            )
+
+        docker_auth = WebAuthenticator(scope=scope)
+        monkeypatch.setattr(docker_auth, "_run_subprocess", _fake_subprocess)
+        await docker_auth.execute(
+            docker_auth.validate_input(
+                {
+                    "login_url": f"{base}/portal/gateway",
+                    "username": _USERNAME,
+                    "password": _PASSWORD,
+                }
+            )
+        )
+        docker_chain = captured[-1]
+
+        assert local_chain == docker_chain == [f"{base}/portal/gateway?error=1"], (
+            f"the two modes disagree about the chain: {local_chain} vs {docker_chain}"
+        )

@@ -607,6 +607,21 @@ detail when you are about to change the code an invariant governs — not by def
     (`AuthResult.scope_refusal`, TERMINAL across both arms) — a credential POST
     that vanished into a redirect and one the application rejected read
     identically downstream.
+90. **One hop-walking primitive, and `redirect_chain` means ONE thing**
+    (`tools/redirect_walk.py`). Three classifiers that must agree is two
+    chances to drift. Every auth exchange walks it — both form arms, the JSON
+    arm, the login-page GET, and the auth probe's redirect-following GET — and
+    the ones carrying no credential are bound too, because a request to a host
+    nothing authorised is outside scope whatever it carries. The chain is the
+    absolute DESTINATIONS in hop order, never the URLs that answered and never
+    a raw `Location` value; the body decays one way, so a 302 followed by a 307
+    never re-acquires the credentials.
+91. **A branch whose producer has not run is not coverage, it is a hiding
+    place.** `_find_login_url` read five sources that had never produced —
+    including the `scan_result` its own tests fed it — in the method whose whole
+    history is a name filter that hid a login page. Delete it or move the call;
+    the phase order is NOT the thing to change, because scan consumes the
+    session auth establishes.
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
