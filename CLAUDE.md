@@ -144,11 +144,22 @@ The hard rules:
 - **The credential the client gave us goes first** — the default-credential sweep
   is `not credentials.authenticating` and nothing else; there is deliberately no
   "…or the supplied credential failed" branch.
-- **A login URL is proven by response SHAPE, never by a status code.** Nothing
+- **A login URL is proven by response SHAPE, never by a status code and never by
+  a path NAME.** Names order the shape probing; they never gate it. Nothing
   proven ⇒ `None`, never the root URL.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`) —
   only a boundary discriminator is accepted; a body-length delta is refused.
   Credentials supplied + assertion failed ⇒ the engagement aborts loudly.
+- **A login succeeds on POSITIVE evidence only** — session material, or a
+  redirect that ACTUALLY occurred (`redirect_chain` non-empty). A 4xx is never
+  success; a different final path is not a redirect; a success carrying no
+  session material is refused at the seam that claimed it. **A 415 is USED**: the
+  response names the encoding, and the same credentials are re-POSTed to the same
+  action under it (`ENCODABLE_CONTENT_TYPES`; prose is never parsed).
+- **The operator's declarations OVERRIDE discovery, never seed it** —
+  `login_url` / `login_api_url` / `login_field` / `login_content_type` /
+  `assert_url` on `RoleCredential`. A declaration that is discarded is worse than
+  no declaration, because the operator believes the engine knows.
 - **Only a session-bearing response is evidence about the session**; the raised
   flag is a hypothesis and `assert_authenticated` is the oracle.
 - **The rails are absent by default** — `get_active_governor()` is `None` unless

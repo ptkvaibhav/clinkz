@@ -136,6 +136,15 @@ This brings up:
 - `clinkz-tools` — the sandboxed tool container (nmap, nuclei, ffuf, sqlmap, ...)
 - `clinkz-dvwa` on `http://localhost:8080`
 - `clinkz-juiceshop` on `http://localhost:3000`
+- `clinkz-meridian` on `http://localhost:8090` — the **third authentication
+  shape** (JSON login at a non-obvious path, identity field `account`, a session
+  cookie on a JSON response, protected routes that deny anonymously with 302 to
+  the login page). Not intentionally vulnerable: it exercises the authentication
+  path, which DVWA's form+cookie and Juice Shop's JSON+bearer between them
+  cannot express. `MERIDIAN_LOGIN_PATH` moves its login page, so the same
+  application can be served at `/portal/gateway` and at `/login` — which is how
+  you tell an oracle that reads the SHAPE of a redirect from one that reads the
+  SPELLING of its destination
 
 ### Running a Scan
 
@@ -461,7 +470,8 @@ clinkz/
 ├── tests/               # Unit, agent, comms, credentials, engagement, knowledge, llm,
 │                        # models, orchestrator, safety, integration, skills_dvwa,
 │                        # skills_juiceshop
-├── docker/              # Dockerfile.tools + Dockerfile.dvwa + docker-compose.yml
+├── docker/              # Dockerfile.tools + Dockerfile.dvwa + meridian/ (the third
+│                        #   auth-shape target) + docker-compose.yml
 └── docs/                # architecture, adding-tools, playbooks, analysis/*
 ```
 

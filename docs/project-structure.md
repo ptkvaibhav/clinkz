@@ -95,7 +95,10 @@ src/clinkz/
 │                     #   factory, fallback, providers, spend,
 │                     #   {anthropic,gemini,openai,ollama}_client
 ├── tools/            # ToolBase (discovery + fingerprint contracts), resolver, mcp_client,
-│                     #   auth, http_client, component_names (one name/version split rule),
+│                     #   auth, http_client, redirect_walk (the ONE hop walker — observe
+│                     #   the 3xx, resolve against what ANSWERED, scope-check, re-POST or
+│                     #   bodyless GET by status; the chain is the DESTINATIONS),
+│                     #   component_names (one name/version split rule),
 │                     #   nmap/ffuf/whatweb/httpx/sqlmap/…
 ├── oob/              # P6: templates (exfil guardrail), collaborator (receive-only)
 ├── browser/          # P7 client-side execution oracle: templates (witness carrier),

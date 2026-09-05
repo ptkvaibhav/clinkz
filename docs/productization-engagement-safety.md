@@ -83,7 +83,10 @@ entry** — `login_url` and `assert_url` included:
       "role": "admin",
       "username": "admin@example.com",
       "password": "...",
-      "login_url": "https://app.example.com/rest/user/login",
+      "login_url": "https://app.example.com/portal/gateway",
+      "login_api_url": "https://app.example.com/portal/v3/session-open",
+      "login_field": "account",
+      "login_content_type": "application/json",
       "assert_url": "https://app.example.com/account",
       "privilege": 10
     },
@@ -99,6 +102,29 @@ express — so it is not on `EngagementScope` beside `EngagementWindow`, and it 
 not an environment variable. `assert_url` names a URL known to behave
 differently authenticated vs anonymous; the assertion tries it first, before its
 conventional-path fallbacks.
+
+**Every declaration OVERRIDES discovery rather than seeding it.** That is the
+whole point of the four login fields, and it is a correction: `_try_api_login`
+used to take the declared `login_url`, keep only its *origin*, and iterate six
+canned routes — so the operator had told us where their login lives and we
+POSTed at six places that were not it. A declaration that is discarded is worse
+than no declaration, because the operator believes the engine knows.
+
+| Field | Declares | Discovery it replaces |
+|---|---|---|
+| `login_url` | The login **page** | Shape-probing the crawl and the conventional paths |
+| `login_api_url` | The JSON login **route**, when it is not the page | Six canned API routes |
+| `login_field` | The identity field name | Reading it from the form, then `email`, then `username` |
+| `login_content_type` | The credential POST's encoding | The form's `enctype`, then a 415 negotiation |
+
+`login_content_type` is validated at model construction against the types the
+authenticator can actually encode: declaring one it cannot produce would be
+silently ignored, which is the failure the field exists to end. `extra="forbid"`
+already catches a misspelled KEY; this catches a misspelled VALUE.
+
+An operator who declares none of them loses nothing — the engine reads the form
+its login page serves, follows the `action`, and renegotiates on a 415. **Detail
+→** [`methodology/authentication-shapes.md`](methodology/authentication-shapes.md).
 
 `privilege` ranks the role in the application's own hierarchy — lower is less
 privileged, and only the relative order is read, so any integers work. The

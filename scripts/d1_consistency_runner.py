@@ -78,6 +78,14 @@ def reset_and_set_level(level: str) -> None:
     cookie from here would pin OUR session and leave the engagement's at the
     container default — so the level switch is a forced recreate, exactly as
     ``docker/docker-compose.yml`` documents.
+
+    Going through compose is also the only thing that pins a level at all. The
+    digininja image defaults to ``impossible`` — the ladder's honesty control
+    group, where every module is patched and a confirm is a phantom by
+    construction — so a container started outside compose runs that at every
+    rung and says nothing about it. Read the level back with
+    ``docker exec clinkz-dvwa sh -c 'echo $DEFAULT_SECURITY_LEVEL'`` before
+    believing a quiet run.
     """
     subprocess.run(
         [

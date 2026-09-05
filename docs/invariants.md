@@ -4,10 +4,13 @@
 > carries the incident that produced it. When the two disagree, CLAUDE.md
 > is the operating instruction and this is the record of why.
 
-The 85 invariants, in their original order, with the forensic detail that
-CLAUDE.md's one-line form drops. Numbering is positional within this file and
-is **not** a stable id — cite an invariant by its rule text, never by its
-number, the same way `.claude/LESSONS.md` ids are historical-not-positional.
+The invariants, in their original order, with the forensic detail that
+CLAUDE.md's one-line form drops. Numbering follows CLAUDE.md's, and an id is
+**historical, not positional** — an invariant keeps its number when others are
+added, so cite one by its rule text where you can, the same way
+`.claude/LESSONS.md` ids are historical-not-positional. A few invariants carry
+their forensic detail in a dedicated `docs/methodology/` file instead of a
+section here, and say so in CLAUDE.md: 86 (SCA catalogue breadth) is one.
 
 ## Architecture, comms, and tool discovery
 
