@@ -144,11 +144,22 @@ The hard rules:
 - **The credential the client gave us goes first** — the default-credential sweep
   is `not credentials.authenticating` and nothing else; there is deliberately no
   "…or the supplied credential failed" branch.
-- **A login URL is proven by response SHAPE, never by a status code.** Nothing
+- **A login URL is proven by response SHAPE, never by a status code and never by
+  a path NAME.** Names order the shape probing; they never gate it. Nothing
   proven ⇒ `None`, never the root URL.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`) —
   only a boundary discriminator is accepted; a body-length delta is refused.
   Credentials supplied + assertion failed ⇒ the engagement aborts loudly.
+- **A login succeeds on POSITIVE evidence only** — session material, or a
+  redirect that ACTUALLY occurred (`redirect_chain` non-empty). A 4xx is never
+  success; a different final path is not a redirect; a success carrying no
+  session material is refused at the seam that claimed it. **A 415 is USED**: the
+  response names the encoding, and the same credentials are re-POSTed to the same
+  action under it (`ENCODABLE_CONTENT_TYPES`; prose is never parsed).
+- **The operator's declarations OVERRIDE discovery, never seed it** —
+  `login_url` / `login_api_url` / `login_field` / `login_content_type` /
+  `assert_url` on `RoleCredential`. A declaration that is discarded is worse than
+  no declaration, because the operator believes the engine knows.
 - **Only a session-bearing response is evidence about the session**; the raised
   flag is a hypothesis and `assert_authenticated` is the oracle.
 - **The rails are absent by default** — `get_active_governor()` is `None` unless
@@ -567,6 +578,50 @@ detail when you are about to change the code an invariant governs — not by def
     unobservable-config-dependent, indistinguishable info leak) is PERMANENTLY
     lead-only and the deliverable states that as a product property. **Detail →
     [`docs/methodology/sca-catalogue-breadth.md`](docs/methodology/sca-catalogue-breadth.md).**
+87. **A redirect boundary is gated by the REDIRECT, never by the spelling of its
+    destination.** Anonymous 3xx + authenticated 2xx on the same URL IS the
+    boundary — the two requests differ in exactly one thing. The destination's
+    name, a password input served there, and a return parameter whose VALUE names
+    the path we asked for are corroboration: recorded, never required. The same
+    rule binds login DISCOVERY — names order the shape probing, they do not gate
+    it. Pinned by serving ONE application at two paths and asserting the SAME
+    verdict; `established` alone is not enough, because a name oracle can reach
+    the right answer by a weaker arm. **Detail →
+    [`docs/methodology/authentication-shapes.md`](docs/methodology/authentication-shapes.md).**
+88. **An error may not assert a negative about a comparison that was never
+    made.** Three auth failures wore one message — nothing dispatched,
+    dispatched and refused, and the assertion ran and found nothing. Only the
+    third may say no URL behaved differently, and only it lists the URLs with
+    both statuses; the second names the URL we actually POSTed to
+    (`AuthResult.posted_to`), which is not the login URL whenever a form `action`
+    pointed elsewhere. The remedies are filtered the same way.
+89. **A credential POST goes where SCOPE allows, and a redirect is a second
+    choice nobody checked.** `-L`/`allow_redirects` let the transport pick the
+    destination, and a **307 preserves the method and body** — so shaping one
+    response, a weaker position than controlling the form's HTML, moved the
+    plaintext credentials off-scope. The 3xx is OBSERVED: `Location` resolved,
+    scope-checked, then dispatched to as a NEW request
+    (`tools/auth.py::_classify_credential_redirect`). Every status is checked,
+    not just the body-preserving pair, because a 302's GET carries the cookie
+    jar. An out-of-scope destination ABORTS and says so
+    (`AuthResult.scope_refusal`, TERMINAL across both arms) — a credential POST
+    that vanished into a redirect and one the application rejected read
+    identically downstream.
+90. **One hop-walking primitive, and `redirect_chain` means ONE thing**
+    (`tools/redirect_walk.py`). Three classifiers that must agree is two
+    chances to drift. Every auth exchange walks it — both form arms, the JSON
+    arm, the login-page GET, and the auth probe's redirect-following GET — and
+    the ones carrying no credential are bound too, because a request to a host
+    nothing authorised is outside scope whatever it carries. The chain is the
+    absolute DESTINATIONS in hop order, never the URLs that answered and never
+    a raw `Location` value; the body decays one way, so a 302 followed by a 307
+    never re-acquires the credentials.
+91. **A branch whose producer has not run is not coverage, it is a hiding
+    place.** `_find_login_url` read five sources that had never produced —
+    including the `scan_result` its own tests fed it — in the method whose whole
+    history is a name filter that hid a login page. Delete it or move the call;
+    the phase order is NOT the thing to change, because scan consumes the
+    session auth establishes.
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

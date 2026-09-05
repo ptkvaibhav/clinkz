@@ -10,7 +10,9 @@ import pytest
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.tools.auth import (
     AuthOutput,
+    AuthResult,
     WebAuthenticator,
+    _EncodingOrder,
     _parse_form_fields,
 )
 
@@ -396,12 +398,22 @@ class TestJsonApiAuth:
     """``authenticate()`` falls back to JSON/API auth when the form flow fails."""
 
     @pytest.fixture()
-    def auth(self) -> WebAuthenticator:
+    def auth(self, monkeypatch: pytest.MonkeyPatch) -> WebAuthenticator:
         scope = EngagementScope(
             name="test",
             targets=[ScopeEntry(type=ScopeType.DOMAIN, value="localhost")],
         )
-        return WebAuthenticator(scope=scope, engagement_id="test-engagement")
+        authenticator = WebAuthenticator(scope=scope, engagement_id="test-engagement")
+
+        # The encoding-order probe reads the login page over HTTP, and there is
+        # no server here. Stub it to the verdict a target with nothing
+        # observable about it produces — form first, which is the order every
+        # assertion below was written against.
+        async def form_first(login_url: str, **_kw: Any) -> _EncodingOrder:
+            return _EncodingOrder(("form", "json"), "stubbed for the unit test")
+
+        monkeypatch.setattr(authenticator, "_encoding_order", form_first)
+        return authenticator
 
     @staticmethod
     def _form_failure(args: dict[str, Any]) -> str:
@@ -426,11 +438,13 @@ class TestJsonApiAuth:
 
         calls: list[tuple[str, dict[str, str]]] = []
 
-        async def fake_api_post(url: str, payload: dict[str, str]) -> tuple[int, str]:
+        async def fake_api_post(
+            url: str, payload: dict[str, str]
+        ) -> tuple[int, str, dict[str, str]]:
             calls.append((url, payload))
             if url.endswith("/rest/user/login"):
-                return 200, json.dumps({"authentication": {"token": "JWT-OK"}})
-            return 404, ""
+                return 200, json.dumps({"authentication": {"token": "JWT-OK"}}), {}
+            return 404, "", {}
 
         monkeypatch.setattr(auth, "execute", fake_execute)
         monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
@@ -464,9 +478,11 @@ class TestJsonApiAuth:
 
         api_called = {"v": False}
 
-        async def fake_api_post(url: str, payload: dict[str, str]) -> tuple[int, str]:
+        async def fake_api_post(
+            url: str, payload: dict[str, str]
+        ) -> tuple[int, str, dict[str, str]]:
             api_called["v"] = True
-            return 200, json.dumps({"token": "should-not-be-used"})
+            return 200, json.dumps({"token": "should-not-be-used"}), {}
 
         monkeypatch.setattr(auth, "execute", fake_execute)
         monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
@@ -485,11 +501,13 @@ class TestJsonApiAuth:
         """A non-email identifier also gets a username-keyed body shape."""
         seen: list[dict[str, str]] = []
 
-        async def fake_api_post(url: str, payload: dict[str, str]) -> tuple[int, str]:
+        async def fake_api_post(
+            url: str, payload: dict[str, str]
+        ) -> tuple[int, str, dict[str, str]]:
             seen.append(payload)
             if "username" in payload:
-                return 200, json.dumps({"token": "T"})
-            return 401, ""
+                return 200, json.dumps({"token": "T"}), {}
+            return 401, "", {}
 
         monkeypatch.setattr(auth, "execute", self._form_failure_async())
         monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
@@ -509,8 +527,10 @@ class TestJsonApiAuth:
         async def fake_execute(args: dict[str, Any]) -> str:
             return self._form_failure(args)
 
-        async def fake_api_post(url: str, payload: dict[str, str]) -> tuple[int, str]:
-            return 404, ""
+        async def fake_api_post(
+            url: str, payload: dict[str, str]
+        ) -> tuple[int, str, dict[str, str]]:
+            return 404, "", {}
 
         monkeypatch.setattr(auth, "execute", fake_execute)
         monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
@@ -525,3 +545,166 @@ class TestJsonApiAuth:
             return self._form_failure(args)
 
         return _inner
+
+
+# ---------------------------------------------------------------------------
+# A 415 is not a success, and a success carries a session
+# ---------------------------------------------------------------------------
+
+
+class TestSuccessRequiresPositiveEvidence:
+    """The defect that made a **415** a proven session.
+
+    ``_check_login_success`` returned True because ``final_url`` differed from
+    ``login_url``: a form whose ``action`` points at another path satisfies
+    "redirected away → success" with no redirect having occurred at all. The
+    server had answered 415 — the clearest possible statement that it accepted
+    nothing — and the engine recorded an authenticated session, then handed
+    ``cookies={}`` to an assertion three layers away.
+    """
+
+    def test_415_at_a_different_path_is_not_success(self) -> None:
+        """The defect verbatim, with Meridian's own URLs."""
+        assert not WebAuthenticator._check_login_success(
+            response_body=json.dumps(
+                {"status": "error", "expects": {"content_type": "application/json"}}
+            ),
+            status_code=415,
+            final_url="http://target/portal/v3/session-open",
+            login_url="http://target/portal/gateway",
+            redirect_chain=[],
+            session_cookies={},
+        )
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 405, 415, 422, 500, 503])
+    def test_no_4xx_or_5xx_is_ever_success(self, status: int) -> None:
+        """Not even one carrying every success keyword and a cookie."""
+        assert not WebAuthenticator._check_login_success(
+            response_body="<html>Welcome to your dashboard — logout</html>",
+            status_code=status,
+            final_url="http://target/dashboard",
+            login_url="http://target/login",
+            redirect_chain=["http://target/dashboard"],
+            session_cookies={"SESSION": "abc"},
+        )
+
+    def test_a_different_final_path_alone_is_not_a_redirect(self) -> None:
+        """An empty redirect chain means no redirect happened. Nothing else."""
+        assert not WebAuthenticator._check_login_success(
+            response_body="<html>ok</html>",
+            status_code=200,
+            final_url="http://target/somewhere/else",
+            login_url="http://target/login",
+            redirect_chain=[],
+            session_cookies={},
+        )
+
+    def test_a_session_cookie_is_positive_evidence(self) -> None:
+        assert WebAuthenticator._check_login_success(
+            response_body=json.dumps({"status": "ok"}),
+            status_code=200,
+            final_url="http://target/portal/v3/session-open",
+            login_url="http://target/portal/gateway",
+            redirect_chain=[],
+            session_cookies={"meridian_portal": "abc"},
+        )
+
+    def test_a_body_token_is_positive_evidence(self) -> None:
+        assert WebAuthenticator._check_login_success(
+            response_body=json.dumps({"authentication": {"token": "JWT"}}),
+            status_code=200,
+            final_url="http://target/rest/user/login",
+            login_url="http://target/login",
+            redirect_chain=[],
+            session_cookies={},
+        )
+
+    def test_a_real_redirect_away_from_login_is_positive_evidence(self) -> None:
+        """DVWA's shape, unchanged: the chain is non-empty because it redirected."""
+        assert WebAuthenticator._check_login_success(
+            response_body="",
+            status_code=200,
+            final_url="http://target/index.php",
+            login_url="http://target/login.php",
+            redirect_chain=["http://target/index.php"],
+            session_cookies={},
+        )
+
+
+class TestNegotiatingA415:
+    """A 415 states the media type it wanted, and the engine now reads it."""
+
+    def test_the_body_names_the_content_type(self) -> None:
+        assert (
+            WebAuthenticator._negotiated_content_type(
+                415,
+                {},
+                json.dumps({"expects": {"content_type": "application/json"}}),
+            )
+            == "application/json"
+        )
+
+    def test_the_accept_post_header_names_it(self) -> None:
+        assert (
+            WebAuthenticator._negotiated_content_type(
+                415, {"Accept-Post": "application/json; charset=utf-8"}, ""
+            )
+            == "application/json"
+        )
+
+    def test_a_type_we_cannot_encode_is_not_retried(self) -> None:
+        """Reported, not guessed at. We cannot produce it, and say so."""
+        assert (
+            WebAuthenticator._negotiated_content_type(415, {"Accept-Post": "application/xml"}, "")
+            == ""
+        )
+
+    @pytest.mark.parametrize("status", [200, 400, 401, 422, 500])
+    def test_only_a_415_negotiates(self, status: int) -> None:
+        """No other status carries this instruction; reading one into them
+        would be parsing prose the target controls."""
+        assert (
+            WebAuthenticator._negotiated_content_type(
+                status, {"Accept-Post": "application/json"}, ""
+            )
+            == ""
+        )
+
+    def test_prose_is_never_parsed(self) -> None:
+        """A body that merely mentions a type states nothing machine-readable."""
+        assert (
+            WebAuthenticator._negotiated_content_type(
+                415, {}, "please send application/json next time"
+            )
+            == ""
+        )
+
+
+class TestASuccessMustCarryASession:
+    """A success holding neither cookie nor token contradicts itself."""
+
+    def test_the_contradiction_is_refused_at_the_seam(self) -> None:
+        scope = EngagementScope(
+            name="test", targets=[ScopeEntry(type=ScopeType.DOMAIN, value="target")]
+        )
+        auth = WebAuthenticator(scope=scope)
+        claimed = AuthResult(
+            success=True,
+            status_code=415,
+            login_url="http://target/portal/gateway",
+            posted_to="http://target/portal/v3/session-open",
+        )
+        refused = auth._require_session_material(claimed)
+        assert refused.success is False
+        assert "no session material" in refused.error
+        # The reason names the URL the credentials actually went to, which is
+        # not the login URL whenever a form action redirected them.
+        assert "session-open" in refused.failure_stage
+
+    def test_a_genuine_session_passes_through_unchanged(self) -> None:
+        scope = EngagementScope(
+            name="test", targets=[ScopeEntry(type=ScopeType.DOMAIN, value="target")]
+        )
+        auth = WebAuthenticator(scope=scope)
+        real = AuthResult(success=True, session_cookies={"SESSION": "x"}, status_code=200)
+        assert auth._require_session_material(real) is real

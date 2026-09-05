@@ -449,6 +449,25 @@ class RoleCredential(BaseModel):
             never the plaintext.
         login_url: Optional explicit login endpoint for this role, when the
             application's login is not discoverable or differs per role.
+        login_api_url: Optional JSON login route, when it is not the login PAGE.
+            An HTML login page at ``/portal/gateway`` whose credentials go to
+            ``/portal/v3/session-open`` is an ordinary SPA, and the two are
+            different facts about the application — so they are two fields.
+
+            The JSON arm used to take ``login_url``, keep only its origin, and
+            iterate six routes chosen in advance. An operator who had already
+            said where their login lives watched the engine POST at six places
+            that were not it. A declaration that is discarded is worse than no
+            declaration, because the operator believes the engine knows.
+        login_field: Optional name of the identity field in the login body.
+            Auto-detection reads it from the form's HTML and the JSON arm falls
+            back to ``email`` then ``username``; an API whose identity field is
+            called ``account`` matches neither, and nothing else can find that
+            out. Declared here, it is tried FIRST.
+        login_content_type: Optional content type for the credential POST.
+            OVERRIDES both the form's ``enctype`` and the negotiation a 415
+            triggers. Declared, not discovered, so an operator who knows their
+            API is JSON-only never spends the round trip finding out.
         assert_url: Optional URL known to behave differently authenticated vs
             anonymous. Tried FIRST by the authenticated-state assertion.
 
@@ -486,9 +505,33 @@ class RoleCredential(BaseModel):
     username: str = ""
     password: SecretStr = SecretStr("")
     login_url: str = ""
+    login_api_url: str = ""
+    login_field: str = ""
+    login_content_type: str = ""
     assert_url: str = ""
     privilege: int | None = None
     description: str = ""
+
+    @field_validator("login_content_type")
+    @classmethod
+    def _known_content_type(cls, v: str) -> str:
+        """Refuse a content type the authenticator cannot actually encode.
+
+        Declaring one it cannot produce would be silently ignored, which is the
+        failure this whole field exists to end. ``extra="forbid"`` above catches
+        a misspelled KEY; this catches a misspelled VALUE.
+        """
+        normalised = (v or "").split(";")[0].strip().lower()
+        if not normalised:
+            return ""
+        from clinkz.tools.auth import ENCODABLE_CONTENT_TYPES
+
+        if normalised not in ENCODABLE_CONTENT_TYPES:
+            raise ValueError(
+                f"login_content_type {v!r} is not one this authenticator can encode "
+                f"({', '.join(ENCODABLE_CONTENT_TYPES)})"
+            )
+        return normalised
 
     @field_validator("role")
     @classmethod

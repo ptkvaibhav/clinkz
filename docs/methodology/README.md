@@ -93,6 +93,7 @@ oracle set.
 | Classes whose verdict asks no model (and the measurements that removed the call) | [deterministic-verdict-classes.md](deterministic-verdict-classes.md) |
 | Phase-3 plan ranking: the fingerprint decides the set, the cap guards the tail | [plan-ranking.md](plan-ranking.md) |
 | SCA catalogue breadth: what a real affected-range predicate would cost | [sca-catalogue-breadth.md](sca-catalogue-breadth.md) |
+| Authentication shapes: the 415, the redirect gate, and the name oracle | [authentication-shapes.md](authentication-shapes.md) |
 
 The gray-box discovery engine (Δ-capability model, capability classes, capability
 learning, cross-language, cross-service) lives under `docs/discovery-engine-*.md`.

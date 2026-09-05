@@ -12,8 +12,15 @@ this codebase is built:
   * Issue the SAME request twice — once carrying the session material, once
     deliberately clean.
   * Require a **deterministic difference** that only an authorization boundary
-    produces: a different status class, a login redirect present anonymously and
+    produces: a different status class, a redirect present anonymously and
     absent authenticated, or a session marker present only when authenticated.
+  * Gate that redirect on **the redirect**, never on the spelling of where it
+    points. An anonymous 3xx and an authenticated 2xx on the same URL is the
+    boundary; whether the destination is called ``/login`` or ``/portal/gateway``
+    is corroboration. This is invariant 64 one layer along — the alias is
+    OBSERVED, never inferred — and it was a live defect: the same application
+    served at two paths reached two different verdicts, and only the name had
+    changed.
   * A body-length delta proves nothing and is explicitly NOT accepted. Page
     chrome, a CSRF token, a timestamp — all of those move the length without any
     boundary existing.
@@ -34,6 +41,7 @@ import logging
 import re
 from enum import StrEnum
 from typing import Protocol
+from urllib.parse import parse_qsl, unquote, urlparse
 
 from pydantic import BaseModel, Field
 
@@ -41,8 +49,19 @@ from clinkz.engagement.gate import EngagementAbortedError
 
 logger = logging.getLogger(__name__)
 
-#: Location/body hints that a response is the login page rather than content.
+#: Spellings a login destination often uses. **Corroboration only.** These
+#: decided the ``login_redirect`` discriminator until a target whose login page
+#: is at ``/portal/gateway`` proved what that costs: seven substrings stood
+#: between the engine and the commonest denial shape in production, and renaming
+#: the page to ``/login`` flipped the verdict with nothing else changed. What is
+#: observable — a redirect happened, the session removes it, the destination
+#: serves a password input, the Location names the URL we asked for — is the
+#: gate now, and these are what the evidence line says afterwards.
 _LOGIN_HINTS = ("login", "signin", "sign-in", "sign_in", "auth", "sso", "session/new")
+
+#: Redirect statuses. A boundary that answers with any of these anonymously and
+#: 2xx authenticated is a boundary whatever it redirects to.
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 #: Markers that appear once a session exists. Presence ONLY in the authenticated
 #: response is the discriminator — presence in both proves nothing.
@@ -166,12 +185,20 @@ class ProbeResponse(BaseModel):
         return ""
 
     @property
+    def is_redirect(self) -> bool:
+        """Whether this response is a redirect, whatever it points at."""
+        return self.status in _REDIRECT_STATUSES
+
+    @property
     def redirects_to_login(self) -> bool:
-        """Whether this response redirects to something login-shaped."""
-        if self.status not in (301, 302, 303, 307, 308):
-            return False
-        target = self.location.lower()
-        return any(hint in target for hint in _LOGIN_HINTS)
+        """Whether this redirect's destination is SPELLED like a login page.
+
+        Corroboration, never a gate. Kept because a destination named ``/login``
+        is genuinely worth saying in the evidence line, and because
+        :func:`looks_unauthenticated` — a mid-run heuristic that raises a flag
+        for an oracle to check, not a verdict — is entitled to a cheap signal.
+        """
+        return self.is_redirect and any(hint in self.location.lower() for hint in _LOGIN_HINTS)
 
     @property
     def serves_login_form(self) -> bool:
@@ -369,8 +396,10 @@ async def assert_authenticated(
     without it — and accepted only on a discriminator that an authorization
     boundary produces:
 
-      1. ``login_redirect`` — anonymous redirects to a login page, authenticated
-         does not.
+      1. ``login_redirect`` — anonymous is redirected away and authenticated is
+         served the content. The gate is the redirect and the session removing
+         it; where the redirect POINTS is corroboration, gathered and reported
+         but never required.
       2. ``status_class`` — anonymous is 401/403 (or any 4xx), authenticated is 2xx.
       3. ``login_form`` — anonymous is served a login form, authenticated is not.
       4. ``session_marker`` — a logout/account marker present only when
@@ -421,6 +450,8 @@ async def assert_authenticated(
 
         assertion = _discriminate(url, authed, anon, username)
         if assertion is not None:
+            if assertion.discriminator == "login_redirect":
+                await _corroborate_destination(probe, assertion, anon)
             assertion.attempted = attempted
             logger.info(
                 "Authenticated state PROVEN at %s via %s (auth=%d anon=%d)",
@@ -461,15 +492,29 @@ def _discriminate(
             evidence=[evidence],
         )
 
-    if anon.redirects_to_login and not authed.redirects_to_login:
-        return built(
+    authed_ok = 200 <= authed.status < 300
+
+    # 1. The redirect boundary. Anonymous is sent somewhere; authenticated is
+    #    served the content. That difference is produced by the session and by
+    #    nothing else — the two requests differ in exactly one thing.
+    #
+    #    What this deliberately does NOT ask is where the redirect points. Seven
+    #    substrings used to decide it, and an application whose login page is at
+    #    ``/portal/gateway`` was invisible to every one of them while the same
+    #    application at ``/login`` proved instantly. The destination's name is
+    #    corroboration and is reported as such.
+    if anon.is_redirect and authed_ok:
+        corroboration = _redirect_corroboration(url, anon)
+        assertion = built(
             "login_redirect",
             f"Anonymous GET {url} -> {anon.status} Location: {anon.location}; "
-            f"authenticated GET -> {authed.status} with no login redirect.",
+            f"authenticated GET -> {authed.status}, not redirected. The session "
+            "is the only difference between the two requests.",
         )
+        assertion.evidence.extend(corroboration)
+        return assertion
 
     anon_denied = anon.status in (401, 403)
-    authed_ok = 200 <= authed.status < 300
     if anon_denied and authed_ok:
         return built(
             "status_class",
@@ -505,6 +550,117 @@ def _discriminate(
             )
 
     return None
+
+
+def _redirect_corroboration(requested_url: str, anon: ProbeResponse) -> list[str]:
+    """Observations that support a redirect being an authorization boundary.
+
+    None of these is required — :func:`_discriminate` has already established
+    the boundary from the redirect itself. They are recorded because an
+    operator reading the assertion wants to know *why* we believe the
+    destination is a login surface, and because the strongest of them is
+    available for free from the response already in hand.
+
+    Two are computed here:
+
+    * The destination is SPELLED like a login page (:data:`_LOGIN_HINTS`).
+    * The ``Location`` carries a query parameter whose value names the URL we
+      asked for — a return parameter. An application that says "go here, and
+      afterwards come back to the thing you wanted" is describing a login
+      redirect by construction, whatever the page is called. The parameter's
+      own name is not consulted: ``next``, ``return_to``, ``r`` and
+      ``ReturnUrl`` are the same idea, and matching on the VALUE reads the
+      application instead of a list we would have to keep.
+
+    A third — the destination serves a password input — needs another request
+    and is added by :func:`_corroborate_destination`.
+
+    Args:
+        requested_url: The URL whose anonymous response redirected.
+        anon: That anonymous response.
+
+    Returns:
+        Zero or more evidence lines.
+    """
+    lines: list[str] = []
+    location = anon.location
+    if not location:
+        return lines
+
+    if any(hint in location.lower() for hint in _LOGIN_HINTS):
+        lines.append(f"The destination {location} is spelled like a login surface.")
+
+    parameter = _return_parameter_naming(location, requested_url)
+    if parameter:
+        lines.append(
+            f"The redirect carries '{parameter}' naming the path we requested — the "
+            "destination is where you are sent to come back from, which is a login "
+            "redirect by construction."
+        )
+    return lines
+
+
+def _return_parameter_naming(location: str, requested_url: str) -> str:
+    """The query parameter in *location* whose value names *requested_url*'s path.
+
+    Args:
+        location: A ``Location`` header value, absolute or relative.
+        requested_url: The URL whose response carried it.
+
+    Returns:
+        The parameter NAME, or ``""`` when no parameter names the path.
+    """
+    wanted = urlparse(requested_url).path.rstrip("/")
+    if not wanted:
+        return ""
+    query = urlparse(location).query
+    if not query:
+        return ""
+    for name, value in parse_qsl(query, keep_blank_values=False):
+        decoded = unquote(value or "")
+        if not decoded:
+            continue
+        candidate = urlparse(decoded).path.rstrip("/") or decoded.rstrip("/")
+        if candidate == wanted:
+            return name
+    return ""
+
+
+async def _corroborate_destination(
+    probe: HttpProbe, assertion: AuthAssertion, anon: ProbeResponse
+) -> None:
+    """Append "the destination serves a password input" when it does.
+
+    One extra request, made only once — after a boundary has already been
+    established — so it cannot cost a candidate walk anything. It is the
+    strongest corroboration available and the only one that reads the
+    destination rather than its name, which is why it is worth the request.
+
+    Failure here is silent by design: this cannot change the verdict in either
+    direction, so a destination that will not load costs an evidence line and
+    nothing else.
+    """
+    location = anon.location
+    if not location:
+        return
+    if location.startswith("/"):
+        parsed = urlparse(assertion.url)
+        if not parsed.scheme or not parsed.netloc:
+            return
+        location = f"{parsed.scheme}://{parsed.netloc}{location}"
+    elif not location.lower().startswith(("http://", "https://")):
+        return
+
+    try:
+        destination = await probe.get(location, follow_redirects=True)
+    except Exception as exc:  # noqa: BLE001 — corroboration, never a verdict
+        logger.debug("Could not read redirect destination %s: %s", location, exc)
+        return
+    if destination.status and destination.status < 400 and destination.serves_login_form:
+        assertion.evidence.append(
+            f'The destination {location} serves an <input type="password"> — it is a '
+            "login surface by shape, not by name."
+        )
 
 
 # ---------------------------------------------------------------------------

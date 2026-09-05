@@ -1,5 +1,17 @@
 FROM ghcr.io/digininja/dvwa:latest
 
+# THE IMAGE DEFAULTS TO `impossible`. Only docker-compose.yml pins a level
+# (DEFAULT_SECURITY_LEVEL=${DVWA_SECURITY_LEVEL:-low}); nothing here does, and
+# nothing in src/ ever sets it. A container started outside compose — `docker
+# run`, or `docker start` on one created by hand — therefore runs the LADDER'S
+# HONESTY CONTROL GROUP, the level at which every module is patched and a
+# confirmed finding is a phantom by construction. That failure is silent: the
+# pipeline completes, the report is clean, and "no exploitation findings" reads
+# in a summary as an engine that found nothing rather than as a target with
+# nothing to find. Read the level back from the container rather than assuming
+# it:
+#     docker exec clinkz-dvwa sh -c 'echo $DEFAULT_SECURITY_LEVEL'
+
 # This image scopes the PHP session cookie to the request host
 # (dvwaPage.inc.php: domain = parse_url(HTTP_HOST)). For the `localhost` target
 # that yields `Set-Cookie: PHPSESSID=...; domain=localhost`, and Python's
