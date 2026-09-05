@@ -115,7 +115,7 @@ under routing v2 (`claude-sonnet-5` by default — **not Opus**).
 | **Recon (v2)** | Ports → services → tech stack → package identity → `ReconResult` | `_package_identity.py` is the third component source and names PACKAGES, not servers; a dependency **range** is deliberately not read |
 | **Scan (v2)** | Service-specific methods, coverage expansion, API surface | Budgets its own wall clock (`SCAN_TIME_BUDGET`) — the orchestrator's timeout DISCARDS the return value; four discoverers union into `endpoints`, none carrying an application's vocabulary; safe methods only |
 | **Research (v2)** | CVE/technique runbook → engagement runbook + `clinkz_knowledge.db` | **Not web-grounded by default** — grounding is declared, weakest-wins, and stamped rather than absorbed |
-| **Exploit (v2)** | 24 adaptive `_test_*` methodologies by tier | The deterministic check GATES the LLM; phase-3 ranking is `_plan_ranking.py`, not the model's; P7 is the client-side oracle |
+| **Exploit (v2)** | 25 adaptive `_test_*` methodologies by tier | The deterministic check GATES the LLM; phase-3 ranking is `_plan_ranking.py`, not the model's; P7 is the client-side oracle; TERMINAL classes dispatch last |
 | **Chaining** | Composition as a capability (`src/clinkz/chaining/`) | Graded by its WEAKEST link; only ever ADDS |
 | **Business logic** | Δ where the developer's intent is the APPLICATION | Intent inferred from the app's own surface, with evidence |
 | **Critic** | **Archived** (`agents/_archive/critic.py`) | Registered but invoked in **0 of 2,774** recorded steps; its job is done by deterministic gates on the emitting path |
@@ -214,6 +214,9 @@ reports the missing capability to the Orchestrator.
   gate. **Not WeasyPrint** — it resolves GTK/Pango at import and does not import on
   Windows, so it could never have run on the machine that produces the bundle.
   `jinja2` remains declared and unused — stated rather than quietly dropped.
+- **Node** backs one TARGET, not the engine: `docker/protopoll` is a real
+  `Object.prototype` — a Python fixture would have been a MODEL of the one
+  property the oracle rests on. Standard library only, no `package.json`.
 - MCP Python SDK for tool servers; Docker for sandboxed tool execution
   (`clinkz-tools`; `TOOL_EXEC_MODE=local` for the in-process HTTP path).
 - Typer CLI; `clinkz trace inspect <engagement>` renders execution traces.
@@ -256,7 +259,8 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
 
 Offline drivers in `scripts/`: `regrade_stored_bundles.py`, `regrade_idor_arms.py`,
 `plan_variance_corpus.py`, `cve_reservation_corpus.py`,
-`juiceshop_benchmark_run.py --record-floor`. **Live:** `three_run_envelope.py`.
+`record_protopoll_fixtures.py`, `juiceshop_benchmark_run.py --record-floor`.
+**Live:** `three_run_envelope.py`.
 `docker compose -f docker/docker-compose.yml up -d` starts the test targets.
 
 ## Code Style
@@ -567,6 +571,21 @@ detail when you are about to change the code an invariant governs — not by def
     unobservable-config-dependent, indistinguishable info leak) is PERMANENTLY
     lead-only and the deliverable states that as a product property. **Detail →
     [`docs/methodology/sca-catalogue-breadth.md`](docs/methodology/sca-catalogue-breadth.md).**
+87. **When the payload's effect outlives the request, the CONTROL runs first**
+    (`_run_control_arm_first`). A control dispatched afterwards observes the
+    change the payload made, exhibits the effect too, and kills the true
+    positive it exists to license. The seam owns the order, not the class; write
+    crossings hit the same constraint.
+88. **A class whose effect outlives the RUN is TERMINAL, dispatched last, and a
+    transient task after one is a stop-the-run condition** — not a warning
+    (`TERMINAL_DISPATCH_CLASSES` / `TRANSIENT_DISPATCH_CLASSES`, partitioned over
+    the dispatch table; `assert_terminal_dispatch_order` on every dispatch). A
+    wildcard authorization does not cover a terminal class.
+89. **A change TESTING made that the target cannot undo is stated in the
+    client-facing document, naming the key** (`ResidualMutation`). Recorded on
+    the WITNESSED effect, not on emission — a disclosure that only fires when we
+    also got a finding out of it is a disclosure that serves us. **Detail →
+    [`docs/methodology/prototype-pollution.md`](docs/methodology/prototype-pollution.md).**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

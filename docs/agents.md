@@ -103,11 +103,28 @@ structural view — module layout, phase steps, data flow — see
   `CLIENT_ORACLE_MODE` is `auto` by default — the Orchestrator provisions it for
   every engagement, while a **directly invoked** agent (unit suite, replay,
   smoke cell) never self-resolves one, so the black-box floor stays
-  byte-identical. All 24 `_test_*` methods are adaptive multi-phase
+  byte-identical. All 25 `_test_*` methods are adaptive multi-phase
   methodologies (six-phase injection family; four-phase behavioral family). The
   **deterministic check GATES the LLM** — no LLM verdict emits on its own; when
   phase-2 has empirically confirmed the primitive, phase-4 prefers the
-  deterministic build. **Per-methodology detail (oracles, phantom fixes,
+  deterministic build.
+
+  One of the 25 is **TERMINAL**: `_test_prototype_pollution` writes a key onto
+  the target process's own `Object.prototype`, which changes how the
+  application answers requests the class never made and persists until the
+  process restarts. Three things follow, none of them optional. It dispatches
+  **last**, after every other class has finished, because every observation
+  after it — including every other class's control arm — would otherwise
+  measure a target this run had already altered, and the partition is asserted
+  on every dispatch as a stop-the-run condition rather than a warning. Its own
+  control arm runs **before** its payload (`_run_control_arm_first`), because a
+  control observed afterwards exhibits the effect too and kills the true
+  positive it exists to license. And the change is DISCLOSED in the
+  client-facing document as a `ResidualMutation` naming the key — the first
+  entry in a Clinkz report whose remediation is something the operator must do
+  to their own infrastructure because we ran the test. A wildcard authorization
+  does not cover it. **Detail →
+  [`docs/methodology/prototype-pollution.md`](methodology/prototype-pollution.md).** **Per-methodology detail (oracles, phantom fixes,
   live-validation, N/A-by-construction) →
   [`docs/methodology/`](docs/methodology/README.md); the five Phase-3 classes and
   the control each confirms against →

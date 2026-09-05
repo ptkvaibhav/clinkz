@@ -8,7 +8,7 @@ summary + a pointer to each of these files. Nothing was dropped in the move.
 
 ## The shared adaptive patterns (W2.1)
 
-All 24 `_test_*` methods are adaptive multi-phase methodologies, not deterministic
+All 25 `_test_*` methods are adaptive multi-phase methodologies, not deterministic
 one-shot skills:
 
 - **Payload-injection family** — six-phase reflection / fingerprint / synthesize /
@@ -75,6 +75,7 @@ oracle set.
 | Business logic: workflow sequence bypass | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
 | Business logic: numeric constraint violation | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
 | Business logic: single-use action replayed | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
+| Server-side prototype pollution (CWE-1321) | [prototype-pollution.md](prototype-pollution.md) |
 
 ## Cross-cutting
 
@@ -93,6 +94,7 @@ oracle set.
 | Classes whose verdict asks no model (and the measurements that removed the call) | [deterministic-verdict-classes.md](deterministic-verdict-classes.md) |
 | Phase-3 plan ranking: the fingerprint decides the set, the cap guards the tail | [plan-ranking.md](plan-ranking.md) |
 | SCA catalogue breadth: what a real affected-range predicate would cost | [sca-catalogue-breadth.md](sca-catalogue-breadth.md) |
+| Terminal dispatch: a class whose effect outlives the run, and the disclosure it owes | [prototype-pollution.md](prototype-pollution.md) |
 
 The gray-box discovery engine (Δ-capability model, capability classes, capability
 learning, cross-language, cross-service) lives under `docs/discovery-engine-*.md`.

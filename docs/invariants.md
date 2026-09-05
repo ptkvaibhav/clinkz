@@ -1529,3 +1529,121 @@ fingerprint matches one we hold). The payload is never a supplied identity.
 **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl` (tool
 calls, LLM calls, agent steps, handoffs, methodology-phase events). `outputs/`
 is local-only by policy — never committed.
+
+## Terminal classes: when the test changes the target
+
+### 87. When the payload's effect outlives the request, the CONTROL runs first
+
+Every control arm in this engine runs *after* the confirming one. The class
+observes its effect, dispatches a probe with the exploitation mechanism removed,
+requires the same oracle to refuse, and emits. That order is not a convention —
+it is the only order that made sense, because every payload the engine had sent
+until now leaves the target's *behaviour* exactly as it found it.
+
+Prototype pollution does not. The payload writes a key onto the target process's
+`Object.prototype`, and from that moment every object the process creates
+inherits it. A control arm dispatched afterwards is therefore observed *through a
+prototype the payload has already written to*: it exhibits the effect too, the
+arm records `confirmed_on_control`, and the finding dies. Not a false positive —
+a **false negative manufactured by the proof itself**, on the one class where the
+proof is the strongest evidence available.
+
+This was not discovered in production; it was reasoned out before the class was
+written, and then measured. `test_prototype_pollution_oracle.py::TestTheArmsMustRunInThisOrder`
+grades the real recorded pollutable case with the two observations swapped, and
+both gadgets flip from confirmed to refused.
+`test_prototype_pollution_live.py::test_the_control_would_have_confirmed_had_it_run_second`
+dispatches a control *after* the payload against the live Node target and asserts
+it does show the effect — so if the fixture ever stopped exhibiting the
+constraint, the test depending on it fails rather than passing vacuously.
+
+The remedy is a seam, not a rule the class remembers. `_run_control_arm_first`
+dispatches the control, runs the class's confirming arm, and records both through
+the same `_finalise_control_arm` every ordinary arm uses — so the ledger row, the
+trace entry and the disclosure-on-kill hold identically for both orders. The
+class hands its half back as a `ConfirmingArm` rather than calling the recorder
+itself, because a class that can forget to record is a class that will.
+
+**Write crossings will hit this next.** A crossing arm that modifies the other
+principal's object leaves that object modified, so its control has the same
+problem. The class docstring says so, and the seam is already there.
+
+### 88. A class whose effect outlives the RUN is terminal, and a transient task after one stops the run
+
+The ordering rule above is about two arms of one class. This is about the other
+twenty-nine.
+
+A prototype write changes how the application answers requests *the class never
+made*. Every observation after it — every probe, and specifically every other
+class's control arm — is a measurement of a target this run has already altered.
+So the class is dispatched last, after every other class has finished, and the
+rotation in `_step_execute_exploits` only reaches it once no transient task is
+left.
+
+The predicate is narrower than "writes to the target", and drawing it carelessly
+would have caught half the engine. Stored XSS stores a payload; mass assignment
+creates objects; the business-logic classes advance records. Those are ordinary
+application records, deleted the way a client deletes any record, and none of
+them changes the behaviour of an unrelated request. What makes a class terminal
+is that its write is **process-global and irreversible through the application**.
+
+`TERMINAL_DISPATCH_CLASSES` / `TRANSIENT_DISPATCH_CLASSES` partition
+`DISPATCHABLE_TEST_METHODS` — the domain computed from the table the dispatcher
+itself reads, both directions asserted, a substantive reason per entry, exactly
+as `CONTROL_EXEMPT_CLASSES` does. A class in neither is a red build: "nobody
+classified it" and "it leaves nothing behind" are different facts and only one of
+them is safe to dispatch early.
+
+And the ordering is asserted **at dispatch, on every dispatch**
+(`assert_terminal_dispatch_order`), where it raises `TerminalDispatchOrderError`
+and stops the run rather than warning. It holds by construction today, which is
+the reason for the check and not an argument against it: a scheduler change that
+interleaved differently would break the property silently, and the corrupted
+results would be indistinguishable from sound ones in every artifact the run
+produces. A warning in a log nobody reads is not a guard against a failure whose
+whole character is that it looks fine.
+
+Two consequences worth stating rather than discovering:
+
+* **A terminal class is the first thing an early deadline costs.** It is last in
+  the rotation, so a cooperative-deadline stop drops it before anything else.
+  That is the correct trade — dispatching it early to preserve breadth would
+  corrupt every observation after it — and
+  `test_breadth_survives_dispatch_deadline` now asserts the exclusion rather than
+  tolerating it, so the loss is visible in the test that owns breadth.
+* **A wildcard authorization does not cover a terminal class.** `permits_all` is
+  how a client says "test everything"; it is not how they say "leave my process
+  altered until I restart it". Every other class either observes or writes a
+  record the application can delete, so a blanket yes carries no obligation a
+  client would have wanted to be asked about separately. This one does, so it
+  needs its key named, and the report's *What was NOT tested* section says which
+  key and why.
+
+### 89. A change TESTING made that the target cannot undo goes in the client-facing document
+
+Every honest-limits section in a Clinkz report is about what the engine could not
+prove. `ResidualMutation` is the first one that is about what it **did**.
+
+A confirmed prototype pollution leaves a key on a running process. No request
+removes it, no administrative action removes it, no cache clear removes it — the
+process holds it in memory and has to be restarted, every worker if the service
+runs more than one. That is the first finding in this engine's history whose
+remediation is something the operator must do to their own infrastructure
+*because we ran the test*, and reporting it only in `trace.jsonl` would hand them
+an unlabelled change to their own systems whose first symptom is something
+downstream behaving oddly.
+
+So it renders as **Changes this test left on your systems**, ahead of the
+findings, in the Markdown and the PDF — naming the key, stating it is still
+present, and giving the restart as an instruction rather than a recommendation.
+
+Two details carry the honesty:
+
+* **Recorded on the witnessed effect, not on emission.** If the control arm then
+  refuses the finding, the operator's process is altered just the same. A
+  disclosure that fires only when we also got a finding out of it is a disclosure
+  that serves us.
+* **Rendered only when populated.** A section reporting "nothing was left behind"
+  on every clean run is one an operator learns to skip — which is exactly the
+  state they must not be in on the run where it is populated. Same reasoning as
+  the ledger's permanent-benign-alarm rule (invariant 77).
