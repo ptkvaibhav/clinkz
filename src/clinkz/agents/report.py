@@ -64,6 +64,7 @@ from clinkz.models.finding import (
     CrossServiceResearchLead,
     Finding,
     FindingStatus,
+    ResidualMutation,
     Severity,
     UnprovenExploitLead,
 )
@@ -305,6 +306,30 @@ def _parse_authorization(raw: Any) -> AuthorizationRecord | None:
     except Exception as exc:  # noqa: BLE001 — a bad header must not lose the findings
         logger.warning("Could not parse the authorization record for the report: %s", exc)
         return None
+
+
+def _parse_residual_mutations(raw: Any) -> list[ResidualMutation]:
+    """Rebuild the residual-mutation records from the orchestrator's handoff.
+
+    A malformed entry is DROPPED with a warning rather than taking the section
+    down, for the same reason a bad authorization header does not lose the
+    findings — but each drop is logged loudly, because the thing being dropped
+    is a change we made to the client's running process and silence about it is
+    the failure this section exists to prevent.
+    """
+    mutations: list[ResidualMutation] = []
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            mutations.append(ResidualMutation.model_validate(entry))
+        except Exception as exc:  # noqa: BLE001 — one bad row must not lose the rest
+            logger.warning(
+                "Could not parse a residual-mutation record for the report — a change "
+                "this run made to the target will be missing from the deliverable: %s",
+                exc,
+            )
+    return mutations
 
 
 def _parse_window(raw: Any) -> EngagementWindow | None:
@@ -573,6 +598,11 @@ class ReportAgent(BaseAgent):
             confirmed_chains=[
                 c for c in (input_data.get("confirmed_chains") or []) if isinstance(c, dict)
             ],
+            # What testing left behind that the client has to clear themselves.
+            # Handed in by the orchestrator from the exploit result and rendered
+            # verbatim; nothing here decides whether a mutation happened, which
+            # is the methodology's own witnessed observation.
+            residual_mutations=_parse_residual_mutations(input_data.get("residual_mutations")),
             authorization=authorization,
             engagement_window=window,
             rules_of_engagement=list(input_data.get("rules_of_engagement") or []),
@@ -810,6 +840,33 @@ class ReportAgent(BaseAgent):
                             ),
                         )
                     )
+        elif authorization is not None:
+            # A wildcard authorizes every class EXCEPT the ones whose effect
+            # outlives the run, and the client has to be told which those were
+            # rather than left to assume a blanket yes covered them. "Test
+            # everything" is not "leave my process altered until I restart it",
+            # and the class the dispatcher withheld on that reasoning is
+            # invisible in a deliverable that lists only explicit exclusions.
+            from clinkz.agents.exploit import TERMINAL_DISPATCH_CLASSES
+
+            for vuln_class in VULN_CLASSES:
+                if vuln_class.test_method not in TERMINAL_DISPATCH_CLASSES:
+                    continue
+                items.append(
+                    NotTestedItem(
+                        item=vuln_class.label,
+                        category=NotTestedCategory.NOT_PERMITTED,
+                        reason=(
+                            "This class leaves the target altered in a way the application "
+                            "cannot undo — proving it requires restarting the affected "
+                            "process afterwards — "
+                            f"{TERMINAL_DISPATCH_CLASSES[vuln_class.test_method]}. "
+                            "A blanket authorization does not cover that, so it was not "
+                            f"attempted. To include it, name '{vuln_class.key}' explicitly "
+                            "in the permitted-technique list."
+                        ),
+                    )
+                )
 
         # Classes whose defining effect happens in a browser. WHICH limitation
         # applies is a fact about this run, not about the class: an oracle that
@@ -1027,6 +1084,11 @@ class ReportAgent(BaseAgent):
                 "",
             ]
         )
+        # Before the findings, not after them. This section is not a claim about
+        # the client's application at all — it is the one thing in the document
+        # the operator has to act on because we ran the test, and a reader who
+        # skims to the severity counts and stops must not miss it.
+        ReportAgent._render_residual_mutations(lines, report)
 
         if not findings:
             lines.extend(
@@ -1100,6 +1162,52 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_research_grounding(lines, report)
         ReportAgent._render_llm_spend(lines, report)
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_residual_mutations(lines: list[str], report: PentestReport) -> None:
+        """What testing left on the target that the target cannot remove.
+
+        Rendered only when there is something to report. A section that says
+        "nothing was left behind" on every clean run is a section an operator
+        learns to skip, which is exactly the state we need them NOT to be in on
+        the run where it is populated — the same reasoning that keeps the
+        component ledger from firing a permanent benign alarm.
+
+        Every other honest-limits section in this document is about what we
+        could not prove. This one is about what we DID, and its remediation is
+        an instruction to the operator rather than a recommendation about their
+        code.
+        """
+        if not report.residual_mutations:
+            return
+        lines.extend(
+            [
+                "## Changes this test left on your systems",
+                "",
+                "Testing this application required writing to it in a way the application "
+                "itself cannot undo. These changes are still in place. They are listed "
+                "here whether or not the test that caused them proved a vulnerability, "
+                "because the action they require of you is the same either way.",
+                "",
+            ]
+        )
+        for mutation in report.residual_mutations:
+            lines.extend(
+                [
+                    f"### `{mutation.key}` on {mutation.endpoint}",
+                    "",
+                    f"- **What happened:** {mutation.mechanism}",
+                    "- **Still present:** "
+                    + (
+                        "yes — witnessed on a later request"
+                        if mutation.witnessed
+                        else "not confirmed"
+                    ),
+                    f"- **What you need to do:** {mutation.remediation}",
+                    "",
+                ]
+            )
+        lines.extend(["---", ""])
 
     @staticmethod
     def _render_scope_refusals(lines: list[str], report: PentestReport) -> None:

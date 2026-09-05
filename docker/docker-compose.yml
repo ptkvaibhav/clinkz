@@ -86,29 +86,29 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Test target: Meridian Portal — the THIRD authentication shape.
+  # Protopoll - the server-side prototype-pollution target.
   #
-  # DVWA is form+cookie, Juice Shop is JSON+bearer. Meridian is JSON login at a
-  # non-obvious path, identity field "account", a session COOKIE on the JSON
-  # response, and protected routes that answer anonymously with 302 to the login
-  # page rather than 401/403. Built to reproduce authentication failures the
-  # first two shapes cannot express; not intentionally vulnerable.
+  # Three merge endpoints and one vulnerability: /api/v2/profile merges
+  # recursively and IS pollutable, /api/v2/notifications runs the same merge with
+  # a three-line guard, and /api/v2/preferences uses a shallow spread that echoes
+  # the injected key straight back out. The two sound ones are the two ways to be
+  # wrong about this class, which is why they are here.
   #
-  # MERIDIAN_LOGIN_PATH moves the login page. Running the same application at
-  # /portal/gateway and at /login is how you tell an oracle that reads the SHAPE
-  # of a redirect from one that reads the SPELLING of its destination:
-  #   MERIDIAN_LOGIN_PATH=/login docker compose ... up -d --force-recreate meridian
+  # The prototype write outlives the request, so a container that has been probed
+  # stays polluted: `docker compose restart protopoll` between runs, exactly as a
+  # real target would need its process restarted. There is no reset endpoint in
+  # the image - PROTOPOLL_RESET_TOKEN is unset, so the route is 404 - and the
+  # engine could not reach it anyway (it needs loopback plus a header no clinkz
+  # code path sends).
   # ---------------------------------------------------------------------------
-  meridian:
+  protopoll:
     build:
-      context: ./meridian
+      context: ./protopoll
       dockerfile: Dockerfile
-    image: clinkz-meridian:latest
-    container_name: clinkz-meridian
-    environment:
-      - MERIDIAN_LOGIN_PATH=${MERIDIAN_LOGIN_PATH:-/portal/gateway}
+    image: clinkz-protopoll:latest
+    container_name: clinkz-protopoll
     ports:
-      - "8090:8090"
+      - "8095:8095"
     networks:
       - pentest-targets
     restart: unless-stopped

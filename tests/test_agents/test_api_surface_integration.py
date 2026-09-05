@@ -224,6 +224,14 @@ def test_body_param_is_only_given_to_the_generic_injection_classes() -> None:
         "_test_ssti",
         "_test_cmdi",
         "_test_xss_stored",
+        # Prototype pollution qualifies under the rule rather than as an
+        # exception to it, and by the strongest reading of it: its injection
+        # point is the body's own top level — a key the application never
+        # offered — so it does not need a particular KIND of field, it needs a
+        # structured body. There is no vocabulary that would discriminate
+        # better, because what decides the outcome is whether the handler merges
+        # recursively, and nothing observable before dispatch says.
+        "_test_prototype_pollution",
     }
 
     # Isolating the change: a body param no longer counts as brute-force's own

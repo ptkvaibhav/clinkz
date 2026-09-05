@@ -17,6 +17,7 @@ from clinkz.models.finding import (
     ChainResearchLead,
     CrossServiceResearchLead,
     Finding,
+    ResidualMutation,
     Severity,
     UnprovenExploitLead,
 )
@@ -231,6 +232,14 @@ class PentestReport(BaseModel):
     #: ``finding_counts`` reads ``findings`` alone, which is what keeps a chain
     #: from inflating the totals it is built out of.
     confirmed_chains: list[dict[str, object]] = Field(default_factory=list)
+    #: Changes TESTING made to the target that the target cannot undo — today, a
+    #: key written onto a running process's prototype chain. Not a finding, not
+    #: a lead, and counted in neither: a finding is a claim about the client's
+    #: application, and this is a statement about what we did to it. It is in
+    #: the client-facing document rather than the trace because the operator has
+    #: to restart a process, and the first they would otherwise hear of it is
+    #: when something downstream behaves oddly.
+    residual_mutations: list[ResidualMutation] = Field(default_factory=list)
     methodology: str = ""
     appendices: dict[str, str] = Field(default_factory=dict)
 

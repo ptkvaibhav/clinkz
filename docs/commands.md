@@ -97,6 +97,16 @@ CLAUDE.md keeps a one-line index of the same set.
   arms were never dispatched against the corrected reference. Reporting that as
   a pass is the acceptance-criterion mistake itself; reporting it as a failure
   claims a measurement nobody made.
+- `python scripts/record_protopoll_fixtures.py` — **offline**, and the only
+  driver here that starts its own target: it runs `docker/protopoll/app.js` on
+  loopback, dispatches both arms of both prototype-pollution gadgets against
+  all three merge endpoints, and writes what actually came back to
+  `tests/fixtures/prototype_pollution/observations.json`. The fixtures are
+  RECORDED rather than authored because the property the oracle rests on — that
+  a guarded recursive merge and a vulnerable one are indistinguishable except
+  by a later observation — is exactly the property a hand-written fixture gets
+  to assert instead of exhibit. Needs `node` on PATH and nothing else; re-run
+  it whenever `app.js` changes.
 - `python scripts/plan_variance_corpus.py [--outputs-root <dir>] [--json]` —
   **offline** replay of every recorded phase-3 ranking against the deterministic
   ranking layer. Sends nothing; reads only `outputs/*/trace.jsonl`, which already

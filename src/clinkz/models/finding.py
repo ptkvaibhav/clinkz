@@ -582,6 +582,15 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # opposite follow-up. A version match never rescues a failed
         # confirmation.
         "version_match_oracle_ran_and_did_not_confirm",
+        # A prototype-pollution candidate whose only carrier is a form-encoded
+        # body or a query string. Whether either can reach the prototype depends
+        # on the body parser the application happens to use and on a flag set in
+        # its code — qs filters ``__proto__`` while letting ``constructor``
+        # through, and ``extended: false`` parses with ``querystring``, whose
+        # result already has a null prototype. None of that is observable from
+        # outside, so the endpoint is not cleared, it is untested, and the lead
+        # says which.
+        "prototype_pollution_carrier_is_json_body_only",
     }
 )
 
@@ -680,6 +689,50 @@ CROSS_SERVICE_WHY_UNCONFIRMED: frozenset[str] = frozenset(
 )
 
 
+class ResidualMutation(BaseModel):
+    """A change to the target this engine made and CANNOT undo.
+
+    Every other artifact a run leaves behind is an ordinary application record —
+    a created object, a stored comment, a junk field on a profile — and the
+    client removes it the way they remove any record. This is the first thing
+    that is not: a key written onto a running process's own prototype chain
+    lives in memory, is inherited by every object that process creates from then
+    on, and no request, administrative action or cache clear removes it. The
+    process has to be restarted.
+
+    So it goes in the client-facing document, not only the trace. A test that
+    leaves work for the operator and reports it in a log they have no reason to
+    read has handed them an unlabelled change to their own infrastructure, and
+    the first they hear of it is when something downstream behaves oddly.
+
+    ``remediation`` is written as an instruction rather than a description for
+    the same reason: this is the one row in a deliverable where the action is
+    something the operator must do BECAUSE we ran the test, rather than
+    something they must do about a flaw we found.
+
+    Attributes:
+        endpoint: The URL whose handler performed the mutation.
+        key: The key that was written, named exactly, so the operator can search
+            for it rather than take the claim on trust.
+        mechanism: What kind of mutation this is, in the engine's own words.
+        test_method: The ``_test_*`` class that caused it.
+        witnessed: Whether the engine OBSERVED the mutation persisting on a
+            later request. Only a witnessed mutation is reported: a probe whose
+            effect was never observed left nothing this engine can point to, and
+            claiming otherwise would be a guess in the direction of alarm.
+        remediation: What the operator has to do about it.
+        occurred_at: When the mutating request was dispatched.
+    """
+
+    endpoint: str
+    key: str
+    mechanism: str
+    test_method: str = ""
+    witnessed: bool = True
+    remediation: str = ""
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ExploitResult(BaseModel):
     """Final output of the v2 exploit agent.
 
@@ -745,4 +798,10 @@ class ExploitResult(BaseModel):
     # how a healthy run manufactures a permanent false alarm.
     emission_candidates: int = 0
     control_arm_kills: int = 0
+    # Changes this run made to the target that the target cannot undo. Recorded
+    # when the effect is WITNESSED, not when a finding is emitted: the two are
+    # different events, and a mutation that confirmed nothing still has to be
+    # disclosed because it is still there. Carried to the report so it reaches
+    # the client-facing document rather than the trace alone.
+    residual_mutations: list[ResidualMutation] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

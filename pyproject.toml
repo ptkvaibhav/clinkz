@@ -113,6 +113,7 @@ markers = [
     "juiceshop_smoke: live Juice Shop skill smoke tests (require running Juice Shop at localhost:3000)",
     "pipeline_smoke: real-container full-pipeline smoke tests — blocking on CI when the underlying target is up",
     "p7_browser: P7 client-side execution oracle tests requiring a real headless browser (pip install -e '.[browser]' && playwright install chromium)",
+    "protopoll: server-side prototype-pollution tests against the Node fixture in docker/protopoll (self-skip without node on PATH)",
 ]
 
 [tool.ruff]
