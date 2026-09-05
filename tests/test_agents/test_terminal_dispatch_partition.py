@@ -29,6 +29,7 @@ import logging
 
 import pytest
 
+from clinkz.agents._control_arm import ConfirmingArm
 from clinkz.agents.exploit import (
     DISPATCHABLE_TEST_METHODS,
     TERMINAL_DISPATCH_CLASSES,
@@ -93,6 +94,57 @@ class TestTheGuardStopsTheRun:
 
     def test_nothing_dispatched_yet_permits_anything(self) -> None:
         assert_terminal_dispatch_order("_test_sqli", set())
+
+
+class TestAnUndispatchableControlDoesNotSendThePayload:
+    """The seam refuses to make an irreversible change it can never use.
+
+    ``ControlVerdict.satisfied`` requires ``dispatched``, so a control that could
+    not be SENT has already killed the finding. In the ordinary arm order that
+    costs nothing — the confirming arm has already run. In the control-first
+    order it would mean dispatching the payload anyway, and this seam exists
+    precisely for payloads whose effect outlives the request, so "anyway" is an
+    irreversible change to the client's system that no finding can come out of.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_confirming_arm_is_not_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        agent = ExploitAgent.__new__(ExploitAgent)
+        agent._logger = logging.getLogger("test.exploit.control_first")
+        agent._control_arms = {}
+        agent._unproven_exploit_leads = []
+        agent._control_arm_kills = 0
+        agent._control_arm_kill_disclosures = 0
+        monkeypatch.setattr(agent, "_trace_methodology_phase", lambda **kw: None)
+        monkeypatch.setattr(agent, "_strip_empty_fragment", lambda url: url)
+        monkeypatch.setattr(agent, "_truncate", lambda text, n: text[:n])
+
+        ran: list[str] = []
+
+        async def _control_that_cannot_be_sent(decoy: str) -> bool:
+            raise OSError("connection refused")
+
+        async def _confirming() -> ConfirmingArm:
+            ran.append("payload")
+            return ConfirmingArm(payload="{}", observation="something", confirmed=True)
+
+        verdict, arm = await agent._run_control_arm_first(
+            skill="prototype_pollution",
+            test_method="_test_prototype_pollution",
+            technique="CWE-1321",
+            endpoint="http://t/api/v2/profile",
+            parameter="__proto__.x",
+            control_label="an ordinary key in place of the prototype-reaching one",
+            oracle_confirms=_control_that_cannot_be_sent,
+            confirming_arm=_confirming,
+        )
+
+        assert ran == [], "the payload was dispatched after a control that never went out"
+        assert verdict.dispatched is False
+        assert verdict.satisfied is False
+        assert arm.payload == ""
+        # And the kill is still disclosed — silence would read as a clean endpoint.
+        assert agent._unproven_exploit_leads, "an un-dispatched arm disclosed nothing"
 
 
 class TestTheRotationPutsTerminalClassesLast:
