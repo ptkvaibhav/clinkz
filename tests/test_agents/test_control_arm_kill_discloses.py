@@ -361,9 +361,19 @@ class TestEveryDispatchedArmIsALedgerRow:
         assert row.successes == 0
 
     def test_registration_is_not_inside_the_kill_branch(self) -> None:
-        """Structural: the call must live in ``_run_control_arm``, on the path
-        every arm takes, and nowhere inside the disclosure helper."""
-        assert "exploit.control_arm" in inspect.getsource(ExploitAgent._run_control_arm)
+        """Structural: the call must live on the path every arm takes.
+
+        That path is now ``_finalise_control_arm`` — the recording half both
+        orders share. ``_run_control_arm`` dispatches then finalises;
+        ``_run_control_arm_first`` dispatches, runs the confirming arm, then
+        finalises, which is what a class whose payload's effect outlives the
+        request needs. Asserting the name in the ONE function both reach is the
+        same rule, at the seam that now owns it — and both entry points are
+        asserted to reach it, so a third order added later cannot skip the row.
+        """
+        assert "exploit.control_arm" in inspect.getsource(ExploitAgent._finalise_control_arm)
+        for entry_point in (ExploitAgent._run_control_arm, ExploitAgent._run_control_arm_first):
+            assert "_finalise_control_arm" in inspect.getsource(entry_point), entry_point
         assert "exploit.control_arm" not in inspect.getsource(
             ExploitAgent._disclose_control_arm_kill
         )

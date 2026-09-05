@@ -76,6 +76,34 @@ services:
       - pentest-targets
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Protopoll - the server-side prototype-pollution target.
+  #
+  # Three merge endpoints and one vulnerability: /api/v2/profile merges
+  # recursively and IS pollutable, /api/v2/notifications runs the same merge with
+  # a three-line guard, and /api/v2/preferences uses a shallow spread that echoes
+  # the injected key straight back out. The two sound ones are the two ways to be
+  # wrong about this class, which is why they are here.
+  #
+  # The prototype write outlives the request, so a container that has been probed
+  # stays polluted: `docker compose restart protopoll` between runs, exactly as a
+  # real target would need its process restarted. There is no reset endpoint in
+  # the image - PROTOPOLL_RESET_TOKEN is unset, so the route is 404 - and the
+  # engine could not reach it anyway (it needs loopback plus a header no clinkz
+  # code path sends).
+  # ---------------------------------------------------------------------------
+  protopoll:
+    build:
+      context: ./protopoll
+      dockerfile: Dockerfile
+    image: clinkz-protopoll:latest
+    container_name: clinkz-protopoll
+    ports:
+      - "8095:8095"
+    networks:
+      - pentest-targets
+    restart: unless-stopped
+
   dvwa-db:
     image: mariadb:10
     container_name: clinkz-dvwa-db

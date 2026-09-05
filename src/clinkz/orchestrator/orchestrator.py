@@ -365,6 +365,11 @@ class OrchestratorAgent:
         # What the P7 client-side oracle did this run. Empty until the exploit
         # phase reports it, and empty on a direct invocation that never had one.
         self._client_oracle: dict[str, Any] = {}
+        # Changes the exploit phase made to the target that the target cannot
+        # undo. Empty on every run that did not dispatch a terminal class, which
+        # is almost all of them; carried to the report because the operator has
+        # to act on it and the trace is not where they will look.
+        self._residual_mutations: list[dict[str, Any]] = []
         # What happened to the gray-box source tree, when one was supplied.
         # Empty for a black-box engagement (nothing was asked for, so there is
         # nothing to report). Populated the moment ``--source`` is present, on
@@ -826,6 +831,23 @@ class OrchestratorAgent:
                 # second is the product working, and it was filed as the first.
                 self._client_oracle = dict(exploit_result.get("client_oracle") or {})
 
+                # What testing left behind. Logged at WARNING here as well as
+                # rendered in the deliverable: an unattended batch that mutated a
+                # target should say so where an operator watching the run sees
+                # it, not only where the client reads it afterwards.
+                self._residual_mutations = [
+                    m
+                    for m in (exploit_result.get("residual_mutations") or [])
+                    if isinstance(m, dict)
+                ]
+                for mutation in self._residual_mutations:
+                    self._logger.warning(
+                        "RESIDUAL MUTATION on %s: key %r is still on the target and needs a "
+                        "process restart to clear",
+                        mutation.get("endpoint"),
+                        mutation.get("key"),
+                    )
+
                 # Evaluate the reachability predicates every component declared
                 # at engagement start. Deliberately HERE and not there: whether
                 # the target has a SQL surface, which tool a chain resolved to,
@@ -925,6 +947,8 @@ class OrchestratorAgent:
                         # Whether a client-side oracle was resolved, how often it
                         # ran, and how often it witnessed execution.
                         "client_oracle": self._client_oracle,
+                        # Changes this run made that the target cannot undo.
+                        "residual_mutations": self._residual_mutations,
                         # What every earlier phase returned. The report needs it
                         # to know whether "0 findings" describes the target or
                         # only this engine's coverage: a run whose recon, scan

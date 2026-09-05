@@ -920,6 +920,48 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
         ),
     ),
     VulnClass(
+        key="prototype_pollution",
+        test_method="_test_prototype_pollution",
+        label="Server-Side Prototype Pollution",
+        capability=_C.SERVER_SIDE,
+        limitation=(
+            "Confirmed only when a request made AFTER the merge — never the "
+            "merge's own response — comes back changed, and an "
+            "identically-shaped merge that cannot reach the prototype, "
+            "dispatched BEFORE it, did not. The response to the polluting "
+            "request proves nothing in either direction: a sound shallow-spread "
+            "merge echoes the injected key straight back while a vulnerable "
+            "recursive merge is silent, because the key landed on the prototype "
+            "and only own properties are serialised. Confirming this class "
+            "leaves the target process altered until it is restarted; the "
+            "engagement's own report names the key and says so."
+        ),
+        coverage_boundary=CoverageBoundary(
+            why_unconfirmed="prototype_pollution_carrier_is_json_body_only",
+            limitation=(
+                "Server-side prototype pollution is probed through JSON request bodies "
+                "only. Whether the same endpoint can be polluted through a form-encoded "
+                "body or a query string depends on which body parser the application "
+                "uses and how it is configured — Express's qs filters __proto__ while "
+                "letting constructor through, and extended:false parses with "
+                "querystring, whose result already has a null prototype — and neither "
+                "the parser nor its version is observable from outside the application. "
+                "A form-encoded endpoint is therefore not cleared by this engine, only "
+                "untested."
+            ),
+        ),
+        title_tokens=("prototype pollution",),
+        remediation=(
+            "Reject __proto__, constructor and prototype as keys wherever request data is "
+            "merged into an object, and prefer a merge that writes with Object.defineProperty "
+            "or into a null-prototype target (Object.create(null)) so a hostile key cannot "
+            "resolve to the prototype at all. Parse request bodies into schema-validated "
+            "objects rather than merging them recursively, and freeze Object.prototype at "
+            "start-up in services that do not extend it. Note that a process already polluted "
+            "stays polluted until it is restarted."
+        ),
+    ),
+    VulnClass(
         key="state_sequence_bypass",
         test_method="_test_state_sequence",
         control_arm=ControlArm(

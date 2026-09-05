@@ -57,6 +57,7 @@ __all__ = [
     "strip_shell_separators",
     "strip_template_delimiters",
     "MARKER_ORACLE_CLASSES",
+    "ConfirmingArm",
     "ControlVerdict",
     "attribution_contradiction",
     "control_evidence_lines",
@@ -122,6 +123,18 @@ DIFFERENTIAL_CONTROL_CLASSES: dict[str, str] = {
         "engagements it consumed 616 of 668 phase-5 refusals, because an application that "
         "404s an unowned id and 200s a neighbour's record is discriminating perfectly and "
         "that gate read it as 'no boundary exists'"
+    ),
+    "_test_prototype_pollution": (
+        "confirms on a differential between two observations of the SAME later request, "
+        "and dispatches its own shape-matched control: the identical recursive merge with "
+        "the one prototype-reaching key replaced by an engine-minted ordinary key, sent "
+        "through the same handler, parser and merge. One of its two gadgets carries no "
+        "minted material at all — a polluted ``status`` shows up as a bare 510, which any "
+        "server may return for its own reasons — so for that gadget the control arm is not "
+        "a check on the oracle, it IS the oracle, and the class may never emit without one "
+        "that refused. Its arms also run in the opposite order to every other class here: "
+        "the control is dispatched BEFORE the payload, because a prototype write outlives "
+        "the request that made it and a control observed afterwards exhibits the effect too"
     ),
 }
 
@@ -471,6 +484,37 @@ def attribution_contradiction(
         f"expected_indicator={expected!r} was minted for this attempt and the "
         f"observation does not cite it: indicator_observed={observed!r}"
     )
+
+
+@dataclass(frozen=True)
+class ConfirmingArm:
+    """What the confirming arm sent and saw, when the control ran BEFORE it.
+
+    Ordinarily a class observes its effect, then dispatches the control, then
+    hands both to the recording seam. That order is impossible for a class whose
+    payload's effect outlives the request: the control would be observed through
+    a target the payload has already changed, would exhibit the effect too, and
+    would kill the finding it exists to license. Prototype pollution is the
+    first such class; a write-crossing arm on the access-control family will be
+    the second, for the same reason.
+
+    So the seam runs the control first and the confirming arm second, and the
+    class hands its half back through this type rather than being trusted to
+    call the recorder afterwards — because a class that can forget to record is
+    a class that will, and the whole point of doing this at one seam is that a
+    class does not do it.
+
+    Attributes:
+        payload: What the confirming arm sent. The decoy must not appear in it,
+            or the two arms were not independent.
+        observation: What the confirming arm claimed to see, verbatim, for the
+            disclosure lead.
+        confirmed: Whether the class's own oracle confirmed on it.
+    """
+
+    payload: str
+    observation: str = ""
+    confirmed: bool = False
 
 
 @dataclass(frozen=True)

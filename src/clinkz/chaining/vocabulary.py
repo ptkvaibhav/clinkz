@@ -163,6 +163,16 @@ NO_YIELD_REASON: dict[str, str] = {
         "A posture assessment of the response's own headers. It recovers nothing "
         "and grants nothing — it describes the response it read."
     ),
+    "_test_prototype_pollution": (
+        "The confirmed effect is a key this engine wrote onto the target process's "
+        "Object.prototype, witnessed coming back as a response header or a status "
+        "code on a later request. That is a write we made, not an artifact we "
+        "recovered: what returns is our own minted value. The class is *about* "
+        "escalating to command execution through a gadget chain, and this engine "
+        "demonstrates no gadget — declaring COMMAND_OUTPUT would make every "
+        "pollution finding the head of a chain whose next link cannot be carried, "
+        "which is the reflected-XSS mistake in a different costume."
+    ),
     "_test_csp": (
         "Whether a served policy leaves script reachable is a property of the "
         "policy. Even a confirmed bypass hands back a witnessed execution, not an "

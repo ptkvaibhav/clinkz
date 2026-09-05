@@ -471,6 +471,7 @@ class _PDFReport:
         self._header_block()
         self._executive_summary()
         self._control_arms()
+        self._residual_mutations()
         self._page_break()
         self._findings()
         self._chains()
@@ -927,6 +928,47 @@ class _PDFReport:
                 value = chain.get(key)
                 if value:
                     self._para(f"<b>{self._text(key)}:</b> {self._text(value)}", self.note)
+
+    def _residual_mutations(self) -> None:
+        """What testing left on the target that the target cannot remove.
+
+        Ahead of the findings, because it is the only section in the document
+        whose content is an instruction to the reader rather than a statement
+        about their application — and a reader who takes the severity counts and
+        stops must not miss it.
+
+        Rendered only when populated. A section reporting "nothing left behind"
+        on every clean run is one an operator learns to skip, which is the state
+        they must not be in on the run where it is populated.
+        """
+        report = self.report
+        if not report.residual_mutations:
+            return
+        self._heading("Changes this test left on your systems")
+        self._para(
+            "Testing this application required writing to it in a way <b>the application "
+            "itself cannot undo</b>. These changes are still in place. They are listed "
+            "whether or not the test that caused them proved a vulnerability, because the "
+            "action they require of you is the same either way.",
+            self.note,
+        )
+        for index, mutation in enumerate(report.residual_mutations, 1):
+            self._heading(
+                f"M{index}. {self._text(mutation.key)} on {self._text(mutation.endpoint)}",
+                self.h3,
+            )
+            self._bullets(
+                [
+                    f"<b>What happened:</b> {self._text(mutation.mechanism)}",
+                    "<b>Still present:</b> "
+                    + (
+                        "yes - witnessed on a later request"
+                        if mutation.witnessed
+                        else "not confirmed"
+                    ),
+                    f"<b>What you need to do:</b> {self._text(mutation.remediation)}",
+                ]
+            )
 
     def _unproven_leads(self) -> None:
         """Unproven exploitation leads — a first-class section, with the reason.

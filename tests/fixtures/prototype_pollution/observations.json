@@ -1,0 +1,282 @@
+{
+  "recorded_from": "docker/protopoll/app.js",
+  "recorded_at": "2026-09-05T06:33:59.570373+00:00",
+  "node_version": "v24.14.0",
+  "note": "Real responses from the Node fixture. Control arm dispatched BEFORE the payload in every case, which is the order the methodology enforces. 'date' is stripped: it is the one header that changes every second.",
+  "cases": [
+    {
+      "endpoint": "/api/v2/profile",
+      "gadget": "header_nonce",
+      "decoy": "clinkzdecoyprotopoll10001",
+      "probe_key": "x-clinkz-pp-10001",
+      "probe_value": "clinkzpp10001",
+      "control_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"profile\":{\"displayName\":\"Ada Lovelace\",\"locale\":\"en-GB\",\"theme\":{\"mode\":\"light\"},\"clinkzdecoyprotopoll10001\":{\"x-clinkz-pp-10001\":\"clinkzpp10001\"}}}"
+      },
+      "control_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"profile\":{\"displayName\":\"Ada Lovelace\",\"locale\":\"en-GB\",\"theme\":{\"mode\":\"light\"},\"clinkzdecoyprotopoll10001\":{\"x-clinkz-pp-10001\":\"clinkzpp10001\"}}}"
+      },
+      "payload_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-clinkz-pp-10001": "clinkzpp10001",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"profile\":{\"displayName\":\"Ada Lovelace\",\"locale\":\"en-GB\",\"theme\":{\"mode\":\"light\"},\"clinkzdecoyprotopoll10001\":{\"x-clinkz-pp-10001\":\"clinkzpp10001\"}}}"
+      },
+      "effect_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-clinkz-pp-10001": "clinkzpp10001",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"profile\":{\"displayName\":\"Ada Lovelace\",\"locale\":\"en-GB\",\"theme\":{\"mode\":\"light\"},\"clinkzdecoyprotopoll10001\":{\"x-clinkz-pp-10001\":\"clinkzpp10001\"}}}"
+      },
+      "merge": "recursive merge, unguarded",
+      "pollutable": true
+    },
+    {
+      "endpoint": "/api/v2/profile",
+      "gadget": "status_code",
+      "decoy": "clinkzdecoyprotopoll10002",
+      "probe_key": "status",
+      "probe_value": 510,
+      "control_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"profile\":{\"displayName\":\"Ada Lovelace\",\"locale\":\"en-GB\",\"theme\":{\"mode\":\"light\"},\"clinkzdecoyprotopoll10002\":{\"status\":510}}}"
+      },
+      "control_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"profile\":{\"displayName\":\"Ada Lovelace\",\"locale\":\"en-GB\",\"theme\":{\"mode\":\"light\"},\"clinkzdecoyprotopoll10002\":{\"status\":510}}}"
+      },
+      "payload_post": {
+        "status": 510,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "status": "510",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"profile\":{\"displayName\":\"Ada Lovelace\",\"locale\":\"en-GB\",\"theme\":{\"mode\":\"light\"},\"clinkzdecoyprotopoll10002\":{\"status\":510}}}"
+      },
+      "effect_observation": {
+        "status": 510,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "status": "510",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"profile\":{\"displayName\":\"Ada Lovelace\",\"locale\":\"en-GB\",\"theme\":{\"mode\":\"light\"},\"clinkzdecoyprotopoll10002\":{\"status\":510}}}"
+      },
+      "merge": "recursive merge, unguarded",
+      "pollutable": true
+    },
+    {
+      "endpoint": "/api/v2/notifications",
+      "gadget": "header_nonce",
+      "decoy": "clinkzdecoyprotopoll10003",
+      "probe_key": "x-clinkz-pp-10003",
+      "probe_value": "clinkzpp10003",
+      "control_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"notifications\":{\"email\":true,\"digest\":\"weekly\",\"channels\":{\"push\":false},\"clinkzdecoyprotopoll10003\":{\"x-clinkz-pp-10003\":\"clinkzpp10003\"}}}"
+      },
+      "control_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"notifications\":{\"email\":true,\"digest\":\"weekly\",\"channels\":{\"push\":false},\"clinkzdecoyprotopoll10003\":{\"x-clinkz-pp-10003\":\"clinkzpp10003\"}}}"
+      },
+      "payload_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"notifications\":{\"email\":true,\"digest\":\"weekly\",\"channels\":{\"push\":false},\"clinkzdecoyprotopoll10003\":{\"x-clinkz-pp-10003\":\"clinkzpp10003\"}}}"
+      },
+      "effect_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"notifications\":{\"email\":true,\"digest\":\"weekly\",\"channels\":{\"push\":false},\"clinkzdecoyprotopoll10003\":{\"x-clinkz-pp-10003\":\"clinkzpp10003\"}}}"
+      },
+      "merge": "recursive merge, guarded key list",
+      "pollutable": false
+    },
+    {
+      "endpoint": "/api/v2/notifications",
+      "gadget": "status_code",
+      "decoy": "clinkzdecoyprotopoll10004",
+      "probe_key": "status",
+      "probe_value": 510,
+      "control_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"notifications\":{\"email\":true,\"digest\":\"weekly\",\"channels\":{\"push\":false},\"clinkzdecoyprotopoll10004\":{\"status\":510}}}"
+      },
+      "control_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"notifications\":{\"email\":true,\"digest\":\"weekly\",\"channels\":{\"push\":false},\"clinkzdecoyprotopoll10004\":{\"status\":510}}}"
+      },
+      "payload_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"notifications\":{\"email\":true,\"digest\":\"weekly\",\"channels\":{\"push\":false},\"clinkzdecoyprotopoll10004\":{\"status\":510}}}"
+      },
+      "effect_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"notifications\":{\"email\":true,\"digest\":\"weekly\",\"channels\":{\"push\":false},\"clinkzdecoyprotopoll10004\":{\"status\":510}}}"
+      },
+      "merge": "recursive merge, guarded key list",
+      "pollutable": false
+    },
+    {
+      "endpoint": "/api/v2/preferences",
+      "gadget": "header_nonce",
+      "decoy": "clinkzdecoyprotopoll10005",
+      "probe_key": "x-clinkz-pp-10005",
+      "probe_value": "clinkzpp10005",
+      "control_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"preferences\":{\"density\":\"comfortable\",\"timezone\":\"Europe/London\",\"clinkzdecoyprotopoll10005\":{\"x-clinkz-pp-10005\":\"clinkzpp10005\"}}}"
+      },
+      "control_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"preferences\":{\"density\":\"comfortable\",\"timezone\":\"Europe/London\",\"clinkzdecoyprotopoll10005\":{\"x-clinkz-pp-10005\":\"clinkzpp10005\"}}}"
+      },
+      "payload_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"preferences\":{\"density\":\"comfortable\",\"timezone\":\"Europe/London\",\"clinkzdecoyprotopoll10005\":{\"x-clinkz-pp-10005\":\"clinkzpp10005\"},\"__proto__\":{\"x-clinkz-pp-10005\":\"clinkzpp10005\"}}}"
+      },
+      "effect_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"preferences\":{\"density\":\"comfortable\",\"timezone\":\"Europe/London\",\"clinkzdecoyprotopoll10005\":{\"x-clinkz-pp-10005\":\"clinkzpp10005\"},\"__proto__\":{\"x-clinkz-pp-10005\":\"clinkzpp10005\"}}}"
+      },
+      "merge": "shallow spread merge (reflects the payload)",
+      "pollutable": false
+    },
+    {
+      "endpoint": "/api/v2/preferences",
+      "gadget": "status_code",
+      "decoy": "clinkzdecoyprotopoll10006",
+      "probe_key": "status",
+      "probe_value": 510,
+      "control_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"preferences\":{\"density\":\"comfortable\",\"timezone\":\"Europe/London\",\"clinkzdecoyprotopoll10006\":{\"status\":510}}}"
+      },
+      "control_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"preferences\":{\"density\":\"comfortable\",\"timezone\":\"Europe/London\",\"clinkzdecoyprotopoll10006\":{\"status\":510}}}"
+      },
+      "payload_post": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"preferences\":{\"density\":\"comfortable\",\"timezone\":\"Europe/London\",\"clinkzdecoyprotopoll10006\":{\"status\":510},\"__proto__\":{\"status\":510}}}"
+      },
+      "effect_observation": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "connection": "close",
+          "transfer-encoding": "chunked"
+        },
+        "body": "{\"preferences\":{\"density\":\"comfortable\",\"timezone\":\"Europe/London\",\"clinkzdecoyprotopoll10006\":{\"status\":510},\"__proto__\":{\"status\":510}}}"
+      },
+      "merge": "shallow spread merge (reflects the payload)",
+      "pollutable": false
+    }
+  ]
+}
