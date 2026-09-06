@@ -573,7 +573,7 @@ class TestSuccessRequiresPositiveEvidence:
             final_url="http://target/portal/v3/session-open",
             login_url="http://target/portal/gateway",
             redirect_chain=[],
-            session_cookies={},
+            session_evidence={},
         )
 
     @pytest.mark.parametrize("status", [400, 401, 403, 404, 405, 415, 422, 500, 503])
@@ -585,7 +585,7 @@ class TestSuccessRequiresPositiveEvidence:
             final_url="http://target/dashboard",
             login_url="http://target/login",
             redirect_chain=["http://target/dashboard"],
-            session_cookies={"SESSION": "abc"},
+            session_evidence={"SESSION": "abc"},
         )
 
     def test_a_different_final_path_alone_is_not_a_redirect(self) -> None:
@@ -596,7 +596,7 @@ class TestSuccessRequiresPositiveEvidence:
             final_url="http://target/somewhere/else",
             login_url="http://target/login",
             redirect_chain=[],
-            session_cookies={},
+            session_evidence={},
         )
 
     def test_a_session_cookie_is_positive_evidence(self) -> None:
@@ -606,7 +606,7 @@ class TestSuccessRequiresPositiveEvidence:
             final_url="http://target/portal/v3/session-open",
             login_url="http://target/portal/gateway",
             redirect_chain=[],
-            session_cookies={"meridian_portal": "abc"},
+            session_evidence={"meridian_portal": "abc"},
         )
 
     def test_a_body_token_is_positive_evidence(self) -> None:
@@ -616,7 +616,7 @@ class TestSuccessRequiresPositiveEvidence:
             final_url="http://target/rest/user/login",
             login_url="http://target/login",
             redirect_chain=[],
-            session_cookies={},
+            session_evidence={},
         )
 
     def test_a_real_redirect_away_from_login_is_positive_evidence(self) -> None:
@@ -627,7 +627,7 @@ class TestSuccessRequiresPositiveEvidence:
             final_url="http://target/index.php",
             login_url="http://target/login.php",
             redirect_chain=["http://target/index.php"],
-            session_cookies={},
+            session_evidence={},
         )
 
 

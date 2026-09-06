@@ -59,6 +59,23 @@ class HTTPClientOutput(ToolOutput):
     #: recording made before the marker existed); an unobserved address merges
     #: nothing, so absence is byte-identical to the behaviour before it.
     resolved_address: str = ""
+    #: Every ``Set-Cookie`` header this response carried, one entry per header,
+    #: verbatim and in the order the transport reported them.
+    #:
+    #: ``response_headers`` is a ``dict``, and a response that sets two cookies
+    #: sends two headers of the same name. Collapsing them into one string loses
+    #: one, and the two transports lose a DIFFERENT one: the curl path joins
+    #: duplicates with ``", "`` so a consumer splitting on the separator it
+    #: guessed keeps the first, and the aiohttp path builds the dict from a
+    #: ``CIMultiDict`` whose later value wins, so it keeps the last. A login
+    #: answering ``Set-Cookie: sid=…`` and ``Set-Cookie: csrf=…`` therefore
+    #: yielded a different single cookie depending on the execution mode.
+    #:
+    #: So the PRODUCER declares the list and no consumer reconstructs a
+    #: separator (invariant 82). Empty on a recording made before this field
+    #: existed, which is why nothing reads it as "this response set no cookie" —
+    #: :attr:`response_headers` is still the answer to that.
+    set_cookie: list[str] = []
 
 
 def _cookie_jar_path(engagement_id: str) -> str:
@@ -563,6 +580,7 @@ class HTTPClientTool(ToolBase):
         redirect_chain: list[str] = []
         status_code = 0
         resp_headers: dict[str, str] = {}
+        set_cookie: list[str] = []
         resp_body = ""
 
         for i, block in enumerate(http_blocks):
@@ -593,12 +611,18 @@ class HTTPClientTool(ToolBase):
                 status_code = code
                 resp_body = body_section
 
-                # Parse headers (append duplicates with `, `)
+                # Parse headers (append duplicates with `, `). ``Set-Cookie`` is
+                # ALSO kept as a list, because that join is lossy for it and a
+                # consumer cannot undo it: a cookie value may itself contain a
+                # comma, so splitting the joined string is a guess about a
+                # separator this code chose.
                 for line in header_section.split("\n"):
                     line = line.strip().rstrip("\r")
                     if ":" in line and not line.startswith("HTTP/"):
                         key, _, value = line.partition(":")
                         k, v = key.strip(), value.strip()
+                        if k.lower() == "set-cookie":
+                            set_cookie.append(v)
                         if k in resp_headers:
                             resp_headers[k] += f", {v}"
                         else:
@@ -614,6 +638,7 @@ class HTTPClientTool(ToolBase):
                 "status_code": status_code,
                 "resolved_address": resolved_address,
                 "response_headers": resp_headers,
+                "set_cookie": set_cookie,
                 "response_body": resp_body,
                 "redirect_chain": redirect_chain,
                 "response_time_ms": round(elapsed_ms, 2),
@@ -668,6 +693,12 @@ class HTTPClientTool(ToolBase):
                         redirect_chain = [str(r.url) for r in resp.history]
 
                     resp_headers = {k: v for k, v in resp.headers.items()}
+                    # ``resp.headers`` is a CIMultiDict; the comprehension above
+                    # keeps the LAST of any repeated header, which for
+                    # ``Set-Cookie`` silently discards every cookie but one. The
+                    # multidict is the only place the full list still exists, so
+                    # it is read here rather than reconstructed downstream.
+                    set_cookie = list(resp.headers.getall("Set-Cookie", []))
                     resp_body = await resp.text(errors="replace")
 
                     raw = (
@@ -682,6 +713,7 @@ class HTTPClientTool(ToolBase):
                         {
                             "status_code": resp.status,
                             "response_headers": resp_headers,
+                            "set_cookie": set_cookie,
                             "response_body": resp_body,
                             "redirect_chain": redirect_chain,
                             "response_time_ms": round(elapsed_ms, 2),
@@ -730,6 +762,7 @@ class HTTPClientTool(ToolBase):
             status_code=data.get("status_code", 0),
             resolved_address=str(data.get("resolved_address") or ""),
             response_headers=data.get("response_headers", {}),
+            set_cookie=data.get("set_cookie") or [],
             response_body=data.get("response_body", ""),
             redirect_chain=data.get("redirect_chain", []),
             response_time_ms=data.get("response_time_ms", 0.0),
