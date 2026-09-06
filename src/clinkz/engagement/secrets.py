@@ -152,6 +152,15 @@ def redact_structure(obj: Any) -> Any:
     header it arrived under. A header dict flattened to a string loses that,
     which is why the walker — not the string rule — makes this call.
 
+    **The key rule reaches a LIST under that key, not only a bare string.**
+    ``Set-Cookie`` is the one header a response legitimately sends more than
+    once, so the producers that keep all of them keep them as a list
+    (``HTTPClientOutput.set_cookie``, ``HopResponse.set_cookies``). Testing
+    ``isinstance(value, str)`` alone would step straight past those into the
+    generic walk, where each element meets only the SHAPE rules — and a session
+    cookie the target named has no shape. The key is the whole of the evidence,
+    so it has to survive the container.
+
     Args:
         obj: A JSON-ish structure.
 
@@ -164,9 +173,15 @@ def redact_structure(obj: Any) -> Any:
         out: dict[Any, Any] = {}
         for key, value in obj.items():
             new_key = redact_structure(key)
-            if isinstance(key, str) and isinstance(value, str):
-                if key.strip().lower() in CREDENTIAL_HEADER_KEYS:
+            if isinstance(key, str) and key.strip().lower() in CREDENTIAL_HEADER_KEYS:
+                if isinstance(value, str):
                     out[new_key] = redact(redact_header_value(key, value))
+                    continue
+                if isinstance(value, (list, tuple)) and all(
+                    isinstance(item, str) for item in value
+                ):
+                    redacted = [redact(redact_header_value(key, item)) for item in value]
+                    out[new_key] = redacted if isinstance(value, list) else tuple(redacted)
                     continue
             out[new_key] = redact_structure(value)
         return out
