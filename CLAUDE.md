@@ -115,7 +115,7 @@ under routing v2 (`claude-sonnet-5` by default — **not Opus**).
 | **Recon (v2)** | Ports → services → tech stack → package identity → `ReconResult` | `_package_identity.py` is the third component source and names PACKAGES, not servers; a dependency **range** is deliberately not read |
 | **Scan (v2)** | Service-specific methods, coverage expansion, API surface | Budgets its own wall clock (`SCAN_TIME_BUDGET`) — the orchestrator's timeout DISCARDS the return value; four discoverers union into `endpoints`, none carrying an application's vocabulary; safe methods only |
 | **Research (v2)** | CVE/technique runbook → engagement runbook + `clinkz_knowledge.db` | **Not web-grounded by default** — grounding is declared, weakest-wins, and stamped rather than absorbed |
-| **Exploit (v2)** | 25 adaptive `_test_*` methodologies by tier | The deterministic check GATES the LLM; phase-3 ranking is `_plan_ranking.py`, not the model's; P7 is the client-side oracle; TERMINAL classes dispatch last |
+| **Exploit (v2)** | 26 adaptive `_test_*` methodologies by tier | The deterministic check GATES the LLM; phase-3 ranking is `_plan_ranking.py`, not the model's; P7 is the client-side oracle; TERMINAL classes dispatch last |
 | **Chaining** | Composition as a capability (`src/clinkz/chaining/`) | Graded by its WEAKEST link; only ever ADDS |
 | **Business logic** | Δ where the developer's intent is the APPLICATION | Intent inferred from the app's own surface, with evidence |
 | **Critic** | **Archived** (`agents/_archive/critic.py`) | Registered but invoked in **0 of 2,774** recorded steps; its job is done by deterministic gates on the emitting path |
@@ -167,7 +167,10 @@ The hard rules:
   The governor owns rate (5 req/s), concurrency (4), the kill switch, blocking
   detection, the window and the action log, and **never raises from the data path**.
 - **`safety/destructive.py` is the one destructive vocabulary**, consulted by both
-  the navigation and submission gates. A parameter VALUE is read for semantics only
+  the navigation and submission gates. A category no request SHAPE can be
+  classified into (`cross_principal_write` — "whose object is this" is a relation,
+  not a property of a request) still lives there and is claimed by the class's
+  own authorization gate. A parameter VALUE is read for semantics only
   when it looks like an identifier the APP chose.
 - **`_run_subprocess` gets the halt check ONLY** — a second slot per request would
   deadlock the semaphore and double-count every rate token.
@@ -518,8 +521,9 @@ detail when you are about to change the code an invariant governs — not by def
     — unevidenced ⇒ a lead. **The status code is never the effect** — the
     read-back is.
 71. **The destructive refusal is the contract, and the benchmark profile does not
-    loosen it.** **Session destruction and security-posture toggles are never
-    permittable on any target** — they damage the ENGAGEMENT, not the target.
+    loosen it.** **Session destruction, security-posture toggles and
+    cross-principal writes are never permittable on any target** — they damage
+    the ENGAGEMENT, not the target.
 72. **A total is not evidence about its parts** (`observability/ledger.py`). Four
     alarm classes stay apart because they have different fixes; *declared but
     never invoked* is tracked separately. **Absent by default**, and it never
@@ -591,12 +595,33 @@ detail when you are about to change the code an invariant governs — not by def
     transient task after one is a stop-the-run condition** — not a warning
     (`TERMINAL_DISPATCH_CLASSES` / `TRANSIENT_DISPATCH_CLASSES`, partitioned over
     the dispatch table; `assert_terminal_dispatch_order` on every dispatch). A
-    wildcard authorization does not cover a terminal class.
+    wildcard authorization does not cover a terminal class. **Among terminal
+    classes the order is the table's DECLARATION order, required rather than
+    permitted**, and it is fixed on interference: a write crossing does not change
+    how the target process parses later writes, a prototype write does. **Being
+    last is what starves them, so they RESERVE plan slots in pass 0** — computed
+    from `TERMINAL_DISPATCH_CLASSES`, a floor never a ceiling, remainder returned
+    to the Tier-1 fill, and zero on a surface no terminal class reaches.
 89. **A change TESTING made that the target cannot undo is stated in the
     client-facing document, naming the key** (`ResidualMutation`). Recorded on
     the WITNESSED effect, not on emission — a disclosure that only fires when we
-    also got a finding out of it is a disclosure that serves us. **Detail →
+    also got a finding out of it is a disclosure that serves us. **Every landed
+    write, whichever arm made it**: a refused finding with three landed writes
+    still discloses three. **Detail →
     [`docs/methodology/prototype-pollution.md`](docs/methodology/prototype-pollution.md).**
+90. **A write is a crossing when a SEPARATE read attributes the persisted object
+    to another principal** (`agents/_write_crossing.py`) — never the status code,
+    never the create's own body. Six probes in a DECLARED order, asserted on what
+    was dispatched: the owner snapshot and both controls precede the payload,
+    because a control graded through a collection the payload grew, or a
+    reference read out of one, is the payload grading its own evidence. `ref(A)`
+    is what the SERVER assigned when the field was omitted; `ref(B)` is looked up
+    in the pre-write snapshot. Every precondition ABSTAINS with nothing sent —
+    an unprovable write still changes the client's data. One dispatch per
+    (collection, principal-pair) per run. **`CATEGORY_CROSS_PRINCIPAL_WRITE` is
+    never-overridable and the class needs `write_crossing` named explicitly.**
+    **Detail →
+    [`docs/methodology/write-crossings.md`](docs/methodology/write-crossings.md).**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

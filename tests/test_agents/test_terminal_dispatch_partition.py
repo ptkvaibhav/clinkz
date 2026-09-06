@@ -29,6 +29,7 @@ import logging
 
 import pytest
 
+from clinkz.agents import exploit as exploit_module
 from clinkz.agents._control_arm import ConfirmingArm
 from clinkz.agents.exploit import (
     DISPATCHABLE_TEST_METHODS,
@@ -37,6 +38,7 @@ from clinkz.agents.exploit import (
     ExploitAgent,
     TerminalDispatchOrderError,
     assert_terminal_dispatch_order,
+    terminal_dispatch_rank,
 )
 from clinkz.models.finding import ExploitPlan, ExploitTask
 
@@ -87,10 +89,36 @@ class TestTheGuardStopsTheRun:
         assert "_test_sqli" in message
         assert terminal in message
 
-    def test_a_second_terminal_class_is_allowed(self) -> None:
-        """Terminal after terminal is the ordinary tail of a run, not a violation."""
+    def test_a_terminal_class_may_continue_its_own_queue(self) -> None:
+        """The ordinary tail of a run: one terminal class working through its tasks."""
         terminal = next(iter(TERMINAL_DISPATCH_CLASSES))
         assert_terminal_dispatch_order(terminal, {terminal})
+
+    def test_the_declared_terminal_order_is_permitted(self) -> None:
+        """Later-declared after earlier-declared is exactly what the rotation does."""
+        declared = sorted(TERMINAL_DISPATCH_CLASSES, key=terminal_dispatch_rank)
+        for index, method in enumerate(declared):
+            assert_terminal_dispatch_order(method, set(declared[:index]))
+
+    @pytest.mark.skipif(
+        len(TERMINAL_DISPATCH_CLASSES) < 2,
+        reason="the ordering among terminal classes only exists once there are two",
+    )
+    def test_a_terminal_class_after_a_later_declared_one_raises(self) -> None:
+        """Terminal-after-terminal is NOT free once there are two of them.
+
+        The old rule permitted any terminal class after any other, which was
+        correct while there was one and became a hole the moment there were two.
+        The order is fixed on interference: a write crossing does not change how
+        the target process parses later writes, and a prototype write does.
+        """
+        declared = sorted(TERMINAL_DISPATCH_CLASSES, key=terminal_dispatch_rank)
+        earlier, later = declared[0], declared[1]
+        with pytest.raises(TerminalDispatchOrderError) as raised:
+            assert_terminal_dispatch_order(earlier, {later})
+        message = str(raised.value)
+        assert earlier in message
+        assert later in message
 
     def test_nothing_dispatched_yet_permits_anything(self) -> None:
         assert_terminal_dispatch_order("_test_sqli", set())
@@ -191,3 +219,68 @@ class TestTheRotationPutsTerminalClassesLast:
 
         assert dispatched[-2:] == [terminal, terminal], dispatched
         assert terminal not in dispatched[:-2], dispatched
+
+
+class TestAWrongRotationStopsTheRun:
+    """The guard OBSERVED refusing a real run, not just a direct call.
+
+    The property holds by construction today: the rotation yields terminal
+    classes in declaration order. That is precisely why the guard reads the
+    declaration ITSELF rather than the helper the rotation sorts by — a guard
+    that consulted the same derived value would agree with the rotation by
+    construction and could never catch it being wrong.
+
+    So the failure is forced the only way a real one could happen: the rotation's
+    ordering helper is replaced, standing in for the scheduler change the guard
+    exists to survive. A guard not seen refusing is not a guard.
+    """
+
+    @pytest.mark.skipif(
+        len(TERMINAL_DISPATCH_CLASSES) < 2,
+        reason="the ordering among terminal classes only exists once there are two",
+    )
+    @pytest.mark.asyncio
+    async def test_terminals_dispatched_backwards_stop_the_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        declared = sorted(TERMINAL_DISPATCH_CLASSES, key=terminal_dispatch_rank)
+        earlier, later = declared[0], declared[1]
+
+        agent = ExploitAgent.__new__(ExploitAgent)
+        agent._logger = logging.getLogger("test.exploit.terminal.rotation")
+        agent._tests_run = 0
+        agent._stopped_early = False
+        agent._category_max_findings = 5
+        agent._category_time_budget = 90.0
+
+        dispatched: list[str] = []
+
+        async def _execute(task: ExploitTask, cache: dict) -> list:
+            dispatched.append(task.test_method)
+            return []
+
+        monkeypatch.setattr(agent, "_execute_task", _execute)
+        monkeypatch.setattr(agent, "_should_stop_dispatching", lambda: False)
+        monkeypatch.setattr(agent, "_trace_dispatch_ordinal", lambda task, ordinal: None)
+        # A scheduler that orders the terminal tail the other way round.
+        monkeypatch.setattr(
+            exploit_module,
+            "terminal_rotation_order",
+            lambda methods: sorted(methods, key=terminal_dispatch_rank, reverse=True),
+        )
+
+        plan = ExploitPlan(
+            tasks=[
+                ExploitTask(test_method=earlier, endpoint_url="http://t/api/a", tier=1),
+                ExploitTask(test_method=later, endpoint_url="http://t/api/b", tier=1),
+            ]
+        )
+        with pytest.raises(TerminalDispatchOrderError) as raised:
+            await agent._step_execute_exploits(plan, None)
+
+        assert dispatched == [later], (
+            "the later-declared terminal class must have gone out first for this test "
+            f"to be measuring the inversion — dispatched {dispatched}"
+        )
+        assert earlier in str(raised.value)
+        assert later in str(raised.value)

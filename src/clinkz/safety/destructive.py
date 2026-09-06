@@ -56,6 +56,24 @@ CATEGORY_BULK_MESSAGING = "bulk_messaging"
 CATEGORY_DATA_RESET = "data_reset"
 CATEGORY_SESSION_DESTRUCTION = "session_destruction"
 CATEGORY_SECURITY_CONTROL = "security_control_toggle"
+#: A write that creates or modifies an object attributed to a principal other
+#: than the caller. Declared HERE because this module is the one destructive
+#: vocabulary — a category restated in ``models/engagement.py`` is a second copy
+#: that drifts — and it is never-overridable
+#: (:func:`~clinkz.models.engagement.never_overridable_categories`) because it
+#: damages the ENGAGEMENT as well as the target: every later observation about
+#: that principal, including the read oracle's own ``owner_read`` arm, is then
+#: made through a collection this run wrote into.
+#:
+#: Nothing classifies a request INTO this category from its URL or body, and
+#: that is deliberate. "Whose object is this" is a relation between a request and
+#: an identity, not a property of a request, so a token vocabulary cannot see it
+#: — :func:`classify_request` would either miss every real crossing or refuse
+#: every ordinary create. The category is claimed by the one class whose oracle
+#: establishes the relation, and it is claimed through the authorization gate
+#: (the client must name ``write_crossing``) rather than through the request
+#: classifier.
+CATEGORY_CROSS_PRINCIPAL_WRITE = "cross_principal_write"
 CATEGORY_UNSAFE_METHOD = "unsafe_method"
 
 # ---------------------------------------------------------------------------
@@ -855,6 +873,7 @@ __all__ = [
     "CATEGORY_BULK_MESSAGING",
     "CATEGORY_CANCELLATION",
     "CATEGORY_CREDENTIAL_CHANGE",
+    "CATEGORY_CROSS_PRINCIPAL_WRITE",
     "CATEGORY_DATA_RESET",
     "CATEGORY_DELETION",
     "CATEGORY_IDENTITY_CHANGE",

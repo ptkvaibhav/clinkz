@@ -114,6 +114,10 @@ CLASS_REQUIRES: dict[str, tuple[ArtifactKind, ...]] = {
     # all — the class's own stated limitation.
     "_test_idor": (_A.CREDENTIAL, _A.SESSION_TOKEN, _A.IDENTITY),
     "_test_mass_assignment": (_A.CREDENTIAL, _A.SESSION_TOKEN),
+    # A second identity is what makes a crossing measurable at all — it is the
+    # class's own stated limitation, and the reference the payload carries has to
+    # be discovered by probing as that identity.
+    "_test_write_crossing": (_A.CREDENTIAL, _A.SESSION_TOKEN, _A.IDENTITY),
     "_test_state_sequence": (_A.CREDENTIAL, _A.SESSION_TOKEN),
     "_test_constraint_violation": (_A.CREDENTIAL, _A.SESSION_TOKEN),
     "_test_repeatability": (_A.CREDENTIAL, _A.SESSION_TOKEN),
@@ -125,6 +129,15 @@ CLASS_REQUIRES: dict[str, tuple[ArtifactKind, ...]] = {
 #: class here can never begin a chain, and if the reason is wrong the engine has
 #: silently declined to escalate a real one.
 NO_YIELD_REASON: dict[str, str] = {
+    "_test_write_crossing": (
+        "The confirmed effect is an object WE wrote, attributed to another principal. "
+        "Nothing came back: the value the object carries is the owner reference this "
+        "engine put there, and the reference itself was discovered by probing as a "
+        "principal whose session the engagement already held. Declaring IDENTITY here "
+        "would make every crossing the head of a chain built on a credential we were "
+        "GIVEN, which is the reflected-XSS mistake — a yield is what a class's "
+        "confirmation PROVES, not what it is named after."
+    ),
     "_test_xss_reflected": (
         "The confirmed effect is a payload landing in an executable context, and "
         "under P7 a script executing. Neither is a token in our hands: this engine "
@@ -255,6 +268,10 @@ CLASS_CONFIRMATION_PRIMITIVES: dict[str, tuple[str, ...]] = {
     "_test_input_validation": ("P4",),
     "_test_secrets_exposure": ("P3",),
     "_test_mass_assignment": ("P4",),
+    # The persisted object is read back and compared against a never-issued
+    # owner reference that round-trips identically — the decoy-substitution
+    # oracle, on a record instead of a response.
+    "_test_write_crossing": ("P4",),
     "_test_state_sequence": ("P4",),
     "_test_constraint_violation": ("P4",),
     "_test_repeatability": ("P4",),

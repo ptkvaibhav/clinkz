@@ -591,6 +591,48 @@ UNPROVEN_WHY_UNCONFIRMED: frozenset[str] = frozenset(
         # outside, so the endpoint is not cleared, it is untested, and the lead
         # says which.
         "prototype_pollution_carrier_is_json_body_only",
+        # The write-crossing class's own abstentions. Every one of these is a
+        # decision made BEFORE a payload is sent, which is why there are so many
+        # of them: a read arm that proves nothing costs a request, and a write arm
+        # that proves nothing costs a row in another principal's data that this
+        # engine has no permission to delete. Declared in
+        # :data:`~clinkz.agents._write_crossing.WRITE_CROSSING_WHY_UNCONFIRMED`
+        # and asserted in sync with this set, so a reason the oracle can produce
+        # and this vocabulary does not know about is a red build.
+        #
+        # The write could not be read back, so it could not be attributed.
+        "write_crossing_not_readable_back",
+        # The created object carries no owning field. Nobody it belongs to, so
+        # nothing to cross into — the write side of the read oracle's
+        # public-catalogue-record abstain.
+        "write_crossing_object_names_no_owner",
+        # ``ref(B)`` was not discovered by probing AS B. Reads need the SELF arm
+        # anchored and writes need the PAYLOAD's owner value discovered; both are
+        # the same law — a reference the caller owns, or abstain. Also carries the
+        # loud arms-inverted refusal, which is that fact caught one step later.
+        "write_crossing_reference_not_owned",
+        # Fewer than two principals, so B's own authorized read — the attribution
+        # source AND the source of ``ref(B)`` — cannot be dispatched at all.
+        "write_crossing_requires_second_principal",
+        # The never-issued control could not be SENT. An un-sent control licenses
+        # nothing, and this payload is irreversible, so it was skipped.
+        "write_crossing_control_arm_not_dispatched",
+        # The never-issued control LANDED, attributed to a principal that does
+        # not exist. The handler stores the owner field as an opaque string
+        # rather than honouring it, and the "crossing" is that same storage.
+        "write_crossing_absent_reference_was_honoured",
+        # The liveness control did not attribute the caller's own object to the
+        # caller, so the endpoint was never shown to honour the owning field in
+        # this shape — an object attributed to somebody else would be a
+        # coincidence rather than a crossing.
+        "write_crossing_endpoint_does_not_honour_owner_field",
+        # The anonymous arm was never sent, so nothing established that this
+        # endpoint requires a session at all.
+        "write_crossing_anonymous_arm_not_dispatched",
+        # The anonymous arm SUCCEEDED. The caller's session was not what crossed
+        # anything: the endpoint is open, which is a different finding with a
+        # different remediation.
+        "write_crossing_endpoint_accepts_unauthenticated_writes",
     }
 )
 

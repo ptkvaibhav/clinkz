@@ -103,28 +103,45 @@ structural view — module layout, phase steps, data flow — see
   `CLIENT_ORACLE_MODE` is `auto` by default — the Orchestrator provisions it for
   every engagement, while a **directly invoked** agent (unit suite, replay,
   smoke cell) never self-resolves one, so the black-box floor stays
-  byte-identical. All 25 `_test_*` methods are adaptive multi-phase
+  byte-identical. All 26 `_test_*` methods are adaptive multi-phase
   methodologies (six-phase injection family; four-phase behavioral family). The
   **deterministic check GATES the LLM** — no LLM verdict emits on its own; when
   phase-2 has empirically confirmed the primitive, phase-4 prefers the
   deterministic build.
 
-  One of the 25 is **TERMINAL**: `_test_prototype_pollution` writes a key onto
+  Two of the 26 are **TERMINAL**. `_test_prototype_pollution` writes a key onto
   the target process's own `Object.prototype`, which changes how the
   application answers requests the class never made and persists until the
-  process restarts. Three things follow, none of them optional. It dispatches
+  process restarts. `_test_write_crossing` creates an object attributed to a
+  principal that is not the caller: it is in that principal's collection when
+  the run ends, and no request this engine may send removes it, because deleting
+  an application record needs `CATEGORY_DELETION` and the client-safe default
+  refuses it. Three things follow for both, none of them optional. They dispatch
   **last**, after every other class has finished, because every observation
-  after it — including every other class's control arm — would otherwise
+  after them — including every other class's control arm — would otherwise
   measure a target this run had already altered, and the partition is asserted
-  on every dispatch as a stop-the-run condition rather than a warning. Its own
-  control arm runs **before** its payload (`_run_control_arm_first`), because a
-  control observed afterwards exhibits the effect too and kills the true
+  on every dispatch as a stop-the-run condition rather than a warning. Their own
+  control arms run **before** their payloads (`_run_control_arm_first`), because
+  a control observed afterwards exhibits the effect too and kills the true
   positive it exists to license. And the change is DISCLOSED in the
   client-facing document as a `ResidualMutation` naming the key — the first
-  entry in a Clinkz report whose remediation is something the operator must do
+  entries in a Clinkz report whose remediation is something the operator must do
   to their own infrastructure because we ran the test. A wildcard authorization
-  does not cover it. **Detail →
-  [`docs/methodology/prototype-pollution.md`](methodology/prototype-pollution.md).** **Per-methodology detail (oracles, phantom fixes,
+  does not cover either.
+
+  Two consequences of there being **two** of them. Among terminal classes the
+  order is `TERMINAL_DISPATCH_CLASSES`'s own declaration order and it is
+  REQUIRED, not merely permitted — write crossing before prototype pollution,
+  because a crossing does not change how the process parses later writes and a
+  prototype write does, so a crossing graded after a pollution is graded on a
+  process this run had already altered. And because being last is what starves
+  them (the plan's per-class floor walks the category order and stops at the
+  cap), they take a **pass-0 slot reservation** computed from that same table:
+  a floor rather than a ceiling, remainder returned to the Tier-1 fill, and zero
+  on a surface no terminal class reaches — so a run without one plans
+  byte-identically. **Detail →
+  [`docs/methodology/prototype-pollution.md`](methodology/prototype-pollution.md)
+  · [`docs/methodology/write-crossings.md`](methodology/write-crossings.md).** **Per-methodology detail (oracles, phantom fixes,
   live-validation, N/A-by-construction) →
   [`docs/methodology/`](docs/methodology/README.md); the five Phase-3 classes and
   the control each confirms against →

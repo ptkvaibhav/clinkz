@@ -502,16 +502,57 @@ class TestTheTwoTiers:
         assert requirement.why_unconfirmed == "single_role_cannot_attribute"
         assert requirement.reason.strip()
 
+    #: The classes whose defining effect is a RELATION between a response and an
+    #: identity, and which therefore cannot confirm on one principal. Listed
+    #: rather than derived, because "this class needs two identities" is a
+    #: coverage cost declared on purpose and a class that acquires one silently
+    #: is what this test exists to catch.
+    ACCESS_CONTROL_FAMILY = frozenset({"_test_idor", "_test_write_crossing"})
+
     def test_every_other_class_needs_exactly_one_principal(self) -> None:
-        """The new rule must not quietly widen to classes that never needed it."""
+        """The rule must not quietly widen to classes that never needed it."""
         from clinkz.agents.exploit import DISPATCHABLE_TEST_METHODS
 
         widened = sorted(
             name
             for name in DISPATCHABLE_TEST_METHODS
-            if name != "_test_idor" and multi_principal_requirement(name).principals_required > 1
+            if name not in self.ACCESS_CONTROL_FAMILY
+            and multi_principal_requirement(name).principals_required > 1
         )
         assert widened == [], widened
+
+    def test_the_family_is_exactly_the_classes_that_declare_the_requirement(self) -> None:
+        """Both directions, so the list above cannot outlive what it describes."""
+        from clinkz.agents.exploit import DISPATCHABLE_TEST_METHODS
+
+        declaring = {
+            name
+            for name in DISPATCHABLE_TEST_METHODS
+            if multi_principal_requirement(name).principals_required > 1
+        }
+        assert declaring == self.ACCESS_CONTROL_FAMILY, (
+            f"declared but not listed: {sorted(declaring - self.ACCESS_CONTROL_FAMILY)}; "
+            f"listed but no longer declaring: {sorted(self.ACCESS_CONTROL_FAMILY - declaring)}"
+        )
+
+    def test_the_write_side_declares_its_own_lead_reason(self) -> None:
+        """The write crossing needs two principals for a DIFFERENT missing arm.
+
+        The read oracle is missing B's authorized read to attribute the response
+        it was served. The write side is missing that AND the probe that
+        discovers ``ref(B)`` — the value the payload has to carry. Two reasons,
+        two vocabulary entries: a lead is only actionable when it names the
+        observation that was missing.
+        """
+        from clinkz.models.finding import UNPROVEN_WHY_UNCONFIRMED
+
+        requirement = multi_principal_requirement("_test_write_crossing")
+        assert requirement.principals_required == 2
+        assert requirement.why_unconfirmed == "write_crossing_requires_second_principal"
+        assert requirement.why_unconfirmed in UNPROVEN_WHY_UNCONFIRMED
+        assert (
+            requirement.why_unconfirmed != multi_principal_requirement("_test_idor").why_unconfirmed
+        )
 
 
 class TestAttribution:
