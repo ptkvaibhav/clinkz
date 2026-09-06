@@ -84,12 +84,27 @@ def never_overridable_categories() -> frozenset[str]:
 
     The line is not "how bad is it" — every category a profile CAN permit is bad
     for the client, which is precisely what a throwaway target makes acceptable.
-    The line is WHO it damages: these two damage the ENGAGEMENT rather than the
+    The line is WHO it damages: these three damage the ENGAGEMENT rather than the
     target. Destroying the shared session or flipping the application's security
     posture mid-run makes every later observation a measurement of a different
     application, which is how a run silently produces confident nonsense. A
     disposable target does not make a corrupted engagement worth having, so no
     profile can opt into these.
+
+    **A cross-principal write is here on the same argument, and it damages
+    both.** The engagement half is what decides it: B's own authorized read is
+    the read oracle's attribution source, so a write crossing dispatched into B's
+    collection corrupts the input of the class most likely to run after it —
+    exactly the "measurement of a different application" this line exists to
+    prevent. The client half is why a throwaway declaration cannot buy it either:
+    a record written into ANOTHER user's account is not one the client deletes
+    "the way they delete any record", because they must first discover it, in an
+    account that is not the one they gave us.
+
+    Being here is not what stops the class from running — it stops a
+    ``BenchmarkProfile`` from PERMITTING the category. The class itself is
+    terminal, so a wildcard authorization does not cover it either: the client
+    names ``write_crossing`` explicitly or it is withheld and the report says so.
 
     Read from :mod:`clinkz.safety.destructive` at call time rather than imported
     at module scope: this module is imported by the engagement gate, which the
@@ -99,11 +114,18 @@ def never_overridable_categories() -> frozenset[str]:
     drifts.
     """
     from clinkz.safety.destructive import (
+        CATEGORY_CROSS_PRINCIPAL_WRITE,
         CATEGORY_SECURITY_CONTROL,
         CATEGORY_SESSION_DESTRUCTION,
     )
 
-    return frozenset({CATEGORY_SESSION_DESTRUCTION, CATEGORY_SECURITY_CONTROL})
+    return frozenset(
+        {
+            CATEGORY_SESSION_DESTRUCTION,
+            CATEGORY_SECURITY_CONTROL,
+            CATEGORY_CROSS_PRINCIPAL_WRITE,
+        }
+    )
 
 
 def overridable_categories() -> frozenset[str]:
@@ -217,9 +239,9 @@ class BenchmarkProfile(BaseModel):
             raise ValueError(
                 f"these categories can never be permitted, on any target: "
                 f"{', '.join(forbidden)}. They damage the ENGAGEMENT rather than the "
-                f"target — destroying the shared session or flipping the application's "
-                f"security posture makes every later observation a measurement of a "
-                f"different application."
+                f"target — destroying the shared session, flipping the application's "
+                f"security posture, or writing an object into another principal's data "
+                f"makes every later observation a measurement of a different application."
             )
         allowed = overridable_categories()
         unknown = sorted(set(cleaned) - allowed)

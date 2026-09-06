@@ -36,6 +36,7 @@ from clinkz.safety.destructive import (
     CATEGORY_BULK_MESSAGING,
     CATEGORY_CANCELLATION,
     CATEGORY_CREDENTIAL_CHANGE,
+    CATEGORY_CROSS_PRINCIPAL_WRITE,
     CATEGORY_DATA_RESET,
     CATEGORY_DELETION,
     CATEGORY_IDENTITY_CHANGE,
@@ -60,6 +61,10 @@ _REFUSED_CATEGORIES: tuple[tuple[str, str], ...] = (
     (CATEGORY_UNSAFE_METHOD, "Sending an inherently unsafe method (PUT / PATCH / DELETE)"),
     (CATEGORY_SESSION_DESTRUCTION, "Logging the engagement's own session out"),
     (CATEGORY_SECURITY_CONTROL, "Toggling a WAF, IDS, or security-level control"),
+    (
+        CATEGORY_CROSS_PRINCIPAL_WRITE,
+        "Creating or modifying an object attributed to a principal other than the caller",
+    ),
 )
 
 #: Every category, as the classifier and the profile validator know them. The

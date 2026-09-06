@@ -480,7 +480,12 @@ CATEGORY_NOT_ADDRESSABLE: dict[str, str] = {
 CATEGORY_CLASSES: dict[str, tuple[str, ...]] = {
     "Injection": ("_test_sqli", "_test_nosqli", "_test_cmdi", "_test_ssti", "_test_xxe"),
     "XSS": ("_test_xss_reflected", "_test_xss_stored", "_test_xss_dom"),
-    "Broken Access Control": ("_test_idor",),
+    # Both sides of one boundary: ``_test_idor`` asks whether an object may be
+    # READ, ``_test_write_crossing`` whether one may be WRITTEN attributed to
+    # somebody else. Declared here whether or not either fires on a given run —
+    # a class missing from this map cannot attribute a solve it earned, which is
+    # the failure mode that costs a number its meaning.
+    "Broken Access Control": ("_test_idor", "_test_write_crossing"),
     "Broken Authentication": ("_test_brute_force", "_test_jwt", "_test_weak_session"),
     "Sensitive Data Exposure": ("_test_secrets_exposure", "_test_lfi", "_test_idor"),
     "Improper Input Validation": (

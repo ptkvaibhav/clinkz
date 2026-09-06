@@ -1612,8 +1612,17 @@ Two consequences worth stating rather than discovering:
   the rotation, so a cooperative-deadline stop drops it before anything else.
   That is the correct trade — dispatching it early to preserve breadth would
   corrupt every observation after it — and
-  `test_breadth_survives_dispatch_deadline` now asserts the exclusion rather than
-  tolerating it, so the loss is visible in the test that owns breadth.
+  `test_breadth_survives_dispatch_deadline` asserts the exclusion rather than
+  tolerating it, so the loss is visible in the test that owns breadth. **The
+  plan-slot reservation does not change this and was never meant to.** The
+  reservation is about whether a terminal class is in the PLAN; the deadline is
+  about whether the dispatcher reaches it. They are different bounds with
+  different fixes, and the exclusion still holds under an early deadline: the
+  rotation yields a terminal class only once no transient task is left, so a stop
+  before that point costs it whatever the plan holds. What the reservation
+  changes is that the loss is now always a *dispatch* loss — before it, a small
+  cap could cost the class silently one stage earlier, and the two were
+  indistinguishable in the artifacts.
 * **A wildcard authorization does not cover a terminal class.** `permits_all` is
   how a client says "test everything"; it is not how they say "leave my process
   altered until I restart it". Every other class either observes or writes a
@@ -1621,6 +1630,43 @@ Two consequences worth stating rather than discovering:
   client would have wanted to be asked about separately. This one does, so it
   needs its key named, and the report's *What was NOT tested* section says which
   key and why.
+
+#### Two terminal classes: the order, and the starvation
+
+Both of these changed the moment there was a second one, and each was a hole
+that a single terminal class could not have exposed.
+
+**Terminal-after-terminal used to be permitted outright.** With one terminal
+class that was correct and cost nothing. With two it is a hole: the arbitrary
+order has to become a *fixed* one, and it has to be fixed on a reason rather than
+a preference. The reason is interference. A write crossing creates an ordinary
+application record; it does not change how the process parses the writes that
+come after it. A prototype write does — every object the process constructs from
+then on inherits the key, so a later write's own body is merged through a changed
+prototype and the read-back that grades it is served by a changed handler. So
+pollution goes last, write crossing is declared first, and
+`assert_terminal_dispatch_order` **requires** that order instead of permitting
+any terminal sequence.
+
+The rotation and the guard read the same table and read it *differently on
+purpose*: the rotation sorts by `terminal_dispatch_rank`, the guard indexes
+`TERMINAL_DISPATCH_CLASSES` itself. A guard that consulted the same derived value
+the thing it guards sorts by would agree with it by construction and could never
+catch it being wrong — the guard-domain law, applied to an ordering.
+
+**Being last is what starves them.** The deterministic plan's per-class floor
+walks `_DETERMINISTIC_CATEGORY_ORDER` and stops at the cap, and the terminal
+classes are declared last there *because the dispatcher runs them last*. So a cap
+smaller than the applicable class count removes exactly them, and removes them
+first — and a class that was never planned is indistinguishable, in every
+artifact a run produces, from a class that ran and found nothing. The fix is the
+same shape as the dependency→CVE source's slot reservation, one layer earlier: a
+**pass-0 reservation sized before anything spends**, COMPUTED from
+`TERMINAL_DISPATCH_CLASSES` rather than from a second list that agrees with it
+today, spent only where the earlier passes left a terminal class with no task at
+all, and returned to the Tier-1 fill otherwise. A floor, never a ceiling. A run
+whose surface reaches no terminal class reserves zero and plans byte-identically,
+which is what makes the reservation safe to pay for on every other run.
 
 ### 89. A change TESTING made that the target cannot undo goes in the client-facing document
 
@@ -1650,3 +1696,86 @@ Two details carry the honesty:
   on every clean run is one an operator learns to skip — which is exactly the
   state they must not be in on the run where it is populated. Same reasoning as
   the ledger's permanent-benign-alarm rule (invariant 77).
+
+* **Every landed write, whichever arm made it.** The pollution class has one
+  payload, so "the write that was witnessed" and "the write the finding is about"
+  were the same object and the distinction never came up. The write-crossing
+  class has four write arms and an anchoring probe, and *most of them land on a
+  sound target*: the liveness control's object, the anchoring object, and — on an
+  endpoint that stores an unowned reference — the never-issued control's object
+  too. A refused finding with three landed writes discloses three. Tying the
+  ledger to the confirming arm would have disclosed the one write we got a
+  finding out of and silently left the others in the client's data.
+
+### 90. A write is a crossing when a SEPARATE read attributes the object to another principal
+
+The read oracle (invariant 31) proves *A was served B's object*. This proves *A
+wrote an object that is B's*. Same boundary, opposite direction, and almost
+nothing transfers: different defining effect, different arms, a different
+destructive category, a different dispatch class.
+
+**What is deliberately not the effect.** `201 Created` proves a record was made
+and says nothing about what it claims to belong to — every framework that
+silently discards an unbound field returns the same 201 as one that honours it,
+which is the identical error `_test_mass_assignment` already refuses to make.
+Nor is the create's own response body: an echo of the submitted owner value
+proves the handler reflects its input, and frameworks reflect before discarding.
+Only a **separate read** of the persisted object is evidence, and attribution
+comes off the owning field through `owner_claim`, reused verbatim from the read
+oracle rather than re-derived.
+
+**Nothing is sent until the claim could be proven.** A read arm that proves
+nothing costs a request; a write arm that proves nothing costs a row in another
+principal's data that this engine has no permission to delete — removing it needs
+`CATEGORY_DELETION`, which the client-safe default refuses, so a cleanup gated on
+a destructive permission is not a cleanup. Every precondition is therefore an
+ABSTAIN with nothing sent, and there are more of them than any other class has.
+
+**`ref(A)` is what the SERVER assigned.** This is the one place the specification
+was under-specified and building it found out. §3 says arm 1 carries `ref(A)` and
+never says where `ref(A)` comes from. Taking it from A's identity tokens — the
+way the read oracle reads the caller's identity — does not work: those are
+usernames and email addresses, and a collection keyed on a numeric `UserId` has
+never issued them, so arm 1 would fail for a reason that says nothing about the
+endpoint. The fix is the write §2(a) already described, promoted to a named
+probe: create an ordinary object as A with the owning field **omitted**, so the
+server assigns the owner. One write answers three questions — the write is
+locatable in a subsequent read, its records name an owner, and the owner the
+server named for A is `ref(A)` in the application's own spelling.
+
+**The order is the claim, and it is asserted on what was dispatched.** Two
+separate orderings are folded into one declared tuple:
+
+* the controls precede the payload, for invariant 87's reason, sharpened: on the
+  create arms a control dispatched afterwards is graded against a collection the
+  payload already grew — a handler that dedupes or rate-limits answers
+  differently — and on a modify it reads an object the payload already changed,
+  exhibits the effect, and kills the true positive it exists to license;
+* **the owner snapshot precedes the payload**, which is not in invariant 87 at
+  all. The snapshot is B's read of B's collection and it is where `ref(B)` comes
+  from. Taken after the crossing it would be a read of a collection this class had
+  just written into — the payload grading its own attribution source, one layer
+  above the control-order defect.
+
+Per invariant 35 the acceptance is the arms: the dispatch sequence is recorded as
+a fact about the run, and an inversion REFUSES rather than grading. The negative
+fixture is a set of observations byte-identical to a sound run's whose only
+difference is the order, and it must fail.
+
+**One dispatch per (collection, principal-pair) per run.** Terminal ordering
+orders classes, not tasks. The plan legitimately holds several tasks for one
+collection — two discoverers spelling a route differently, an item URL beside its
+collection — and every arm of this class writes, so a second dispatch is four
+more objects in another principal's data to re-answer a question the run has
+answered.
+
+**The category damages the engagement, not only the target.**
+`CATEGORY_CROSS_PRINCIPAL_WRITE` is never-overridable, beside session destruction
+and the security-posture toggle, and the engagement half is what decides it: B's
+own authorized read is the read oracle's attribution source, so a write crossing
+dispatched into B's collection corrupts the input of the class most likely to run
+after it. That is exactly the "measurement of a different application" the
+never-overridable line exists to prevent. The client half is why a throwaway
+declaration cannot buy it either — a record written into another user's account
+is not one the client deletes "the way they delete any record", because they must
+first discover it, in an account that is not the one they gave us.

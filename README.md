@@ -375,7 +375,7 @@ uses the model *for*, since that is what actually differs.
 | **Recon** | Port analysis, tech-stack extraction, synthesis | Port scan → service/version → web recon → tech stack |
 | **Scan** | Strategy planning, output review, coverage check | Crawl + fuzz HTTP, enumerate FTP/SSH/SMB/DB; coverage checkpoint via fallback chains |
 | **Research** | Query generation + technique synthesis. **Not web-grounded** — see above | Cross-engagement KB lookup + NVD CVE feed; rate-limit-aware with a wall-clock budget; persists techniques back to `clinkz_knowledge.db` |
-| **Exploit** | Plans tests, and named checkpoints inside each methodology | Deterministic `_test_*` skills execute; 25 adaptive multi-phase methodologies (injection family: SQLi, NoSQL, SSTI, XXE, …; plus Tier-2 JWT token forgery and SSRF, and one TERMINAL class — server-side prototype pollution — dispatched last because its effect outlives the run) |
+| **Exploit** | Plans tests, and named checkpoints inside each methodology | Deterministic `_test_*` skills execute; 26 adaptive multi-phase methodologies (injection family: SQLi, NoSQL, SSTI, XXE, …; plus Tier-2 JWT token forgery and SSRF, and two TERMINAL classes — server-side prototype pollution and cross-principal write — dispatched last, in a declared order, because their effect outlives the run and each would grade the other against a target it had changed) |
 | **Report** | **Zero LLM calls** | Pulls findings from state store, emits JSON + Markdown in <30 s |
 
 > **Critic:** archived (`src/clinkz/agents/_archive/critic.py`). It was

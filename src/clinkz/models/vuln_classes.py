@@ -920,6 +920,79 @@ VULN_CLASSES: tuple[VulnClass, ...] = (
         ),
     ),
     VulnClass(
+        key="write_crossing",
+        test_method="_test_write_crossing",
+        # No ``control_arm`` exemption, for the same reason ``_test_idor`` has
+        # none: the class DISPATCHES a never-issued owner reference through the
+        # shared ``_run_control_arm_first`` seam and records its verdict in the
+        # evidence, so it is bound by the never-sent-control rule rather than
+        # excused from it — see
+        # :data:`~clinkz.agents._control_arm.DIFFERENTIAL_CONTROL_CLASSES`. A
+        # ``governing_rule`` here would claim a DIFFERENT control governs it,
+        # which is what that field is for and is not what is true.
+        label="Cross-Principal Write (Broken Access Control on Create)",
+        capability=_C.SERVER_SIDE,
+        multi_principal=MultiPrincipalRequirement(
+            principals_required=2,
+            why_unconfirmed="write_crossing_requires_second_principal",
+            reason=(
+                "the defining effect is that the caller created or modified an object "
+                "attributable to someone else, and the value that makes it theirs has to "
+                "be DISCOVERED by probing as that principal rather than synthesised or "
+                "incremented off the caller's. One principal can neither source that "
+                "reference nor corroborate the attribution with the owner's own "
+                "authorized read of the object"
+            ),
+        ),
+        limitation=(
+            "Distinct from the access-control READ class, which asks whether an "
+            "object may be fetched. This asks whether one may be WRITTEN "
+            "attributed to another principal. Confirmation requires the created "
+            "object to be located in a SEPARATE read of the collection and "
+            "attributed by the field the application itself names an owner with "
+            "— a status code never confirms, because every framework that "
+            "silently discards an unbound field returns the same 201 as one that "
+            "honours it, and neither does the write's own response body, because "
+            "frameworks reflect before discarding. It also requires at least two "
+            "authenticated roles, RANKED via the optional 'privilege' field on "
+            "each role in the credential file: the crossing is dispatched from "
+            "the least privileged identity, because a privileged principal "
+            "filing an object on a subordinate's behalf is in most applications "
+            "the feature. Every arm of this class WRITES, so a run that confirms "
+            "it — and a run that only reaches its control arms — leaves objects "
+            "behind that this engine cannot delete; the report names each one."
+        ),
+        coverage_boundary=CoverageBoundary(
+            why_unconfirmed="write_crossing_object_names_no_owner",
+            limitation=(
+                "An endpoint whose records name no owner cannot be crossed into, "
+                "and this class abstains rather than infers — the same boundary "
+                "the read oracle draws around a public catalogue record, for the "
+                "same reason: there is nobody the object belongs to. The class "
+                "also abstains, sending nothing at all, whenever the write "
+                "cannot be located in a subsequent read, because a write that "
+                "cannot be read back is a write that cannot be attributed and "
+                "an unprovable write still changes the client's data. Both are "
+                "real coverage boundaries rather than formalities: an "
+                "access-control flaw on such an endpoint produces the same "
+                "artifact a sound one does, which is nothing."
+            ),
+        ),
+        title_tokens=(
+            "cross-principal write",
+            "write crossing",
+        ),
+        remediation=(
+            "Set an object's owner server-side from the authenticated session, never from the "
+            "request body, and reject a request that supplies one rather than silently "
+            "discarding it — a discarded field and an honoured field return the same status, "
+            "so silence here is what makes the flaw invisible in testing. Where a privileged "
+            "role legitimately files an object on another user's behalf, authorise that "
+            "capability explicitly on the role rather than on the presence of the field, and "
+            "log it. Apply the same rule to update as to create."
+        ),
+    ),
+    VulnClass(
         key="prototype_pollution",
         test_method="_test_prototype_pollution",
         label="Server-Side Prototype Pollution",

@@ -33,6 +33,13 @@ src/clinkz/
 │                     #   WRONG direction: a sound shallow-spread merge echoes
 │                     #   the injected key and a vulnerable recursive one does
 │                     #   not),
+│                     #   _write_crossing (the WRITE side of the access-control
+│                     #   boundary — attribution read off the PERSISTED object
+│                     #   through _idor_oracle.owner_claim, never off the create's
+│                     #   status or its own echo; the arm order is a declared
+│                     #   tuple and an inversion REFUSES, because the snapshot
+│                     #   ref(B) comes from is a collection the payload writes
+│                     #   into),
 │                     #   _url_safety (may we fetch it?), _url_shape (in what order?),
 │                     #   _origin (THE scheme+host fence — one helper, six call sites;
 │                     #   + OriginIdentity: which origins are ONE SERVICE, from

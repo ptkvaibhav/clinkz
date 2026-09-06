@@ -124,6 +124,19 @@ DIFFERENTIAL_CONTROL_CLASSES: dict[str, str] = {
         "404s an unowned id and 200s a neighbour's record is discriminating perfectly and "
         "that gate read it as 'no boundary exists'"
     ),
+    "_test_write_crossing": (
+        "confirms on a differential between four dispatched WRITES and dispatches its own "
+        "never-issued owner reference: a value of the same shape, length and character "
+        "classes as the real one that belongs to nobody, sent through the same handler in "
+        "the same body shape and required to land unattributed — or not to land at all. Its "
+        "control also runs BEFORE the payload, and for a sharper reason than the pollution "
+        "class's: a control dispatched afterwards is observed through a collection the "
+        "payload has already grown, and on the modify arm through an object the payload has "
+        "already changed, so it exhibits the effect too and kills the true positive it "
+        "exists to license. A minted decoy would be wrong here for the same reason it is "
+        "wrong for _test_idor — the endpoint expects a reference, and a value shaped like a "
+        "token takes the target's parse-error path and differs from everything"
+    ),
     "_test_prototype_pollution": (
         "confirms on a differential between two observations of the SAME later request, "
         "and dispatches its own shape-matched control: the identical recursive merge with "

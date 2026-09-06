@@ -76,6 +76,7 @@ oracle set.
 | Business logic: numeric constraint violation | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
 | Business logic: single-use action replayed | [chaining-and-business-logic.md](chaining-and-business-logic.md) |
 | Server-side prototype pollution (CWE-1321) | [prototype-pollution.md](prototype-pollution.md) |
+| Cross-principal write (broken access control on create) | [write-crossings.md](write-crossings.md) |
 
 ## Cross-cutting
 
@@ -94,7 +95,7 @@ oracle set.
 | Classes whose verdict asks no model (and the measurements that removed the call) | [deterministic-verdict-classes.md](deterministic-verdict-classes.md) |
 | Phase-3 plan ranking: the fingerprint decides the set, the cap guards the tail | [plan-ranking.md](plan-ranking.md) |
 | SCA catalogue breadth: what a real affected-range predicate would cost | [sca-catalogue-breadth.md](sca-catalogue-breadth.md) |
-| Terminal dispatch: a class whose effect outlives the run, and the disclosure it owes | [prototype-pollution.md](prototype-pollution.md) |
+| Terminal dispatch: a class whose effect outlives the run, and the disclosure it owes | [prototype-pollution.md](prototype-pollution.md) · [write-crossings.md](write-crossings.md) |
 
 The gray-box discovery engine (Δ-capability model, capability classes, capability
 learning, cross-language, cross-service) lives under `docs/discovery-engine-*.md`.
