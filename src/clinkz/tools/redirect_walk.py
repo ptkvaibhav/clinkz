@@ -108,12 +108,20 @@ class HopResponse(NamedTuple):
             themselves any more.
         payload: Whatever the caller needs handed back — a body, a raw dump, a
             parsed model. The walk never reads it.
+        set_cookies: Every ``Set-Cookie`` header this hop carried, one entry per
+            header, verbatim. ``headers`` is a ``dict`` and a response that sets
+            two cookies sends two headers of the same name, so the dict keeps one
+            of them and which one it keeps depends on the transport. The walk
+            never reads this either — it exists so the TRANSPORT declares the
+            list at the only point it still has it, rather than a consumer
+            splitting the joined string on a separator somebody guessed.
     """
 
     status: int
     headers: dict[str, str]
     landed_url: str = ""
     payload: Any = None
+    set_cookies: tuple[str, ...] = ()
 
 
 class WalkOutcome(NamedTuple):

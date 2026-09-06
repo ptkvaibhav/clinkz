@@ -782,6 +782,43 @@ detail → `docs/productization-engagement-safety.md`.**
   URL is not a login page, it is where a credential POST goes when nobody proved
   anything. A JSON login API serves no form and is found by
   `detect_auth_mechanism`, which is the component that knows how to ask.
+- **No session verdict rests on a destination's SPELLING.** The rule above is
+  about finding the login page; this one is about every later answer to "are we
+  still authenticated". `WebAuthenticator.verify_session` kept the exact oracle
+  `assert_authenticated` had shed — `login` / `signin` / `auth` matched against a
+  redirect destination — on the arm `TOOL_EXEC_MODE=docker` uses and on the path
+  the default-credential sweep re-verifies through, and the curl arm discarded
+  the response body (`-o /dev/null`) so nothing else could have decided. Both
+  arms now **walk** the redirect through `walk_redirects` (which also puts the
+  session material back inside the scope gate) and hand the response that
+  answered to one shared rule, `_session_survived`: a 401 or 403, or an
+  `<input type="password">` in the body — the same deterministic signal
+  `detect_auth_mechanism` uses to decide a page is a login surface.
+  **The domain is computed, not grepped**
+  (`tests/test_tools/test_session_verdict_name_oracles.py`): sinks are declared,
+  every function whose return reaches one through a verdict-carrying call-graph
+  edge is the domain, every string-literal test inside it is flagged by AST, and
+  the classification says what each tests. `ProbeResponse.redirects_to_login` is
+  the single `destination_spelling` entry and carries a licence naming all three
+  consumers and the bound on each. Detail →
+  [`methodology/authentication-shapes.md`](methodology/authentication-shapes.md).
+- **Session evidence is the DELTA across the credential POST.** Both form arms
+  handed the success oracle the merged cookie jar — the login-page GET's cookies
+  unioned with the POST's — so a framework that starts a session on the GET to
+  hold a CSRF token satisfied "session material exists" *before a credential was
+  sent*, and a wrong password answered `200 <the login page again>` scored as a
+  proven session behind nothing but a seven-substring failure-keyword list. The
+  oracle now reads only `Set-Cookie` from the credential walk.
+  `AuthResult.session_cookies` still CARRIES the GET's cookie, because on a
+  framework that promotes a pre-login session in place that cookie is the
+  session: carriage and evidence are different questions.
+- **`Set-Cookie` is carried as a list the producer declares.** A response setting
+  two cookies sends two headers of one name; a `dict` keeps one, and the curl
+  path (which joins duplicates with `", "`) and the aiohttp path (a `CIMultiDict`
+  whose last value wins) keep a *different* one. `HTTPClientOutput.set_cookie`
+  and `HopResponse.set_cookies` carry them verbatim, one entry per header, and
+  `_cookies_from_set_cookie` is the only parser — no consumer splits a joined
+  header on a separator somebody else chose (invariant 82).
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`).
   The same URL is fetched with the session and deliberately without it
   (`HTTPClientTool`'s `no_session` — the shared cookie jar would otherwise make

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from clinkz.tools.auth import WebAuthenticator
+from clinkz.tools.auth import WebAuthenticator, _cookies_from_set_cookie
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "auth"
 
@@ -34,7 +34,7 @@ def _fixture(name: str) -> str:
 
 class TestParsingWhatCurlWrites:
     def test_a_single_block_yields_status_body_and_headers(self) -> None:
-        status, body, headers = WebAuthenticator._parse_curl_exchange(
+        status, body, headers, _cookies = WebAuthenticator._parse_curl_exchange(
             _fixture("meridian_login_415_curl.txt")
         )
         assert status == 415
@@ -43,7 +43,7 @@ class TestParsingWhatCurlWrites:
 
     def test_the_415_body_names_the_encoding_through_the_real_bytes(self) -> None:
         """End to end over the fixture: bytes -> parse -> negotiated type."""
-        status, body, headers = WebAuthenticator._parse_curl_exchange(
+        status, body, headers, _cookies = WebAuthenticator._parse_curl_exchange(
             _fixture("meridian_login_415_curl.txt")
         )
         assert (
@@ -52,7 +52,7 @@ class TestParsingWhatCurlWrites:
 
     def test_the_415_is_not_read_as_a_successful_login(self) -> None:
         """The defect, over the real bytes and at the real form-action URL."""
-        status, body, _headers = WebAuthenticator._parse_curl_exchange(
+        status, body, _headers, _cookies = WebAuthenticator._parse_curl_exchange(
             _fixture("meridian_login_415_curl.txt")
         )
         assert not WebAuthenticator._check_login_success(
@@ -61,13 +61,13 @@ class TestParsingWhatCurlWrites:
             final_url="http://target/portal/v3/session-open",
             login_url="http://target/portal/gateway",
             redirect_chain=[],
-            session_cookies={},
+            session_evidence={},
         )
 
     def test_the_200_yields_the_session_cookie_and_a_success(self) -> None:
         raw = _fixture("meridian_login_200_curl.txt")
-        status, body, _headers = WebAuthenticator._parse_curl_exchange(raw)
-        cookies = WebAuthenticator._parse_set_cookies(raw)
+        status, body, _headers, set_cookies = WebAuthenticator._parse_curl_exchange(raw)
+        cookies = _cookies_from_set_cookie(set_cookies)
         assert status == 200
         assert "meridian_portal" in cookies
         assert WebAuthenticator._check_login_success(
@@ -76,7 +76,7 @@ class TestParsingWhatCurlWrites:
             final_url="http://target/portal/v3/session-open",
             login_url="http://target/portal/gateway",
             redirect_chain=[],
-            session_cookies=cookies,
+            session_evidence=cookies,
         )
 
     def test_a_multi_block_dump_reports_the_block_that_answered(self) -> None:
@@ -94,7 +94,7 @@ class TestParsingWhatCurlWrites:
         aiohttp arm filled the same field with absolute URLs. One field, two
         meanings, read by the success oracle.
         """
-        status, body, headers = WebAuthenticator._parse_curl_exchange(
+        status, body, headers, _cookies = WebAuthenticator._parse_curl_exchange(
             _fixture("meridian_redirect_chain_curl.txt")
         )
         assert status == 200, "the final block answered, not the 302 that led to it"
@@ -103,10 +103,11 @@ class TestParsingWhatCurlWrites:
 
     @pytest.mark.parametrize("raw", ["", "   ", "not an http response at all"])
     def test_unparseable_output_is_data_not_a_crash(self, raw: str) -> None:
-        status, body, headers = WebAuthenticator._parse_curl_exchange(raw)
+        status, body, headers, set_cookies = WebAuthenticator._parse_curl_exchange(raw)
         assert status == 0
         assert body == ""
         assert headers == {}
+        assert set_cookies == []
 
 
 class TestTheFormActionIsScopeChecked:

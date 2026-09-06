@@ -147,6 +147,16 @@ The hard rules:
 - **A login URL is proven by response SHAPE, never by a status code and never by
   a path NAME.** Names order the shape probing; they never gate it. Nothing
   proven ⇒ `None`, never the root URL.
+- **No session verdict rests on a destination's SPELLING** — the same rule, and
+  `verify_session` kept the oracle `assert_authenticated` had shed. Both arms
+  walk the redirect and read the response (`_session_survived`: 401/403, or an
+  `<input type="password">`). The DOMAIN is computed from the call graph — every
+  function whose return feeds a verdict sink — and each string-literal test in it
+  is classified; `redirects_to_login` is the one `destination_spelling` entry and
+  carries a licence naming every consumer and its bound.
+- **Session evidence is the DELTA across the credential POST, not the jar** — a
+  cookie the login-page GET issued exists whatever we send. Carriage
+  (`session_cookies`) and evidence are separate questions.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`) —
   only a boundary discriminator is accepted; a body-length delta is refused.
   Credentials supplied + assertion failed ⇒ the engagement aborts loudly.
@@ -162,6 +172,9 @@ The hard rules:
   no declaration, because the operator believes the engine knows.
 - **Only a session-bearing response is evidence about the session**; the raised
   flag is a hypothesis and `assert_authenticated` is the oracle.
+- **`Set-Cookie` is carried as a LIST the producer declares** (`set_cookie` /
+  `HopResponse.set_cookies`) — a `dict` keeps one of two cookies and the two
+  transports keep a DIFFERENT one; no consumer splits a joined header.
 - **The rails are absent by default** — `get_active_governor()` is `None` unless
   an engagement installed one, so direct methodology invocation is byte-identical.
   The governor owns rate (5 req/s), concurrency (4), the kill switch, blocking
