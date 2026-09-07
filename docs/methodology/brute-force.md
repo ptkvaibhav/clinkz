@@ -41,9 +41,8 @@ series ended when `_BRUTE_FORCE_ATTEMPTS` ran out rather than when the target
 answered. A login whose policy trips at nine is, from here, byte-identical to one
 with no policy at all.
 
-So the ceiling is carried on the result (`BruteForceMethodologyResult.attempt_ceiling`,
-with `ceiling_is_our_budget` naming whose it is) and stated in all three
-client-facing places:
+So the ceiling is carried on the result (`BruteForceMethodologyResult.attempt_ceiling`)
+and stated in all three client-facing places:
 
 | where | what it says |
 |---|---|
@@ -54,6 +53,55 @@ client-facing places:
 `_BRUTE_FORCE_ATTEMPTS` is a named constant rather than a literal in the loop for
 exactly this reason: the emitter has to state the bound to the client, and a
 bound enforced in one place and quoted in another drifts.
+`_BRUTE_FORCE_PROBE_USERNAME` is one for the same reason — see *whose attempts*
+below.
+
+### There was a `ceiling_is_our_budget` flag and it is gone
+
+It returned `not self.protected`, and it was read at exactly one place: the
+phase-4 emitter, which runs only when `protected` is False. It could therefore
+only ever render `True`. **A boolean that cannot take its other value where it
+is read does not check anything** — it looked like the emitter was verifying the
+bound while every sentence around it asserted the same thing unconditionally.
+
+And its one reachable `False` would have been wrong. `protected` is set by the
+INCONCLUSIVE branch as well as by a refusal, because both must block emission —
+so on a contaminated series the flag would have said *the ceiling belongs to the
+target* about a series the target never refused.
+
+What replaced it is a guard rather than a longer comment: `_brute_force_phase4_emit`
+raises `BruteForceEmissionError` on a `protected` result. The caller's gate is a
+**precondition of the render**, and it is now enforced where the render happens.
+
+### Whose attempts these are
+
+The finding says "8 attempts". The engagement may have offered the same login
+sixty — the authenticator's own login flow, plus every guess in the
+default-credential sweep — and those are bounded by
+`SafetyPolicy.max_credential_attempts_per_account`, which **this class does not
+draw on**. The exemption is deliberate (a class that must send a full series
+cannot share a budget the login flow has already spent) and it is *declared*,
+not incidental: `tests/test_safety/test_credential_sender_domain.py` computes
+every credential-sending function in the engine and requires each to be
+classified GOVERNED or EXEMPT with a reason. See
+[credential-attempts-and-lockout.md](credential-attempts-and-lockout.md).
+
+So the finding carries a row naming its own:
+
+    attempts_by_this_class=8 POST submission(s) of 'admin' to <url>, dispatched by
+    _test_brute_force alone. Credential attempts made elsewhere in this engagement
+    (the authenticator's login, the default-credential sweep) are not among them
+    and are not counted here.
+
+### The lockout-at-*k* case emits nothing, and that is the point
+
+A target that locks at attempt 4 of an 8-attempt ceiling produces **no finding**:
+emission requires `not protected`, and the refusal sets it. What must be right in
+that case is the RECORD — `protection_type=LOCKOUT`, `observed_at_attempt=4`, and
+the marker the target actually served — and that is what
+`test_a_target_that_locks_below_the_ceiling_emits_nothing` pins. It is also the
+transition the corpus has never contained (see the sweep below), so the fixture
+is the only place it exists.
 
 ## Has the instrument ever fired? — the corpus, swept
 
@@ -79,6 +127,40 @@ the series began, from an earlier run. What has never been observed is a
 *transition*: attempts 1…k−1 answered normally and attempt k refused. That is
 the observation which would let this class report a *measured* ceiling instead of
 an assumed one, and it remains unobserved. Stated rather than claimed.
+
+### `inconclusive` is 136 of 369, and it reached no client
+
+The second-largest row in that table is the positive control refusing to
+conclude, and until now it produced **nothing at all** — no finding, no lead, no
+row — which is byte-identical, in a deliverable, to a login that was tested and
+was fine. The string `inconclusive` appears in **zero of the 4,169 stored
+reports**.
+
+What produces it, swept over the same corpus:
+
+| cause | rows | endpoint | what it is |
+|---|---|---|---|
+| `no response (transport failure or refused submission)` | 75 | `/vulnerabilities/csrf/test_credentials.php`, **all 75** | **our own refusal, not the target's.** `_submit_form_fields` runs `is_destructive_form_submission` first and returns a `status=0` sentinel without sending; that form overwrites authentication material. The recorded observations are `status=0, length=0, time_ms=0.13` — nothing left the process. The class then graded an endpoint it had not touched |
+| `redirected away to '<url>/index.php'` | 60 | `/vulnerabilities/brute/`, **all 60** | the login URL is a directory and the target redirects to its own index. `_brute_force_attempt_reached_auth` accepts a 3xx only when the `Location` resolves back to the **same** auth endpoint, compared by path — and `/x/` ≠ `/x/index.php`. **This one is a recall defect of ours, not a target property**, and it is named here rather than fixed: the fix is to read what the destination SERVES rather than compare spellings, which is the rule the session oracles already follow |
+| `redirected away to '/login.php'` | 1 | `/vulnerabilities/brute/` | a genuine bounce |
+
+Note what the first row means: **every inconclusive verdict in the corpus that
+was not a redirect was the engine refusing its own probe.** The positive control
+is doing exactly its job — eight refused submissions cannot support a claim about
+a login's protection — and the endpoint was nonetheless absent from the
+deliverable, indistinguishable from one that passed.
+
+Engagement `01b8e683` is the shape of the disclosure failure: the client
+document carries `No Brute-Force Protection on http://172.20.0.2/vulnerabilities/brute/`
+while the same run's `/vulnerabilities/csrf/test_credentials.php` login was
+inconclusive and dropped without a word. Two logins tested, one graded, one
+absent, and nothing to tell them apart.
+
+The class now declares an `InconclusiveMeasurement`, which the report renders in
+*What was NOT tested* under **"Tested, but the measurement could not support a
+conclusion"** — carrying the classifier's own rationale verbatim and the number
+of requests that went out, because "could not conclude" reads very differently
+at 0 and at 8.
 
 **And the two `rate_limit` rows were phantoms.** Both came off
 `X-RateLimit-Remaining: 99` — an endpoint advertising ninety-nine remaining

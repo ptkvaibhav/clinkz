@@ -400,3 +400,99 @@ rather than built.
   that answers about our IP is recorded against whichever account was in flight;
   the sweep's `first_credential_stop()` covers the common case, but a per-role
   login on a throttled source will each see it once.
+
+---
+
+## Who the budget can see — computed, not listed
+
+`max_credential_attempts_per_account` bounds credential attempts per
+`(origin, account)`, and it bounds them at **one** place: `EngagementGovernor
+.authorize(..., account=...)`. A request arrives there with an account named only
+when the caller says so. `HTTPClientTool.execute` reads
+`self.credential_account`, which is assigned at exactly **one line** in the whole
+engine — `tools/auth.py`, the JSON arm — and `WebAuthenticator` names the account
+at its own credential POST through `_governed_request`.
+
+**Every other credential-bearing request in the engine is invisible to that
+budget**, and the largest of them is the component whose entire purpose is to
+send failed logins.
+
+### `_test_brute_force` is EXEMPT
+
+It submits `_BRUTE_FORCE_ATTEMPTS` passwords for `_BRUTE_FORCE_PROBE_USERNAME`
+(`admin`) against every login form it finds, through `_submit_form_fields` →
+`HTTPClientTool` with no account named. The governor counts none of them, refuses
+none of them, and the action log files them as `mutating_method` rather than
+`credential_attempt`.
+
+Measured over the stored corpus by replaying every recorded POST whose body
+carried a password-shaped field:
+
+| component | recorded credential POSTs | engagements |
+|---|---|---|
+| auth JSON arm (account NAMED) | 7,095 | 168 |
+| **methodology via `http_client` (account NOT named)** | **2,796** | **81** |
+| auth form arm (account NAMED) | 762 | 186 |
+
+with **200 ungoverned credential POSTs against a single login form** in
+engagement `0fabde50` alone (`http://172.20.0.2/login.php`), and 184 in
+`914647e3`.
+
+**The exemption is right and stays.** A class that must send a full series to
+measure whether a control trips cannot share a budget the login flow has already
+spent: it would abstain on an exhausted allowance and then report an absence it
+never measured, which is the failure this whole document is about, one component
+over. The alternative the addendum names — *governed ⇒ it must abstain and say
+the budget was spent upstream* — is strictly worse here, because the budget is
+spent upstream on almost every engagement.
+
+**What was wrong is that the exemption was incidental.** Nothing declared it,
+nothing tested it, and it was discovered by sweeping a corpus.
+`tests/test_safety/test_credential_sender_domain.py` closes that: the DOMAIN is
+computed — every function under `src/clinkz` that handles a password-shaped
+identifier, found by AST walk — and the CLASSIFICATION is declared per function
+as `GOVERNED` / `EXEMPT` / `NO_DISPATCH`, each with a reason of at least six
+words. Both directions are asserted, and a separate check pins that
+`credential_account` is assigned exactly once, because the entire exemption
+table is written against that uniqueness.
+
+The domain is deliberately identifier-based rather than dict-key-based: the
+brute-force observation loop builds its body from `{username_field: ...,
+password_field: ...}` — **variable** keys — so a domain computed from literal
+dict keys cannot see the single largest ungoverned credential sender in the
+engine. That is the guard-domain law's own failure mode.
+
+**And the client-facing finding names the attempts THIS class made**, so a reader
+cannot mistake the class's eight for the engagement's sixty against the same
+login. See [brute-force.md](brute-force.md).
+
+---
+
+## A sweep the target stopped names what it never sent
+
+The stop is correct and unchanged: once the login answers with a lockout, a rate
+limit or a captcha, every further guess is an attempt on evidence we already
+hold. What was wrong is what the stop left behind — an ERROR log line, and a
+deliverable in which the engagement reports no default credentials. **That
+sentence is a claim about every pair in the catalogue, and after a stop it is a
+claim about pairs that were never dispatched.**
+
+`_try_default_credentials` now builds its whole candidate list BEFORE the first
+attempt. That is structural rather than cosmetic: a loop that seeds the next
+technology only after finishing the previous one does not know, at the moment it
+stops, what it was going to do next — so it cannot name its own remainder.
+
+The record it writes (`credential_sweep`) reaches the report as a
+`NotTestedCategory.SWEEP_STOPPED` item under **"Stopped early on the target's own
+refusal — pairs never sent"**, naming the account the stop was recorded for, the
+kind, the marker the target served, how many pairs were offered of how many
+planned, and the untried remainder.
+
+**The remainder is named by account and technology, never by password.**
+`register_secret` runs on a guess as it is offered, so a pair that was never sent
+was never registered for redaction — writing its password into the deliverable
+would put an unregistered secret past the one gate that exists to catch them. The
+disclosure says so in its own text.
+
+A sweep that ran to completion records `stopped: False` and produces no item:
+there is no claim left standing that the run cannot support.
