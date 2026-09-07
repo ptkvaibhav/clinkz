@@ -116,12 +116,63 @@ class TestFormFieldParser:
 class TestLoginSuccessHeuristics:
     """Test :meth:`WebAuthenticator._login_verdict` heuristics."""
 
-    def test_success_logout_in_body(self) -> None:
-        assert LoginVerdict.PROVEN is _verdict_of(
+    def test_a_word_in_the_page_is_not_a_session(self) -> None:
+        """The deleted rule 3, pinned in the direction it now answers.
+
+        A 2xx carrying ``logout`` / ``dashboard`` / ``welcome`` / ``profile``
+        used to be ``PROVEN``. Replayed over all 762 credential POSTs in the
+        stored corpus that rule carried the verdict FOUR times, all four in
+        engagement ``d67835f5`` against ``https://ptkvaibhav.vercel.app/`` — a
+        portfolio site with no login of any kind, whose page contains the word
+        ``profile``. Four guessed passwords were marked valid against a site
+        that never evaluated one. It has no correct live firing in the corpus.
+
+        With no session material, no redirect and nothing carried, the honest
+        answer is that nothing here could be a session.
+        """
+        assert LoginVerdict.REFUSED is _verdict_of(
             response_body="<html><a href='/logout'>Logout</a></html>",
             status_code=200,
             final_url="http://target/index.php",
             login_url="http://target/login.php",
+            redirect_chain=[],
+        )
+
+    def test_the_portfolio_shape_that_produced_four_phantoms(self) -> None:
+        """Engagement ``d67835f5``, reduced to its inputs.
+
+        200, no cookie set by the POST, no redirect, a page containing
+        ``profile``, and a cookie the site hands every visitor carried from
+        before the credentials went out. Rule 3 read that as proof. Rule 4 reads
+        the same response as what it is: not a denial, carrying something a
+        promoted session COULD be, and therefore a question for
+        ``assert_authenticated`` rather than an answer here.
+        """
+        verdict = _verdict_of(
+            response_body="<html><main>My profile</main></html>",
+            status_code=200,
+            final_url="https://ptkvaibhav.vercel.app/",
+            login_url="https://ptkvaibhav.vercel.app/",
+            redirect_chain=[],
+            carried_session={"csrf-token": "f68e7f1b"},
+        )
+        assert verdict is LoginVerdict.INDETERMINATE
+
+    def test_an_authentication_token_in_the_body_is_proof(self) -> None:
+        """Rule 1b, which the corpus has never exercised on THIS arm.
+
+        Zero of the 762 recorded form-arm credential POSTs reached it: the JSON
+        arm has its own token path and is where every token-bearing login in the
+        corpus was answered. A rule with no positive control is a dead
+        instrument, so this is its control — the form arm can be pointed at a
+        JSON login API by ``login_content_type``, and then this is the rule that
+        decides.
+        """
+        assert LoginVerdict.PROVEN is _verdict_of(
+            response_body='{"authentication": {"token": "eyJhbGciOiJIUzI1NiJ9.e30.sig"}}',
+            status_code=200,
+            final_url="http://target/rest/user/login",
+            login_url="http://target/rest/user/login",
             redirect_chain=[],
         )
 

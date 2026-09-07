@@ -2471,7 +2471,27 @@ class WebAuthenticator(ToolBase):
            — read here as "redirected away, therefore logged in". The curl arm
            filled it with raw ``Location`` values, unresolved, so
            ``urlparse("index.php").path`` was compared against ``/login.php``.
-        3. **An authenticated-page marker** in the body, on a 2xx.
+        **There used to be a third, and it is gone.** A 2xx whose body carried
+        one of eight English words — ``logout``, ``dashboard``, ``welcome``,
+        ``profile``, … — was ``PROVEN``. It is the only rule here that read page
+        furniture rather than the session, and the corpus is unambiguous about
+        what it bought. Replayed over all 762 recorded credential POSTs in
+        ``outputs/``, it carried the verdict **four** times, all four in one
+        engagement (``d67835f5``, target ``https://ptkvaibhav.vercel.app/``) — a
+        portfolio site with no login of any kind, whose page contains the word
+        ``profile``. Four default-credential guesses (``admin:admin``,
+        ``root:root``, ``admin:password``, ``test:test``) were marked VALID
+        against a site that never evaluated one of them, and the run went on to
+        ``verify_session`` carrying the cookie that page hands every visitor.
+        Zero correct firings and four wrong ones is not a rule with a weak
+        positive control; it is a rule whose only live evidence is against it.
+
+        Nothing is lost by removing it. The shape it was standing in for — a
+        good credential answered ``200`` with no new cookie, because the
+        framework promoted the pre-login session in place — is what rule 4 below
+        now says, and says correctly: ``INDETERMINATE``, deferred to
+        ``assert_authenticated``, which compares an authenticated request
+        against an anonymous control instead of reading a noun out of the HTML.
 
         Two rules bound those, and both were written by a live failure. **A 4xx
         is never success** — the old rule reached "logged in" on a **415**, which
@@ -2582,26 +2602,13 @@ class WebAuthenticator(ToolBase):
                     f"which is not the login page",
                 )
 
-        # 3. An authenticated-page marker on a 2xx. Last, not first: a login
-        #    page carrying the word "profile" in its footer is a page anyone can
-        #    read, and the two tests above are about the session itself.
-        if 200 <= status_code < 300:
-            success_keywords = [
-                "logout",
-                "sign out",
-                "signout",
-                "log out",
-                "dashboard",
-                "welcome",
-                "my account",
-                "profile",
-            ]
-            marker = next((kw for kw in success_keywords if kw in body_lower), "")
-            if marker:
-                return LoginJudgement(
-                    LoginVerdict.PROVEN,
-                    f"the response carries the authenticated-page marker {marker!r}",
-                )
+        # 3 is deliberately absent. An "authenticated-page marker" — one of eight
+        #   English nouns in a 2xx body — used to return PROVEN here. It fired
+        #   four times in the whole recorded corpus, all four on a site with no
+        #   login, and the shape it was there for is rule 4's job. See the
+        #   docstring; the deletion is the fix, not a tightened keyword list,
+        #   because every keyword list has the same defect and a longer one only
+        #   moves which page furniture triggers it.
 
         # 4. Nothing proved it. Is there anything to defer WITH?
         #

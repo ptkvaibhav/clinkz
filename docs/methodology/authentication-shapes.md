@@ -630,6 +630,112 @@ Logged here rather than built: it is a real gap, it is not this branch's work,
 and an operator reading a "the credentials were wrong" abort against a
 captcha-gated login deserves to find this paragraph.
 
+## Defect 14 — a rule with no positive control, swept out of the corpus
+
+Every rule in `_login_verdict` is an instrument. A bounded absence is worth
+nothing if the thing that would bound it can never be observed (that is the
+brute-force ceiling's lesson), and a *verdict* rule is worth less than nothing if
+its only live firings are wrong.
+
+The corpus predates `LoginVerdict`, so no stored artifact carries a verdict
+label — but it carries the bytes. Every `web_authenticator` invocation records
+curl's full dump, and `_parse_curl_output` still parses it. So the question is
+answered by replaying the CURRENT oracle over the recorded exchanges rather than
+by grepping for a string the engine never wrote.
+
+**762 credential POSTs, 186 engagements**, every one re-decided:
+
+| rule | verdict | fired | engagements | what it was |
+|---|---|---|---|---|
+| status ≥ 400 | REFUSED | 52 | 29 | Juice Shop `401 Invalid email or password.` |
+| body failure marker | REFUSED | 520 | 160 | DVWA's `Login failed` |
+| **1a** cookie the POST set | **PROVEN** | **148** | **136** | DVWA's `Set-Cookie: PHPSESSID` on the login 302 |
+| **1b** token in the body | PROVEN | **0** | 0 | never reached on this arm |
+| **2** redirect away from login | **PROVEN** | **14** | **14** | DVWA answering `302 → /index.php` with no new cookie |
+| **3** authenticated-page marker | PROVEN | **4** | **1** | all four wrong — see below |
+| **4** carried jar, not a denial | INDETERMINATE | **0** | 0 | added 2026-09-07; no run predates it |
+| nothing proved it | REFUSED | 24 | 4 | a JSON login page POSTed as a form |
+
+**Rule 2 has fired.** It is not settled by rule 1 on DVWA: when the credential
+POST re-uses an existing `PHPSESSID` rather than issuing one, the delta is empty
+and the redirect to `/index.php` is the only positive evidence there is. 14
+engagements, and the shape is exactly the one the rule was written for.
+
+**Rule 3 was a dead instrument, and it is deleted.** A 2xx body containing one of
+eight English words — `logout`, `dashboard`, `welcome`, `profile`, … — returned
+PROVEN. Its four firings are all in engagement `d67835f5`, target
+**`https://ptkvaibhav.vercel.app/`**: a personal portfolio site with no login of
+any kind, whose page contains the word *profile*. `_find_login_url` accepted the
+site root as a login surface, the sweep offered `admin:admin`, `root:root`,
+`admin:password` and `test:test` at it, and rule 3 declared all four PROVEN — so
+four guessed passwords were marked VALID against a site that never evaluated one,
+and the run went on to `verify_session` carrying the `csrf-token` cookie that
+page hands every visitor. Zero correct firings and four wrong ones is not a weak
+positive control; it is an instrument whose only live evidence is against it.
+
+Nothing is lost by removing it. The shape it stood in for — a good credential
+answered `200` with no new cookie because the framework promoted the pre-login
+session in place — is exactly what rule 4 says, and says correctly: the same
+inputs now reach INDETERMINATE and defer to `assert_authenticated`, which
+compares an authenticated request against an anonymous control instead of reading
+a noun out of the HTML. **A longer or stricter keyword list would not have
+helped**; every keyword list has this defect and a longer one only moves which
+page furniture triggers it.
+
+**Rules 1b and 4 get fixtures rather than deletions**, because their zeros mean
+different things. Rule 4 is a day old. Rule 1b is reachable on this arm the
+moment `login_content_type` points the form arm at a JSON login API — every
+token-bearing login in the corpus was answered by the JSON arm, which has its own
+token path. Both are pinned in `tests/test_tools/test_auth.py`.
+
+## Defect 15 — the JSON arm's jarless phantom, and where it did NOT land
+
+The fix in the same round (`0ab0723`) closed a real hole: the JSON arm's success
+rule was `2xx AND (token OR any Set-Cookie)`, and that arm carries no jar of its
+own, so a framework that starts a session for any cookieless caller sets a cookie
+on **every route it is offered** — DVWA's `/login.php` answers a JSON POST `200`
+with `Set-Cookie: PHPSESSID` and its own login form in the body. Two wrong
+passwords for `admin` reached PROVEN.
+
+`_attempt_login` re-proves only INDETERMINATE — a PROVEN guess is marked valid
+with no further oracle — so a false PROVEN passes straight through to the
+credential store and the report. The corpus was therefore worth checking, because
+every statistic in [brute-force.md](brute-force.md) came out of it.
+
+**It never landed.** Replaying the JSON arm's rule over all **7,095** recorded
+JSON credential POSTs:
+
+| outcome | rows | engagements |
+|---|---|---|
+| non-2xx (both rules skip) | 6,617 | 168 |
+| token (old and new agree: PROVEN) | 87 | 30 |
+| 2xx, no session material (old refused too) | 391 | 21 |
+| **phantom (old PROVEN, new refuses)** | **0** | **0** |
+
+Two reasons, and the second is the one worth keeping:
+
+1. `login_url` entered the JSON arm's candidate list on **2026-09-03**
+   (`ab8260a`, "observe the login, never guess its name"), after almost every
+   stored run. Before it, the arm only ever offered the six canned routes
+   (`/rest/user/login`, `/api/login`, …), which on DVWA are 404s.
+2. **The arm is only jarless on one transport.** `_execute_aiohttp` builds a
+   fresh `CookieJar` per request and the arm passes no cookies, so it is
+   genuinely jarless there. `_execute_curl` passes `-b <shared jar>`, so on the
+   docker path the POST carries whatever the engagement already holds and a
+   session-starting framework issues nothing new. **The entire stored corpus is
+   docker** — 298,768 recorded `http_client` invocations, `exec_mode: docker`,
+   without exception.
+
+So the answer to *did any past run authenticate by the JSON arm on a jarless
+POST and proceed as authenticated* is **no**, and the brute-force statistics are
+not derived from a corpus contaminated by it. But the reason is not that the
+rule was safe: it is that the transport which exhibits it is the one the corpus
+does not contain. That is a transport-equivalence gap of exactly the kind
+`tests/test_tools/test_transport_corpus_coverage.py` was built for, and it is the
+reason the fix stands on its own merits rather than on an incident count.
+
+The **form** arm's phantom is the one that did land: rule 3, four times, above.
+
 ## The regression that is the test
 
 `tests/test_engagement/test_meridian_auth.py` runs Meridian in a thread on an
