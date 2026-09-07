@@ -677,7 +677,18 @@ hand-written, so it cannot drift out of date:
 * classes with **no methodology** — Insecure CAPTCHA, business logic, races;
 * action categories the safety rails refused, with counts and an example;
 * coverage cut short by a halt;
-* surface unreachable without a session, or without a second role.
+* surface unreachable without a session, or without a second role;
+* **measurements that refused themselves** (`measurement_inconclusive`) — a class
+  that RAN against an endpoint and whose own positive control found the series
+  could not support a conclusion. Every other entry here is a reason something
+  did not run; this one ran and may not speak, and the two are the same artifact
+  — none — without it. 136 of 369 recorded brute-force verdicts were
+  `inconclusive` and the word reached none of 4,169 stored reports;
+* **a default-credential sweep the target stopped** (`sweep_stopped`) — the
+  account it stopped for, the marker the target served, how many pairs were
+  offered of how many planned, and the untried remainder by account and
+  technology. Never by password: an unsent pair was never registered for
+  redaction.
 
 A client reading "no findings" is entitled to know whether that means "we looked
 and it is sound" or "we could not look".
