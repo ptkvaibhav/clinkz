@@ -21,9 +21,19 @@ from pathlib import Path
 
 import pytest
 
-from clinkz.tools.auth import WebAuthenticator, _cookies_from_set_cookie
+from clinkz.tools.auth import LoginVerdict, WebAuthenticator, _cookies_from_set_cookie
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "auth"
+
+
+def _verdict_of(**kwargs: object) -> LoginVerdict:
+    """The verdict alone, for tests that assert one.
+
+    ``_login_verdict`` returns a :class:`~clinkz.tools.auth.LoginJudgement` —
+    the verdict AND the observation behind it — because a refusal has to be able
+    to name what was absent. These cases are about the verdict.
+    """
+    return WebAuthenticator._login_verdict(**kwargs).verdict  # type: ignore[arg-type]
 
 
 def _fixture(name: str) -> str:
@@ -55,7 +65,7 @@ class TestParsingWhatCurlWrites:
         status, body, _headers, _cookies = WebAuthenticator._parse_curl_exchange(
             _fixture("meridian_login_415_curl.txt")
         )
-        assert not WebAuthenticator._check_login_success(
+        assert LoginVerdict.REFUSED is _verdict_of(
             response_body=body,
             status_code=status,
             final_url="http://target/portal/v3/session-open",
@@ -70,7 +80,7 @@ class TestParsingWhatCurlWrites:
         cookies = _cookies_from_set_cookie(set_cookies)
         assert status == 200
         assert "meridian_portal" in cookies
-        assert WebAuthenticator._check_login_success(
+        assert LoginVerdict.PROVEN is _verdict_of(
             response_body=body,
             status_code=status,
             final_url="http://target/portal/v3/session-open",

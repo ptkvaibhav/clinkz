@@ -24,6 +24,7 @@ from clinkz.models.methodology import (
 )
 from clinkz.models.scan import ParamLocation
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
+from clinkz.safety.lockout import classify_lockout
 from clinkz.state import StateStore
 from clinkz.tools.resolver import ToolResolver
 
@@ -209,13 +210,23 @@ def _obs(
     ``auth_reached`` defaults to True so the protection-shape tests below
     exercise the classifier they are about; the positive control itself has
     dedicated tests in :class:`TestPositiveControl`.
+
+    ``lockout_kind`` is DERIVED through the same classifier the producer runs,
+    never hand-set beside the marker. A fixture that sets one and not the other
+    can hold a combination the producer cannot emit, and then it is testing a
+    row that does not exist — invariant 82's rule for mocks, applied to a model
+    a test builds directly.
     """
+    signal = classify_lockout(
+        status, {"Retry-After": retry_after} if retry_after else {}, body_marker
+    )
     return BruteForceObservation(
         attempt=n,
         status=status,
         length=length,
         time_ms=time_ms,
         body_marker=body_marker,
+        lockout_kind=signal.kind.value if signal.kind else "",
         retry_after=retry_after,
         auth_reached=auth_reached,
         auth_reach_reason="test fixture",

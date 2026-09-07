@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 import pytest
 
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
-from clinkz.tools.auth import CredentialRedirectRefusedError, WebAuthenticator
+from clinkz.tools.auth import CredentialRedirectRefusedError, LoginJudgement, WebAuthenticator
 from clinkz.tools.redirect_walk import RedirectHop
 
 #: The engagement's target. In scope.
@@ -804,7 +804,7 @@ class _RejectingLogin(BaseHTTPRequestHandler):
     back to the login page, and no cookie is ever set. Under the aiohttp arm's
     old ``redirect_chain`` — the URLs that ANSWERED — the chain held the ACTION
     path, which differs from the login path, which
-    :meth:`WebAuthenticator._check_login_success` reads as "redirected away,
+    :meth:`WebAuthenticator._login_verdict` reads as "redirected away,
     therefore logged in".
     """
 
@@ -843,7 +843,7 @@ class TestRedirectChainHasOneMeaning:
     It used to carry two, and which one you got depended on the transport.
     aiohttp recorded the URLs that ANSWERED (``resp.history``); curl recorded
     the raw ``Location`` header values, unresolved, so ``urlparse("index.php")``
-    was compared against ``/login.php``. ``_check_login_success`` reads this
+    was compared against ``/login.php``. ``_login_verdict`` reads this
     field to decide whether a login succeeded.
     """
 
@@ -851,7 +851,7 @@ class TestRedirectChainHasOneMeaning:
     def _spy(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         """Capture the ``redirect_chain`` the success oracle is handed."""
         captured: list[list[str]] = []
-        original = WebAuthenticator._check_login_success
+        original = WebAuthenticator._login_verdict
 
         def _wrapped(
             response_body: str,
@@ -859,8 +859,9 @@ class TestRedirectChainHasOneMeaning:
             final_url: str,
             login_url: str,
             redirect_chain: list[str],
-            session_cookies: dict[str, str] | None = None,
-        ) -> bool:
+            session_evidence: dict[str, str] | None = None,
+            carried_session: dict[str, str] | None = None,
+        ) -> LoginJudgement:
             captured.append(list(redirect_chain))
             return original(
                 response_body,
@@ -868,10 +869,11 @@ class TestRedirectChainHasOneMeaning:
                 final_url,
                 login_url,
                 redirect_chain,
-                session_cookies,
+                session_evidence,
+                carried_session,
             )
 
-        monkeypatch.setattr(WebAuthenticator, "_check_login_success", staticmethod(_wrapped))
+        monkeypatch.setattr(WebAuthenticator, "_login_verdict", staticmethod(_wrapped))
         return captured
 
     @staticmethod

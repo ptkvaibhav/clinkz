@@ -16,7 +16,39 @@ Three things change when the target is real:
 
 ## A · Engagement setup
 
-### The authorization record — required, not a flag with a default
+### Credential attempts — the rail that did not exist
+
+The governor owns rate (5 req/s), concurrency (4), the kill switch, blocking
+detection, the window and the action log. Until this branch it did **not** own
+how many times one account was offered a password, because its slot was taken per
+`authenticate()` call rather than per credential POST — and one failing call
+dispatches 16 of them in docker mode, 18 on the host, and up to 64 against one
+account across the default-credential sweep. The client-facing action log for a
+two-role engagement recorded two entries.
+
+Now:
+
+* the slot is taken **per credential POST**, and a credential-bearing request
+  NAMES the account. Naming it is also what declares the request is a login and
+  not a `credential_change` — without that declaration the destructive classifier
+  reads the body's field names, and a login whose identity field is spelled
+  `account` was refused as a credential change;
+* `SafetyPolicy.max_credential_attempts_per_account` (default **8**, keyed on
+  origin + account, `--max-credential-attempts`) refuses further attempts once
+  spent, naming the operator declarations that would reach the login in one;
+* `safety/lockout.py` classifies each login response, and a lockout, rate limit
+  or captcha **stops** every later attempt for that account — checked BEFORE the
+  budget, because an observation about the target outranks an assumption about
+  it. The default-credential sweep stops on the first such evidence for ANY
+  account;
+* every attempt and every refusal reaches `actions.jsonl` under
+  `credential_attempt`, naming the account and its position in the budget, with
+  the password redacted and the field NAME kept.
+
+**Detail →
+[`docs/methodology/credential-attempts-and-lockout.md`](methodology/credential-attempts-and-lockout.md).**
+
+## The authorization record — required, not a flag with a default
 
 `AuthorizationRecord` (`models/engagement.py`) carries the authorizing party's
 name, role and contact, the authorization reference, the permitted-technique

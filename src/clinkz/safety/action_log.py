@@ -57,6 +57,18 @@ OUTCOME_FAILED = "failed"
 #: wrongly by a log in which that does not appear.
 CATEGORY_BROWSER_NAVIGATION = "browser_navigation"
 
+#: Category stamped on every request that offers a credential for an account.
+#:
+#: Distinct from ``mutating_method`` for the reason the browser category is
+#: distinct from it: what is being recorded is not "a POST changed something",
+#: it is "we tried a password against a named account", and that is the one
+#: question an operator asks after handing us a login. Sixteen of these per
+#: ``authenticate()`` used to reach the log as at most ONE entry saying "POST
+#: mutates target state" — and the JSON arm, which rides the HTTP chokepoint,
+#: logged its seven-to-twenty-four individually, so what the log meant depended
+#: on which transport the run happened to take.
+CATEGORY_CREDENTIAL_ATTEMPT = "credential_attempt"
+
 
 class ActionRecord(BaseModel):
     """One state-changing request the engagement produced.
@@ -344,6 +356,7 @@ class RefusalTally(BaseModel):
 
 __all__ = [
     "CATEGORY_BROWSER_NAVIGATION",
+    "CATEGORY_CREDENTIAL_ATTEMPT",
     "OUTCOME_FAILED",
     "OUTCOME_REFUSED",
     "OUTCOME_SENT",

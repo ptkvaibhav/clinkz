@@ -1860,6 +1860,13 @@ class BruteForceObservation(BaseModel):
     retry_after: str = ""
     rate_limit_headers: dict[str, str] = Field(default_factory=dict)
     body_marker: str = ""
+    # Which KIND of refusal the marker was — ``lockout`` / ``rate_limit`` /
+    # ``captcha`` (:class:`~clinkz.safety.lockout.LockoutKind`), or empty when
+    # the response carried none. Declared by the classifier that matched the
+    # phrase rather than re-derived downstream from a substring of it: the
+    # grader used to ask ``"captcha" in body_marker``, which is the consumer
+    # guessing at a producer's vocabulary.
+    lockout_kind: str = ""
     auth_reached: bool = False
     auth_reach_reason: str = ""
 

@@ -543,12 +543,20 @@ signal `serves_login_form` uses. A variable that reads as a guard and gates
 nothing is worse than no variable, because the next reader believes the guard is
 there.
 
-## What one role is offered — an accounting, not a fix
+## What one role is offered — the accounting that became the fix
 
-The authenticator has no concept of account lockout. `_test_brute_force` does: it
+The authenticator had no concept of account lockout. `_test_brute_force` did: it
 sends 8 attempts, watches for lockout / rate-limit / captcha markers, and **stops
-early on a hard lockout**. None of that exists on the login path, and locking out
-an account a client handed us is a harm we cause.
+early on a hard lockout**. None of that existed on the login path, and locking
+out an account a client handed us is a harm we cause.
+
+**Fixed on the branch after this one.** The numbers below are what was MEASURED
+before that work, and they are why it happened; the fix — the governor slot moved
+to the credential POST, a declarable per-account budget, one shared lockout
+vocabulary, and a sweep that stops on the first evidence — is
+[credential-attempts-and-lockout.md](credential-attempts-and-lockout.md). The
+measurement is kept here verbatim because a bound whose motivation is a number
+nobody can find again is a bound the next person raises.
 
 Per `authenticate()` call, one role, one login URL, no operator declarations:
 
@@ -577,21 +585,34 @@ That call happens more than once:
 16 = 64 credential POSTs to one account**, 72 in local mode — with no lockout
 awareness anywhere and no counter shared between the three paths.
 
-Two further facts an operator would want:
+Two further facts an operator would want, both since fixed:
 
-* The governor paces this (5 req/s, concurrency 4) but does not bound it. Its
-  slot is taken per `authenticate()` call, not per credential POST.
-* The **action log under-counts**. `execute()` takes ONE governor authorization
+* The governor paced this (5 req/s, concurrency 4) but did not bound it. Its slot
+  was taken per `authenticate()` call, not per credential POST — so the one
+  component that could have bounded a brute-force could not see one.
+* The **action log under-counted**. `execute()` took ONE governor authorization
   for the whole form arm — both attempts, the 415 re-POST, every redirect hop —
   because that arm drives aiohttp and curl directly. The JSON arm rides
-  `HTTPClientTool`, so its 7-24 POSTs are individually authorized and logged. Two
-  accounting regimes inside one call.
+  `HTTPClientTool`, so its 7-24 POSTs were individually authorized and logged.
+  Two accounting regimes inside one call, and what the log meant depended on
+  which transport ran.
 
-No fix is made here. The numbers are the deliverable.
+Measured again after the fix, same driver, same target: **8 credential POSTs and
+8 action-log entries plus one refusal** on a credential that does not work, on
+both transports; **2 and 2** on one that does.
 
-## Captcha-gated login does not abstain — logged, not built
+## Captcha-gated login — the refusal is now a STOP, the abstain is still not built
 
-A login behind a captcha is not detected. The form arm parses the page, POSTs the
+**Partly fixed**; see
+[credential-attempts-and-lockout.md](credential-attempts-and-lockout.md) part 4.
+A captcha's refusal is now classified by the shared lockout vocabulary and
+recorded as a stop, so it costs ONE attempt rather than N, and the failure names
+the evidence that was absent rather than asserting the credentials were wrong.
+Detecting the gate from the login page's own markup and abstaining with nothing
+sent remains unbuilt. The paragraph below is the original diagnosis, kept because
+it is the clearest statement of why the shape matters.
+
+A login behind a captcha was not detected. The form arm parses the page, POSTs the
 credentials **into the gate**, and reads the refusal as bad credentials: the
 `failure_keywords` list matches nothing, no session material comes back, and the
 result says "the credentials were wrong" about a request the application never
@@ -647,6 +668,21 @@ retries a failed login once and the curl arm does not. Each scenario declares a
 number per transport, and where they differ it must say why — a divergence note
 nobody can point at is how a real one gets absorbed. Where they agree, a reason
 is refused.
+
+**And the SELECTION of those scenarios is now computed too.** They were chosen —
+each one a shape the arms had already been caught diverging on — and a corpus
+assembled from past failures covers past failures.
+`tests/test_tools/test_transport_corpus_coverage.py` walks `tests/`, resolves
+each auth test to the credential arm(s) it actually drives (naming an arm
+outright, or reaching `_dispatch` under whichever `TOOL_EXEC_MODE` is in force),
+and reports the DELTA: every test that drives exactly ONE arm must say why.
+
+The first run of it found **fourteen**, all aiohttp — including the off-scope
+credential redirect, which is the most safety-critical behaviour in the file and
+was asserted on one transport only. That shape is now a two-arm scenario
+(`a_credential_redirect_off_scope_is_refused_not_followed`); the other thirteen
+carry a declared reason naming the two-arm scenario that covers their shape, or
+naming the component under test as one with no transport of its own.
 
 ## Running Meridian
 

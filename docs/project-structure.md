@@ -83,7 +83,10 @@ src/clinkz/
 │                     #   auth_state (detect / PROVE / maintain), dryrun
 ├── safety/           # destructive (default-deny classifier + subresource_guard_spec, the
 │                     #   vocabulary shipped INTO the browser), governor (rate, concurrency,
-│                     #   kill switch, blocking, window), action_log (+ browser navigations),
+│                     #   kill switch, blocking, window, per-account credential budget),
+│                     #   lockout (the ONE lockout/rate-limit/captcha vocabulary, shared
+│                     #   with _test_brute_force — same observation, opposite verdicts),
+│                     #   action_log (+ browser navigations + credential attempts),
 │                     #   benchmark (the explicit throwaway-target opt-in — absent by default)
 ├── comms/            # AgentMessage, async bus, protocol
 ├── discovery/        # Δ-model: ingestor(s) (detect_ingestor reports a MISS; a tree in an

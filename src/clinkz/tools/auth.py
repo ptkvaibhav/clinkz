@@ -25,7 +25,7 @@ or a redirect that actually occurred. A 4xx is never success, and a final URL
 that differs from the login URL is not a redirect: a form whose ``action``
 points at another path produces exactly that with an empty redirect chain, and
 reading it as "redirected away, therefore logged in" is how a **415** became a
-proven session. See :meth:`WebAuthenticator._check_login_success`.
+proven session. See :meth:`WebAuthenticator._login_verdict`.
 
 The 415 is not merely refused, it is USED. A server answering
 ``415 Unsupported Media Type`` has stated the encoding it wants, so the same
@@ -69,13 +69,19 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
+from enum import StrEnum
 from html.parser import HTMLParser
 from typing import Any, NamedTuple
 from urllib.parse import urlencode, urlparse
 
 from pydantic import BaseModel
 
+from clinkz.safety.governor import (
+    REFUSED_CREDENTIAL_BUDGET,
+    REFUSED_CREDENTIAL_STOPPED,
+)
 from clinkz.tools.base import ToolBase, ToolOutput
 from clinkz.tools.redirect_walk import (
     HopResponse,
@@ -96,6 +102,13 @@ _API_LOGIN_ROUTES: tuple[str, ...] = (
     "/api/v1/auth/login",
     "/auth/login",
     "/login",
+)
+
+#: Governor refusal categories that mean "stop offering this account a password",
+#: as opposed to "this one request was refused". Imported by value rather than
+#: re-spelled, so a category renamed in the governor breaks the build here.
+_CREDENTIAL_REFUSAL_CATEGORIES: frozenset[str] = frozenset(
+    {REFUSED_CREDENTIAL_BUDGET, REFUSED_CREDENTIAL_STOPPED}
 )
 
 #: Content types this authenticator can encode a credential body as. A 415
@@ -136,6 +149,55 @@ _TOKEN_JSON_PATHS: tuple[tuple[str, ...], ...] = (
 # ---------------------------------------------------------------------------
 # Output models
 # ---------------------------------------------------------------------------
+
+
+class LoginVerdict(StrEnum):
+    """What the credential exchange PROVED, in three values rather than two.
+
+    ``bool`` was the defect. "The POST set no cookie" has two causes and a
+    boolean collapses them into the same answer:
+
+    * the application refused the credential; or
+    * the application **promoted the pre-login session in place** — the cookie
+      it issued on the login GET is now an authenticated session, and a
+      successful login therefore sets nothing at all.
+
+    Django's ``cycle_key``, PHP's ``session_regenerate_id(false)`` and every
+    framework that keeps the same session id across a login produce the second
+    shape. Reading it as the first reports a working credential as a wrong one,
+    aborts the engagement, and tells the operator their password is bad.
+
+    So the exchange answers with what it observed and the VERDICT is left to the
+    oracle that can actually settle it —
+    :func:`~clinkz.engagement.auth_state.assert_authenticated`, which compares an
+    authenticated request against an anonymous control and is already running on
+    every declared credential.
+    """
+
+    #: Positive evidence the credential POST produced a session.
+    PROVEN = "proven"
+    #: Nothing refused it and nothing proved it, and the exchange is carrying
+    #: session material from before the credentials were sent. Defer.
+    INDETERMINATE = "indeterminate"
+    #: The response refused the credential, or produced nothing that could be a
+    #: session and nothing to defer with.
+    REFUSED = "refused"
+
+
+class LoginJudgement(NamedTuple):
+    """One verdict and the observation that produced it.
+
+    The evidence travels with the verdict because a refusal has to be able to
+    say what was ABSENT. "The credentials were wrong" is a claim about the
+    operator's input; "the credential POST returned 200, set no cookie, returned
+    no token, was not redirected and the exchange held nothing from before" is a
+    list of things we looked for and did not find. Only the second is something
+    this code observed, and only the second leaves an operator able to tell a bad
+    password from a login shape we cannot read.
+    """
+
+    verdict: LoginVerdict
+    evidence: str
 
 
 class AuthResult(BaseModel):
@@ -190,6 +252,24 @@ class AuthResult(BaseModel):
     # second arm afterwards would offer the same credentials to the same target
     # and bury the refusal under whatever the second arm reported.
     scope_refusal: str = ""
+    # What the credential exchange PROVED, in three values. ``success`` is
+    # "the exchange did not refuse" and is therefore true for both PROVEN and
+    # INDETERMINATE; ``proven`` is the narrower question, and the two consumers
+    # need different ones. The declared-credential path may proceed on
+    # INDETERMINATE because ``assert_authenticated`` runs immediately after it
+    # and settles the question; the default-credential SWEEP may not, because
+    # marking a guessed password "valid" is a claim, and an indeterminate
+    # exchange has not earned it.
+    verdict: LoginVerdict = LoginVerdict.REFUSED
+    # The observation behind ``verdict`` — what was seen, or what was looked for
+    # and not found. Carried into the abort message so a failure names absent
+    # evidence rather than asserting the credentials were wrong.
+    verdict_evidence: str = ""
+
+    @property
+    def proven(self) -> bool:
+        """Whether the exchange itself proved a session, rather than deferring."""
+        return self.verdict is LoginVerdict.PROVEN
 
     @property
     def carries_session_material(self) -> bool:
@@ -221,6 +301,30 @@ class _EncodingOrder(NamedTuple):
 
     arms: tuple[str, ...]
     reason: str
+
+
+class CredentialAttemptRefusedError(Exception):
+    """The safety rails refused a credential-bearing request before it was sent.
+
+    A dedicated type for the same reason
+    :class:`CredentialRedirectRefusedError` is one: the JSON arm's per-route
+    loop catches ``Exception`` and moves to the next candidate, and this refusal
+    must never become that. When the per-account budget is spent or the target
+    has shown us it stopped evaluating credentials, "try the next route" is the
+    exact behaviour being refused.
+
+    Attributes:
+        category: The governor's refusal category, so the failure message can
+            distinguish a spent budget from an observed lockout.
+        account: The account no further credential will be offered for.
+    """
+
+    def __init__(self, reason: str, *, category: str, account: str, url: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.category = category
+        self.account = account
+        self.url = url
 
 
 class CredentialRedirectRefusedError(Exception):
@@ -524,46 +628,152 @@ class WebAuthenticator(ToolBase):
     async def execute(self, args: dict[str, Any]) -> str:
         """Execute the full login flow and return JSON result.
 
-        The login flow is its own HTTP path (curl/aiohttp directly, not via
-        :class:`~clinkz.tools.http_client.HTTPClientTool`), so it takes its own
-        governor slot. It never nests with the HTTP chokepoint: the JSON/API
-        fallback runs *after* this method returns.
+        **The governor slot is taken per REQUEST, not per call.** It used to
+        wrap this whole method: the login-page GET, both attempts, the 415
+        re-POST and every redirect hop inside them shared one authorization and
+        produced one action-log entry. Measured against Meridian, one
+        ``authenticate()`` for a credential that does not work dispatches
+        **16 credential POSTs in docker mode and 18 on the host** — and the
+        client-facing action log recorded *one*, saying "POST mutates target
+        state". The one component that could have bounded a brute-force we did
+        not intend to perform could not see it.
 
-        A login is state-changing enough to belong in the action log — an
-        operator asking "what did it do to my app?" should see every
-        authentication attempt — and it must be paced like everything else, so
-        repeated default-credential attempts cannot become an unintended
-        brute-force burst against a production login.
+        The JSON arm made the same call differently: it rides
+        :class:`~clinkz.tools.http_client.HTTPClientTool`, so its seven-to-
+        twenty-four POSTs were authorized and logged individually. Two
+        accounting regimes inside one call meant the log's meaning depended on
+        which transport the run happened to take.
+
+        So the slot moves to :meth:`_governed_request`, which every request this
+        flow makes now passes through, and a credential-bearing one NAMES THE
+        ACCOUNT — which is what gives
+        :attr:`~clinkz.models.engagement.SafetyPolicy.max_credential_attempts_per_account`
+        somewhere to live.
+        """
+        return await self._dispatch(args)
+
+    @asynccontextmanager
+    async def _governed_request(
+        self, method: str, url: str, *, account: str = ""
+    ) -> AsyncIterator[None]:
+        """One request through the safety rails — paced, counted, logged.
+
+        Absent by default, like every other rail: with no governor installed
+        this is a no-op and a direct invocation behaves byte for byte as before.
+
+        Args:
+            method: HTTP method of the request about to be made.
+            url: Its URL.
+            account: Non-empty when the request carries a credential FOR that
+                account. That is what makes it countable against the per-account
+                budget and what names it in the action log.
+
+        Raises:
+            CredentialAttemptRefusedError: The rails refused a credential
+                attempt. Raised rather than returned because the callers are
+                redirect-walk dispatch closures with no channel for a refusal,
+                and because the JSON arm's ``except Exception: continue`` is the
+                exact behaviour being refused — a dedicated type is what lets it
+                tell "this route errored" from "stop offering this password".
         """
         from clinkz.safety.governor import get_active_governor
 
         governor = get_active_governor()
-        if governor is not None:
-            decision = await governor.authorize(
-                "POST",
-                args["login_url"],
-                stage="auth",
-                field_names=["username", "password"],
+        if governor is None:
+            yield
+            return
+        decision = await governor.authorize(
+            method,
+            url,
+            stage="auth",
+            field_names=["username", "password"] if account else None,
+            account=account,
+        )
+        if not decision.allowed:
+            # Raised for a non-credential request too — the only way one is
+            # refused here is a halted engagement or a destructive
+            # classification, and both are "stop", not "try something else".
+            raise CredentialAttemptRefusedError(
+                decision.reason,
+                category=decision.category,
+                account=account,
+                url=url,
             )
-            if not decision.allowed:
-                return json.dumps(
-                    {
-                        "success": False,
-                        "session_cookies": {},
-                        "redirect_url": "",
-                        "login_url": args["login_url"],
-                        "username": args.get("username", ""),
-                        "status_code": 0,
-                        "error": (
-                            f"refused by safety policy [{decision.category}]: {decision.reason}"
-                        ),
-                    }
-                )
-            try:
-                return await self._dispatch(args)
-            finally:
-                governor.release()
-        return await self._dispatch(args)
+        try:
+            yield
+        finally:
+            governor.release()
+
+    def _observe_credential_response(
+        self,
+        url: str,
+        account: str,
+        status: int,
+        headers: dict[str, str] | None,
+        body: str,
+    ) -> None:
+        """Hand one login response to the rails for lockout classification.
+
+        Recorded, never raised: the refusal happens on the NEXT
+        :meth:`_governed_request`, which keeps every stop in the action log
+        beside every other one and keeps this off the data path.
+        """
+        from clinkz.safety.governor import get_active_governor
+
+        governor = get_active_governor()
+        if governor is None or not account:
+            return
+        governor.observe_credential_response(
+            url=url, account=account, status=status, headers=headers, body=body
+        )
+
+    def _attempt_refused_result(
+        self,
+        refused: CredentialAttemptRefusedError,
+        *,
+        login_url: str,
+        username: str,
+        session_cookies: dict[str, str] | None = None,
+    ) -> str:
+        """The JSON body for a login the safety rails stopped.
+
+        Its ``failure_stage`` says the rails stopped us. It does NOT say the
+        credentials were wrong — nothing evaluated them.
+        """
+        self._logger.error(
+            "LOGIN REQUEST REFUSED [%s]%s at %s: %s",
+            refused.category,
+            f" for {refused.account!r}" if refused.account else "",
+            refused.url,
+            refused.reason,
+        )
+        return json.dumps(
+            {
+                "success": False,
+                "verdict": LoginVerdict.REFUSED.value,
+                "verdict_evidence": refused.reason,
+                "session_cookies": session_cookies or {},
+                "redirect_url": "",
+                "login_url": login_url,
+                "username": username,
+                "status_code": 0,
+                "posted_to": refused.url,
+                "error": f"refused by safety policy [{refused.category}]: {refused.reason}",
+                "failure_stage": (
+                    (
+                        f"the safety rails refused a further credential attempt for "
+                        f"{refused.account!r} [{refused.category}]: {refused.reason}. "
+                        f"Nothing evaluated these credentials, so this is not a "
+                        f"statement about them"
+                    )
+                    if refused.account
+                    else (
+                        f"the safety rails refused a request the login flow needed to "
+                        f"make to {refused.url} [{refused.category}]: {refused.reason}"
+                    )
+                ),
+            }
+        )
 
     async def _dispatch(self, args: dict[str, Any]) -> str:
         """Route the login flow to the curl (docker) or aiohttp (host) path.
@@ -615,6 +825,25 @@ class WebAuthenticator(ToolBase):
             # Carried through, or the refusal the form arm wrote dies here and
             # ``authenticate()`` runs the next arm as if nothing happened.
             scope_refusal=data.get("scope_refusal", ""),
+            # Same rule for the verdict: an arm that answered INDETERMINATE and
+            # is parsed back as a bare ``success=True`` has had the one thing it
+            # was careful about erased at the boundary.
+            #
+            # The default FOLLOWS ``success`` rather than being pinned to
+            # REFUSED. An envelope with no ``verdict`` key comes from a producer
+            # that had only two values, and its ``success: true`` was an
+            # unqualified claim of proof; reading it as a refusal would
+            # contradict the producer's own field. Only a producer that KNOWS
+            # about the third value can express it.
+            verdict=LoginVerdict(
+                data.get("verdict")
+                or (
+                    LoginVerdict.PROVEN.value
+                    if data.get("success", False)
+                    else LoginVerdict.REFUSED.value
+                )
+            ),
+            verdict_evidence=data.get("verdict_evidence", ""),
         )
         return AuthOutput(
             tool_name=self.name,
@@ -663,6 +892,19 @@ class WebAuthenticator(ToolBase):
         ``cookies={}`` and fail there — reporting an accurate message about the
         wrong component, three layers from the code that invented the success.
 
+        **An arm may also answer "I cannot tell".** An application that promotes
+        its pre-login session in place answers a GOOD credential with ``200``,
+        no ``Set-Cookie`` and no token, which is byte-identical to how many
+        applications answer a bad one. That arm returns
+        :attr:`LoginVerdict.INDETERMINATE`, and it is HELD rather than returned:
+        a later arm may prove a session outright, and a proof outranks a
+        deferral. If none does, the held result is returned with
+        ``success=True`` and ``proven=False`` — carrying the session material
+        the exchange holds so that
+        :func:`~clinkz.engagement.auth_state.assert_authenticated`, the stronger
+        oracle and the one already running on the next line of
+        ``_authenticate_role``, can settle it against an anonymous control.
+
         **A scope refusal is TERMINAL, not an arm that did not work.** An arm
         whose credential POST was redirected outside the engagement scope
         returns immediately, without running the other one. The alternative
@@ -691,6 +933,11 @@ class WebAuthenticator(ToolBase):
 
         form_result: AuthResult | None = None
         api_result: AuthResult | None = None
+        # An arm that could not tell a promoted session from a refusal is HELD,
+        # not returned: a later arm may still PROVE one, and a proof outranks a
+        # deferral. Only the first is kept — the second would be the same
+        # ambiguity about the same target.
+        deferred: AuthResult | None = None
 
         for arm in order.arms:
             if arm == "form":
@@ -701,11 +948,7 @@ class WebAuthenticator(ToolBase):
                     identity_field=identity_field,
                     content_type=content_type,
                 )
-                if form_result.success:
-                    return self._require_session_material(form_result)
-                if form_result.scope_refusal:
-                    return form_result
-                self._logger.info("Cookie/form auth did not establish a session for %s", login_url)
+                result = form_result
             else:
                 api_result = await self._try_api_login(
                     login_url,
@@ -714,12 +957,33 @@ class WebAuthenticator(ToolBase):
                     api_login_url=api_login_url,
                     identity_field=identity_field,
                 )
-                if api_result.success:
-                    return self._require_session_material(api_result)
-                if api_result.scope_refusal:
-                    return api_result
+                result = api_result
 
-        # Both arms failed. Surface the form arm's failure when there is one —
+            if result.proven:
+                return self._require_session_material(result)
+            if result.scope_refusal:
+                return result
+            if result.verdict is LoginVerdict.INDETERMINATE and deferred is None:
+                deferred = result
+            elif arm == "form":
+                self._logger.info("Cookie/form auth did not establish a session for %s", login_url)
+
+        if deferred is not None:
+            # No arm proved a session and one could not rule out a promoted
+            # one. Hand it forward carrying the session material it holds; the
+            # assertion decides. This is the ONLY path by which a caller
+            # receives a success it must not treat as proof, which is why
+            # ``verdict`` travels with it and ``proven`` is False.
+            self._logger.warning(
+                "Login for %s at %s is INDETERMINATE — deferring the verdict to the "
+                "authenticated-state assertion. %s",
+                username,
+                deferred.posted_to or login_url,
+                deferred.verdict_evidence,
+            )
+            return self._require_session_material(deferred)
+
+        # Both arms refused. Surface the form arm's failure when there is one —
         # it carries the richer context (which URL was POSTed to, what came
         # back) that the abort message needs to say what actually happened.
         failed = form_result or api_result
@@ -782,6 +1046,12 @@ class WebAuthenticator(ToolBase):
         return result.model_copy(
             update={
                 "success": False,
+                "verdict": LoginVerdict.REFUSED,
+                "verdict_evidence": (
+                    f"the flow reported a session and held neither a cookie nor a token "
+                    f"(status {result.status_code} from "
+                    f"{result.posted_to or result.login_url})"
+                ),
                 "error": (
                     "login reported success but produced no session material "
                     f"(status {result.status_code} from "
@@ -916,10 +1186,16 @@ class WebAuthenticator(ToolBase):
 
         last_status = 0
         attempted: list[str] = []
+        # The first route that could not be told apart from a promoted session.
+        # Held rather than returned, because a LATER route may still prove one
+        # outright and a proof outranks a deferral.
+        indeterminate: AuthResult | None = None
         for url in routes:
             for body in bodies:
                 try:
-                    status, resp_body, set_cookies = await self._api_post_json(url, body)
+                    status, resp_body, set_cookies = await self._api_post_json(
+                        url, body, account=username
+                    )
                 except CredentialRedirectRefusedError as refused:
                     # NOT "this route errored, try the next". The target asked
                     # us to hand these credentials to a host outside scope, and
@@ -949,6 +1225,34 @@ class WebAuthenticator(ToolBase):
                             f"the credential POST to {refused.posted_to} {refused.reason}"
                         ),
                     )
+                except CredentialAttemptRefusedError as refused:
+                    # NOT "this route errored, try the next". Trying the next
+                    # route is precisely what the rails just refused.
+                    self._logger.error(
+                        "CREDENTIAL ATTEMPT REFUSED [%s] for %r at %s: %s",
+                        refused.category,
+                        refused.account,
+                        refused.url,
+                        refused.reason,
+                    )
+                    if indeterminate is not None:
+                        return indeterminate
+                    return AuthResult(
+                        success=False,
+                        verdict=LoginVerdict.REFUSED,
+                        verdict_evidence=refused.reason,
+                        login_url=login_url,
+                        username=username,
+                        status_code=last_status,
+                        posted_to=refused.url,
+                        error=(f"refused by safety policy [{refused.category}]: {refused.reason}"),
+                        failure_stage=(
+                            f"the safety rails refused a further credential attempt for "
+                            f"{refused.account!r} [{refused.category}]: {refused.reason}. "
+                            f"Nothing evaluated these credentials, so this is not a "
+                            f"statement about them"
+                        ),
+                    )
                 except Exception as exc:
                     self._logger.debug("API login POST %s failed: %s", url, exc)
                     continue
@@ -957,12 +1261,48 @@ class WebAuthenticator(ToolBase):
                 if status < 200 or status >= 300:
                     continue
                 token = self._extract_token(resp_body)
-                # Every cookie this arm can see was set AFTER the credentials
-                # went out — the JSON arm has no login-page GET, so there is no
-                # pre-credential exchange for one to have come from. The delta
-                # rule the form arms apply is satisfied here by construction.
+                # Every cookie this arm can see on THIS response was set after
+                # the credentials went out — the JSON arm has no login-page GET
+                # of its own, so there is no pre-credential exchange of its own
+                # for one to have come from. The delta rule the form arms apply
+                # is satisfied here by construction.
                 cookies = _cookies_from_set_cookie(set_cookies)
                 if not token and not cookies:
+                    # 2xx, no token, no Set-Cookie. Same two causes as on the
+                    # form arms and the same fix: an application that promoted
+                    # its session in place answers a GOOD credential exactly
+                    # like this. The jar the ENGAGEMENT is carrying — which the
+                    # form arm's login GET may well have filled — is what a
+                    # promoted session would be carried by, and if there is one,
+                    # this is a deferral rather than a failure.
+                    if indeterminate is None:
+                        carried = self._carried_session_cookies()
+                        if carried and self._session_survived(status, resp_body):
+                            evidence = (
+                                f"POST {url} returned {status} with no token and no "
+                                f"Set-Cookie, and the engagement is carrying "
+                                f"{', '.join(sorted(carried))} from before it. On an "
+                                f"application that promotes its pre-login session in "
+                                f"place that is what a SUCCESSFUL login looks like, so "
+                                f"the verdict is deferred to the authenticated-state "
+                                f"assertion"
+                            )
+                            self._logger.warning(
+                                "JSON/API login at %s is INDETERMINATE — %s", url, evidence
+                            )
+                            indeterminate = AuthResult(
+                                success=True,
+                                verdict=LoginVerdict.INDETERMINATE,
+                                verdict_evidence=evidence,
+                                session_cookies=carried,
+                                redirect_url=url,
+                                login_url=url,
+                                posted_to=url,
+                                username=username,
+                                status_code=status,
+                                auth_body_fields=list(body),
+                                auth_content_type="application/json",
+                            )
                     continue
                 self._logger.info(
                     "JSON/API auth succeeded via %s (%s)",
@@ -971,6 +1311,15 @@ class WebAuthenticator(ToolBase):
                 )
                 return AuthResult(
                     success=True,
+                    verdict=LoginVerdict.PROVEN,
+                    verdict_evidence=(
+                        f"POST {url} returned {status} carrying "
+                        + (
+                            "an authentication token"
+                            if token
+                            else f"Set-Cookie: {', '.join(sorted(cookies))}"
+                        )
+                    ),
                     bearer_token=token,
                     session_cookies=cookies,
                     redirect_url=url,
@@ -982,8 +1331,16 @@ class WebAuthenticator(ToolBase):
                     auth_content_type="application/json",
                 )
 
+        if indeterminate is not None:
+            return indeterminate
+
         return AuthResult(
             success=False,
+            verdict=LoginVerdict.REFUSED,
+            verdict_evidence=(
+                "no route answered 2xx carrying an authentication token or a Set-Cookie, "
+                "and none answered in a way that could have been a promoted session"
+            ),
             login_url=login_url,
             username=username,
             status_code=last_status,
@@ -999,7 +1356,9 @@ class WebAuthenticator(ToolBase):
             ),
         )
 
-    async def _api_post_json(self, url: str, payload: dict[str, str]) -> tuple[int, str, list[str]]:
+    async def _api_post_json(
+        self, url: str, payload: dict[str, str], *, account: str = ""
+    ) -> tuple[int, str, list[str]]:
         """POST ``payload`` as JSON to ``url``, returning ``(status, body, set_cookies)``.
 
         Reuses :class:`HTTPClientTool` so the request honours the same
@@ -1021,15 +1380,31 @@ class WebAuthenticator(ToolBase):
         destination is not. Each hop is dispatched as its own validated request
         instead, which is what puts it back inside the scope check.
 
+        Args:
+            url: The route to POST to.
+            payload: The credential body.
+            account: The account this credential is for. Handed to the HTTP
+                chokepoint so the attempt is counted against the per-account
+                budget and named in the action log.
+
         Raises:
             CredentialRedirectRefusedError: A hop's destination is outside scope.
                 An exception rather than a return value because the caller's
                 per-route loop catches ``Exception`` and moves on, and this must
                 not be one of the things it moves on from.
+            CredentialAttemptRefusedError: The rails refused the attempt. Same
+                reason, and the same rule: "try the next route" is the behaviour
+                being refused.
         """
         from clinkz.tools.http_client import HTTPClientTool
 
         http = HTTPClientTool(scope=self.scope, engagement_id=self._engagement_id)
+        # The chokepoint takes the slot for this arm — wrapping it here as well
+        # would nest two acquisitions of the same semaphore and double-count
+        # every rate token. It authorizes, counts and logs the attempt instead,
+        # which is what makes the two arms account for a credential POST the
+        # same way.
+        http.credential_account = account
         body = json.dumps(payload)
         dispatched_to = url
         # Every hop's Set-Cookie, in order. A login answered 302-with-the-session
@@ -1050,6 +1425,18 @@ class WebAuthenticator(ToolBase):
                 request["headers"]["Content-Type"] = "application/json"
                 request["body"] = body
             parsed = http.parse_output(await http.execute(http.validate_input(request)))
+            # The chokepoint returns a refusal as an error-shaped response
+            # rather than raising, which is right for a methodology probe and
+            # wrong here: the caller's next move on a soft failure is to offer
+            # the same password to the next route, and that is the thing being
+            # refused. Promote it.
+            if carries_credentials and parsed.safety_refusal in _CREDENTIAL_REFUSAL_CATEGORIES:
+                raise CredentialAttemptRefusedError(
+                    parsed.error or parsed.safety_refusal,
+                    category=parsed.safety_refusal,
+                    account=account,
+                    url=hop_url,
+                )
             set_cookies.extend(parsed.set_cookie)
             return HopResponse(
                 status=parsed.status_code,
@@ -1166,6 +1553,25 @@ class WebAuthenticator(ToolBase):
             return False
         return self._session_survived(outcome.response.status, str(outcome.response.payload or ""))
 
+    def _carried_session_cookies(self) -> dict[str, str]:
+        """Cookies the ENGAGEMENT is already carrying, for the deferral test only.
+
+        Never evidence that a credential worked — a cookie that exists whatever
+        we send cannot distinguish a good password from a bad one. It is read for
+        exactly one question: is there anything here that a promoted session
+        COULD be, so that an ambiguous response is worth deferring on rather than
+        calling a failure.
+        """
+        if not self._engagement_id:
+            return {}
+        from clinkz.tools.http_client import get_session_cookies
+
+        try:
+            return get_session_cookies(self._engagement_id)
+        except Exception as exc:  # noqa: BLE001 — a missing jar is not a login failure
+            self._logger.debug("Could not read the engagement cookie jar: %s", exc)
+            return {}
+
     @staticmethod
     def _session_survived(status: int, body: str) -> bool:
         """Whether a response to a session-bearing request says the session lives.
@@ -1245,9 +1651,10 @@ class WebAuthenticator(ToolBase):
                     # it lands on is where the field names and the form
                     # ``action`` come from.
                     async def _get_login_page(hop_url: str, _carries: bool) -> HopResponse:
-                        async with session.get(
-                            hop_url, ssl=False, allow_redirects=False
-                        ) as get_resp:
+                        async with (
+                            self._governed_request("GET", hop_url),
+                            session.get(hop_url, ssl=False, allow_redirects=False) as get_resp,
+                        ):
                             return HopResponse(
                                 status=get_resp.status,
                                 headers=dict(get_resp.headers),
@@ -1358,31 +1765,53 @@ class WebAuthenticator(ToolBase):
                         # These are the cookies that exist because a credential
                         # was sent, and they are the only cookies that are
                         # evidence about the credential — see
-                        # ``_check_login_success`` rule 1. Read off the
+                        # ``_login_verdict`` rule 1. Read off the
                         # multidict rather than the header dict: a response
                         # setting two cookies sends two headers of one name and
                         # ``dict(resp.headers)`` keeps the last.
                         set_cookies: list[str] = []
 
                         async def _dispatch(hop_url: str, carries_credentials: bool) -> HopResponse:
-                            if carries_credentials:
-                                request = session.post(
-                                    hop_url,
-                                    data=body,
-                                    headers=extra,
-                                    ssl=False,
-                                    allow_redirects=False,
+                            # The slot is per HOP, and a hop that carries the
+                            # credential names the account. A 307 re-POSTs the
+                            # password; it is another attempt and it counts as
+                            # one.
+                            #
+                            # The request is BUILT inside the slot, not before
+                            # it: ``session.post`` returns a context manager
+                            # wrapping a coroutine, and a refusal that raises
+                            # past one that was never entered leaves it
+                            # un-awaited.
+                            async with self._governed_request(
+                                "POST" if carries_credentials else "GET",
+                                hop_url,
+                                account=username if carries_credentials else "",
+                            ):
+                                request = (
+                                    session.post(
+                                        hop_url,
+                                        data=body,
+                                        headers=extra,
+                                        ssl=False,
+                                        allow_redirects=False,
+                                    )
+                                    if carries_credentials
+                                    else session.get(hop_url, ssl=False, allow_redirects=False)
                                 )
-                            else:
-                                request = session.get(hop_url, ssl=False, allow_redirects=False)
-                            async with request as resp:
-                                hop_cookies = tuple(resp.headers.getall("Set-Cookie", []))
-                                set_cookies.extend(hop_cookies)
+                                async with request as resp:
+                                    hop_cookies = tuple(resp.headers.getall("Set-Cookie", []))
+                                    set_cookies.extend(hop_cookies)
+                                    hop_body = await resp.text(errors="replace")
+                                    hop_headers = dict(resp.headers)
+                                if carries_credentials:
+                                    self._observe_credential_response(
+                                        hop_url, username, resp.status, hop_headers, hop_body
+                                    )
                                 return HopResponse(
                                     status=resp.status,
-                                    headers=dict(resp.headers),
+                                    headers=hop_headers,
                                     landed_url=str(resp.url),
-                                    payload=await resp.text(errors="replace"),
+                                    payload=hop_body,
                                     set_cookies=hop_cookies,
                                 )
 
@@ -1489,25 +1918,30 @@ class WebAuthenticator(ToolBase):
                         len(post_body),
                     )
 
-                    # Step 6: Does POSITIVE evidence say a session exists?
-                    success = self._check_login_success(
+                    # Step 6: what did the exchange PROVE — in three values.
+                    judgement = self._login_verdict(
                         post_body,
                         post_status,
                         final_url,
                         login_url,
                         redirect_chain,
                         session_evidence,
+                        session_cookies,
                     )
+                    success = judgement.verdict is not LoginVerdict.REFUSED
 
                     self._logger.info(
-                        "Auth attempt %d result: success=%s",
+                        "Auth attempt %d verdict: %s — %s",
                         attempt,
-                        success,
+                        judgement.verdict.value,
+                        judgement.evidence,
                     )
 
                     last_result = json.dumps(
                         {
                             "success": success,
+                            "verdict": judgement.verdict.value,
+                            "verdict_evidence": judgement.evidence,
                             "session_cookies": session_cookies,
                             "redirect_url": final_url,
                             "login_url": login_url,
@@ -1515,16 +1949,19 @@ class WebAuthenticator(ToolBase):
                             "status_code": post_status,
                             "posted_to": post_url,
                             "negotiated_content_type": negotiated,
-                            "failure_stage": (
-                                ""
-                                if success
-                                else f"credential POST to {post_url} returned {post_status} "
-                                "with no session material"
-                            ),
+                            "failure_stage": ("" if success else judgement.evidence),
                         }
                     )
 
-                    if success:
+                    if judgement.verdict is LoginVerdict.PROVEN:
+                        return last_result
+                    if judgement.verdict is LoginVerdict.INDETERMINATE:
+                        # Retrying would offer the same password again for no
+                        # new information: the response was not a refusal and
+                        # the assertion, not another POST, is what settles it.
+                        self._logger.warning(
+                            "Login at %s is INDETERMINATE — %s", post_url, judgement.evidence
+                        )
                         return last_result
 
                     # If first attempt failed, retry with fresh session/CSRF
@@ -1535,6 +1972,10 @@ class WebAuthenticator(ToolBase):
                         )
                         continue
 
+            except CredentialAttemptRefusedError as refused:
+                # Terminal, and never retried: the rails refused this attempt,
+                # and the second attempt is the thing being refused.
+                return self._attempt_refused_result(refused, login_url=login_url, username=username)
             except Exception as exc:
                 self._logger.error(
                     "aiohttp login flow failed (attempt %d): %s",
@@ -1644,7 +2085,8 @@ class WebAuthenticator(ToolBase):
                 if get_dumps:
                     cmd += ["-b", cookie_jar]
                 cmd += ["-c", cookie_jar, hop_url]
-                stdout, stderr, rc = await self._run_subprocess(cmd)
+                async with self._governed_request("GET", hop_url):
+                    stdout, stderr, rc = await self._run_subprocess(cmd)
                 get_dumps.append(stdout)
                 get_rc, get_stderr = rc, stderr
                 status, body, headers, hop_cookies = self._parse_curl_exchange(stdout)
@@ -1752,9 +2194,21 @@ class WebAuthenticator(ToolBase):
                             cmd += ["-H", f"{header}: {value}"]
                         cmd += ["-d", body]
                     cmd += ["-b", cookie_jar, "-c", cookie_jar, hop_url]
-                    stdout, _stderr, _rc = await self._run_subprocess(cmd)
+                    # Per HOP, and naming the account on the hops that carry the
+                    # credential. ``_run_subprocess`` takes no slot of its own
+                    # (it gets the halt check only), so this does not nest.
+                    async with self._governed_request(
+                        "POST" if carries_credentials else "GET",
+                        hop_url,
+                        account=username if carries_credentials else "",
+                    ):
+                        stdout, _stderr, _rc = await self._run_subprocess(cmd)
                     status, resp_body, headers, hop_cookies = self._parse_curl_exchange(stdout)
                     hop_set_cookies.extend(hop_cookies)
+                    if carries_credentials:
+                        self._observe_credential_response(
+                            hop_url, username, status, headers, resp_body
+                        )
                     return HopResponse(
                         status=status,
                         headers=headers,
@@ -1849,18 +2303,23 @@ class WebAuthenticator(ToolBase):
                     jar_cookies = self._read_cookie_jar(cookie_jar)
                 session_cookies = jar_cookies
 
-            success = self._check_login_success(
+            judgement = self._login_verdict(
                 post_response_body,
                 post_status,
                 final_url,
                 login_url,
                 redirect_chain,
                 session_evidence,
+                session_cookies,
             )
+            success = judgement.verdict is not LoginVerdict.REFUSED
+            self._logger.info("Auth verdict: %s — %s", judgement.verdict.value, judgement.evidence)
 
             return json.dumps(
                 {
                     "success": success,
+                    "verdict": judgement.verdict.value,
+                    "verdict_evidence": judgement.evidence,
                     "session_cookies": session_cookies,
                     "redirect_url": final_url,
                     "login_url": login_url,
@@ -1868,15 +2327,12 @@ class WebAuthenticator(ToolBase):
                     "status_code": post_status,
                     "posted_to": post_url,
                     "negotiated_content_type": negotiated,
-                    "failure_stage": (
-                        ""
-                        if success
-                        else f"credential POST to {post_url} returned {post_status} "
-                        "with no session material"
-                    ),
+                    "failure_stage": ("" if success else judgement.evidence),
                 }
             )
 
+        except CredentialAttemptRefusedError as refused:
+            return self._attempt_refused_result(refused, login_url=login_url, username=username)
         except Exception as exc:
             self._logger.error("curl login flow failed: %s", exc, exc_info=True)
             return json.dumps(
@@ -1947,17 +2403,18 @@ class WebAuthenticator(ToolBase):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _check_login_success(
+    def _login_verdict(
         response_body: str,
         status_code: int,
         final_url: str,
         login_url: str,
         redirect_chain: list[str],
         session_evidence: dict[str, str] | None = None,
-    ) -> bool:
-        """Whether POSITIVE evidence says a session was established.
+        carried_session: dict[str, str] | None = None,
+    ) -> LoginJudgement:
+        """What the credential exchange proved — in three values, not two.
 
-        Success is not the absence of a failure keyword. It requires one of:
+        Success requires POSITIVE evidence:
 
         1. **Session material the CREDENTIAL POST produced** — cookies set on
            the credential exchange, or a token in its body. This is the thing a
@@ -1969,22 +2426,10 @@ class WebAuthenticator(ToolBase):
            POST's — so an application that issues its session cookie on the
            login **GET** (PHP does, Django does, every framework that starts a
            session to hold a CSRF token does) satisfied rule 1 before a
-           credential had been sent at all. A wrong password answered
-           ``200 <the login page again>`` then scored as a proven session, and
-           the only thing standing between that and the report was the
-           failure-keyword list two lines below: a target whose refusal says
-           "Those details do not match" contains none of those seven substrings.
-           A control arm merged into the treatment is not a control.
-
-           The cookies the exchange HOLDS are still what
-           :attr:`AuthResult.session_cookies` carries — the GET's cookie is
-           genuinely the session on a framework that promotes it in place, and
-           dropping it would break the carriage. Evidence and carriage are
-           different questions and this is the one that decides the verdict.
+           credential had been sent at all. A control arm merged into the
+           treatment is not a control.
         2. **A redirect that actually occurred** — ``redirect_chain`` non-empty,
-           landing somewhere other than the login page. An application that
-           answers a good credential with "go to your dashboard" said so in a
-           ``Location`` header, and the chain is where that is recorded.
+           landing somewhere other than the login page.
 
            ``redirect_chain`` means one thing: **the absolute destinations a
            redirect pointed to, in hop order**
@@ -1992,45 +2437,75 @@ class WebAuthenticator(ToolBase):
            two, and this test is why that mattered. The aiohttp arm filled it
            with the URLs that ANSWERED, so a POST to a form ``action`` answered
            "302 back to /login?error=1" produced a chain holding the ACTION path
-           — different from the login path, read here as "redirected away,
-           therefore logged in". A rejected credential scored as a session. The
-           curl arm meanwhile filled it with raw ``Location`` values, unresolved,
-           so ``urlparse("index.php").path`` was compared against ``/login.php``.
+           — read here as "redirected away, therefore logged in". The curl arm
+           filled it with raw ``Location`` values, unresolved, so
+           ``urlparse("index.php").path`` was compared against ``/login.php``.
         3. **An authenticated-page marker** in the body, on a 2xx.
 
-        Two rules bound it, and both were written by a live failure:
+        Two rules bound those, and both were written by a live failure. **A 4xx
+        is never success** — the old rule reached "logged in" on a **415**, which
+        is the server stating what it wanted. **A different final path is not a
+        redirect** — a form whose ``action`` points elsewhere satisfies that with
+        no redirect having happened, which is exactly the shape of a JSON login
+        API behind an HTML form.
 
-        **A 4xx is never success.** The old rule reached "logged in" on a
-        **415**, and 415 is the server stating what it wanted — the clearest
-        possible answer that nothing was accepted. Anything at or above 400
-        returns ``False`` before any other test runs.
+        **And then the third value, which is the whole point of this being an
+        enum.** When none of the three fire, "the POST set no cookie" still has
+        two causes:
 
-        **A different final path is not a redirect.** The old rule compared
-        ``final_url``'s path with ``login_url``'s and called a difference
-        "redirected away → success". A form whose ``action`` points at another
-        path satisfies that with no redirect having happened at all, which is
-        exactly the shape of a JSON login API behind an HTML form. The redirect
-        test now reads ``redirect_chain``, which is empty unless a redirect
-        genuinely occurred.
+        * the application refused the credential; or
+        * the application **promoted the pre-login session in place**. Django's
+          ``cycle_key``, PHP's ``session_regenerate_id(False)``, and every
+          framework that keeps one session id across the login boundary answer a
+          GOOD credential with ``200``, no ``Set-Cookie``, and a page. The cookie
+          that IS the session was issued on the login GET, so the delta — the
+          only honest evidence — is empty on success.
+
+        The two are indistinguishable from this response, so this function stops
+        distinguishing them. An empty delta with a **non-empty carried jar**, on
+        a response that is not itself a denial, is :attr:`LoginVerdict.INDETERMINATE`
+        and the verdict passes to
+        :func:`~clinkz.engagement.auth_state.assert_authenticated` — which
+        compares an authenticated request against an anonymous control, is the
+        stronger oracle, and is already running on the very next line of
+        ``_authenticate_role``.
+
+        "Not itself a denial" is :meth:`_session_survived`, the same shared rule
+        both verification arms use: not a 401/403, and not a body serving an
+        ``<input type="password">``. That is what keeps this from swallowing
+        every failed login — an application that answers a wrong password by
+        re-serving its login form is REFUSED here, on an observation, without
+        needing its refusal to contain one of seven English substrings.
 
         Args:
             response_body: HTML/JSON body of the final response.
             status_code: HTTP status code of the final response.
-            final_url: URL after all redirects.
+            final_url: URL after all redirects. Deliberately not consulted for
+                the verdict; carried for the caller's record.
             login_url: Original login URL.
             redirect_chain: Absolute destinations a redirect actually pointed
                 to, in hop order. Empty when nothing redirected.
             session_evidence: Cookies the CREDENTIAL POST set — the delta across
                 the POST boundary, never the cookies the exchange was already
                 holding when it dispatched.
+            carried_session: The cookies the exchange HOLDS. Only ever read to
+                decide INDETERMINATE: it is what a promoted session would be
+                carried by, and it is never on its own evidence that a
+                credential worked.
 
         Returns:
-            ``True`` only on positive evidence of a session.
+            A :class:`LoginJudgement` — the verdict, and the observation behind
+            it, phrased so a refusal names what was absent rather than asserting
+            anything about the operator's password.
         """
-        # A 4xx or 5xx is the server refusing. Nothing after this point can
-        # make it a success, so nothing after this point gets to run.
+        # A 4xx or 5xx is the server refusing. Nothing after this point can make
+        # it a success, so nothing after this point gets to run.
         if status_code >= 400:
-            return False
+            return LoginJudgement(
+                LoginVerdict.REFUSED,
+                f"the credential POST was answered {status_code}, which is the server "
+                f"refusing the request rather than issuing a session",
+            )
 
         body_lower = (response_body or "").lower()
 
@@ -2043,23 +2518,38 @@ class WebAuthenticator(ToolBase):
             "bad credentials",
             "access denied",
         ]
-        if any(kw in body_lower for kw in failure_keywords):
-            return False
+        matched = next((kw for kw in failure_keywords if kw in body_lower), "")
+        if matched:
+            return LoginJudgement(
+                LoginVerdict.REFUSED,
+                f"the response body carries the refusal marker {matched!r}",
+            )
 
         # 1. Session material — a cookie the CREDENTIAL POST set, or a token in
         #    its body. Not a cookie the login-page GET set: that one exists
         #    whatever we send, so it cannot distinguish a good credential from a
         #    bad one.
         if session_evidence:
-            return True
+            return LoginJudgement(
+                LoginVerdict.PROVEN,
+                f"the credential POST set {', '.join(sorted(session_evidence))}",
+            )
         if WebAuthenticator._extract_token(response_body or ""):
-            return True
+            return LoginJudgement(
+                LoginVerdict.PROVEN,
+                "the credential response body carried an authentication token",
+            )
 
         # 2. A redirect that ACTUALLY occurred, to somewhere other than login.
         if redirect_chain and login_url:
             login_path = urlparse(login_url).path.rstrip("/")
-            if any(urlparse(r).path.rstrip("/") != login_path for r in redirect_chain):
-                return True
+            away = [r for r in redirect_chain if urlparse(r).path.rstrip("/") != login_path]
+            if away:
+                return LoginJudgement(
+                    LoginVerdict.PROVEN,
+                    f"the credential POST was answered with a redirect to {away[0]}, "
+                    f"which is not the login page",
+                )
 
         # 3. An authenticated-page marker on a 2xx. Last, not first: a login
         #    page carrying the word "profile" in its footer is a page anyone can
@@ -2075,12 +2565,41 @@ class WebAuthenticator(ToolBase):
                 "my account",
                 "profile",
             ]
-            if any(kw in body_lower for kw in success_keywords):
-                return True
+            marker = next((kw for kw in success_keywords if kw in body_lower), "")
+            if marker:
+                return LoginJudgement(
+                    LoginVerdict.PROVEN,
+                    f"the response carries the authenticated-page marker {marker!r}",
+                )
 
-        # No session material, no redirect, no marker. ``final_url`` differing
-        # from ``login_url`` is deliberately not consulted — see the docstring.
-        return False
+        # 4. Nothing proved it. Is there anything to defer WITH?
+        #
+        # Only when the exchange is carrying session material from before the
+        # credentials went out, and only when this response is not itself a
+        # denial. Both halves are load-bearing: without the first there is
+        # nothing an assertion could carry, and without the second every
+        # re-served login page would become a deferral.
+        if carried_session and WebAuthenticator._session_survived(status_code, response_body or ""):
+            return LoginJudgement(
+                LoginVerdict.INDETERMINATE,
+                f"the credential POST returned {status_code}, set no cookie and returned "
+                f"no token, and the exchange is carrying "
+                f"{', '.join(sorted(carried_session))} from before the credentials were "
+                f"sent. On an application that promotes its pre-login session in place "
+                f"that cookie IS the session and this is what a SUCCESSFUL login looks "
+                f"like, so the verdict is deferred to the authenticated-state assertion",
+            )
+
+        # No session material, no redirect, no marker, nothing carried. Say what
+        # was absent. ``final_url`` differing from ``login_url`` is deliberately
+        # not consulted — see the docstring.
+        return LoginJudgement(
+            LoginVerdict.REFUSED,
+            f"the credential POST to {final_url or login_url} returned {status_code}, set "
+            f"no cookie, returned no token, was not redirected away from the login page, "
+            f"and the exchange held no session material from before it — there is nothing "
+            f"here that could be a session",
+        )
 
     @staticmethod
     def _negotiated_content_type(

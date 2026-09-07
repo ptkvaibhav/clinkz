@@ -1779,3 +1779,97 @@ never-overridable line exists to prevent. The client half is why a throwaway
 declaration cannot buy it either — a record written into another user's account
 is not one the client deletes "the way they delete any record", because they must
 first discover it, in an account that is not the one they gave us.
+
+---
+
+## 91 · "The POST set no cookie" has two causes
+
+Invariant 11 removed the merged jar from the success test, and it was right to:
+the login-page GET's cookie exists whatever we send, so counting it as evidence
+let a wrong password answered `200 <the login page again>` score as a proven
+session. The DELTA across the credential boundary is the honest evidence.
+
+The delta is also **empty on a successful login** against any application that
+promotes its pre-login session in place — `session_regenerate_id(False)`,
+Django's `cycle_key` on a reused key, every framework that attaches an identity
+to the session id it has already issued rather than minting a new one. The
+honest evidence and the refusal produce the same observation, and a `bool` return
+made them the same answer: the engagement aborted, and the operator was told
+their password was wrong about a password that worked.
+
+Three values, not two. `PROVEN` when the POST produced something. `REFUSED` when
+the response refused, or when there is nothing to defer with. `INDETERMINATE`
+when nothing proved it, the exchange is carrying session material from before the
+credentials went out, and the response is not itself a denial — and then the
+verdict goes to `assert_authenticated`, which compares an authenticated request
+against an anonymous control and was already running on the next line.
+
+The deferral's bound is the load-bearing half. "Not itself a denial" is
+`_session_survived` — not a 401/403, and not a body serving an
+`<input type="password">` — which is the same rule both verification arms use and
+is strictly stronger than the seven failure keywords it now sits behind: an
+application whose refusal reads "Those details do not match" is REFUSED on the
+form it re-served rather than on English it did not use.
+
+And the deferral may not reach the default-credential sweep. Marking a guessed
+password `valid` is a claim that reaches the report; on a promote-in-place
+application EVERY guess is indeterminate, good or bad, so an unproven deferral
+would mark all of them valid. The sweep puts an indeterminate guess to the same
+oracle before believing it.
+
+The positive control is the whole cost of this invariant. **No target this
+project owns has the shape** — DVWA sets a fresh `PHPSESSID`, Juice Shop returns
+a JWT, Meridian sets `meridian_portal` — so all three pass whether the branch
+works or not, and a branch nothing reaches is indistinguishable from a branch
+that does not work. `tests/test_tools/test_promoted_session_login.py` builds it,
+end to end, with its negative arm beside it.
+
+## 92 · The only component that could bound it could not see it
+
+Measured at the transport against Meridian, one `authenticate()` call, one role:
+a credential that WORKS costs 2 credential POSTs; one that does not costs **16**
+in docker mode and **18** on the host. Multiply by the four default passwords the
+catalogue holds for `admin` and one account is offered **64** passwords in a run.
+
+The client-facing record of a two-role engagement was **two** `actions.jsonl`
+entries, both reading `POST mutates target state`.
+
+`execute()` took ONE governor authorization for the whole form arm — both
+attempts, the 415 re-POST, every redirect hop — because that arm drives aiohttp
+and curl directly. The JSON arm rides the HTTP chokepoint, so its 7-24 POSTs were
+authorized and logged individually. Two accounting regimes inside one call, so
+what the log MEANT depended on which transport the run happened to take. The
+governor owns the rate limit, the concurrency cap, the kill switch and that log;
+it is the only component that could have bounded a brute-force we did not intend
+to perform, and it was looking at one request where sixteen had gone out.
+
+The slot moves to the POST, and a credential-bearing request names the account.
+That is what gives the budget somewhere to live, and it is also what declares the
+request's SHAPE: without it the destructive classifier reads the body's own field
+names, `account` is a mutation qualifier ("account settings"), and a JSON login
+whose identity field is spelled `account` — Meridian's is — classified as
+`credential_change` and was refused, then reported as "no API login route
+returned a token".
+
+Two protections, failing in opposite directions. The **budget** is an assumption
+made in advance; it cannot know where a particular policy trips, so it is
+declarable and defaults low (8 — four times the headroom every measured success
+needs). The **stop** is an observation the target hands us; it knows exactly, and
+it arrives too late to prevent the attempt that produced it, which is precisely
+why acting on it must stop the ones after it. The stop is checked first, because
+an observation about the target outranks an assumption about it.
+
+`safety/lockout.py` is the one vocabulary, and it is shared with
+`_test_brute_force` for the reason `safety/destructive.py` is shared: the
+methodology reads those signals to decide whether the TARGET is protected and the
+authenticator reads them to decide whether WE must stop — the same observation,
+opposite purposes, and a signal list that exists twice diverges. The classifier
+reads headers and status before body text, because a protocol artifact cannot be
+page furniture, and it DECLARES which kind it saw rather than leaving a consumer
+to re-derive it from a substring of the marker.
+
+The sweep asks for the first stop on ANY account. A lockout, a rate limit or a
+captcha is usually a statement about the source or the endpoint rather than about
+one identity, and an engine that stops guessing `admin`'s password and carries
+straight on to `root`'s has learned nothing from the evidence it just received.
+

@@ -635,6 +635,28 @@ detail when you are about to change the code an invariant governs — not by def
     never-overridable and the class needs `write_crossing` named explicitly.**
     **Detail →
     [`docs/methodology/write-crossings.md`](docs/methodology/write-crossings.md).**
+91. **"The POST set no cookie" has TWO causes and a boolean collapses them.** A
+    framework that promotes its pre-login session in place sets nothing on a
+    SUCCESSFUL login, so an empty `Set-Cookie` delta beside a non-empty carried
+    jar is `INDETERMINATE` (`LoginVerdict`) and the verdict DEFERS to
+    `assert_authenticated` — the stronger oracle, already running. The JSON arm's
+    `2xx + token-or-cookie` rule has the same hole and the same fix. A deferral
+    is bounded by `_session_survived`: a response serving an
+    `<input type="password">` is REFUSED, on an observation rather than on seven
+    English substrings. **A guessed credential may not ride the deferral** — the
+    sweep proves it or marks it invalid. **A login declared failed names the
+    evidence that was ABSENT and never asserts the credentials were wrong.**
+92. **A credential POST is bounded by the component that can see it, and the
+    stop the TARGET declares outranks the budget WE assumed.** The governor slot
+    moves from `authenticate()` to each credential POST, which NAMES the account
+    (`SafetyPolicy.max_credential_attempts_per_account`, default 8, keyed on
+    origin+account) — measured 16-18 POSTs per failing call, 64 across a sweep,
+    against **two** action-log entries. Naming the account also declares the
+    request is a login, not a `credential_change`. `safety/lockout.py` is the one
+    lockout vocabulary, shared with `_test_brute_force`; a lockout, rate limit or
+    captcha is recorded and refuses every later attempt, and the sweep stops on
+    the first evidence for ANY account. **Detail →
+    [`docs/methodology/credential-attempts-and-lockout.md`](docs/methodology/credential-attempts-and-lockout.md).**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

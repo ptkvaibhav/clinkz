@@ -446,6 +446,13 @@ class SafetyPolicy(BaseModel):
         max_state_changing_requests: Ceiling on state-changing requests the
             engagement may send in total. ``0`` disables the ceiling. A cheap
             backstop against a runaway loop mutating a live application.
+        max_credential_attempts_per_account: Ceiling on credential-bearing
+            requests offered for any ONE account, across the whole engagement
+            and all three producers that make them (the login, the session
+            refresh, and the default-credential sweep). ``0`` disables the
+            bound; the default is deliberately low. See
+            :mod:`clinkz.safety.lockout` for the observed half of the same
+            protection.
     """
 
     max_requests_per_second: float = Field(default=5.0, gt=0.0)
@@ -453,6 +460,17 @@ class SafetyPolicy(BaseModel):
     blocking_threshold: int = Field(default=5, ge=1)
     halt_on_blocking: bool = True
     max_state_changing_requests: int = Field(default=0, ge=0)
+    # Low by design, and low is a decision rather than a default nobody chose.
+    # Measured against the three targets this engine is developed on, one
+    # ``authenticate()`` that SUCCEEDS costs 1-3 credential POSTs; the 16-18 and
+    # the 64-across-a-sweep in the accounting are what a login that never
+    # succeeds costs, and every one of those is spent after the answer is
+    # already known. Eight leaves every observed success two attempts of
+    # headroom and cuts the worst case by a factor of eight. It does NOT promise
+    # no lockout — a policy that trips at three trips at three — which is why
+    # the observed stop (:mod:`clinkz.safety.lockout`) is the other half and the
+    # one that reads the target rather than assuming it.
+    max_credential_attempts_per_account: int = Field(default=8, ge=0)
 
 
 class RoleCredential(BaseModel):

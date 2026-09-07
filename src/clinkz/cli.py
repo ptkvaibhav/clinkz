@@ -342,6 +342,17 @@ def scan(
         int | None,
         typer.Option("--max-concurrency", help="Max simultaneous in-flight requests."),
     ] = None,
+    max_credential_attempts: Annotated[
+        int | None,
+        typer.Option(
+            "--max-credential-attempts",
+            help=(
+                "Credential-bearing requests permitted against any ONE account, across "
+                "the whole engagement. Default 8. Raise it only when a login genuinely "
+                "needs more attempts than that to reach; 0 removes the bound."
+            ),
+        ),
+    ] = None,
     token_cap: Annotated[
         int | None,
         typer.Option(
@@ -521,6 +532,8 @@ def scan(
         scope_obj.safety.max_requests_per_second = rate
     if max_concurrency is not None:
         scope_obj.safety.max_concurrent_requests = max_concurrency
+    if max_credential_attempts is not None:
+        scope_obj.safety.max_credential_attempts_per_account = max_credential_attempts
 
     # LLM budget. Assembled here so a bad cap is refused before anything is
     # dispatched, rather than discovered as an under-count at the end.
