@@ -32,7 +32,10 @@ binds is COMPUTED from the call graph:
   very oracle this file exists to pin was not flagged.
 * **The classification** says what each flagged member tests. Only
   ``destination_spelling`` is dangerous, and every entry carrying it needs a
-  licence naming its consumer and the bound that keeps it from being a verdict.
+  licence naming EVERY consumer and the bound that keeps it from being a
+  verdict there. The consumer set is computed from the tree and asserted in
+  both directions, so the licence is a gate rather than a paragraph that goes
+  stale the first time a fourth consumer is added.
 
 Assert both directions: an unclassified flagged member fails, and an entry that
 outlived the code it described fails.
@@ -58,9 +61,10 @@ PKG = SRC / "clinkz"
 #: makes. Every function reachable from one of these through a verdict-carrying
 #: edge is in the domain this file guards.
 SESSION_VERDICT_SINKS: dict[str, str] = {
-    "_check_login_success": (
-        "decides whether a credential exchange established a session; its return "
-        "IS AuthResult.success"
+    "_login_verdict": (
+        "decides what a credential exchange PROVED — proven / indeterminate / "
+        "refused; its return IS AuthResult.verdict, and AuthResult.success is "
+        "read off it"
     ),
     "_require_session_material": (
         "decides whether a success that carries no session material may stand"
@@ -126,7 +130,8 @@ LITERAL_TESTS: dict[str, tuple[str, str]] = {
         "response_key_name",
         "Tests JSON body keys and header names against token-carrying key names. "
         "The destination test in its fourth arm is the redirects_to_login "
-        "property, classified separately, and its licence is recorded below.",
+        "property, classified separately, and its licence — which names this "
+        "function as one of its computed consumers — is recorded below.",
     ),
     "clinkz.engagement.auth_state:ProbeResponse.location": (
         "header_name",
@@ -166,12 +171,16 @@ LITERAL_TESTS: dict[str, tuple[str, str]] = {
         "Compares the configured tool execution mode against 'docker'. That value "
         "is this engine's own setting, not anything a target says.",
     ),
-    "clinkz.tools.auth:WebAuthenticator._check_login_success": (
+    "clinkz.tools.auth:WebAuthenticator._login_verdict": (
         "body_marker",
         "Tests failure and success keywords against the response BODY, and the "
         "success markers run LAST — after session material and after a redirect "
         "that actually occurred — precisely because a body marker is the weakest "
-        "of the three. Nothing here reads where a redirect points.",
+        "of the three. Nothing here reads where a redirect points. The keyword "
+        "lists are also no longer the last line of defence: a refusal none of "
+        "them recognise now reaches the INDETERMINATE branch, where "
+        '_session_survived decides on an <input type="password"> instead of '
+        "on English.",
     ),
     "clinkz.tools.auth:WebAuthenticator._dispatch": (
         "engine_token",
@@ -248,30 +257,56 @@ LITERAL_TESTS: dict[str, tuple[str, str]] = {
     ),
 }
 
-#: qualname of a ``destination_spelling`` member -> every consumer that reads it,
-#: and the bound that keeps it from being the verdict there.
+#: qualname of a ``destination_spelling`` member -> ``{consumer qualname: the
+#: bound that keeps it from being the verdict there}``.
 #:
-#: An exemption is an allow-list entry with a substantive reason, never a silent
-#: skip. A member that appears here and NOT in the code any more fails, and a
-#: ``destination_spelling`` member with no entry here fails.
-DESTINATION_SPELLING_LICENCE: dict[str, str] = {
-    "clinkz.engagement.auth_state:ProbeResponse.redirects_to_login": (
-        "Three consumers, and none of them may be the verdict. (1) "
-        "looks_unauthenticated raises a HYPOTHESIS for SessionSentinel, which "
-        "answers it by re-running assert_authenticated — the oracle — so a "
-        "missed spelling costs a re-verification and never a wrong claim "
-        "(invariant 37). (2) detect_auth_mechanism uses it to label a surface "
-        "UNKNOWN when nothing else was found, which is a statement about what we "
-        "could not determine. (3) read_auth_artifact's fourth arm treats a "
-        "redirect that is NOT login-spelled as authenticated state; the "
-        "differential bounds it, because a login page this list does not "
-        "recognise makes the control arm authenticated too and "
-        "decide_auth_bypass then refuses to confirm — so an unrecognised "
-        "spelling costs COVERAGE there, not a false finding. The session "
-        "assertion itself stopped reading this property when /portal/gateway "
-        "proved the cost, and it must never read it again."
-    ),
+#: **The consumer set is COMPUTED, not described.** It used to be one prose
+#: paragraph naming three consumers, which is a comment: a fourth consumer added
+#: next month reads a destination's spelling with nothing failing, and the
+#: paragraph goes on saying "three consumers" while there are four. The
+#: paragraph is now a mapping, and
+#: :func:`test_the_licence_names_exactly_the_consumers_that_exist` derives the
+#: real set from the same tree the guard walks and asserts BOTH directions —
+#: a consumer with no bound fails, and a bound for a consumer that no longer
+#: reads it fails too.
+#:
+#: The domain is computed from the source of truth; only the CLASSIFICATION is
+#: hand-maintained. That is the guard-domain law, applied to the guard's own
+#: exemption table.
+DESTINATION_SPELLING_LICENCE: dict[str, dict[str, str]] = {
+    "clinkz.engagement.auth_state:ProbeResponse.redirects_to_login": {
+        "clinkz.engagement.auth_state:looks_unauthenticated": (
+            "Raises a HYPOTHESIS for the SessionSentinel, which answers it by "
+            "re-running assert_authenticated — the oracle. A spelling this list "
+            "does not recognise costs one re-verification and never a wrong "
+            "claim, because the sentinel never concludes anything itself "
+            "(invariant 37)."
+        ),
+        "clinkz.engagement.auth_state:detect_auth_mechanism": (
+            "Labels a surface UNKNOWN when nothing else was found, which is a "
+            "statement about what we could not determine rather than a verdict "
+            "about the target. A missed spelling leaves the mechanism "
+            "undetermined, which is what it already was."
+        ),
+        "clinkz.agents._auth_bypass:read_auth_artifact": (
+            "Its fourth arm treats a redirect that is NOT login-spelled as "
+            "authenticated state. The DIFFERENTIAL bounds it: a login page this "
+            "list does not recognise makes the CONTROL arm look authenticated "
+            "too, and decide_auth_bypass then refuses to confirm — so an "
+            "unrecognised spelling costs coverage there, never a false finding."
+        ),
+    },
 }
+
+#: The one consumer that must NEVER appear in the mapping above, and why.
+#:
+#: ``_discriminate`` is where the /portal/gateway defect lived: it decided
+#: ``login_redirect`` on seven substrings, so a login page at a path none of them
+#: spelled reached "authenticated" by a body keyword instead. It stopped reading
+#: the property, and it may not start again — there is no bound that would make
+#: a name test acceptable in the oracle whose whole job is to be the thing the
+#: names were standing in for.
+FORBIDDEN_SPELLING_CONSUMERS: tuple[str, ...] = ("clinkz.engagement.auth_state:_discriminate",)
 
 #: Members the fix put on the observed rule. They are asserted to be in the
 #: domain and to test NO string literal at all, so re-introducing a name gate in
@@ -676,11 +711,85 @@ def test_every_destination_spelling_test_is_licensed() -> None:
     )
     stale = set(DESTINATION_SPELLING_LICENCE) - spelling
     assert not stale, f"licences for tests that no longer exist: {sorted(stale)}"
-    for qual, licence in DESTINATION_SPELLING_LICENCE.items():
-        assert len(licence.split()) >= 30, (
-            f"{qual}: a licence names every consumer and the bound on each — "
-            f"this one is too short to have done that"
-        )
+    for qual, consumers in DESTINATION_SPELLING_LICENCE.items():
+        assert consumers, f"{qual}: a licence with no consumers licenses nothing"
+        for consumer, bound in consumers.items():
+            assert len(bound.split()) >= 20, (
+                f"{qual} -> {consumer}: the bound is what stops this being the "
+                f"verdict there, and this one is too short to have stated one"
+            )
+
+
+def _property_readers(member: str) -> set[str]:
+    """Every function in ``src/clinkz`` that READS the property named by *member*.
+
+    Computed from the tree, and deliberately NOT restricted to the
+    verdict-carrying edges the rest of this file walks. A read that decides
+    nothing today is one refactor away from deciding something, and the point of
+    the licence is that a new consumer has to be looked at before it lands — not
+    after it has become a verdict.
+
+    The property's own definition is excluded: a property is not its own
+    consumer.
+    """
+    attribute = member.rsplit(".", 1)[1]
+    definition = member.rsplit(":", 1)[1]
+    readers: set[str] = set()
+    for path in sorted(PKG.rglob("*.py")):
+        module = _module_name(path)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+
+        def walk(node: ast.AST, prefix: str) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.ClassDef):
+                    walk(child, f"{prefix}{child.name}.")
+                elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    qual = f"{prefix}{child.name}"
+                    if qual != definition and any(
+                        isinstance(sub, ast.Attribute) and sub.attr == attribute
+                        for sub in ast.walk(child)
+                    ):
+                        readers.add(f"{module}:{qual}")
+                    walk(child, f"{qual}.")
+
+        walk(tree, "")
+    return readers
+
+
+@pytest.mark.parametrize("member", sorted(DESTINATION_SPELLING_LICENCE))
+def test_the_licence_names_exactly_the_consumers_that_exist(member: str) -> None:
+    """The licence is a GATE, not a comment.
+
+    Both directions, because they fail differently. A consumer with no entry is
+    a name test that reached the codebase without anyone stating why it cannot
+    become the verdict — the whole failure mode this file exists for. An entry
+    with no consumer is a licence describing code that has moved, which reads as
+    coverage and is not.
+    """
+    declared = set(DESTINATION_SPELLING_LICENCE[member])
+    actual = _property_readers(member)
+
+    unlicensed = actual - declared
+    assert not unlicensed, (
+        f"{member} has consumers with no licence: {sorted(unlicensed)}. Each one "
+        f"reads where a redirect POINTS, so each one needs an entry naming the "
+        f"bound that keeps it from being the verdict."
+    )
+    stale = declared - actual
+    assert not stale, (
+        f"{member} is licensed for consumers that no longer read it: "
+        f"{sorted(stale)}. A licence for code that has moved reads as coverage."
+    )
+
+
+@pytest.mark.parametrize("member", sorted(DESTINATION_SPELLING_LICENCE))
+def test_the_session_assertion_is_never_a_licensed_consumer(member: str) -> None:
+    """No bound would make a name test acceptable in the oracle itself."""
+    declared = set(DESTINATION_SPELLING_LICENCE[member])
+    assert not declared & set(FORBIDDEN_SPELLING_CONSUMERS), (
+        f"{member} is licensed for {sorted(declared & set(FORBIDDEN_SPELLING_CONSUMERS))} — "
+        f"that is the /portal/gateway defect, licensed"
+    )
 
 
 @pytest.mark.parametrize("qual", NO_LITERAL_TEST_AT_ALL)

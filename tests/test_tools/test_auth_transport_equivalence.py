@@ -48,7 +48,7 @@ from urllib.parse import urlparse
 import pytest
 
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
-from clinkz.tools.auth import WebAuthenticator
+from clinkz.tools.auth import LoginVerdict, WebAuthenticator
 
 _HOST = "127.0.0.1"
 _USERNAME = "acct-4417"
@@ -88,6 +88,11 @@ class Scenario:
         cookies: The cookie set both arms must carry, exactly.
         posted_to_path: The path the credential POST must have gone to.
         negotiated: The content type a 415 named and was retried under.
+        verdict: The three-valued conclusion both arms must reach. ``success``
+            is the two-valued shadow of it and is asserted as well, because a
+            scenario that agrees on the boolean and disagrees on PROVEN vs
+            INDETERMINATE is two arms disagreeing about whether they know
+            anything — which is exactly the distinction this branch added.
         aiohttp_attempts: Credential-bearing POSTs the aiohttp arm must send.
         curl_attempts: The same for the curl arm.
         divergence: Required when the two counts differ, refused when they agree.
@@ -103,9 +108,19 @@ class Scenario:
     posted_to_path: str
     aiohttp_attempts: int
     curl_attempts: int
+    verdict: LoginVerdict = LoginVerdict.REFUSED
     negotiated: str = ""
+    #: The off-scope destination both arms must REFUSE to dispatch to, when the
+    #: scenario has one. Empty for every scenario that stays in scope.
+    scope_refusal: str = ""
     divergence: str = ""
     posted_fields: frozenset[str] | None = field(default=None)
+
+    def __post_init__(self) -> None:
+        # A scenario that declares only the boolean gets the unambiguous
+        # verdict that matches it. INDETERMINATE has to be asked for by name.
+        if self.verdict is LoginVerdict.REFUSED and self.success:
+            object.__setattr__(self, "verdict", LoginVerdict.PROVEN)
 
 
 class _Origin(BaseHTTPRequestHandler):
@@ -283,6 +298,48 @@ SCENARIOS: tuple[Scenario, ...] = (
         ),
     ),
     Scenario(
+        name="the_session_is_promoted_in_place_and_the_post_sets_nothing",
+        login_path="/portal/gateway",
+        script={
+            ("GET", "/portal/gateway"): [
+                Reply(
+                    200,
+                    _PORTAL_FORM,
+                    (
+                        ("Content-Type", _HTML),
+                        ("Set-Cookie", "SESSIONID=promoted-in-place; Path=/"),
+                    ),
+                )
+            ],
+            # THE POSITIVE CONTROL. A GOOD credential, and the application
+            # answers 200 with no Set-Cookie at all: it kept the session id it
+            # issued on the GET and simply attached an identity to it —
+            # ``session_regenerate_id(False)``, Django's ``cycle_key`` with a
+            # reused key, every framework that promotes in place. The body is an
+            # account page: no password input, no refusal marker, and
+            # deliberately none of the eight authenticated-page markers either,
+            # because a scenario that a body keyword can rescue does not test
+            # the branch it is here to test.
+            ("POST", "/session"): [
+                Reply(
+                    200,
+                    "<html><h1>Account overview</h1><p>Balance: 42</p></html>",
+                    (("Content-Type", _HTML),),
+                )
+            ],
+        },
+        success=True,
+        verdict=LoginVerdict.INDETERMINATE,
+        cookies={"SESSIONID": "promoted-in-place"},
+        posted_to_path="/session",
+        # One attempt on BOTH arms. The aiohttp arm's retry exists to get a
+        # fresh CSRF token after a refusal, and this was not a refusal — sending
+        # the same password again would cost the account an attempt and return
+        # the same ambiguity.
+        aiohttp_attempts=1,
+        curl_attempts=1,
+    ),
+    Scenario(
         name="multi_cookie_set_cookie_survives_intact",
         login_path="/portal/gateway",
         script={
@@ -351,6 +408,29 @@ SCENARIOS: tuple[Scenario, ...] = (
         ),
     ),
     Scenario(
+        name="a_credential_redirect_off_scope_is_refused_not_followed",
+        login_path="/portal/gateway",
+        script={
+            ("GET", "/portal/gateway"): [Reply(200, _PORTAL_FORM, (("Content-Type", _HTML),))],
+            # A 307 preserves the method AND the body, so following this hands
+            # the engagement's plaintext credentials to a host the operator
+            # never authorised. The destination is unroutable on purpose: if
+            # either arm followed it the test would hang or error rather than
+            # quietly pass, so a regression cannot look like a success.
+            ("POST", "/session"): [
+                Reply(307, "", (("Location", "http://credential-sink.invalid:9/collect"),))
+            ],
+        },
+        success=False,
+        cookies={},
+        posted_to_path="/session",
+        scope_refusal="http://credential-sink.invalid:9/collect",
+        # ONE attempt on both arms, and the retry asymmetry does not apply: a
+        # scope refusal is terminal, not "this attempt did not work".
+        aiohttp_attempts=1,
+        curl_attempts=1,
+    ),
+    Scenario(
         name="the_login_page_sits_behind_a_redirect",
         login_path="/login",
         script={
@@ -402,7 +482,7 @@ SCENARIOS: tuple[Scenario, ...] = (
 class Outcome:
     """What one transport concluded, in the terms the two must agree on."""
 
-    verdict: tuple[bool, int, str, str, str]
+    verdict: tuple[bool, str, int, str, str, str]
     cookies: dict[str, str]
     attempts: int
     credential_bodies: tuple[str, ...]
@@ -464,6 +544,7 @@ async def _run(
     return Outcome(
         verdict=(
             result.success,
+            result.verdict.value,
             result.status_code,
             urlparse(result.posted_to).path,
             result.negotiated_content_type,
@@ -505,10 +586,11 @@ async def test_both_transports_reach_the_same_verdict(
 
     expected = (
         scenario.success,
-        aiohttp_outcome.verdict[1],
+        scenario.verdict.value,
+        aiohttp_outcome.verdict[2],
         scenario.posted_to_path,
         scenario.negotiated,
-        "",
+        scenario.scope_refusal,
     )
     assert aiohttp_outcome.verdict == expected, (
         f"the aiohttp arm reached {aiohttp_outcome.verdict}, expected {expected}"
@@ -608,11 +690,20 @@ def test_the_corpus_covers_every_shape_the_arms_have_diverged_on() -> None:
     covered = {s.name for s in SCENARIOS}
     required = {
         "dvwa_form_302_to_index",  # a redirect that IS a success
+        # The promoted-session shape. No target this project owns has it, so
+        # this scenario IS the positive control: without it the INDETERMINATE
+        # branch has no case that reaches it, and a branch nothing reaches is
+        # indistinguishable from a branch that does not work.
+        "the_session_is_promoted_in_place_and_the_post_sets_nothing",
         "rejected_credential_redirects_back_to_the_login_page",  # and one that is not
         "pre_credential_cookie_and_the_login_page_served_back",  # the delta rule
         "multi_cookie_set_cookie_survives_intact",  # the lossy header dict
         "a_415_names_the_encoding_and_the_retry_authenticates",  # negotiation
         "a_415_naming_an_encoding_we_cannot_produce_is_not_retried",
+        # The safety-critical shape, and the one the computed corpus delta
+        # showed was asserted on the aiohttp arm only
+        # (test_transport_corpus_coverage.py).
+        "a_credential_redirect_off_scope_is_refused_not_followed",
         "the_login_page_sits_behind_a_redirect",  # the GET walk
         "only_the_login_forms_fields_are_sent",  # the per-form gate
     }
