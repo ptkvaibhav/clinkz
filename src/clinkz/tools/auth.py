@@ -1138,10 +1138,15 @@ class WebAuthenticator(ToolBase):
            target either way.
         3. :data:`_API_LOGIN_ROUTES` — conventions, tried last.
 
-        **A session cookie is a session.** Success used to require a token, so
-        an API that answers a JSON login with ``Set-Cookie`` and no token in the
-        body — a common shape, and the one a same-site SPA uses — authenticated
-        successfully and was recorded as a failure.
+        **A session cookie is a session — unless the response is a denial.**
+        Success used to require a token, so an API that answers a JSON login
+        with ``Set-Cookie`` and no token in the body — a common shape, and the
+        one a same-site SPA uses — authenticated successfully and was recorded
+        as a failure. Accepting the cookie then over-corrected: this arm sends
+        no jar, so a framework that starts a session for any cookieless caller
+        sets one on every route it is offered, whatever the credential said. The
+        cookie counts only on a response :meth:`_session_survived` does not
+        recognise as a denial.
 
         Args:
             login_url: The login URL as known; tried directly, and its origin
@@ -1303,6 +1308,32 @@ class WebAuthenticator(ToolBase):
                                 auth_body_fields=list(body),
                                 auth_content_type="application/json",
                             )
+                    continue
+                # A cookie is only evidence about the credential if the response
+                # is not itself a denial. ``_session_survived`` is the same rule
+                # both form arms and both verification arms already run, and it
+                # is what this arm was missing.
+                #
+                # "Set after the credentials went out" is NOT the delta rule.
+                # This arm carries no jar, so a framework that starts a session
+                # for any cookieless caller answers EVERY route in the canned
+                # list with a fresh session cookie — measured on DVWA, whose
+                # ``/login.php`` answers a JSON POST ``200`` with two
+                # ``Set-Cookie: PHPSESSID`` headers and its own login form in the
+                # body. Under the old rule two wrong passwords for ``admin``
+                # reached ``PROVEN``, and a PROVEN verdict is what the
+                # default-credential sweep marks ``valid`` and reports without
+                # putting it to any further oracle. The pre-credential cookie
+                # merged into the treatment, one arm over.
+                if not token and not self._session_survived(status, resp_body):
+                    self._logger.warning(
+                        "JSON/API login at %s answered %d and set %s, but the response "
+                        "is itself a login surface — a cookie the server issues to any "
+                        "caller is not evidence that a credential worked. Not a success.",
+                        url,
+                        status,
+                        ", ".join(sorted(cookies)) or "no cookie",
+                    )
                     continue
                 self._logger.info(
                     "JSON/API auth succeeded via %s (%s)",
