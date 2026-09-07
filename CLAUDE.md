@@ -662,12 +662,41 @@ detail when you are about to change the code an invariant governs — not by def
     [`docs/methodology/credential-attempts-and-lockout.md`](docs/methodology/credential-attempts-and-lockout.md).**
 
 93. **An absence that holds only up to N is reported WITH N, and N is ours**
-    (`attempt_ceiling` / `ceiling_is_our_budget`). A header's absence is complete
-    in one response; a lockout's is not. The emission gate guarantees the ceiling
-    is always the engine's budget — a refusal would have set `protected` — so the
-    title, the description and the evidence each name it, and the class may never
-    render as "no protection exists". **Detail →
-    [`docs/methodology/brute-force.md`](docs/methodology/brute-force.md).**
+    (`attempt_ceiling`). A header's absence is complete in one response; a
+    lockout's is not. The emission gate guarantees the ceiling is always the
+    engine's budget — a refusal would have set `protected` — so the title, the
+    description and the evidence each name it, and the class may never render as
+    "no protection exists". **A flag that cannot take its other value where it is
+    read is a comment**: `ceiling_is_our_budget` was `not protected`, read only
+    at the emitter, which runs only when `protected` is False — deleted for a
+    guard (`BruteForceEmissionError`) that makes the caller's gate a precondition
+    of the render. The finding also names the attempts THIS class made. **Detail
+    → [`docs/methodology/brute-force.md`](docs/methodology/brute-force.md).**
+
+94. **A verdict rule with no correct live firing is a dead instrument, and the
+    corpus decides which.** Every `_login_verdict` rule is replayable over stored
+    curl dumps. The authenticated-page-marker rule fired 4 times in 762 POSTs,
+    all four on a site with no login — **deleted**; rule 4's INDETERMINATE
+    deferral is the shape it stood in for, and every keyword list has the same
+    defect. A zero that means *not yet reachable here* gets a fixture instead.
+    **Detail →
+    [`docs/methodology/authentication-shapes.md`](docs/methodology/authentication-shapes.md).**
+
+95. **A measurement that refused itself is not a clean result, and a truncated
+    sweep is not a negative.** An `INCONCLUSIVE` series RAN, so it is declared
+    (`InconclusiveMeasurement`) and rendered — 136 of 369 recorded verdicts, in
+    none of 4,169 reports. A sweep the target stopped names that it stopped, why,
+    and the pairs never sent — **by account and technology, never by password**,
+    which was never registered for redaction.
+
+96. **A bound the budget cannot SEE bounds nothing, so every credential sender is
+    classified.** The per-account budget is spent only where an account is NAMED
+    (`credential_account`, assigned once). `_test_brute_force` is EXEMPT
+    deliberately — it cannot share a budget the login flow already spent — and
+    the exemption is DECLARED over a domain computed by AST, because literal
+    dict keys cannot see the variable-keyed loop that sends the most (2,796
+    ungoverned credential POSTs, 81 engagements). **Detail →
+    [`docs/methodology/credential-attempts-and-lockout.md`](docs/methodology/credential-attempts-and-lockout.md).**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
