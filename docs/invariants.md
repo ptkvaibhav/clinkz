@@ -1873,3 +1873,43 @@ captcha is usually a statement about the source or the endpoint rather than abou
 one identity, and an engine that stops guessing `admin`'s password and carries
 straight on to `root`'s has learned nothing from the evidence it just received.
 
+## 93 · An absence that holds only up to N
+
+`_test_security_headers` and `_test_brute_force` both report that something is
+not there, and they are not the same kind of claim. A missing `X-Frame-Options`
+is missing in the one response that had to carry it; the observation is complete,
+and no further request can change the answer. "No brute-force protection" is
+complete only up to the number of failed logins we sent.
+
+And the number is always **ours**. The emission gate is
+`result.auth_reached and not result.protected`, and `protected` False means no
+attempt in the series was refused — which means the series ended when the
+engine's own ceiling ran out, not when the target answered. There is no emitted
+finding whose ceiling belongs to the target, because a refusal at attempt *k*
+sets `protected` and stops the emission. So the finding said "No Brute-Force
+Protection on /login.php" about a login whose policy might trip at nine, and
+nothing in the deliverable said which number the sentence was true up to.
+
+The fix is not a caveat. The ceiling is carried on the result
+(`attempt_ceiling`, with `ceiling_is_our_budget` naming whose it is) and appears
+in the title, the description and the evidence, and `_BRUTE_FORCE_ATTEMPTS` is a
+named constant precisely so the number the loop enforces and the number the
+client reads cannot drift apart.
+
+**Then the instrument was checked, because a bound nothing can trip is
+decoration.** Swept over 2,976 stored traces — 369 phase-3 verdicts across 153
+engagements — ten series ended early on a refusal the target made (DVWA `high`,
+`account has been locked`), against 359 that ran the full eight. The class can
+observe a refusal. But all ten were at **attempt 0**: an account already locked
+when the series began. A *transition* — attempts 1…k−1 normal, attempt k refused
+— has never been recorded, so the ceiling this class reports has never been a
+measured one. That is stated in the methodology doc rather than implied away.
+
+The same sweep found the two `rate_limit` verdicts in the corpus were phantoms,
+both off `X-RateLimit-Remaining: 99` — an endpoint advertising ninety-nine
+remaining requests, graded PROTECTED, because phase 3 read the headers raw while
+`classify_lockout` requires the remaining count to have reached zero. Two
+readings of one observation, and the looser one was the one that decided the
+verdict. Phase 3 reads the DECLARED `lockout_kind` now, which is 82's rule
+applied to the shared vocabulary this class had just been migrated onto.
+

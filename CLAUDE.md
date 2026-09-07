@@ -640,10 +640,13 @@ detail when you are about to change the code an invariant governs — not by def
     SUCCESSFUL login, so an empty `Set-Cookie` delta beside a non-empty carried
     jar is `INDETERMINATE` (`LoginVerdict`) and the verdict DEFERS to
     `assert_authenticated` — the stronger oracle, already running. The JSON arm's
-    `2xx + token-or-cookie` rule has the same hole and the same fix. A deferral
-    is bounded by `_session_survived`: a response serving an
-    `<input type="password">` is REFUSED, on an observation rather than on seven
-    English substrings. **A guessed credential may not ride the deferral** — the
+    `2xx + token-or-cookie` rule has the same hole and the same fix, and the
+    cookie half needs one more: **a cookie the server issues to ANY caller is not
+    evidence about a credential** — the JSON arm carries no jar, so a
+    session-starting framework sets one on every route it is offered. A deferral
+    is bounded by `_session_survived`, and so is that cookie branch: a response
+    serving an `<input type="password">` is REFUSED, on an observation rather
+    than on seven English substrings. **A guessed credential may not ride the deferral** — the
     sweep proves it or marks it invalid. **A login declared failed names the
     evidence that was ABSENT and never asserts the credentials were wrong.**
 92. **A credential POST is bounded by the component that can see it, and the
@@ -657,6 +660,14 @@ detail when you are about to change the code an invariant governs — not by def
     captcha is recorded and refuses every later attempt, and the sweep stops on
     the first evidence for ANY account. **Detail →
     [`docs/methodology/credential-attempts-and-lockout.md`](docs/methodology/credential-attempts-and-lockout.md).**
+
+93. **An absence that holds only up to N is reported WITH N, and N is ours**
+    (`attempt_ceiling` / `ceiling_is_our_budget`). A header's absence is complete
+    in one response; a lockout's is not. The emission gate guarantees the ceiling
+    is always the engine's budget — a refusal would have set `protected` — so the
+    title, the description and the evidence each name it, and the class may never
+    render as "no protection exists". **Detail →
+    [`docs/methodology/brute-force.md`](docs/methodology/brute-force.md).**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

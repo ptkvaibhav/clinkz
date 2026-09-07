@@ -1,10 +1,12 @@
 """Which auth fixtures reach a transport, and which reach only ONE — computed, then declared.
 
-``test_auth_transport_equivalence.py`` pins nine scenarios against both credential
-arms. Those nine were **chosen**: each is a shape the two arms had already been
-caught diverging on, written down after the divergence was found by reading the
+``test_auth_transport_equivalence.py`` pins its scenarios against both credential
+arms. Those were **chosen**: each is a shape the two arms had already been caught
+diverging on, written down after the divergence was found by reading the
 implementations side by side. A corpus assembled from past failures covers past
-failures.
+failures. (How many there are is deliberately not written down here — a count in
+a docstring is a second place for the corpus size to live, and it is the one that
+goes stale. ``test_the_corpus_is_not_empty`` reads the suite itself.)
 
 This file computes the other half. It walks ``tests/`` and works out, per test
 function, which credential arm that test actually drives — ``_execute_aiohttp``,

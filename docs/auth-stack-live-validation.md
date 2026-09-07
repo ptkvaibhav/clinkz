@@ -83,7 +83,41 @@ first one three-valued, which is why it is now stated separately.
 * The rule is a pure boundary: a status class the session changes and nothing
   else. No name is read anywhere on this path.
 
-### DVWA — no discriminator needed
+### DVWA — `session_evidence` (rule 1), and it is the delta that carries it
+
+The other two rows named a rule and this one named an arm, which is the half of
+the answer that does not distinguish anything: *which* rule fired is the whole
+subject of Part 2, and DVWA is the target Part 2's delta exists for.
+
+* **Login verdict:** `proven — the credential POST set PHPSESSID`. Rule 1,
+  by `session_evidence`.
+* **What the delta actually contained:** `{PHPSESSID}` — one cookie, and not the
+  same one the login page issued. Measured at the transport, 2026-09-07:
+
+  ```
+  GET  /login.php  -> 200  Set-Cookie: security=impossible
+                           Set-Cookie: PHPSESSID=59feaeee…
+                           Set-Cookie: PHPSESSID=f43e6a00…
+  POST /login.php  -> 302  Set-Cookie: PHPSESSID=073b8bad…   Location: index.php
+  ```
+
+  DVWA calls `session_regenerate_id(TRUE)`, so the POST mints a **new** id. The
+  delta across the credential boundary is `{PHPSESSID: 073b8bad…}`; `security`
+  is in `session_cookies` (carriage) and NOT in the evidence, because the GET set
+  it. That split is the whole of §2 rendered on a live target: **carriage and
+  evidence are different questions.**
+
+* **Why this row is the one that mattered.** DVWA issues `PHPSESSID` on the login
+  **GET** — twice, with two different values. Under the pre-§2 rule the merged
+  jar satisfied rule 1 before a credential had been sent, so DVWA authenticated
+  on a cookie that exists whatever you POST. It still reaches `proven` now, but
+  on the POST's own id. And the two GET-issued values are §3's shape live: before
+  the multi-cookie fix, curl kept the first and aiohttp the last, so the two arms
+  would have carried **different session ids** off the same response.
+
+* **Rule 2 never fires here even though a redirect occurs.** The POST is answered
+  `302 index.php` and `redirect_chain` is non-empty, but rule 1 is evaluated
+  first and settles it. The redirect is corroboration this row does not need.
 
 The ladder authenticates a single `admin` through the form arm; the level is
 pinned per rung and the admin password hash is compared before and after each

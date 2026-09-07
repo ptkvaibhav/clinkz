@@ -67,6 +67,50 @@ Set-Cookie)` skipped to the next route on a promoted session; it now holds the
 first indeterminate candidate, keeps looking (a proof outranks a deferral), and
 returns the candidate only if nothing proved one.
 
+### And the cookie half of that rule had a hole of its own
+
+The arm's licence for reading a `Set-Cookie` as proof was written into the code:
+
+> Every cookie this arm can see on THIS response was set after the credentials
+> went out — the JSON arm has no login-page GET of its own, so there is no
+> pre-credential exchange of its own for one to have come from. The delta rule
+> the form arms apply is satisfied here by construction.
+
+"After the credentials went out" is not the delta rule. The delta rule is about a
+cookie the **credential** caused, and the reason the form arms compute a delta at
+all is that a login-page GET issues one whatever you send. This arm carries no
+jar, so every cookieless request it makes to a session-starting framework is
+answered with a fresh session cookie — on all eight canned routes, for any
+password, including a rejected one.
+
+Measured against `clinkz-dvwa`, 2026-09-07:
+
+```
+POST /login.php  {"username": "admin", "password": "wrongpass-a"}
+-> 200
+   Set-Cookie: security=impossible
+   Set-Cookie: PHPSESSID=766d4ae9…
+   Set-Cookie: PHPSESSID=08787c34…
+   <the login form>
+```
+
+Two wrong passwords for `admin` reached `LoginVerdict.PROVEN` on that shape,
+with evidence reading *"POST http://…/login.php returned 200 carrying
+Set-Cookie: PHPSESSID"*. And PROVEN is the verdict nothing re-checks:
+`_attempt_login` re-proves only an INDETERMINATE guess, so the
+default-credential sweep would have marked both **valid**, stored a session for
+them and reported a default-credential finding built on a cookie the server
+hands anyone. The pre-credential cookie merged into the treatment, one arm over.
+
+The cookie branch is gated by `_session_survived` now — the same rule both form
+arms and both verification arms already run, and the one this arm was missing.
+Pinned in `tests/test_tools/test_json_arm_anonymous_cookie.py`, in both
+directions: a session-starting origin that answers every route `200 + Set-Cookie
++ a login form` must not authenticate a wrong password, and a same-site JSON API
+that answers with a session cookie and no token must still authenticate — a fix
+that refuses the second has traded a false positive for a false negative on the
+commoner shape.
+
 ### Where the deferral may NOT go
 
 The **default-credential sweep** marks a guessed password `valid`, and that is a
@@ -76,6 +120,34 @@ would mark all of them valid. `_attempt_login` puts an indeterminate guess to
 `assert_authenticated` first (`_prove_swept_session`) and marks it invalid if the
 oracle does not prove a session. Those are GETs, not credential POSTs, so the
 extra work costs the account nothing.
+
+### A guessed password is a client credential the moment it works
+
+Found by the security review of this branch's own diff, rated **MEDIUM**, and it
+belongs here rather than in a gates checklist: it is a defect of the sweep, on
+the sweep's own path, and the reason it existed is a piece of reasoning about
+credentials that reads as obviously true and is not.
+
+`run()` registers the operator's secrets for redaction. The sweep's catalogue
+passwords were not registered, because they are **public** — `admin` / `password`
+is in this repository, in the OWASP lists, and in the target's own documentation.
+Redacting a value everybody already has looks like theatre.
+
+It is not. A default password is public **until it works**. The moment one
+authenticates it stops being a catalogue entry and becomes a live credential for
+the client's system — and by then it has already been written, verbatim, into
+`actions.jsonl`'s body excerpt on the JSON arm, which is exactly the artifact the
+disclosure gate exists to keep clean. The window is the whole sweep: we cannot
+know which guess is the live one until after we have sent it.
+
+So `register_secret(password)` runs **before** the attempt, not on success —
+`orchestrator.py::_attempt_login`. Registering on the outcome would be the same
+bug with a smaller window, because the write that leaks it happens during the
+attempt.
+
+The generalisation is the one the redactor's own domain law already carries: a
+value's classification is not a property of where it came from, and "this is
+public" is a claim about the past.
 
 ### The positive control
 
@@ -193,6 +265,31 @@ That is what part 4 is for.
 |---|---|---|
 | credential that WORKS | 2 POSTs, **2** action-log entries | 2 POSTs, 2 entries |
 | credential that does NOT | **8** POSTs, 8 entries + 1 refusal | **8** POSTs, 8 entries + 1 refusal |
+
+### And measured across a SWEEP, on a second target
+
+Meridian's 64 was the projection `4 × 16`. Driven end to end against
+`clinkz-dvwa` on 2026-09-07 — four distinct catalogue passwords for `admin` at
+one origin, `TOOL_EXEC_MODE=local`, the governor's own counters and its
+`actions.jsonl` read back afterwards:
+
+| `--max-credential-attempts` | credential POSTs vs `admin` | action-log entries |
+|---|---|---|
+| `0` (the bound removed) | **64** | 64 sent, 0 refused |
+| `8` (the default) | **8** | 8 sent + 7 refused = 15 |
+
+64 is the projection, reproduced on a target that never informed it. And the
+governor slot is now genuinely **per credential POST**: 64 POSTs produced 64
+entries — one each, not one for the call — which is the accounting defect this
+part exists to close, at the scale it actually occurs.
+
+**The budget is keyed `(origin, account)` and the counter lives for the
+engagement**, so the four sweep pairs share one budget of eight rather than
+getting eight apiece. The first pair spends it; the remaining three are refused
+with nothing dispatched. That is why the answer to "how many times did you offer
+a password for this account" is **8** for a whole default run — the role login,
+every session refresh and every sweep pair included — rather than 8 per
+producer.
 
 Each entry reads `credential attempt N of 8 for account 'acct-4417' at
 http://…`, and carries the account in `signal`. The password does not reach the

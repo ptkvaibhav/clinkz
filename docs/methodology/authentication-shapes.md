@@ -656,12 +656,34 @@ than a property of the application.
 them was found that way, one at a time, after a live run had already gone wrong.
 `tests/test_tools/test_auth_transport_equivalence.py` is the other half, and it
 has the same shape as the `/portal/gateway` ↔ `/login` equality: **the equality
-IS the test, and it has a domain where inspection does not.** Eight scenarios —
+IS the test, and it has a domain where inspection does not.** Its scenarios —
 each one a shape the arms have actually diverged on — are served by one scripted
 loopback origin, replayed once through `_execute_aiohttp` and once through
 `_execute_curl` (a real `curl`, `TOOL_EXEC_MODE=local`), and three things are
 compared: the verdict tuple, the exact surviving cookie set, and how many
 credential-bearing POSTs the origin received.
+
+**The scenario table below is re-derived from `SCENARIOS`, never counted by
+hand.** A prose count of a computed corpus is a second place for its size to
+live, and it is the one that goes stale: this section said *eight* while the
+suite held ten, and the file that computes the delta said *nine*.
+
+| # | scenario | verdict both arms must reach | POSTs (aiohttp / curl) |
+|---|---|---|---|
+| 1 | `dvwa_form_302_to_index` | PROVEN | 1 / 1 |
+| 2 | `rejected_credential_redirects_back_to_the_login_page` | REFUSED | 2 / 1 |
+| 3 | `pre_credential_cookie_and_the_login_page_served_back` | REFUSED | 2 / 1 |
+| 4 | `the_session_is_promoted_in_place_and_the_post_sets_nothing` | INDETERMINATE | 1 / 1 |
+| 5 | `multi_cookie_set_cookie_survives_intact` | PROVEN | 1 / 1 |
+| 6 | `a_415_names_the_encoding_and_the_retry_authenticates` | PROVEN | 2 / 2 |
+| 7 | `a_415_naming_an_encoding_we_cannot_produce_is_not_retried` | REFUSED | 2 / 1 |
+| 8 | `a_credential_redirect_off_scope_is_refused_not_followed` | REFUSED, nothing dispatched off scope | 1 / 1 |
+| 9 | `the_login_page_sits_behind_a_redirect` | PROVEN | 1 / 1 |
+| 10 | `only_the_login_forms_fields_are_sent` | PROVEN | 1 / 1 |
+
+The attempt counts differ on four rows because the aiohttp arm retries a failed
+login once and the curl arm does not; each row declares both numbers and, where
+they differ, why.
 
 The attempt count is **not** asserted equal, because it is not: the aiohttp arm
 retries a failed login once and the curl arm does not. Each scenario declares a
@@ -679,10 +701,32 @@ and reports the DELTA: every test that drives exactly ONE arm must say why.
 
 The first run of it found **fourteen**, all aiohttp — including the off-scope
 credential redirect, which is the most safety-critical behaviour in the file and
-was asserted on one transport only. That shape is now a two-arm scenario
-(`a_credential_redirect_off_scope_is_refused_not_followed`); the other thirteen
-carry a declared reason naming the two-arm scenario that covers their shape, or
-naming the component under test as one with no transport of its own.
+was asserted on one transport only.
+
+**The sweep still reports fourteen, and that is the honest number.** Adding
+`a_credential_redirect_off_scope_is_refused_not_followed` put the off-scope
+*shape* in front of both arms; it did not remove the single-arm test, which
+asserts something else — that the aiohttp session issued no second request — and
+which can only be read off that arm's own request list. So the count did not go
+down by one, and describing it as "thirteen remaining" over-claimed the fix by
+implying a test had been converted rather than a shape covered. **Fourteen
+single-arm tests, fourteen declared reasons**, asserted in both directions by
+`test_every_single_arm_fixture_says_why`.
+
+Each reason is one of four dispositions, and the distinction is what the table
+is for — "covered elsewhere" and "has no other arm to be covered on" are
+different facts:
+
+| disposition | tests | what the single-arm test is actually asserting |
+|---|---|---|
+| **A · the shape is held by a two-arm scenario or sibling; this asserts the arm's own record** | 7 | which requests aiohttp issued or did not issue, and what the shared chain then implies |
+| **B · the subject is `assert_authenticated`, which has one implementation and no transport** | 4 | the discriminator, the spelling invariance, the public-path negative control, the deferral's settlement |
+| **C · a statement about the TARGET, not about a transport** | 2 | that *Meridian's* 415 is read as negotiation; that its refusal shape reaches the whole verdict tuple |
+| **D · the subject is a loop above the transport seam** | 1 | that the JSON arm stops rather than continuing to its next route |
+
+Group A is the only one where a shape could still hide, and every entry in it
+names the two-arm scenario that covers it — which is what makes the reason
+falsifiable: delete that scenario and the reason is a lie a reader can catch.
 
 ## Running Meridian
 
