@@ -159,6 +159,14 @@ CREDENTIAL_HEADER_KEYS: Final = frozenset(
         "proxy-authorization",
         "cookie",
         "set-cookie",
+        # The same header as a MODEL FIELD. ``HTTPClientOutput.set_cookie`` and
+        # ``HopResponse.set_cookies`` carry Set-Cookie verbatim as a list,
+        # because a dict cannot hold a header a response sends twice — and
+        # ``model_dump()`` turns a field name into a dict key, which is what
+        # this set is matched against. The hyphenated spelling above would not
+        # have caught either of them.
+        "set_cookie",
+        "set_cookies",
         "x-api-key",
         "api-key",
         "apikey",
@@ -491,8 +499,18 @@ def redact_header_value(key: str, value: str) -> str:
     if not value or _already_redacted(value):
         return value
     normalised = key.strip().lower()
-    if normalised in ("cookie", "set-cookie"):
-        return _redact_cookie_string(value)
+    # The model-field spellings belong here too, not only in the key set: a
+    # cookie NAME is evidence and only the VALUE is the session, and routing
+    # ``set_cookie`` to the generic branch would replace the whole header and
+    # take the name with it.
+    if normalised in ("cookie", "set-cookie", "set_cookie", "set_cookies"):
+        as_pairs = _redact_cookie_string(value)
+        if as_pairs != value:
+            return as_pairs
+        # No ``name=value`` pair anywhere in it, so there is no NAME to
+        # preserve and the whole string is value. Falling through to the
+        # generic header replacement is the difference between returning a
+        # fingerprint and returning the credential the pair rule could not see.
     # A JWT-valued header keeps the richer fingerprint.
     shaped = redact_shapes(value)
     if shaped != value:

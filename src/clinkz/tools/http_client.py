@@ -59,6 +59,32 @@ class HTTPClientOutput(ToolOutput):
     #: recording made before the marker existed); an unobserved address merges
     #: nothing, so absence is byte-identical to the behaviour before it.
     resolved_address: str = ""
+    #: Every ``Set-Cookie`` header this response carried, one entry per header,
+    #: verbatim and in the order the transport reported them.
+    #:
+    #: ``response_headers`` is a ``dict``, and a response that sets two cookies
+    #: sends two headers of the same name. Collapsing them into one string loses
+    #: one, and the two transports lose a DIFFERENT one: the curl path joins
+    #: duplicates with ``", "`` so a consumer splitting on the separator it
+    #: guessed keeps the first, and the aiohttp path builds the dict from a
+    #: ``CIMultiDict`` whose later value wins, so it keeps the last. A login
+    #: answering ``Set-Cookie: sid=…`` and ``Set-Cookie: csrf=…`` therefore
+    #: yielded a different single cookie depending on the execution mode.
+    #:
+    #: So the PRODUCER declares the list and no consumer reconstructs a
+    #: separator (invariant 82). Empty on a recording made before this field
+    #: existed, which is why nothing reads it as "this response set no cookie" —
+    #: :attr:`response_headers` is still the answer to that.
+    set_cookie: list[str] = []
+    #: The governor refusal CATEGORY when this request was refused by the safety
+    #: rails, empty otherwise. ``execute`` has always written it into the JSON
+    #: envelope and ``parse_output`` used to drop it, so the one consumer that
+    #: has to tell "the rails stopped this" from "that probe failed" — the JSON
+    #: auth arm, whose next move on a soft failure is to offer the same password
+    #: to the next route — could not. A consumer never guesses a producer's
+    #: field names (invariant 82), so it is declared here rather than read off
+    #: the raw dict at the call site.
+    safety_refusal: str = ""
 
 
 def _cookie_jar_path(engagement_id: str) -> str:
@@ -149,6 +175,13 @@ class HTTPClientTool(ToolBase):
         super().__init__(scope=scope, timeout=timeout)
         self._engagement_id = engagement_id
         self._stage = stage
+        # Non-empty only on the instance the JSON auth arm builds for a
+        # credential exchange. It names the account every POST through this
+        # instance is offering a password for, which is what makes the attempt
+        # countable against the per-account budget and nameable in the
+        # client-facing action log. Every other caller leaves it empty and this
+        # tool behaves byte for byte as before.
+        self.credential_account: str = ""
 
     @property
     def name(self) -> str:
@@ -317,11 +350,28 @@ class HTTPClientTool(ToolBase):
         if governor is None:
             return await self._dispatch(args)
 
+        # A credential-bearing request NAMES the account it offers a password
+        # for, so the one component that can bound a brute-force can see one.
+        # Set by the JSON auth arm on the tool instance it constructs, and read
+        # only for the method that carries the body — the redirect walk's GET
+        # hops go through this same instance and are not attempts.
+        account = self.credential_account if args["method"].upper() == "POST" else ""
         decision = await governor.authorize(
             args["method"],
             args["url"],
             body=args.get("body", "") or "",
             stage=self._stage or self.category,
+            account=account,
+            # A LOGIN is not a credential CHANGE, and the account naming is the
+            # declaration that says which one this is. Without it the
+            # destructive classifier reads the body's own field names, and
+            # ``account`` is a mutation qualifier ("account settings") — so a
+            # JSON login whose identity field is spelled ``account`` (Meridian's
+            # is) classified as ``credential_change`` and was refused, then
+            # reported as "no API login route returned a token". The form arms
+            # have always declared these two names for exactly this reason; the
+            # JSON arm now does the same, so both arms are classified alike.
+            field_names=["username", "password"] if account else None,
         )
         if not decision.allowed:
             self._logger.warning(
@@ -356,7 +406,36 @@ class HTTPClientTool(ToolBase):
             raw,
             session_bearing=args.get("session_mode", SESSION_AMBIENT) == SESSION_AMBIENT,
         )
+        if account:
+            self._observe_credential(governor, raw, url=args["url"], account=account)
         return raw
+
+    @staticmethod
+    def _observe_credential(governor: Any, raw: str, *, url: str, account: str) -> None:
+        """Classify one login response for lockout / rate-limit / captcha.
+
+        Separate from :meth:`_observe`, which is about the target blocking the
+        ENGAGEMENT. This one is about the target refusing to evaluate a
+        CREDENTIAL, which is a different observation with a different remedy: the
+        first halts the run, the second stops offering one account a password.
+        A response that never arrived is not evidence either way.
+        """
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        status = data.get("status_code")
+        if not isinstance(status, int) or status <= 0:
+            return
+        governor.observe_credential_response(
+            url=url,
+            account=account,
+            status=status,
+            headers=data.get("response_headers") or {},
+            body=data.get("response_body") or "",
+        )
 
     async def _dispatch(self, args: dict[str, Any]) -> str:
         """Route to the curl (docker) or aiohttp (host) implementation."""
@@ -563,6 +642,7 @@ class HTTPClientTool(ToolBase):
         redirect_chain: list[str] = []
         status_code = 0
         resp_headers: dict[str, str] = {}
+        set_cookie: list[str] = []
         resp_body = ""
 
         for i, block in enumerate(http_blocks):
@@ -593,12 +673,18 @@ class HTTPClientTool(ToolBase):
                 status_code = code
                 resp_body = body_section
 
-                # Parse headers (append duplicates with `, `)
+                # Parse headers (append duplicates with `, `). ``Set-Cookie`` is
+                # ALSO kept as a list, because that join is lossy for it and a
+                # consumer cannot undo it: a cookie value may itself contain a
+                # comma, so splitting the joined string is a guess about a
+                # separator this code chose.
                 for line in header_section.split("\n"):
                     line = line.strip().rstrip("\r")
                     if ":" in line and not line.startswith("HTTP/"):
                         key, _, value = line.partition(":")
                         k, v = key.strip(), value.strip()
+                        if k.lower() == "set-cookie":
+                            set_cookie.append(v)
                         if k in resp_headers:
                             resp_headers[k] += f", {v}"
                         else:
@@ -614,6 +700,7 @@ class HTTPClientTool(ToolBase):
                 "status_code": status_code,
                 "resolved_address": resolved_address,
                 "response_headers": resp_headers,
+                "set_cookie": set_cookie,
                 "response_body": resp_body,
                 "redirect_chain": redirect_chain,
                 "response_time_ms": round(elapsed_ms, 2),
@@ -668,6 +755,12 @@ class HTTPClientTool(ToolBase):
                         redirect_chain = [str(r.url) for r in resp.history]
 
                     resp_headers = {k: v for k, v in resp.headers.items()}
+                    # ``resp.headers`` is a CIMultiDict; the comprehension above
+                    # keeps the LAST of any repeated header, which for
+                    # ``Set-Cookie`` silently discards every cookie but one. The
+                    # multidict is the only place the full list still exists, so
+                    # it is read here rather than reconstructed downstream.
+                    set_cookie = list(resp.headers.getall("Set-Cookie", []))
                     resp_body = await resp.text(errors="replace")
 
                     raw = (
@@ -682,6 +775,7 @@ class HTTPClientTool(ToolBase):
                         {
                             "status_code": resp.status,
                             "response_headers": resp_headers,
+                            "set_cookie": set_cookie,
                             "response_body": resp_body,
                             "redirect_chain": redirect_chain,
                             "response_time_ms": round(elapsed_ms, 2),
@@ -730,6 +824,8 @@ class HTTPClientTool(ToolBase):
             status_code=data.get("status_code", 0),
             resolved_address=str(data.get("resolved_address") or ""),
             response_headers=data.get("response_headers", {}),
+            set_cookie=data.get("set_cookie") or [],
+            safety_refusal=str(data.get("safety_refusal") or ""),
             response_body=data.get("response_body", ""),
             redirect_chain=data.get("redirect_chain", []),
             response_time_ms=data.get("response_time_ms", 0.0),

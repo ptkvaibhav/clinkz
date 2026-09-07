@@ -11,7 +11,8 @@ CLAUDE.md keeps a one-line index of the same set.
 - `python -m clinkz scan --target <url|host|ip|cidr> [--scope <entry|scope.json>]
   [--exclude <entry>] [--authorization <auth.json> | --auth-* flags |
   --auth-prompt] [--creds <creds.json>] [--source <tree>] [--benchmark-profile
-  <bp.json>] [--dry-run] [--rate-limit N] [--max-concurrency N] [--out <dir>]
+  <bp.json>] [--dry-run] [--rate-limit N] [--max-concurrency N]
+  [--max-credential-attempts N] [--out <dir>]
   [--resume <id>]` — full pentest (recon → scan/research/exploit → report). The
   only end-to-end command. **Refuses to start without an authorization record**
   (`--auth-*` flags refuse with EVERY missing field named — the record has no
@@ -36,6 +37,16 @@ CLAUDE.md keeps a one-line index of the same set.
   (`cli.py::EXIT_CODES`, rendered into `--help`, asserted by the test suite):
   0 completed · 1 failed · 2 bad input · 3 refused before testing · 4 halted ·
   5 completed but the bundle FAILED the disclosure gate.
+  `--rate-limit` and `--max-concurrency` override the engagement's pacing rails;
+  **`--max-credential-attempts` bounds how many credential-bearing requests any
+  ONE account is offered**, across the whole engagement and all three producers
+  that make them (the login, the session refresh, the default-credential sweep).
+  Default 8, `0` removes the bound. Measured against Meridian: a login that
+  works costs 2 credential POSTs; one that does not used to cost 16 in docker
+  mode, 18 on the host, and up to 64 against one account across a sweep. The
+  other half is not a flag — a lockout, rate limit or captcha the target
+  declares refuses every later attempt for that account and stops the sweep
+  outright.
 - `python -m clinkz abort <engagement_id>` — kill switch: halt immediately and
   cleanly (the report is still produced).
 - `python -m clinkz actions <engagement_id> [--outcome sent|refused] [--raw]` —

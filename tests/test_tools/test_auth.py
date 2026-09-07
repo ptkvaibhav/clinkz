@@ -11,6 +11,7 @@ from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
 from clinkz.tools.auth import (
     AuthOutput,
     AuthResult,
+    LoginVerdict,
     WebAuthenticator,
     _EncodingOrder,
     _parse_form_fields,
@@ -19,6 +20,16 @@ from clinkz.tools.auth import (
 # ---------------------------------------------------------------------------
 # HTML form parsing tests
 # ---------------------------------------------------------------------------
+
+
+def _verdict_of(**kwargs: object) -> LoginVerdict:
+    """The verdict alone, for tests that assert one.
+
+    ``_login_verdict`` returns a :class:`~clinkz.tools.auth.LoginJudgement` —
+    the verdict AND the observation behind it — because a refusal has to be able
+    to name what was absent. These cases are about the verdict.
+    """
+    return WebAuthenticator._login_verdict(**kwargs).verdict  # type: ignore[arg-type]
 
 
 class TestFormFieldParser:
@@ -103,10 +114,23 @@ class TestFormFieldParser:
 
 
 class TestLoginSuccessHeuristics:
-    """Test _check_login_success heuristics."""
+    """Test :meth:`WebAuthenticator._login_verdict` heuristics."""
 
-    def test_success_logout_in_body(self) -> None:
-        assert WebAuthenticator._check_login_success(
+    def test_a_word_in_the_page_is_not_a_session(self) -> None:
+        """The deleted rule 3, pinned in the direction it now answers.
+
+        A 2xx carrying ``logout`` / ``dashboard`` / ``welcome`` / ``profile``
+        used to be ``PROVEN``. Replayed over all 762 credential POSTs in the
+        stored corpus that rule carried the verdict FOUR times, all four in
+        engagement ``d67835f5`` against ``https://ptkvaibhav.vercel.app/`` — a
+        portfolio site with no login of any kind, whose page contains the word
+        ``profile``. Four guessed passwords were marked valid against a site
+        that never evaluated one. It has no correct live firing in the corpus.
+
+        With no session material, no redirect and nothing carried, the honest
+        answer is that nothing here could be a session.
+        """
+        assert LoginVerdict.REFUSED is _verdict_of(
             response_body="<html><a href='/logout'>Logout</a></html>",
             status_code=200,
             final_url="http://target/index.php",
@@ -114,8 +138,46 @@ class TestLoginSuccessHeuristics:
             redirect_chain=[],
         )
 
+    def test_the_portfolio_shape_that_produced_four_phantoms(self) -> None:
+        """Engagement ``d67835f5``, reduced to its inputs.
+
+        200, no cookie set by the POST, no redirect, a page containing
+        ``profile``, and a cookie the site hands every visitor carried from
+        before the credentials went out. Rule 3 read that as proof. Rule 4 reads
+        the same response as what it is: not a denial, carrying something a
+        promoted session COULD be, and therefore a question for
+        ``assert_authenticated`` rather than an answer here.
+        """
+        verdict = _verdict_of(
+            response_body="<html><main>My profile</main></html>",
+            status_code=200,
+            final_url="https://ptkvaibhav.vercel.app/",
+            login_url="https://ptkvaibhav.vercel.app/",
+            redirect_chain=[],
+            carried_session={"csrf-token": "f68e7f1b"},
+        )
+        assert verdict is LoginVerdict.INDETERMINATE
+
+    def test_an_authentication_token_in_the_body_is_proof(self) -> None:
+        """Rule 1b, which the corpus has never exercised on THIS arm.
+
+        Zero of the 762 recorded form-arm credential POSTs reached it: the JSON
+        arm has its own token path and is where every token-bearing login in the
+        corpus was answered. A rule with no positive control is a dead
+        instrument, so this is its control — the form arm can be pointed at a
+        JSON login API by ``login_content_type``, and then this is the rule that
+        decides.
+        """
+        assert LoginVerdict.PROVEN is _verdict_of(
+            response_body='{"authentication": {"token": "eyJhbGciOiJIUzI1NiJ9.e30.sig"}}',
+            status_code=200,
+            final_url="http://target/rest/user/login",
+            login_url="http://target/rest/user/login",
+            redirect_chain=[],
+        )
+
     def test_success_redirected_away(self) -> None:
-        assert WebAuthenticator._check_login_success(
+        assert LoginVerdict.PROVEN is _verdict_of(
             response_body="<html>Dashboard</html>",
             status_code=200,
             final_url="http://target/dashboard",
@@ -124,7 +186,7 @@ class TestLoginSuccessHeuristics:
         )
 
     def test_failure_invalid_in_body(self) -> None:
-        assert not WebAuthenticator._check_login_success(
+        assert LoginVerdict.REFUSED is _verdict_of(
             response_body="<html>Invalid credentials</html>",
             status_code=200,
             final_url="http://target/login",
@@ -133,7 +195,7 @@ class TestLoginSuccessHeuristics:
         )
 
     def test_failure_incorrect_password(self) -> None:
-        assert not WebAuthenticator._check_login_success(
+        assert LoginVerdict.REFUSED is _verdict_of(
             response_body="<html>incorrect password</html>",
             status_code=200,
             final_url="http://target/login",
@@ -142,7 +204,7 @@ class TestLoginSuccessHeuristics:
         )
 
     def test_failure_login_failed(self) -> None:
-        assert not WebAuthenticator._check_login_success(
+        assert LoginVerdict.REFUSED is _verdict_of(
             response_body="<html>Login failed. Try again.</html>",
             status_code=200,
             final_url="http://target/login",
@@ -151,7 +213,7 @@ class TestLoginSuccessHeuristics:
         )
 
     def test_success_302_redirect(self) -> None:
-        assert WebAuthenticator._check_login_success(
+        assert LoginVerdict.PROVEN is _verdict_of(
             response_body="",
             status_code=302,
             final_url="http://target/home",
@@ -439,12 +501,12 @@ class TestJsonApiAuth:
         calls: list[tuple[str, dict[str, str]]] = []
 
         async def fake_api_post(
-            url: str, payload: dict[str, str]
-        ) -> tuple[int, str, dict[str, str]]:
+            url: str, payload: dict[str, str], *, account: str = ""
+        ) -> tuple[int, str, list[str]]:
             calls.append((url, payload))
             if url.endswith("/rest/user/login"):
-                return 200, json.dumps({"authentication": {"token": "JWT-OK"}}), {}
-            return 404, "", {}
+                return 200, json.dumps({"authentication": {"token": "JWT-OK"}}), []
+            return 404, "", []
 
         monkeypatch.setattr(auth, "execute", fake_execute)
         monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
@@ -479,8 +541,8 @@ class TestJsonApiAuth:
         api_called = {"v": False}
 
         async def fake_api_post(
-            url: str, payload: dict[str, str]
-        ) -> tuple[int, str, dict[str, str]]:
+            url: str, payload: dict[str, str], *, account: str = ""
+        ) -> tuple[int, str, list[str]]:
             api_called["v"] = True
             return 200, json.dumps({"token": "should-not-be-used"}), {}
 
@@ -502,8 +564,8 @@ class TestJsonApiAuth:
         seen: list[dict[str, str]] = []
 
         async def fake_api_post(
-            url: str, payload: dict[str, str]
-        ) -> tuple[int, str, dict[str, str]]:
+            url: str, payload: dict[str, str], *, account: str = ""
+        ) -> tuple[int, str, list[str]]:
             seen.append(payload)
             if "username" in payload:
                 return 200, json.dumps({"token": "T"}), {}
@@ -528,9 +590,9 @@ class TestJsonApiAuth:
             return self._form_failure(args)
 
         async def fake_api_post(
-            url: str, payload: dict[str, str]
-        ) -> tuple[int, str, dict[str, str]]:
-            return 404, "", {}
+            url: str, payload: dict[str, str], *, account: str = ""
+        ) -> tuple[int, str, list[str]]:
+            return 404, "", []
 
         monkeypatch.setattr(auth, "execute", fake_execute)
         monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
@@ -555,7 +617,7 @@ class TestJsonApiAuth:
 class TestSuccessRequiresPositiveEvidence:
     """The defect that made a **415** a proven session.
 
-    ``_check_login_success`` returned True because ``final_url`` differed from
+    ``_login_verdict`` returned True because ``final_url`` differed from
     ``login_url``: a form whose ``action`` points at another path satisfies
     "redirected away → success" with no redirect having occurred at all. The
     server had answered 415 — the clearest possible statement that it accepted
@@ -565,7 +627,7 @@ class TestSuccessRequiresPositiveEvidence:
 
     def test_415_at_a_different_path_is_not_success(self) -> None:
         """The defect verbatim, with Meridian's own URLs."""
-        assert not WebAuthenticator._check_login_success(
+        assert LoginVerdict.REFUSED is _verdict_of(
             response_body=json.dumps(
                 {"status": "error", "expects": {"content_type": "application/json"}}
             ),
@@ -573,61 +635,61 @@ class TestSuccessRequiresPositiveEvidence:
             final_url="http://target/portal/v3/session-open",
             login_url="http://target/portal/gateway",
             redirect_chain=[],
-            session_cookies={},
+            session_evidence={},
         )
 
     @pytest.mark.parametrize("status", [400, 401, 403, 404, 405, 415, 422, 500, 503])
     def test_no_4xx_or_5xx_is_ever_success(self, status: int) -> None:
         """Not even one carrying every success keyword and a cookie."""
-        assert not WebAuthenticator._check_login_success(
+        assert LoginVerdict.REFUSED is _verdict_of(
             response_body="<html>Welcome to your dashboard — logout</html>",
             status_code=status,
             final_url="http://target/dashboard",
             login_url="http://target/login",
             redirect_chain=["http://target/dashboard"],
-            session_cookies={"SESSION": "abc"},
+            session_evidence={"SESSION": "abc"},
         )
 
     def test_a_different_final_path_alone_is_not_a_redirect(self) -> None:
         """An empty redirect chain means no redirect happened. Nothing else."""
-        assert not WebAuthenticator._check_login_success(
+        assert LoginVerdict.REFUSED is _verdict_of(
             response_body="<html>ok</html>",
             status_code=200,
             final_url="http://target/somewhere/else",
             login_url="http://target/login",
             redirect_chain=[],
-            session_cookies={},
+            session_evidence={},
         )
 
     def test_a_session_cookie_is_positive_evidence(self) -> None:
-        assert WebAuthenticator._check_login_success(
+        assert LoginVerdict.PROVEN is _verdict_of(
             response_body=json.dumps({"status": "ok"}),
             status_code=200,
             final_url="http://target/portal/v3/session-open",
             login_url="http://target/portal/gateway",
             redirect_chain=[],
-            session_cookies={"meridian_portal": "abc"},
+            session_evidence={"meridian_portal": "abc"},
         )
 
     def test_a_body_token_is_positive_evidence(self) -> None:
-        assert WebAuthenticator._check_login_success(
+        assert LoginVerdict.PROVEN is _verdict_of(
             response_body=json.dumps({"authentication": {"token": "JWT"}}),
             status_code=200,
             final_url="http://target/rest/user/login",
             login_url="http://target/login",
             redirect_chain=[],
-            session_cookies={},
+            session_evidence={},
         )
 
     def test_a_real_redirect_away_from_login_is_positive_evidence(self) -> None:
         """DVWA's shape, unchanged: the chain is non-empty because it redirected."""
-        assert WebAuthenticator._check_login_success(
+        assert LoginVerdict.PROVEN is _verdict_of(
             response_body="",
             status_code=200,
             final_url="http://target/index.php",
             login_url="http://target/login.php",
             redirect_chain=["http://target/index.php"],
-            session_cookies={},
+            session_evidence={},
         )
 
 

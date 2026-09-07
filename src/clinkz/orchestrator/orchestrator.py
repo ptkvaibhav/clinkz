@@ -118,6 +118,7 @@ from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.orchestrator.target_resolver import resolve_target_for_docker_mode
 from clinkz.safety.benchmark import set_active_benchmark_profile
 from clinkz.safety.governor import EngagementGovernor, set_active_governor
+from clinkz.safety.lockout import NO_LOCKOUT, LockoutSignal
 from clinkz.safety.scope_refusals import (
     ScopeRefusalLog,
     scope_refusal_summary,
@@ -448,6 +449,16 @@ class OrchestratorAgent:
         # is almost all of them; carried to the report because the operator has
         # to act on it and the trace is not where they will look.
         self._residual_mutations: list[dict[str, Any]] = []
+        # Series the exploit phase RAN and could not conclude from. Empty until
+        # it reports them; carried to the report for the same reason as the
+        # mutations above — an operator reading "no brute-force finding" is
+        # entitled to know whether the class graded the login or abandoned it.
+        self._inconclusive_measurements: list[dict[str, Any]] = []
+        # What the default-credential sweep tried, and what it never got to.
+        # Empty on a run with no sweep and on a sweep that ran to completion:
+        # the disclosure exists for the TRUNCATED case, where "no default
+        # credentials were found" is a claim about pairs that were never sent.
+        self._credential_sweep: dict[str, Any] = {}
         # What happened to the gray-box source tree, when one was supplied.
         # Empty for a black-box engagement (nothing was asked for, so there is
         # nothing to report). Populated the moment ``--source`` is present, on
@@ -926,6 +937,15 @@ class OrchestratorAgent:
                         mutation.get("key"),
                     )
 
+                # Series a class ran and could not conclude from. Carried
+                # through unchanged: nothing here decides whether a measurement
+                # was inconclusive — the class's own positive control did.
+                self._inconclusive_measurements = [
+                    m
+                    for m in (exploit_result.get("inconclusive_measurements") or [])
+                    if isinstance(m, dict)
+                ]
+
                 # Evaluate the reachability predicates every component declared
                 # at engagement start. Deliberately HERE and not there: whether
                 # the target has a SQL surface, which tool a chain resolved to,
@@ -1027,6 +1047,16 @@ class OrchestratorAgent:
                         "client_oracle": self._client_oracle,
                         # Changes this run made that the target cannot undo.
                         "residual_mutations": self._residual_mutations,
+                        # Series a class RAN and could not conclude from. Not a
+                        # finding and not a lead: a measurement that refused
+                        # itself, which is otherwise indistinguishable in the
+                        # deliverable from a login that was tested and was fine.
+                        "inconclusive_measurements": self._inconclusive_measurements,
+                        # What the default-credential sweep did NOT try, when the
+                        # target's own answer stopped it. A truncated sweep that
+                        # says nothing asserts a negative about attempts it never
+                        # made.
+                        "credential_sweep": self._credential_sweep,
                         # What every earlier phase returned. The report needs it
                         # to know whether "0 findings" describes the target or
                         # only this engine's coverage: a run whose recon, scan
@@ -2231,6 +2261,27 @@ class OrchestratorAgent:
         then uses the HTTP client tool to attempt login on discovered endpoints.
         Valid credentials and sessions are stored for handoff to later phases.
 
+        **A sweep that stops early says so, and names what it never sent.** The
+        stop itself is right and stays: the target has answered with a lockout,
+        a rate limit or a captcha, every further guess is an attempt on evidence
+        we already hold, and on a lockout it extends the lock. What was wrong is
+        what the stop produced — a log line, and a deliverable in which the
+        engagement reports no default credentials. That sentence is a claim
+        about every pair in the catalogue, and after a stop it is a claim about
+        pairs that were never dispatched.
+
+        So the full candidate list is built BEFORE the first attempt rather than
+        discovered technology-by-technology as the loop runs. It is the only way
+        the truncated case can name its own remainder: a loop that seeds the
+        next technology only after finishing the previous one does not know, at
+        the moment it stops, what it was going to do next.
+
+        The remainder is named by **account and technology, never by password**.
+        :func:`~clinkz.engagement.secrets.register_secret` runs on a guess as it
+        is offered, so a pair that was never offered was never registered for
+        redaction — writing its password into the deliverable would put an
+        unregistered secret past the one gate that exists to catch them.
+
         Args:
             recon_result: Result dict from the recon phase.
         """
@@ -2255,46 +2306,95 @@ class OrchestratorAgent:
             self._logger.info("No login surface proven — skipping default cred check")
             return
 
+        # The WHOLE candidate list, before the first attempt. Built up front so a
+        # truncated sweep can name its own remainder; see the docstring.
+        planned: list[tuple[str, Any]] = []
+        for tech in technologies:
+            if not await self._cred_store.seed_defaults(self._engagement_id, tech):
+                continue
+            creds = await self._cred_store.get(self._engagement_id, technology=tech)
+            planned.extend((tech, cred) for cred in creds if cred.valid is None)
+
         # Track tested (url, user, pass) combos to skip duplicates across technologies
         tested_combos: set[tuple[str, str, str]] = set()
+        attempted = 0
 
-        for tech in technologies:
-            # Seed defaults into the credential store
-            cred_ids = await self._cred_store.seed_defaults(self._engagement_id, tech)
-            if not cred_ids:
-                continue
-
-            # Get the seeded credentials
-            creds = await self._cred_store.get(self._engagement_id, technology=tech)
-            untested = [c for c in creds if c.valid is None]
-
-            for cred in untested:
-                combo = (login_url, cred.username, cred.password)
-                if combo in tested_combos:
-                    self._logger.debug(
-                        "Skipping duplicate cred test: %s:%s @ %s",
-                        cred.username,
-                        "***",
-                        login_url,
-                    )
-                    continue
-                tested_combos.add(combo)
-
-                # Try the credential via HTTP client
-                success = await self._attempt_login(
-                    login_url, cred.username, cred.password, cred.id
+        for index, (tech, cred) in enumerate(planned):
+            # The target has already told us it is not evaluating
+            # credentials. Continuing is N-1 further attempts on evidence we
+            # have already received — the exact shape of the captcha defect,
+            # where a refusal the application made WITHOUT looking at the
+            # password was read as "that password was wrong" and the next
+            # one was sent.
+            stopped_for, stop = self._credential_stop_evidence()
+            if stop.kind is not None:
+                untried = planned[index:]
+                self._logger.error(
+                    "DEFAULT-CREDENTIAL SWEEP STOPPED at %s: the login answered with "
+                    "%s (%s: %r) for %r. Every further guess would be an attempt on "
+                    "evidence we already have, and on a lockout it extends the lock. "
+                    "%d pair(s) left untried.",
+                    login_url,
+                    stop.kind.value,
+                    stop.detail,
+                    stop.marker,
+                    stopped_for,
+                    len(untried),
                 )
-                if success:
-                    self._logger.info(
-                        "DEFAULT CRED VALID: %s:%s on %s (%s)",
-                        cred.username,
-                        "***",
-                        login_url,
-                        tech,
-                    )
-                    self._register_swept_session(cred.username, login_url, tech)
-                else:
-                    await self._cred_store.mark_invalid(cred.id)
+                self._credential_sweep = {
+                    "login_url": login_url,
+                    "stopped": True,
+                    "stopped_for_account": stopped_for,
+                    "stop_kind": stop.kind.value,
+                    "stop_detail": stop.detail,
+                    "stop_marker": stop.marker,
+                    "attempted": attempted,
+                    "planned": len(planned),
+                    # Account and technology only. The passwords behind these
+                    # were never offered, so they were never registered for
+                    # redaction — see the docstring.
+                    "untried": sorted(
+                        {f"{c.username} ({t})" for t, c in untried},
+                    ),
+                }
+                return
+
+            combo = (login_url, cred.username, cred.password)
+            if combo in tested_combos:
+                self._logger.debug(
+                    "Skipping duplicate cred test: %s:%s @ %s",
+                    cred.username,
+                    "***",
+                    login_url,
+                )
+                continue
+            tested_combos.add(combo)
+
+            # Try the credential via HTTP client
+            attempted += 1
+            success = await self._attempt_login(login_url, cred.username, cred.password, cred.id)
+            if success:
+                self._logger.info(
+                    "DEFAULT CRED VALID: %s:%s on %s (%s)",
+                    cred.username,
+                    "***",
+                    login_url,
+                    tech,
+                )
+                self._register_swept_session(cred.username, login_url, tech)
+            else:
+                await self._cred_store.mark_invalid(cred.id)
+
+        # Ran to completion. Recorded as a fact rather than left as an absence,
+        # because "the sweep finished" and "no sweep ran" are different states
+        # and the report has to be able to tell them apart.
+        self._credential_sweep = {
+            "login_url": login_url,
+            "stopped": False,
+            "attempted": attempted,
+            "planned": len(planned),
+            "untried": [],
+        }
 
     @staticmethod
     def _phase_delivered(phase: dict[str, Any]) -> bool:
@@ -2833,6 +2933,23 @@ class OrchestratorAgent:
             and _LOGIN_IDENTITY_FIELD_RE.search(body) is not None
         )
 
+    @staticmethod
+    def _credential_stop_evidence() -> tuple[str, LockoutSignal]:
+        """The first lockout / rate-limit / captcha the login has answered with.
+
+        Read from the governor because the governor is the one component every
+        credential POST passes through — the login, the session refresh and the
+        sweep each build their own authenticator and none of them can see the
+        others. Absent rails (a direct driver invocation) means no evidence,
+        which is the honest answer and not "no lockout exists".
+        """
+        from clinkz.safety.governor import get_active_governor
+
+        governor = get_active_governor()
+        if governor is None:
+            return ("", NO_LOCKOUT)
+        return governor.first_credential_stop()
+
     async def _attempt_login(
         self,
         url: str,
@@ -2858,8 +2975,18 @@ class OrchestratorAgent:
         assert self._cred_store is not None
         assert self._engagement_id is not None
 
+        # A GUESSED password is registered for redaction too, before it is
+        # offered. Only operator-supplied secrets were registered (run(), above),
+        # and the sweep's catalogue passwords therefore reached the action log's
+        # body excerpt verbatim on the JSON arm. A default password is public
+        # until it WORKS — and the moment it works it is a live credential for
+        # the client's system sitting in plaintext in an artifact, which is
+        # precisely what the disclosure gate exists to prevent. Registering it
+        # before the attempt costs nothing and does not depend on the outcome.
+        register_secret(password)
+
         try:
-            from clinkz.tools.auth import WebAuthenticator
+            from clinkz.tools.auth import LoginVerdict, WebAuthenticator
 
             authenticator = WebAuthenticator(
                 scope=self._scope,
@@ -2867,6 +2994,25 @@ class OrchestratorAgent:
             )
 
             result = await authenticator.authenticate(url, username, password)
+
+            # A GUESS is marked valid only on PROOF. The declared-credential
+            # path may proceed on an INDETERMINATE verdict because
+            # ``assert_authenticated`` runs on the next line and settles it;
+            # here there is no such line, and "this default password worked" is
+            # a claim that reaches the report. So an indeterminate guess is put
+            # to the same oracle before it is believed — an application that
+            # promotes its session in place answers every guess that way, good
+            # or bad, and the deferral would otherwise mark all of them valid.
+            if result.verdict is LoginVerdict.INDETERMINATE:
+                proven = await self._prove_swept_session(url, username, result)
+                if not proven:
+                    self._logger.info(
+                        "Default credential for %r at %s was INDETERMINATE and the "
+                        "assertion did not prove a session — not marking it valid.",
+                        username,
+                        url,
+                    )
+                    return False
 
             if result.success:
                 await self._cred_store.mark_valid(
@@ -2890,6 +3036,39 @@ class OrchestratorAgent:
             )
 
         return False
+
+    async def _prove_swept_session(self, login_url: str, username: str, result: Any) -> bool:
+        """Settle an INDETERMINATE guess against an anonymous control.
+
+        The same oracle the declared-credential path uses, reached by the same
+        candidate list. It costs GETs, not credential POSTs, so it is outside
+        the per-account attempt budget and cannot itself lock anything.
+        """
+        probe = _ToolHttpProbe(self._scope, self._engagement_id or "")
+        base_url = self._primary_target_url().rstrip("/")
+        candidates = [
+            *(f"{base_url}{path}" for path in PROTECTED_PATH_CANDIDATES),
+            f"{base_url}/",
+            f"{base_url}/index.php",
+            login_url,
+        ]
+        headers = {"Authorization": f"Bearer {result.bearer_token}"} if result.bearer_token else {}
+        assertion = await assert_authenticated(
+            probe,
+            candidates,
+            cookies=result.session_cookies,
+            headers=headers,
+            username=username,
+        )
+        if assertion.established:
+            self._logger.info(
+                "Default credential for %r at %s was INDETERMINATE and the assertion "
+                "PROVED a session (%s).",
+                username,
+                login_url,
+                assertion.discriminator,
+            )
+        return assertion.established
 
     async def _verify_and_refresh_session(
         self,
@@ -3267,6 +3446,14 @@ class OrchestratorAgent:
             "login_url": login_url,
             "posted_to": result.posted_to,
             "assertion": assertion,
+            # What the credential exchange itself concluded, kept apart from
+            # what the assertion concluded. They answer different questions and
+            # the abort message needs both: a login the exchange PROVED and the
+            # assertion could not corroborate is a missing discriminator, and a
+            # login the exchange could not tell apart from a promoted session is
+            # a different diagnosis with a different remedy.
+            "login_verdict": result.verdict.value,
+            "login_verdict_evidence": result.verdict_evidence,
         }
         if assertion.established and cred.role == (
             self._credentials.primary().role if self._credentials.primary() else ""
@@ -3366,10 +3553,26 @@ class OrchestratorAgent:
                 # behaved differently" is a statement about something observed.
                 any_reached_assertion = True
                 any_dispatched = True
-                lines.append(
-                    f"  [{role}] the session was established and the assertion RAN, but no "
-                    "candidate URL behaved differently with and without it."
-                )
+                if session.get("login_verdict") == "indeterminate":
+                    # The exchange never proved a session either. Saying only
+                    # "no candidate URL behaved differently" would point the
+                    # operator at their protected-path list when the login
+                    # itself was the ambiguous step.
+                    lines.append(
+                        f"  [{role}] the login could not be told apart from a refusal, so "
+                        "the verdict was deferred to the assertion — which RAN against "
+                        "the session material the exchange was holding and found no "
+                        "candidate URL that behaved differently with and without it."
+                    )
+                    lines.append(
+                        f"      the login exchange observed: "
+                        f"{session.get('login_verdict_evidence') or 'not stated'}"
+                    )
+                else:
+                    lines.append(
+                        f"  [{role}] the session was established and the assertion RAN, "
+                        "but no candidate URL behaved differently with and without it."
+                    )
                 lines.append("      compared (authenticated vs anonymous):")
                 for attempt in assertion.attempted[:8]:
                     lines.append(f"        {attempt}")

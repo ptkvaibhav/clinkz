@@ -617,6 +617,12 @@ class ReportAgent(BaseAgent):
                 graybox_source=dict(input_data.get("graybox_source") or {}),
                 resumed_from=str(input_data.get("resumed_from") or ""),
                 client_oracle=dict(input_data.get("client_oracle") or {}),
+                inconclusive_measurements=[
+                    m
+                    for m in (input_data.get("inconclusive_measurements") or [])
+                    if isinstance(m, dict)
+                ],
+                credential_sweep=dict(input_data.get("credential_sweep") or {}),
             ),
             safety_summary=safety,
             authentication=authentication,
@@ -742,6 +748,8 @@ class ReportAgent(BaseAgent):
         graybox_source: dict[str, Any] | None = None,
         resumed_from: str = "",
         client_oracle: dict[str, Any] | None = None,
+        inconclusive_measurements: list[dict[str, Any]] | None = None,
+        credential_sweep: dict[str, Any] | None = None,
     ) -> list[NotTestedItem]:
         """Assemble the honest-limits section from the run's own artifacts.
 
@@ -770,6 +778,13 @@ class ReportAgent(BaseAgent):
                 nothing, which is read as "no oracle" (the conservative reading:
                 a run that cannot say what it did did not demonstrate it did
                 anything).
+            inconclusive_measurements: Series a class RAN and whose own positive
+                control refused. Declared by the class; nothing here decides
+                whether a measurement concluded.
+            credential_sweep: What the default-credential sweep planned, sent and
+                never got to. Read only for the TRUNCATED case — a completed
+                sweep and an absent one both produce no item, because neither
+                leaves a claim standing that the run cannot support.
 
         Returns:
             One :class:`NotTestedItem` per limitation, most client-relevant first.
@@ -953,6 +968,74 @@ class ReportAgent(BaseAgent):
                     item=f"{vuln_class.label} — records this class cannot attribute",
                     category=NotTestedCategory.CLASS_ABSTAINS,
                     reason=vuln_class.coverage_boundary.limitation,
+                )
+            )
+
+        # Series a class RAN and could not conclude from.
+        #
+        # Every other entry in this section is a reason something did NOT run.
+        # This one ran: requests went to the endpoint, and the class's own
+        # positive control found they had not measured what it needed measured.
+        # The two look identical in a deliverable — no finding — and the second
+        # is what a client reads as "tested, fine".
+        #
+        # Measured before it was fixed: 136 of 369 recorded brute-force verdicts
+        # were `inconclusive`, across 75 engagements, and the word appears in
+        # none of the 4,169 stored reports. Engagement `01b8e683` is the shape of
+        # the defect — "No Brute-Force Protection on /vulnerabilities/brute/" in
+        # the document, and the same run's /vulnerabilities/csrf/
+        # test_credentials.php login inconclusive and silently absent.
+        for measurement in inconclusive_measurements or []:
+            if not isinstance(measurement, dict):
+                continue
+            endpoint = str(measurement.get("endpoint") or "")
+            method = str(measurement.get("test_method") or "a methodology")
+            attempts = int(measurement.get("attempts") or 0)
+            items.append(
+                NotTestedItem(
+                    item=f"{method} at {endpoint}",
+                    category=NotTestedCategory.MEASUREMENT_INCONCLUSIVE,
+                    reason=(
+                        f"This class dispatched {attempts} request(s) to {endpoint} and its "
+                        f"own positive control refused the series: "
+                        f"{measurement.get('reason') or 'no rationale recorded'} "
+                        f"No conclusion about this endpoint is drawn from it in either "
+                        f"direction — the absence of a finding here is the absence of a "
+                        f"measurement, not the absence of a flaw."
+                    ),
+                )
+            )
+
+        # A default-credential sweep the TARGET stopped.
+        sweep = credential_sweep or {}
+        if sweep.get("stopped"):
+            untried = [str(entry) for entry in (sweep.get("untried") or [])]
+            items.append(
+                NotTestedItem(
+                    item=(
+                        f"Default credentials at {sweep.get('login_url') or 'the login'} — "
+                        f"{len(untried)} candidate pair(s) never sent"
+                    ),
+                    category=NotTestedCategory.SWEEP_STOPPED,
+                    reason=(
+                        f"The sweep offered {sweep.get('attempted', 0)} of "
+                        f"{sweep.get('planned', 0)} planned credential pairs and then "
+                        f"stopped: the login answered with "
+                        f"{sweep.get('stop_kind') or 'a refusal'} "
+                        f"({sweep.get('stop_detail') or 'observed'}: "
+                        f"{sweep.get('stop_marker')!r}) for account "
+                        f"{sweep.get('stopped_for_account')!r}. That answer was not about "
+                        f"any password, so further guesses would test nothing and, on a "
+                        f"lockout, extend the lock. This engagement therefore reports "
+                        f"nothing about the pairs it did not send"
+                        + (
+                            f" — accounts left untried: {', '.join(untried)}. "
+                            "Passwords are named nowhere here: a pair that was never "
+                            "offered was never registered for redaction."
+                            if untried
+                            else "."
+                        )
+                    ),
                 )
             )
 
@@ -2261,7 +2344,10 @@ class ReportAgent(BaseAgent):
                 "*no methodology* are limitations of this tool and are candidates "
                 "for manual review. *Examined in a real browser* is not one of "
                 "them: there the oracle ran and witnessed nothing, which is an "
-                "answer rather than a gap.",
+                "answer rather than a gap. *Tested, but the measurement could "
+                "not support a conclusion* is the reverse — requests were sent "
+                "and did not measure what the test needed, so nothing is claimed "
+                "about that endpoint in either direction.",
                 "",
             ]
         )
@@ -2283,6 +2369,12 @@ class ReportAgent(BaseAgent):
             NotTestedCategory.UNAUTHENTICATED: "Limited by the sessions available",
             NotTestedCategory.CLASS_ABSTAINS: (
                 "Reported as a lead, not a finding — the class abstains"
+            ),
+            NotTestedCategory.MEASUREMENT_INCONCLUSIVE: (
+                "Tested, but the measurement could not support a conclusion"
+            ),
+            NotTestedCategory.SWEEP_STOPPED: (
+                "Stopped early on the target's own refusal — pairs never sent"
             ),
         }
         rendered: set[str] = set()

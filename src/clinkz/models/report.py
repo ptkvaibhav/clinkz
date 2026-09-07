@@ -149,6 +149,18 @@ class NotTestedCategory(StrEnum):
             which is about a capability that was absent. This one is a boundary
             of the METHOD, and it renders on a clean run because it is a
             property of the class rather than of this target.
+        MEASUREMENT_INCONCLUSIVE: The class RAN against this endpoint and its own
+            positive control refused the series — requests went out and did not
+            measure what the class needed measured. Distinct from every category
+            above, all of which are reasons the class did not run: this one ran
+            and may not speak. It is the loudest silence in the corpus — 136 of
+            369 recorded brute-force verdicts, across 75 engagements, and the
+            word never once reached a client document.
+        SWEEP_STOPPED: The default-credential sweep stopped on the target's own
+            refusal (a lockout, a rate limit, a captcha) with candidate pairs
+            left unsent. Its own category because the remedy is the client's:
+            the engine will not guess past that answer, so covering the
+            remainder needs the account unlocked or the pairs supplied.
     """
 
     OUT_OF_SCOPE = "out_of_scope"
@@ -161,6 +173,8 @@ class NotTestedCategory(StrEnum):
     UNAUTHENTICATED = "unauthenticated"
     SOURCE_NOT_INGESTED = "source_not_ingested"
     CLASS_ABSTAINS = "class_abstains"
+    MEASUREMENT_INCONCLUSIVE = "measurement_inconclusive"
+    SWEEP_STOPPED = "sweep_stopped"
 
 
 class NotTestedItem(BaseModel):

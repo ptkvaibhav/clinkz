@@ -147,6 +147,16 @@ The hard rules:
 - **A login URL is proven by response SHAPE, never by a status code and never by
   a path NAME.** Names order the shape probing; they never gate it. Nothing
   proven ⇒ `None`, never the root URL.
+- **No session verdict rests on a destination's SPELLING** — the same rule, and
+  `verify_session` kept the oracle `assert_authenticated` had shed. Both arms
+  walk the redirect and read the response (`_session_survived`: 401/403, or an
+  `<input type="password">`). The DOMAIN is computed from the call graph — every
+  function whose return feeds a verdict sink — and each string-literal test in it
+  is classified; `redirects_to_login` is the one `destination_spelling` entry and
+  carries a licence naming every consumer and its bound.
+- **Session evidence is the DELTA across the credential POST, not the jar** — a
+  cookie the login-page GET issued exists whatever we send. Carriage
+  (`session_cookies`) and evidence are separate questions.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`) —
   only a boundary discriminator is accepted; a body-length delta is refused.
   Credentials supplied + assertion failed ⇒ the engagement aborts loudly.
@@ -162,6 +172,9 @@ The hard rules:
   no declaration, because the operator believes the engine knows.
 - **Only a session-bearing response is evidence about the session**; the raised
   flag is a hypothesis and `assert_authenticated` is the oracle.
+- **`Set-Cookie` is carried as a LIST the producer declares** (`set_cookie` /
+  `HopResponse.set_cookies`) — a `dict` keeps one of two cookies and the two
+  transports keep a DIFFERENT one; no consumer splits a joined header.
 - **The rails are absent by default** — `get_active_governor()` is `None` unless
   an engagement installed one, so direct methodology invocation is byte-identical.
   The governor owns rate (5 req/s), concurrency (4), the kill switch, blocking
@@ -622,6 +635,68 @@ detail when you are about to change the code an invariant governs — not by def
     never-overridable and the class needs `write_crossing` named explicitly.**
     **Detail →
     [`docs/methodology/write-crossings.md`](docs/methodology/write-crossings.md).**
+91. **"The POST set no cookie" has TWO causes and a boolean collapses them.** A
+    framework that promotes its pre-login session in place sets nothing on a
+    SUCCESSFUL login, so an empty `Set-Cookie` delta beside a non-empty carried
+    jar is `INDETERMINATE` (`LoginVerdict`) and the verdict DEFERS to
+    `assert_authenticated` — the stronger oracle, already running. The JSON arm's
+    `2xx + token-or-cookie` rule has the same hole and the same fix, and the
+    cookie half needs one more: **a cookie the server issues to ANY caller is not
+    evidence about a credential** — the JSON arm carries no jar, so a
+    session-starting framework sets one on every route it is offered. A deferral
+    is bounded by `_session_survived`, and so is that cookie branch: a response
+    serving an `<input type="password">` is REFUSED, on an observation rather
+    than on seven English substrings. **A guessed credential may not ride the deferral** — the
+    sweep proves it or marks it invalid. **A login declared failed names the
+    evidence that was ABSENT and never asserts the credentials were wrong.**
+92. **A credential POST is bounded by the component that can see it, and the
+    stop the TARGET declares outranks the budget WE assumed.** The governor slot
+    moves from `authenticate()` to each credential POST, which NAMES the account
+    (`SafetyPolicy.max_credential_attempts_per_account`, default 8, keyed on
+    origin+account) — measured 16-18 POSTs per failing call, 64 across a sweep,
+    against **two** action-log entries. Naming the account also declares the
+    request is a login, not a `credential_change`. `safety/lockout.py` is the one
+    lockout vocabulary, shared with `_test_brute_force`; a lockout, rate limit or
+    captcha is recorded and refuses every later attempt, and the sweep stops on
+    the first evidence for ANY account. **Detail →
+    [`docs/methodology/credential-attempts-and-lockout.md`](docs/methodology/credential-attempts-and-lockout.md).**
+
+93. **An absence that holds only up to N is reported WITH N, and N is ours**
+    (`attempt_ceiling`). A header's absence is complete in one response; a
+    lockout's is not. The emission gate guarantees the ceiling is always the
+    engine's budget — a refusal would have set `protected` — so the title, the
+    description and the evidence each name it, and the class may never render as
+    "no protection exists". **A flag that cannot take its other value where it is
+    read is a comment**: `ceiling_is_our_budget` was `not protected`, read only
+    at the emitter, which runs only when `protected` is False — deleted for a
+    guard (`BruteForceEmissionError`) that makes the caller's gate a precondition
+    of the render. The finding also names the attempts THIS class made. **Detail
+    → [`docs/methodology/brute-force.md`](docs/methodology/brute-force.md).**
+
+94. **A verdict rule with no correct live firing is a dead instrument, and the
+    corpus decides which.** Every `_login_verdict` rule is replayable over stored
+    curl dumps. The authenticated-page-marker rule fired 4 times in 762 POSTs,
+    all four on a site with no login — **deleted**; rule 4's INDETERMINATE
+    deferral is the shape it stood in for, and every keyword list has the same
+    defect. A zero that means *not yet reachable here* gets a fixture instead.
+    **Detail →
+    [`docs/methodology/authentication-shapes.md`](docs/methodology/authentication-shapes.md).**
+
+95. **A measurement that refused itself is not a clean result, and a truncated
+    sweep is not a negative.** An `INCONCLUSIVE` series RAN, so it is declared
+    (`InconclusiveMeasurement`) and rendered — 136 of 369 recorded verdicts, in
+    none of 4,169 reports. A sweep the target stopped names that it stopped, why,
+    and the pairs never sent — **by account and technology, never by password**,
+    which was never registered for redaction.
+
+96. **A bound the budget cannot SEE bounds nothing, so every credential sender is
+    classified.** The per-account budget is spent only where an account is NAMED
+    (`credential_account`, assigned once). `_test_brute_force` is EXEMPT
+    deliberately — it cannot share a budget the login flow already spent — and
+    the exemption is DECLARED over a domain computed by AST, because literal
+    dict keys cannot see the variable-keyed loop that sends the most (2,796
+    ungoverned credential POSTs, 81 engagements). **Detail →
+    [`docs/methodology/credential-attempts-and-lockout.md`](docs/methodology/credential-attempts-and-lockout.md).**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

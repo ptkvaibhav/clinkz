@@ -96,6 +96,7 @@ oracle set.
 | Phase-3 plan ranking: the fingerprint decides the set, the cap guards the tail | [plan-ranking.md](plan-ranking.md) |
 | SCA catalogue breadth: what a real affected-range predicate would cost | [sca-catalogue-breadth.md](sca-catalogue-breadth.md) |
 | Terminal dispatch: a class whose effect outlives the run, and the disclosure it owes | [prototype-pollution.md](prototype-pollution.md) · [write-crossings.md](write-crossings.md) |
+| Credential attempts: the deferred verdict, the per-account budget, the lockout stop | [credential-attempts-and-lockout.md](credential-attempts-and-lockout.md) |
 
 The gray-box discovery engine (Δ-capability model, capability classes, capability
 learning, cross-language, cross-service) lives under `docs/discovery-engine-*.md`.

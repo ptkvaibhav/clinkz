@@ -16,7 +16,39 @@ Three things change when the target is real:
 
 ## A · Engagement setup
 
-### The authorization record — required, not a flag with a default
+### Credential attempts — the rail that did not exist
+
+The governor owns rate (5 req/s), concurrency (4), the kill switch, blocking
+detection, the window and the action log. Until this branch it did **not** own
+how many times one account was offered a password, because its slot was taken per
+`authenticate()` call rather than per credential POST — and one failing call
+dispatches 16 of them in docker mode, 18 on the host, and up to 64 against one
+account across the default-credential sweep. The client-facing action log for a
+two-role engagement recorded two entries.
+
+Now:
+
+* the slot is taken **per credential POST**, and a credential-bearing request
+  NAMES the account. Naming it is also what declares the request is a login and
+  not a `credential_change` — without that declaration the destructive classifier
+  reads the body's field names, and a login whose identity field is spelled
+  `account` was refused as a credential change;
+* `SafetyPolicy.max_credential_attempts_per_account` (default **8**, keyed on
+  origin + account, `--max-credential-attempts`) refuses further attempts once
+  spent, naming the operator declarations that would reach the login in one;
+* `safety/lockout.py` classifies each login response, and a lockout, rate limit
+  or captcha **stops** every later attempt for that account — checked BEFORE the
+  budget, because an observation about the target outranks an assumption about
+  it. The default-credential sweep stops on the first such evidence for ANY
+  account;
+* every attempt and every refusal reaches `actions.jsonl` under
+  `credential_attempt`, naming the account and its position in the budget, with
+  the password redacted and the field NAME kept.
+
+**Detail →
+[`docs/methodology/credential-attempts-and-lockout.md`](methodology/credential-attempts-and-lockout.md).**
+
+## The authorization record — required, not a flag with a default
 
 `AuthorizationRecord` (`models/engagement.py`) carries the authorizing party's
 name, role and contact, the authorization reference, the permitted-technique
@@ -645,7 +677,18 @@ hand-written, so it cannot drift out of date:
 * classes with **no methodology** — Insecure CAPTCHA, business logic, races;
 * action categories the safety rails refused, with counts and an example;
 * coverage cut short by a halt;
-* surface unreachable without a session, or without a second role.
+* surface unreachable without a session, or without a second role;
+* **measurements that refused themselves** (`measurement_inconclusive`) — a class
+  that RAN against an endpoint and whose own positive control found the series
+  could not support a conclusion. Every other entry here is a reason something
+  did not run; this one ran and may not speak, and the two are the same artifact
+  — none — without it. 136 of 369 recorded brute-force verdicts were
+  `inconclusive` and the word reached none of 4,169 stored reports;
+* **a default-credential sweep the target stopped** (`sweep_stopped`) — the
+  account it stopped for, the marker the target served, how many pairs were
+  offered of how many planned, and the untried remainder by account and
+  technology. Never by password: an unsent pair was never registered for
+  redaction.
 
 A client reading "no findings" is entitled to know whether that means "we looked
 and it is sound" or "we could not look".
@@ -782,6 +825,43 @@ detail → `docs/productization-engagement-safety.md`.**
   URL is not a login page, it is where a credential POST goes when nobody proved
   anything. A JSON login API serves no form and is found by
   `detect_auth_mechanism`, which is the component that knows how to ask.
+- **No session verdict rests on a destination's SPELLING.** The rule above is
+  about finding the login page; this one is about every later answer to "are we
+  still authenticated". `WebAuthenticator.verify_session` kept the exact oracle
+  `assert_authenticated` had shed — `login` / `signin` / `auth` matched against a
+  redirect destination — on the arm `TOOL_EXEC_MODE=docker` uses and on the path
+  the default-credential sweep re-verifies through, and the curl arm discarded
+  the response body (`-o /dev/null`) so nothing else could have decided. Both
+  arms now **walk** the redirect through `walk_redirects` (which also puts the
+  session material back inside the scope gate) and hand the response that
+  answered to one shared rule, `_session_survived`: a 401 or 403, or an
+  `<input type="password">` in the body — the same deterministic signal
+  `detect_auth_mechanism` uses to decide a page is a login surface.
+  **The domain is computed, not grepped**
+  (`tests/test_tools/test_session_verdict_name_oracles.py`): sinks are declared,
+  every function whose return reaches one through a verdict-carrying call-graph
+  edge is the domain, every string-literal test inside it is flagged by AST, and
+  the classification says what each tests. `ProbeResponse.redirects_to_login` is
+  the single `destination_spelling` entry and carries a licence naming all three
+  consumers and the bound on each. Detail →
+  [`methodology/authentication-shapes.md`](methodology/authentication-shapes.md).
+- **Session evidence is the DELTA across the credential POST.** Both form arms
+  handed the success oracle the merged cookie jar — the login-page GET's cookies
+  unioned with the POST's — so a framework that starts a session on the GET to
+  hold a CSRF token satisfied "session material exists" *before a credential was
+  sent*, and a wrong password answered `200 <the login page again>` scored as a
+  proven session behind nothing but a seven-substring failure-keyword list. The
+  oracle now reads only `Set-Cookie` from the credential walk.
+  `AuthResult.session_cookies` still CARRIES the GET's cookie, because on a
+  framework that promotes a pre-login session in place that cookie is the
+  session: carriage and evidence are different questions.
+- **`Set-Cookie` is carried as a list the producer declares.** A response setting
+  two cookies sends two headers of one name; a `dict` keeps one, and the curl
+  path (which joins duplicates with `", "`) and the aiohttp path (a `CIMultiDict`
+  whose last value wins) keep a *different* one. `HTTPClientOutput.set_cookie`
+  and `HopResponse.set_cookies` carry them verbatim, one entry per header, and
+  `_cookies_from_set_cookie` is the only parser — no consumer splits a joined
+  header on a separator somebody else chose (invariant 82).
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`).
   The same URL is fetched with the session and deliberately without it
   (`HTTPClientTool`'s `no_session` — the shared cookie jar would otherwise make

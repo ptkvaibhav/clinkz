@@ -405,6 +405,337 @@ the endpoint table's writer set is computed from the tree, and only then is
 `get_endpoints`. A second endpoint producer, or a reordered `run()`, fails the
 guard rather than silently widening it.
 
+## Defect 10 — the name oracle survived the fix, on the default transport
+
+Defect 2 took the name gate out of `assert_authenticated`. It was still live one
+module away, in the session check:
+
+```python
+# _verify_session_curl, and _verify_session_aiohttp said the same thing
+if status in (301, 302, 303, 307):
+    if any(hint in redirect.lower() for hint in ("login", "signin", "auth")):
+        return False
+```
+
+Three substrings, matched against `%{redirect_url}` — on the arm
+`TOOL_EXEC_MODE=docker` (the default) uses, and on the path the
+default-credential sweep runs through when it re-verifies a session it
+established. `/portal/gateway` fails it today: the session is dead, the app says
+so with a 302, and `verify_session` returns True.
+
+The curl arm was worse than a name gate. It ran with `-o /dev/null`, so the
+response body — the one thing that could have said "this is the login page
+again" — was discarded before anything could read it, and the redirect it did
+read was never scope-checked.
+
+**Both arms now FETCH and one function DECIDES.** `_session_survived` takes the
+status and the body of the response that answered and applies two observations:
+a 401 or 403, and an `<input type="password">` in the body — the same
+deterministic signal `detect_auth_mechanism` uses to decide a page is a login
+surface at all. The redirect is not sniffed, it is **walked**, through the same
+`walk_redirects` primitive every other exchange here uses, so a 302 to
+`/portal/gateway` and a 302 to `/login` are settled by what the destination
+serves. Walking it also puts the session material back inside the scope gate.
+
+### The domain, computed
+
+Fixing one function is fixing one function. A grep for three substrings is the
+same guess one layer up, so
+`tests/test_tools/test_session_verdict_name_oracles.py` computes the set this
+rule binds:
+
+* **Sinks are declared** — ten seams where an authenticated / not-authenticated
+  decision is taken, each with the decision it makes.
+* **The domain is computed** — every function whose return reaches one of those
+  sinks through a *verdict-carrying* edge: a call or property read whose value
+  lands in a `return`, a branch test, a comparison, a boolean operator, an
+  `assert`, or a local that later reaches one of those. A callee whose result is
+  appended to an evidence list or passed on as an argument decides nothing and
+  is not in it. **70 functions**, across `tools/`, `engagement/`, `agents/`,
+  `orchestrator/`, `models/`.
+* **The flag is computed** — 22 of the 70 compare a value against a string
+  literal, resolved through module constants, local assignments, and the
+  iterables of `for` loops and comprehensions. That last part is the guard's own
+  near-miss: the first detector read only the `Compare` node, so
+  `any(hint in location for hint in _LOGIN_HINTS)` was invisible to it and the
+  very oracle the file is named after went unflagged.
+* **The classification is declared** — what each of the 22 actually tests: a
+  cookie name, a header name, a JSON key, a media type, URL grammar, a body
+  marker, a token this engine itself wrote, or a **destination's spelling**.
+
+Both directions are asserted, and the resolution is import-aware rather than by
+simple name: resolving `self.x()` and `.get` by spelling alone put 180 functions
+in the domain, most of them coincidences. A domain nobody can read is not a
+domain anybody checks.
+
+**One member is classified `destination_spelling`:**
+`ProbeResponse.redirects_to_login`. It is kept, and it carries a licence naming
+every consumer and the bound on each — `looks_unauthenticated` raises a
+hypothesis an oracle answers (invariant 37); `detect_auth_mechanism` labels a
+surface UNKNOWN, which is a statement about what could not be determined; and
+`read_auth_artifact`'s fourth arm treats a *not*-login-spelled redirect as
+authenticated state, where the differential bounds it — a login page this list
+does not recognise makes the **control** arm authenticated too, and
+`decide_auth_bypass` then refuses to confirm. An unrecognised spelling costs
+coverage there, not honesty. The session assertion may never read it again, and
+that is asserted as a call-graph fact rather than a grep.
+
+## Defect 11 — the pre-credential cookie was the control arm, merged into the treatment
+
+`_check_login_success` rule 1 accepted "session material" as proof a credential
+worked. Both form arms handed it the merged jar: the login-page GET's cookies
+unioned with the POST's.
+
+A framework that starts a session on the login **GET** to hold a CSRF token —
+PHP does, Django does, most of them do — therefore satisfied rule 1 *before a
+credential had been sent*. A wrong password answered `200 <the login page
+again>` scored as a proven session, and the only thing between that and the
+report was the failure-keyword list: seven substrings, none of which appear in
+"Those details do not match".
+
+**Session evidence is the DELTA across the POST boundary.** Both arms now
+collect `Set-Cookie` across every hop of the credential walk — and only that
+walk — and hand *that* to rule 1. Evidence and carriage are separated, because
+they are different questions: `AuthResult.session_cookies` still carries the
+GET's cookie, since on a framework that promotes a pre-login session in place
+that cookie IS the session and dropping it would break every later request.
+
+The JSON arm needed no change and now says so: it has no login-page GET, so
+every cookie it can see is post-credential by construction.
+
+## Defect 12 — multi-cookie `Set-Cookie` was lossy on both transports
+
+`sid` + `csrf` on one response loses one, and **the transport picks which**:
+
+| producer | how it collapses | which cookie survives |
+|---|---|---|
+| `HTTPClientTool._parse_curl_output` | joins duplicate headers with `", "` | the first (a consumer splitting on a guessed separator keeps it) |
+| `HTTPClientTool._execute_aiohttp` | a dict comprehension over a `CIMultiDict` | the last |
+
+A `dict` cannot hold a header a response legitimately sends twice, and no
+consumer can undo the join: a cookie value may itself contain a comma, so
+splitting the joined string is a guess about a separator this code chose.
+
+**The producer declares the list.** `HTTPClientOutput.set_cookie` and
+`HopResponse.set_cookies` carry `Set-Cookie` verbatim, one entry per header, read
+off the multidict and off the header block where the full list still exists;
+`_cookies_from_set_cookie` is the one parser. `WebAuthenticator._parse_set_cookies`
+- which scanned the raw curl dump line by line, **including response bodies**, so
+a page rendering the text `Set-Cookie: admin=1` set a cookie — is gone.
+
+## Defect 13 — a variable that reads as a guard and gates nothing
+
+`_FormFieldParser._in_form` was set on `<form>` and cleared on `</form>` and then
+gated no collection at all. Every `<input>` on the page went into one flat bucket.
+
+On a page with a search box, a login form and a newsletter signup, the credential
+POST carried the search form's hidden token, the newsletter's `list_id`, and —
+because the newsletter's `email` input was the last identity-shaped field parsed —
+put the username in **`email`** instead of `account`. A rejection caused by fields
+the login form never declared would have been reported as "the credentials were
+wrong".
+
+Fields are now collected **per form**, and which form is the login form is decided
+by shape: the one carrying a `type="password"` input, falling back to the first
+`method="POST"` form, then the first form, then — only when the page declared no
+form at all — the inputs outside one. That first rule is the same deterministic
+signal `serves_login_form` uses. A variable that reads as a guard and gates
+nothing is worse than no variable, because the next reader believes the guard is
+there.
+
+## What one role is offered — the accounting that became the fix
+
+The authenticator had no concept of account lockout. `_test_brute_force` did: it
+sends 8 attempts, watches for lockout / rate-limit / captcha markers, and **stops
+early on a hard lockout**. None of that existed on the login path, and locking
+out an account a client handed us is a harm we cause.
+
+**Fixed on the branch after this one.** The numbers below are what was MEASURED
+before that work, and they are why it happened; the fix — the governor slot moved
+to the credential POST, a declarable per-account budget, one shared lockout
+vocabulary, and a sweep that stops on the first evidence — is
+[credential-attempts-and-lockout.md](credential-attempts-and-lockout.md). The
+measurement is kept here verbatim because a bound whose motivation is a number
+nobody can find again is a bound the next person raises.
+
+Per `authenticate()` call, one role, one login URL, no operator declarations:
+
+| arm | credential POSTs | why |
+|---|---|---|
+| form, aiohttp (`local`) | 1-4 | `max_attempts = 2`, and each attempt may re-POST once under a 415-negotiated type |
+| form, curl (`docker`, the default) | 1-2 | single shot, plus the same 415 re-POST |
+| JSON (`_try_api_login`, runs whenever the form arm fails) | 7-24, typically 14 | `routes × bodies`: up to 8 routes (declared + `login_url` + 6 canned, deduped) × up to 3 identity keys (declared, `email`, `username`). Every non-2xx `continue`s, so the loop runs to completion |
+
+**One `authenticate()` is therefore 16-18 credential POSTs against one account in
+the ordinary failing case, and up to 28.**
+
+That call happens more than once:
+
+* once when the engagement authenticates;
+* again from `_verify_and_refresh_session` whenever `verify_session` says the
+  session is gone — and the `SessionSentinel` can trigger that more than once a
+  run;
+* once **per default credential pair** in the sweep, which runs only when the
+  operator supplied none. The catalogue holds four distinct passwords for
+  `admin` (`password`, `admin`, `tomcat`, `admin123`); two of them are `generic`
+  and are seeded for *every* technology recon identifies, so `admin` sees at
+  least two pairs and up to four.
+
+**Worst realistic sum against `admin`, docker mode, sweep active: 4 pairs ×
+16 = 64 credential POSTs to one account**, 72 in local mode — with no lockout
+awareness anywhere and no counter shared between the three paths.
+
+Two further facts an operator would want, both since fixed:
+
+* The governor paced this (5 req/s, concurrency 4) but did not bound it. Its slot
+  was taken per `authenticate()` call, not per credential POST — so the one
+  component that could have bounded a brute-force could not see one.
+* The **action log under-counted**. `execute()` took ONE governor authorization
+  for the whole form arm — both attempts, the 415 re-POST, every redirect hop —
+  because that arm drives aiohttp and curl directly. The JSON arm rides
+  `HTTPClientTool`, so its 7-24 POSTs were individually authorized and logged.
+  Two accounting regimes inside one call, and what the log meant depended on
+  which transport ran.
+
+Measured again after the fix, same driver, same target: **8 credential POSTs and
+8 action-log entries plus one refusal** on a credential that does not work, on
+both transports; **2 and 2** on one that does.
+
+## Captcha-gated login — the refusal is now a STOP, the abstain is still not built
+
+**Partly fixed**; see
+[credential-attempts-and-lockout.md](credential-attempts-and-lockout.md) part 4.
+A captcha's refusal is now classified by the shared lockout vocabulary and
+recorded as a stop, so it costs ONE attempt rather than N, and the failure names
+the evidence that was absent rather than asserting the credentials were wrong.
+Detecting the gate from the login page's own markup and abstaining with nothing
+sent remains unbuilt. The paragraph below is the original diagnosis, kept because
+it is the clearest statement of why the shape matters.
+
+A login behind a captcha was not detected. The form arm parses the page, POSTs the
+credentials **into the gate**, and reads the refusal as bad credentials: the
+`failure_keywords` list matches nothing, no session material comes back, and the
+result says "the credentials were wrong" about a request the application never
+evaluated. The default-credential sweep then marks each pair invalid on the same
+evidence and moves on.
+
+That is the three-wrong-bullets failure again — a wrong cause, reported
+confidently. Detect-and-abstain is cheap: the login page already parses, and a
+captcha declares itself in the markup a form-shaped detector can read the same
+way it reads `type="password"`. Converting this from *silently wrong* to
+*correctly refusing* costs one shape test and an `AuthResult.failure_stage` that
+says the login is gated. Solving the captcha is out of scope and always will be.
+
+Logged here rather than built: it is a real gap, it is not this branch's work,
+and an operator reading a "the credentials were wrong" abort against a
+captcha-gated login deserves to find this paragraph.
+
+## Defect 14 — a rule with no positive control, swept out of the corpus
+
+Every rule in `_login_verdict` is an instrument. A bounded absence is worth
+nothing if the thing that would bound it can never be observed (that is the
+brute-force ceiling's lesson), and a *verdict* rule is worth less than nothing if
+its only live firings are wrong.
+
+The corpus predates `LoginVerdict`, so no stored artifact carries a verdict
+label — but it carries the bytes. Every `web_authenticator` invocation records
+curl's full dump, and `_parse_curl_output` still parses it. So the question is
+answered by replaying the CURRENT oracle over the recorded exchanges rather than
+by grepping for a string the engine never wrote.
+
+**762 credential POSTs, 186 engagements**, every one re-decided:
+
+| rule | verdict | fired | engagements | what it was |
+|---|---|---|---|---|
+| status ≥ 400 | REFUSED | 52 | 29 | Juice Shop `401 Invalid email or password.` |
+| body failure marker | REFUSED | 520 | 160 | DVWA's `Login failed` |
+| **1a** cookie the POST set | **PROVEN** | **148** | **136** | DVWA's `Set-Cookie: PHPSESSID` on the login 302 |
+| **1b** token in the body | PROVEN | **0** | 0 | never reached on this arm |
+| **2** redirect away from login | **PROVEN** | **14** | **14** | DVWA answering `302 → /index.php` with no new cookie |
+| **3** authenticated-page marker | PROVEN | **4** | **1** | all four wrong — see below |
+| **4** carried jar, not a denial | INDETERMINATE | **0** | 0 | added 2026-09-07; no run predates it |
+| nothing proved it | REFUSED | 24 | 4 | a JSON login page POSTed as a form |
+
+**Rule 2 has fired.** It is not settled by rule 1 on DVWA: when the credential
+POST re-uses an existing `PHPSESSID` rather than issuing one, the delta is empty
+and the redirect to `/index.php` is the only positive evidence there is. 14
+engagements, and the shape is exactly the one the rule was written for.
+
+**Rule 3 was a dead instrument, and it is deleted.** A 2xx body containing one of
+eight English words — `logout`, `dashboard`, `welcome`, `profile`, … — returned
+PROVEN. Its four firings are all in engagement `d67835f5`, target
+**`https://ptkvaibhav.vercel.app/`**: a personal portfolio site with no login of
+any kind, whose page contains the word *profile*. `_find_login_url` accepted the
+site root as a login surface, the sweep offered `admin:admin`, `root:root`,
+`admin:password` and `test:test` at it, and rule 3 declared all four PROVEN — so
+four guessed passwords were marked VALID against a site that never evaluated one,
+and the run went on to `verify_session` carrying the `csrf-token` cookie that
+page hands every visitor. Zero correct firings and four wrong ones is not a weak
+positive control; it is an instrument whose only live evidence is against it.
+
+Nothing is lost by removing it. The shape it stood in for — a good credential
+answered `200` with no new cookie because the framework promoted the pre-login
+session in place — is exactly what rule 4 says, and says correctly: the same
+inputs now reach INDETERMINATE and defer to `assert_authenticated`, which
+compares an authenticated request against an anonymous control instead of reading
+a noun out of the HTML. **A longer or stricter keyword list would not have
+helped**; every keyword list has this defect and a longer one only moves which
+page furniture triggers it.
+
+**Rules 1b and 4 get fixtures rather than deletions**, because their zeros mean
+different things. Rule 4 is a day old. Rule 1b is reachable on this arm the
+moment `login_content_type` points the form arm at a JSON login API — every
+token-bearing login in the corpus was answered by the JSON arm, which has its own
+token path. Both are pinned in `tests/test_tools/test_auth.py`.
+
+## Defect 15 — the JSON arm's jarless phantom, and where it did NOT land
+
+The fix in the same round (`0ab0723`) closed a real hole: the JSON arm's success
+rule was `2xx AND (token OR any Set-Cookie)`, and that arm carries no jar of its
+own, so a framework that starts a session for any cookieless caller sets a cookie
+on **every route it is offered** — DVWA's `/login.php` answers a JSON POST `200`
+with `Set-Cookie: PHPSESSID` and its own login form in the body. Two wrong
+passwords for `admin` reached PROVEN.
+
+`_attempt_login` re-proves only INDETERMINATE — a PROVEN guess is marked valid
+with no further oracle — so a false PROVEN passes straight through to the
+credential store and the report. The corpus was therefore worth checking, because
+every statistic in [brute-force.md](brute-force.md) came out of it.
+
+**It never landed.** Replaying the JSON arm's rule over all **7,095** recorded
+JSON credential POSTs:
+
+| outcome | rows | engagements |
+|---|---|---|
+| non-2xx (both rules skip) | 6,617 | 168 |
+| token (old and new agree: PROVEN) | 87 | 30 |
+| 2xx, no session material (old refused too) | 391 | 21 |
+| **phantom (old PROVEN, new refuses)** | **0** | **0** |
+
+Two reasons, and the second is the one worth keeping:
+
+1. `login_url` entered the JSON arm's candidate list on **2026-09-03**
+   (`ab8260a`, "observe the login, never guess its name"), after almost every
+   stored run. Before it, the arm only ever offered the six canned routes
+   (`/rest/user/login`, `/api/login`, …), which on DVWA are 404s.
+2. **The arm is only jarless on one transport.** `_execute_aiohttp` builds a
+   fresh `CookieJar` per request and the arm passes no cookies, so it is
+   genuinely jarless there. `_execute_curl` passes `-b <shared jar>`, so on the
+   docker path the POST carries whatever the engagement already holds and a
+   session-starting framework issues nothing new. **The entire stored corpus is
+   docker** — 298,768 recorded `http_client` invocations, `exec_mode: docker`,
+   without exception.
+
+So the answer to *did any past run authenticate by the JSON arm on a jarless
+POST and proceed as authenticated* is **no**, and the brute-force statistics are
+not derived from a corpus contaminated by it. But the reason is not that the
+rule was safe: it is that the transport which exhibits it is the one the corpus
+does not contain. That is a transport-equivalence gap of exactly the kind
+`tests/test_tools/test_transport_corpus_coverage.py` was built for, and it is the
+reason the fix stands on its own merits rather than on an incident count.
+
+The **form** arm's phantom is the one that did land: rule 3, four times, above.
+
 ## The regression that is the test
 
 `tests/test_engagement/test_meridian_auth.py` runs Meridian in a thread on an
@@ -421,11 +752,87 @@ passed. A name oracle passes every test that only ever spells the login page the
 way it expects.
 
 Both execution modes are covered. `tests/test_tools/test_auth_curl_path.py`
-parses fixtures captured from a real `curl -s -S -D - -X POST -L` against a
+parses fixtures captured from a real `curl -s -S -D — -X POST -L` against a
 running Meridian — the bytes curl writes, not a plausible transcript of them
 (invariant 83) — because an application that authenticates under
 `TOOL_EXEC_MODE=local` and not under `docker` is a defect the mode hides rather
 than a property of the application.
+
+**And reading the two arms side by side is not enough.** Every divergence between
+them was found that way, one at a time, after a live run had already gone wrong.
+`tests/test_tools/test_auth_transport_equivalence.py` is the other half, and it
+has the same shape as the `/portal/gateway` ↔ `/login` equality: **the equality
+IS the test, and it has a domain where inspection does not.** Its scenarios —
+each one a shape the arms have actually diverged on — are served by one scripted
+loopback origin, replayed once through `_execute_aiohttp` and once through
+`_execute_curl` (a real `curl`, `TOOL_EXEC_MODE=local`), and three things are
+compared: the verdict tuple, the exact surviving cookie set, and how many
+credential-bearing POSTs the origin received.
+
+**The scenario table below is re-derived from `SCENARIOS`, never counted by
+hand.** A prose count of a computed corpus is a second place for its size to
+live, and it is the one that goes stale: this section said *eight* while the
+suite held ten, and the file that computes the delta said *nine*.
+
+| # | scenario | verdict both arms must reach | POSTs (aiohttp / curl) |
+|---|---|---|---|
+| 1 | `dvwa_form_302_to_index` | PROVEN | 1 / 1 |
+| 2 | `rejected_credential_redirects_back_to_the_login_page` | REFUSED | 2 / 1 |
+| 3 | `pre_credential_cookie_and_the_login_page_served_back` | REFUSED | 2 / 1 |
+| 4 | `the_session_is_promoted_in_place_and_the_post_sets_nothing` | INDETERMINATE | 1 / 1 |
+| 5 | `multi_cookie_set_cookie_survives_intact` | PROVEN | 1 / 1 |
+| 6 | `a_415_names_the_encoding_and_the_retry_authenticates` | PROVEN | 2 / 2 |
+| 7 | `a_415_naming_an_encoding_we_cannot_produce_is_not_retried` | REFUSED | 2 / 1 |
+| 8 | `a_credential_redirect_off_scope_is_refused_not_followed` | REFUSED, nothing dispatched off scope | 1 / 1 |
+| 9 | `the_login_page_sits_behind_a_redirect` | PROVEN | 1 / 1 |
+| 10 | `only_the_login_forms_fields_are_sent` | PROVEN | 1 / 1 |
+
+The attempt counts differ on four rows because the aiohttp arm retries a failed
+login once and the curl arm does not; each row declares both numbers and, where
+they differ, why.
+
+The attempt count is **not** asserted equal, because it is not: the aiohttp arm
+retries a failed login once and the curl arm does not. Each scenario declares a
+number per transport, and where they differ it must say why — a divergence note
+nobody can point at is how a real one gets absorbed. Where they agree, a reason
+is refused.
+
+**And the SELECTION of those scenarios is now computed too.** They were chosen —
+each one a shape the arms had already been caught diverging on — and a corpus
+assembled from past failures covers past failures.
+`tests/test_tools/test_transport_corpus_coverage.py` walks `tests/`, resolves
+each auth test to the credential arm(s) it actually drives (naming an arm
+outright, or reaching `_dispatch` under whichever `TOOL_EXEC_MODE` is in force),
+and reports the DELTA: every test that drives exactly ONE arm must say why.
+
+The first run of it found **fourteen**, all aiohttp — including the off-scope
+credential redirect, which is the most safety-critical behaviour in the file and
+was asserted on one transport only.
+
+**The sweep still reports fourteen, and that is the honest number.** Adding
+`a_credential_redirect_off_scope_is_refused_not_followed` put the off-scope
+*shape* in front of both arms; it did not remove the single-arm test, which
+asserts something else — that the aiohttp session issued no second request — and
+which can only be read off that arm's own request list. So the count did not go
+down by one, and describing it as "thirteen remaining" over-claimed the fix by
+implying a test had been converted rather than a shape covered. **Fourteen
+single-arm tests, fourteen declared reasons**, asserted in both directions by
+`test_every_single_arm_fixture_says_why`.
+
+Each reason is one of four dispositions, and the distinction is what the table
+is for — "covered elsewhere" and "has no other arm to be covered on" are
+different facts:
+
+| disposition | tests | what the single-arm test is actually asserting |
+|---|---|---|
+| **A · the shape is held by a two-arm scenario or sibling; this asserts the arm's own record** | 7 | which requests aiohttp issued or did not issue, and what the shared chain then implies |
+| **B · the subject is `assert_authenticated`, which has one implementation and no transport** | 4 | the discriminator, the spelling invariance, the public-path negative control, the deferral's settlement |
+| **C · a statement about the TARGET, not about a transport** | 2 | that *Meridian's* 415 is read as negotiation; that its refusal shape reaches the whole verdict tuple |
+| **D · the subject is a loop above the transport seam** | 1 | that the JSON arm stops rather than continuing to its next route |
+
+Group A is the only one where a shape could still hide, and every entry in it
+names the two-arm scenario that covers it — which is what makes the reason
+falsifiable: delete that scenario and the reason is a lie a reader can catch.
 
 ## Running Meridian
 

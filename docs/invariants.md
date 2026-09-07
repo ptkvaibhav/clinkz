@@ -1779,3 +1779,293 @@ never-overridable line exists to prevent. The client half is why a throwaway
 declaration cannot buy it either — a record written into another user's account
 is not one the client deletes "the way they delete any record", because they must
 first discover it, in an account that is not the one they gave us.
+
+---
+
+## 91 · "The POST set no cookie" has two causes
+
+Invariant 11 removed the merged jar from the success test, and it was right to:
+the login-page GET's cookie exists whatever we send, so counting it as evidence
+let a wrong password answered `200 <the login page again>` score as a proven
+session. The DELTA across the credential boundary is the honest evidence.
+
+The delta is also **empty on a successful login** against any application that
+promotes its pre-login session in place — `session_regenerate_id(False)`,
+Django's `cycle_key` on a reused key, every framework that attaches an identity
+to the session id it has already issued rather than minting a new one. The
+honest evidence and the refusal produce the same observation, and a `bool` return
+made them the same answer: the engagement aborted, and the operator was told
+their password was wrong about a password that worked.
+
+Three values, not two. `PROVEN` when the POST produced something. `REFUSED` when
+the response refused, or when there is nothing to defer with. `INDETERMINATE`
+when nothing proved it, the exchange is carrying session material from before the
+credentials went out, and the response is not itself a denial — and then the
+verdict goes to `assert_authenticated`, which compares an authenticated request
+against an anonymous control and was already running on the next line.
+
+The deferral's bound is the load-bearing half. "Not itself a denial" is
+`_session_survived` — not a 401/403, and not a body serving an
+`<input type="password">` — which is the same rule both verification arms use and
+is strictly stronger than the seven failure keywords it now sits behind: an
+application whose refusal reads "Those details do not match" is REFUSED on the
+form it re-served rather than on English it did not use.
+
+And the deferral may not reach the default-credential sweep. Marking a guessed
+password `valid` is a claim that reaches the report; on a promote-in-place
+application EVERY guess is indeterminate, good or bad, so an unproven deferral
+would mark all of them valid. The sweep puts an indeterminate guess to the same
+oracle before believing it.
+
+The positive control is the whole cost of this invariant. **No target this
+project owns has the shape** — DVWA sets a fresh `PHPSESSID`, Juice Shop returns
+a JWT, Meridian sets `meridian_portal` — so all three pass whether the branch
+works or not, and a branch nothing reaches is indistinguishable from a branch
+that does not work. `tests/test_tools/test_promoted_session_login.py` builds it,
+end to end, with its negative arm beside it.
+
+## 92 · The only component that could bound it could not see it
+
+Measured at the transport against Meridian, one `authenticate()` call, one role:
+a credential that WORKS costs 2 credential POSTs; one that does not costs **16**
+in docker mode and **18** on the host. Multiply by the four default passwords the
+catalogue holds for `admin` and one account is offered **64** passwords in a run.
+
+The client-facing record of a two-role engagement was **two** `actions.jsonl`
+entries, both reading `POST mutates target state`.
+
+`execute()` took ONE governor authorization for the whole form arm — both
+attempts, the 415 re-POST, every redirect hop — because that arm drives aiohttp
+and curl directly. The JSON arm rides the HTTP chokepoint, so its 7-24 POSTs were
+authorized and logged individually. Two accounting regimes inside one call, so
+what the log MEANT depended on which transport the run happened to take. The
+governor owns the rate limit, the concurrency cap, the kill switch and that log;
+it is the only component that could have bounded a brute-force we did not intend
+to perform, and it was looking at one request where sixteen had gone out.
+
+The slot moves to the POST, and a credential-bearing request names the account.
+That is what gives the budget somewhere to live, and it is also what declares the
+request's SHAPE: without it the destructive classifier reads the body's own field
+names, `account` is a mutation qualifier ("account settings"), and a JSON login
+whose identity field is spelled `account` — Meridian's is — classified as
+`credential_change` and was refused, then reported as "no API login route
+returned a token".
+
+Two protections, failing in opposite directions. The **budget** is an assumption
+made in advance; it cannot know where a particular policy trips, so it is
+declarable and defaults low (8 — four times the headroom every measured success
+needs). The **stop** is an observation the target hands us; it knows exactly, and
+it arrives too late to prevent the attempt that produced it, which is precisely
+why acting on it must stop the ones after it. The stop is checked first, because
+an observation about the target outranks an assumption about it.
+
+`safety/lockout.py` is the one vocabulary, and it is shared with
+`_test_brute_force` for the reason `safety/destructive.py` is shared: the
+methodology reads those signals to decide whether the TARGET is protected and the
+authenticator reads them to decide whether WE must stop — the same observation,
+opposite purposes, and a signal list that exists twice diverges. The classifier
+reads headers and status before body text, because a protocol artifact cannot be
+page furniture, and it DECLARES which kind it saw rather than leaving a consumer
+to re-derive it from a substring of the marker.
+
+The sweep asks for the first stop on ANY account. A lockout, a rate limit or a
+captcha is usually a statement about the source or the endpoint rather than about
+one identity, and an engine that stops guessing `admin`'s password and carries
+straight on to `root`'s has learned nothing from the evidence it just received.
+
+## 93 · An absence that holds only up to N
+
+`_test_security_headers` and `_test_brute_force` both report that something is
+not there, and they are not the same kind of claim. A missing `X-Frame-Options`
+is missing in the one response that had to carry it; the observation is complete,
+and no further request can change the answer. "No brute-force protection" is
+complete only up to the number of failed logins we sent.
+
+And the number is always **ours**. The emission gate is
+`result.auth_reached and not result.protected`, and `protected` False means no
+attempt in the series was refused — which means the series ended when the
+engine's own ceiling ran out, not when the target answered. There is no emitted
+finding whose ceiling belongs to the target, because a refusal at attempt *k*
+sets `protected` and stops the emission. So the finding said "No Brute-Force
+Protection on /login.php" about a login whose policy might trip at nine, and
+nothing in the deliverable said which number the sentence was true up to.
+
+The fix is not a caveat. The ceiling is carried on the result
+(`attempt_ceiling`, with `ceiling_is_our_budget` naming whose it is) and appears
+in the title, the description and the evidence, and `_BRUTE_FORCE_ATTEMPTS` is a
+named constant precisely so the number the loop enforces and the number the
+client reads cannot drift apart.
+
+**Then the instrument was checked, because a bound nothing can trip is
+decoration.** Swept over 2,976 stored traces — 369 phase-3 verdicts across 153
+engagements — ten series ended early on a refusal the target made (DVWA `high`,
+`account has been locked`), against 359 that ran the full eight. The class can
+observe a refusal. But all ten were at **attempt 0**: an account already locked
+when the series began. A *transition* — attempts 1…k−1 normal, attempt k refused
+— has never been recorded, so the ceiling this class reports has never been a
+measured one. That is stated in the methodology doc rather than implied away.
+
+The same sweep found the two `rate_limit` verdicts in the corpus were phantoms,
+both off `X-RateLimit-Remaining: 99` — an endpoint advertising ninety-nine
+remaining requests, graded PROTECTED, because phase 3 read the headers raw while
+`classify_lockout` requires the remaining count to have reached zero. Two
+readings of one observation, and the looser one was the one that decided the
+verdict. Phase 3 reads the DECLARED `lockout_kind` now, which is 82's rule
+applied to the shared vocabulary this class had just been migrated onto.
+
+
+## 93b · A flag that cannot take its other value
+
+`ceiling_is_our_budget` returned `not self.protected`. It was read at exactly one
+place — `_brute_force_phase4_emit`, which the caller runs only when `protected`
+is False — so it could only ever render `True`, into an evidence row reading
+`ceiling_is_our_budget=True` on every finding this class has ever produced. It
+looked like the emitter was checking the bound. Every sentence around it asserted
+the same thing unconditionally, with no branch.
+
+And its one reachable `False` would have lied. `protected` is set by the
+INCONCLUSIVE branch as well as by a refusal — both have to block emission — so on
+a contaminated series the flag would have said *the ceiling belongs to the
+target* about a series the target never refused.
+
+The replacement is a guard, not a longer comment: the emitter raises
+`BruteForceEmissionError` on a `protected` result. The caller's gate is a
+PRECONDITION of the render, and it is now enforced where the render happens
+rather than asserted in a docstring one function away.
+
+Beside it, the finding gained the row that says whose attempts these are. The
+engagement may offer the same login sixty credentials — the authenticator's login
+flow, plus every guess in the sweep — and a reader cannot tell those from the
+class's eight unless the document says. See 96 for why they are counted in
+different places.
+
+## 94 · A verdict rule with no correct live firing
+
+The brute-force ceiling's lesson is that a bound nothing can trip is decoration.
+The same question asked of a *verdict* rule is sharper: a verdict rule that never
+fires costs nothing, and one that fires wrongly manufactures sessions.
+
+The corpus predates `LoginVerdict`, so no stored artifact carries a verdict — but
+every `web_authenticator` invocation records curl's full dump, and the engine's
+own parser still reads it. Replaying the CURRENT oracle over **762 credential
+POSTs in 186 engagements** is therefore possible, and it settles which rules are
+instruments:
+
+| rule | fired | engagements |
+|---|---|---|
+| status >= 400 -> REFUSED | 52 | 29 |
+| body failure marker -> REFUSED | 520 | 160 |
+| 1a · cookie the POST set -> PROVEN | 148 | 136 |
+| 1b · token in the body -> PROVEN | 0 | 0 |
+| 2 · redirect away from login -> PROVEN | 14 | 14 |
+| 3 · authenticated-page marker -> PROVEN | 4 | 1 |
+| 4 · carried jar, not a denial -> INDETERMINATE | 0 | 0 |
+| nothing proved it -> REFUSED | 24 | 4 |
+
+Rule 2 is not, as assumed, settled by rule 1 on every form target: when a
+credential POST re-uses an existing `PHPSESSID` the delta is empty and the
+redirect is the only positive evidence there is.
+
+**Rule 3's four firings are all wrong.** Engagement `d67835f5`, target
+`https://ptkvaibhav.vercel.app/` — a portfolio site with no login, whose page
+contains the word *profile*. `_find_login_url` accepted the site root, the sweep
+offered `admin:admin`, `root:root`, `admin:password` and `test:test`, and the
+rule declared all four PROVEN on that word. Four guessed passwords marked VALID
+against a site that never evaluated one, and the run continued to
+`verify_session` carrying the `csrf-token` cookie that page hands every visitor.
+
+It is deleted rather than tightened. Every keyword list has this defect; a longer
+one only changes which page furniture triggers it. The shape rule 3 stood in for
+— a good credential answered `200` with no new cookie, because the framework
+promoted the pre-login session in place — is what rule 4 now says, and says
+correctly: the same inputs reach INDETERMINATE and defer to
+`assert_authenticated`, which compares an authenticated request against an
+anonymous control instead of reading a noun out of the HTML.
+
+Rules 1b and 4 keep their zeros and get fixtures, because the zeros mean
+different things: rule 4 is a day old, and rule 1b is reachable on the form arm
+the moment `login_content_type` points it at a JSON login API.
+
+**And the JSON arm's phantom never landed.** `_attempt_login` re-proves only
+INDETERMINATE, so a false PROVEN reaches the credential store with no further
+oracle — worth checking, since the brute-force statistics came out of the same
+corpus. Replayed over 7,095 JSON credential POSTs: 87 proven by token, 391 2xx
+with no session material, 6,617 non-2xx, and **zero** phantoms. Two reasons, and
+only the second generalises: `login_url` entered that arm's candidate list four
+days before this sweep, and the arm is jarless only on the aiohttp transport —
+`_execute_curl` passes `-b <shared jar>`, and all 298,768 recorded `http_client`
+invocations in the corpus are docker. The fix stands on its own merits, not on an
+incident count.
+
+## 95 · A measurement that refused itself
+
+Every entry in "What was NOT tested" answers a client asking what an absence of
+findings means, and two of the answers were missing — the two that most look like
+a clean result.
+
+`_test_brute_force`'s positive control sets `INCONCLUSIVE` when the attempts
+never reached the authentication handler, which sets `protected` and blocks
+emission. Correct, and it produced **nothing**: no finding, no lead, no row —
+byte-identical, in the deliverable, to a login that was tested and was fine.
+**136 of 369** recorded phase-3 verdicts across **75 engagements**, and the string
+`inconclusive` appears in **none of the 4,169 stored reports**.
+
+Engagement `01b8e683` is the shape of it: the client document carries
+`No Brute-Force Protection on http://172.20.0.2/vulnerabilities/brute/` while the
+same run's `/vulnerabilities/csrf/test_credentials.php` login was inconclusive and
+dropped without a word. Two logins tested, one graded, one absent, and nothing to
+tell them apart.
+
+What produces it, swept, and both causes are ours rather than the target's. **75
+rows, every one of them `/vulnerabilities/csrf/test_credentials.php`**, are eight
+submissions the engine itself refused: `_submit_form_fields` runs
+`is_destructive_form_submission` first — that form overwrites authentication
+material — and returns a `status=0` sentinel without sending, which the
+recordings show as `status=0, length=0, time_ms=0.13`. The class graded an
+endpoint nothing had touched. **60 rows, every one of them
+`/vulnerabilities/brute/`**, are a directory login URL redirecting to its own
+`index.php`, which the reach oracle rejects because it compares paths and `/x/`
+is not `/x/index.php` — a recall defect named in the methodology doc rather than
+fixed here; the fix is to read what the destination SERVES, which is the rule the
+session oracles already follow.
+
+The same silence one component over: a default-credential sweep stopped by the
+target's own refusal left an ERROR log line and a deliverable in which the
+engagement reports no default credentials — a claim about every pair in the
+catalogue, made after some were never dispatched. The stop stays; the sweep now
+builds its whole candidate list before the first attempt, which is what lets it
+name its own remainder, and the remainder is named by account and technology
+only. `register_secret` runs on a guess as it is offered, so a pair never sent
+was never registered for redaction, and writing its password into the deliverable
+would put an unregistered secret past the one gate that exists to catch them.
+
+## 96 · A bound the budget cannot see
+
+`max_credential_attempts_per_account` bounds credential attempts per
+`(origin, account)` at one place: `EngagementGovernor.authorize(..., account=...)`.
+A request reaches it with an account named only when the caller says so, and
+`credential_account` is assigned at exactly one line in the engine.
+
+Everything else is invisible to it — and the largest of them is the component
+whose entire purpose is to send failed logins. `_test_brute_force` submits eight
+passwords for `admin` against every login form it finds, and the governor counts
+none of them, refuses none of them, and logs them as `mutating_method` rather
+than `credential_attempt`. Measured by replaying every recorded POST carrying a
+password-shaped field: **7,095** from the auth JSON arm (governed), **762** from
+the form arm (governed), **2,796** from methodologies (ungoverned) across 81
+engagements — 200 of them against a single login form in engagement `0fabde50`.
+
+The exemption is right and stays. A class that must send a full series to measure
+whether a control trips cannot share a budget the login flow has already spent:
+it would abstain on an exhausted allowance and then report an absence it never
+measured, which is 95's failure with the sign flipped.
+
+What was wrong is that the exemption was *incidental* — nothing declared it,
+nothing tested it, and it was found by sweeping a corpus. The domain is now
+computed by AST over every function under `src/clinkz` that handles a
+password-shaped identifier, and each is classified GOVERNED / EXEMPT /
+NO_DISPATCH with a reason, both directions asserted. Identifier-based rather than
+dict-key-based on purpose: the brute-force loop builds its body from
+`{username_field: ..., password_field: ...}` — variable keys — so a domain
+computed from literal dict keys cannot see the single largest ungoverned sender
+in the engine. That is the guard-domain law's own failure mode, one more time.

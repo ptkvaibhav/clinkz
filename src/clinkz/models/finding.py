@@ -775,6 +775,42 @@ class ResidualMutation(BaseModel):
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class InconclusiveMeasurement(BaseModel):
+    """A class that RAN against an endpoint and could not support a conclusion.
+
+    Not a finding, not a lead, and — critically — not silence. A methodology
+    whose positive control refuses the series has made a real observation: it
+    dispatched requests, they did not measure what the class needed measured,
+    and so the class may say nothing about that endpoint. The failure this type
+    exists to prevent is that "may say nothing" and "found nothing" are the same
+    artifact in a deliverable, and the second is the one a client reads.
+
+    The motivating measurement is `_test_brute_force`'s. Across 2,976 stored
+    traces the class recorded 369 phase-3 verdicts and **136 of them were
+    `inconclusive`** — 8/8 attempts that never reached the authentication
+    handler, across 75 engagements — and the string "inconclusive" appears in
+    **zero** of the 4,169 stored reports. In engagement `01b8e683` the client
+    document carries "No Brute-Force Protection on /vulnerabilities/brute/"
+    while the same run's `/vulnerabilities/csrf/test_credentials.php` login was
+    inconclusive and dropped without a word: two logins tested, one graded, one
+    silently absent, and nothing in the document to tell them apart.
+
+    Attributes:
+        test_method: The ``_test_*`` class whose series was inconclusive.
+        endpoint: The URL it was measuring.
+        reason: Why the observations could not support a conclusion, in the
+            class's own words — the rationale its own classifier wrote, not a
+            re-description of it.
+        attempts: How many requests the class dispatched. Carried because "we
+            could not conclude" reads very differently at 0 and at 8.
+    """
+
+    test_method: str
+    endpoint: str
+    reason: str
+    attempts: int = 0
+
+
 class ExploitResult(BaseModel):
     """Final output of the v2 exploit agent.
 
@@ -846,4 +882,10 @@ class ExploitResult(BaseModel):
     # disclosed because it is still there. Carried to the report so it reaches
     # the client-facing document rather than the trace alone.
     residual_mutations: list[ResidualMutation] = Field(default_factory=list)
+    # Series a class RAN and could not conclude from. Carried for the same
+    # reason as the mutations above and with the opposite polarity: that one is
+    # something we did to the target, this one is something we could not learn
+    # about it. Both are invisible in a finding count, and both are the kind of
+    # fact a client's absence-of-findings is otherwise read against.
+    inconclusive_measurements: list[InconclusiveMeasurement] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

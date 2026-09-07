@@ -1860,6 +1860,13 @@ class BruteForceObservation(BaseModel):
     retry_after: str = ""
     rate_limit_headers: dict[str, str] = Field(default_factory=dict)
     body_marker: str = ""
+    # Which KIND of refusal the marker was — ``lockout`` / ``rate_limit`` /
+    # ``captcha`` (:class:`~clinkz.safety.lockout.LockoutKind`), or empty when
+    # the response carried none. Declared by the classifier that matched the
+    # phrase rather than re-derived downstream from a substring of it: the
+    # grader used to ask ``"captcha" in body_marker``, which is the consumer
+    # guessing at a producer's vocabulary.
+    lockout_kind: str = ""
     auth_reached: bool = False
     auth_reach_reason: str = ""
 
@@ -1891,6 +1898,33 @@ class BruteForceMethodologyResult(BaseModel):
     # per-attempt throttle IS a brute-force control; only comparing attempts to
     # each other (looking for growth) reads a deliberate flat delay as absence.
     baseline_ms: float = 0.0
+    # THE CEILING. How many attempts this class was willing to make against one
+    # form — the bound the series was allowed to reach, set by us and not by
+    # the target.
+    #
+    # It is carried because the finding this class emits is a **bounded
+    # absence**, and bounded absences are a different kind of claim from the
+    # ones every other class here makes. A missing ``X-Frame-Options`` is
+    # complete in one response: the header is absent, and no further request
+    # can make it present. "Nothing stopped us" is only ever true *up to a
+    # number* — and when no refusal was observed, that number is this one,
+    # which is a fact about the engine rather than about the application.
+    #
+    # There is deliberately no ``ceiling_is_our_budget`` flag beside it. There
+    # was one — ``not self.protected`` — and it was read at exactly one place,
+    # the phase-4 emitter, which runs only when ``protected`` is False. It could
+    # therefore only ever render ``True``, which makes it a comment with a
+    # boolean's costume on: it looked like the emitter was checking something.
+    #
+    # And its one reachable ``False`` was a lie. ``protected`` is set True by the
+    # INCONCLUSIVE branch as well as by a refusal, because both must block
+    # emission — so on a contaminated series the flag would have said "the
+    # ceiling belongs to the target" about a series the target never refused.
+    # A flag that cannot take its other value where it is read, and misreports
+    # where it can, is deleted rather than documented: the emitter now states
+    # the bound as the unconditional sentence it always was, under a guard that
+    # makes the precondition real (``_brute_force_phase4_emit``).
+    attempt_ceiling: int = 0
 
 
 # ---------------------------------------------------------------------------

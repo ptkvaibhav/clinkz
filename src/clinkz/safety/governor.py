@@ -42,13 +42,18 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict
 
 from clinkz.config import outputs_root as configured_outputs_root
 from clinkz.engagement.gate import EngagementAbortedError
 from clinkz.models.engagement import EngagementWindow, SafetyPolicy
-from clinkz.safety.action_log import CATEGORY_BROWSER_NAVIGATION, ActionLog
+from clinkz.safety.action_log import (
+    CATEGORY_BROWSER_NAVIGATION,
+    CATEGORY_CREDENTIAL_ATTEMPT,
+    ActionLog,
+)
 from clinkz.safety.benchmark import (
     benchmark_override,
     get_active_benchmark_profile,
@@ -58,6 +63,7 @@ from clinkz.safety.destructive import (
     MUTATING_METHODS,
     classify_request,
 )
+from clinkz.safety.lockout import NO_LOCKOUT, LockoutSignal, classify_lockout
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,14 @@ HALT_ACTION_CEILING = "state_change_ceiling"
 #: Refusal categories the governor itself produces (as opposed to the
 #: destructive classifier's categories).
 REFUSED_HALTED = "engagement_halted"
+#: The per-account credential-attempt budget is spent. Refusing here is the
+#: whole point: a login path that keeps going is one that locks the account the
+#: client handed us.
+REFUSED_CREDENTIAL_BUDGET = "credential_attempt_budget"
+#: The target already told us it is not evaluating credentials any more —
+#: locked, throttled or behind a human-verification gate. Every further attempt
+#: is a request we know the answer to and a harm we choose to cause.
+REFUSED_CREDENTIAL_STOPPED = "credential_attempts_stopped"
 
 #: Statuses that mean "throttled / refused by an edge" regardless of body.
 _HARD_BLOCK_STATUSES = frozenset({429, 503})
@@ -233,6 +247,14 @@ class EngagementGovernor:
         # rather than the governor importing it, which keeps the safety package
         # free of any dependency on the engagement's auth logic.
         self._observers: list[ResponseObserver] = []
+        # Credential attempts, counted per (origin, account). Not per call, not
+        # per engagement: the harm is "how many times did we offer a password
+        # for THIS account", and that number is spread across three producers
+        # that never spoke to each other — the login, the session refresh, and
+        # the default-credential sweep, each constructing its own authenticator.
+        # The governor is the one object all three already pass through.
+        self._credential_attempts: dict[tuple[str, str], int] = {}
+        self._credential_stops: dict[tuple[str, str], LockoutSignal] = {}
         self._logger = logging.getLogger(f"{__name__}.EngagementGovernor")
 
     def add_response_observer(self, observer: ResponseObserver) -> None:
@@ -335,6 +357,7 @@ class EngagementGovernor:
         stage: str = "",
         field_names: list[str] | None = None,
         labels: list[str] | None = None,
+        account: str = "",
     ) -> RequestDecision:
         """Decide whether a request may be sent, and pace it if so.
 
@@ -342,6 +365,16 @@ class EngagementGovernor:
         slot; the caller MUST call :meth:`release` afterwards (or use
         :meth:`request`, which does it for you). On a refusal nothing is
         acquired, so a refused request costs no slot and no delay.
+
+        **A credential-bearing request names the account it is offering a
+        password for**, and that is the only way this object can bound a
+        brute-force it did not intend to perform. The authenticator used to take
+        ONE slot for a whole ``authenticate()`` call — the login-page GET, both
+        attempts, the 415 re-POST and every redirect hop inside it — so the
+        component that owns the rate limit, the action log and the kill switch
+        saw a single "POST /login" where sixteen credential POSTs had gone out.
+        Naming the account moves the slot to the POST and gives the count
+        somewhere to live.
 
         Args:
             method: HTTP method.
@@ -351,6 +384,12 @@ class EngagementGovernor:
             stage: Producing phase, for the action log.
             field_names: Explicit field names, when the caller already parsed them.
             labels: Button/label text associated with the action.
+            account: The account identifier this request offers a credential
+                for. Non-empty marks the request a credential attempt: it is
+                counted against :attr:`SafetyPolicy.max_credential_attempts_per_account`
+                and refused once that budget is spent or once the target has
+                shown us it stopped evaluating credentials. Empty — every other
+                request in the engagement — is byte-identical to before.
 
         Returns:
             A :class:`RequestDecision`. Never raises.
@@ -423,27 +462,192 @@ class EngagementGovernor:
                 self._log_refusal(decision, verb, url, body, stage)
                 return decision
 
+        if account:
+            credential_refusal = self._credential_decision(verb, url, account)
+            if credential_refusal is not None:
+                self._log_refusal(credential_refusal, verb, url, body, stage)
+                return credential_refusal
+
         self._rate_wait_seconds += await self._bucket.acquire()
         await self._slots.acquire()
+        if account:
+            self._credential_attempts[self._credential_key(url, account)] = (
+                self._credential_attempts.get(self._credential_key(url, account), 0) + 1
+            )
         self._requests_authorized += 1
         self._stamp_request_window()
         if state_changing:
             self._state_changes_sent += 1
+            spent = self._credential_attempts.get(self._credential_key(url, account), 0)
             self.action_log.record_sent(
                 method=verb,
                 url=url,
                 stage=stage,
-                category="mutating_method",
-                reason=f"{verb} mutates target state",
+                # A credential attempt is named as one. It is a state-changing
+                # request like any other, but "POST mutates target state" is
+                # what the log said for all sixteen of them, and an operator
+                # asking "how many times did you try my admin password" could
+                # not answer it from the client-facing record.
+                category=CATEGORY_CREDENTIAL_ATTEMPT if account else "mutating_method",
+                reason=(
+                    f"credential attempt {spent} of "
+                    f"{self.policy.max_credential_attempts_per_account} for account "
+                    f"{account!r} at {_origin(url)}"
+                    if account
+                    else f"{verb} mutates target state"
+                ),
+                signal=account,
                 body=body,
             )
-        if state_changing:
             return RequestDecision(allowed=True, state_changing=True)
         return _ALLOWED_READ
 
     def release(self) -> None:
         """Release the concurrency slot acquired by an allowed :meth:`authorize`."""
         self._slots.release()
+
+    # ------------------------------------------------------------------
+    # Credential attempts
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _credential_key(url: str, account: str) -> tuple[str, str]:
+        """The budget key: origin plus account.
+
+        Origin, not URL. The JSON arm walks up to eight ROUTES on one host,
+        offering the same password to the same account each time; a per-URL
+        counter would give each route its own budget and would bound nothing.
+        Account, not role: the sweep tries four passwords for ``admin`` under
+        four different technology labels, and the account is what locks.
+        """
+        return (_origin(url), account)
+
+    def _credential_decision(self, verb: str, url: str, account: str) -> RequestDecision | None:
+        """Refuse a credential attempt that is spent or already answered, else ``None``.
+
+        Two refusals, and they are different facts:
+
+        * **Stopped.** The target has already told us it is not evaluating
+          credentials — locked, throttled, or gated behind human verification.
+          Every further attempt is a request whose answer we already have, and
+          on a lockout it is a request that extends the lock. Checked FIRST,
+          because it is an observation about the target and the budget is only
+          an assumption about it.
+        * **Budget spent.** We have offered this account
+          :attr:`SafetyPolicy.max_credential_attempts_per_account` passwords and
+          none of them worked. Production policies trip between three and ten
+          attempts, so the alternative to refusing here is locking an account
+          the client handed us on the assumption that we would be careful.
+
+        Returns:
+            The refusal, or ``None`` when the attempt may proceed.
+        """
+        key = self._credential_key(url, account)
+
+        stop = self._credential_stops.get(key)
+        if stop and stop.kind is not None:
+            return RequestDecision(
+                allowed=False,
+                category=REFUSED_CREDENTIAL_STOPPED,
+                reason=(
+                    f"the login at {key[0]} already answered with {stop.kind.value} "
+                    f"({stop.detail}: {stop.marker!r}) for account {account!r}. That answer "
+                    f"was not about the password, so offering another one tells us nothing "
+                    f"and, on a lockout, extends it"
+                ),
+                signal=stop.marker,
+                state_changing=verb in MUTATING_METHODS,
+            )
+
+        budget = self.policy.max_credential_attempts_per_account
+        spent = self._credential_attempts.get(key, 0)
+        if budget and spent >= budget:
+            return RequestDecision(
+                allowed=False,
+                category=REFUSED_CREDENTIAL_BUDGET,
+                reason=(
+                    f"{spent} credential attempts have been made against account "
+                    f"{account!r} at {key[0]} and the per-account budget is {budget}. "
+                    f"Refusing further attempts. If this login genuinely needs more, "
+                    f"declare login_api_url / login_field / login_content_type so it is "
+                    f"reached in one, or raise max_credential_attempts_per_account"
+                ),
+                signal=str(budget),
+                state_changing=verb in MUTATING_METHODS,
+            )
+        return None
+
+    def observe_credential_response(
+        self,
+        *,
+        url: str,
+        account: str,
+        status: int,
+        headers: dict[str, str] | None = None,
+        body: str = "",
+    ) -> LockoutSignal:
+        """Read one login response for evidence that further attempts are pointless.
+
+        Recorded, not raised. The authenticator asks :meth:`authorize` before
+        the next attempt and is refused there, which keeps the "never raises
+        from the data path" rule intact and keeps the refusal in the action log
+        beside every other one.
+
+        Only the FIRST signal per account is kept. A second would overwrite the
+        observation that actually stopped us with whatever the target said
+        afterwards, and the first is the one the operator needs to see.
+
+        Args:
+            url: The URL the credential went to.
+            account: The account the credential was for.
+            status: Response status.
+            headers: Response headers.
+            body: Response body.
+
+        Returns:
+            The :class:`~clinkz.safety.lockout.LockoutSignal` — falsy when the
+            response carried none.
+        """
+        if not account:
+            return NO_LOCKOUT
+        signal = classify_lockout(status, headers, body)
+        if not signal:
+            return NO_LOCKOUT
+        key = self._credential_key(url, account)
+        if key not in self._credential_stops:
+            self._credential_stops[key] = signal
+            self._logger.error(
+                "CREDENTIAL STOP for %r at %s: %s (%s: %r). No further credential will be "
+                "offered for this account.",
+                account,
+                key[0],
+                signal.kind.value if signal.kind else "",
+                signal.detail,
+                signal.marker,
+            )
+        return signal
+
+    def credential_attempts(self, url: str, account: str) -> int:
+        """How many credential attempts this engagement has made for one account."""
+        return self._credential_attempts.get(self._credential_key(url, account), 0)
+
+    def credential_stop(self, url: str, account: str) -> LockoutSignal:
+        """The recorded stop for one account, or ``NO_LOCKOUT``."""
+        return self._credential_stops.get(self._credential_key(url, account), NO_LOCKOUT)
+
+    def first_credential_stop(self) -> tuple[str, LockoutSignal]:
+        """The first stop recorded for ANY account, as ``(account, signal)``.
+
+        The default-credential sweep asks this rather than asking per account,
+        because a lockout / rate limit / captcha is usually a statement about
+        the SOURCE or the endpoint rather than about one identity: an engine
+        that stops guessing ``admin``'s password and carries straight on to
+        ``root``'s has learned nothing from the evidence it just received.
+        """
+        for (_origin_, account), signal in self._credential_stops.items():
+            if signal.kind is not None:
+                return (account, signal)
+        return ("", NO_LOCKOUT)
 
     def record_navigation(
         self,
@@ -595,6 +799,21 @@ class EngagementGovernor:
             "halt_reason": self._halt_reason,
             "halt_detail": self._halt_detail,
             "consecutive_blocks_at_end": self._consecutive_blocks,
+            # Per-account, because a total is not evidence about its parts: 24
+            # attempts spread over six accounts and 24 against one are the same
+            # number and a different engagement.
+            "max_credential_attempts_per_account": (
+                self.policy.max_credential_attempts_per_account
+            ),
+            "credential_attempts": {
+                f"{account} @ {origin}": count
+                for (origin, account), count in sorted(self._credential_attempts.items())
+            },
+            "credential_stops": {
+                f"{account} @ {origin}": f"{signal.kind.value}: {signal.marker}"
+                for (origin, account), signal in sorted(self._credential_stops.items())
+                if signal.kind is not None
+            },
         }
 
     # ------------------------------------------------------------------
@@ -625,6 +844,19 @@ class EngagementGovernor:
             signal=decision.signal,
             body=body,
         )
+
+
+def _origin(url: str) -> str:
+    """``scheme://netloc`` of *url*, or the url itself when it has no origin.
+
+    The fallback is deliberate: a relative or malformed URL still has to key a
+    counter, and grouping every unparseable one together bounds them jointly
+    rather than handing each a fresh budget of its own.
+    """
+    parsed = urlparse(url or "")
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return url or ""
 
 
 def _body_field_names(body: str) -> list[str]:
