@@ -15,7 +15,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from clinkz.agents.exploit import ExploitAgent, PageAnalysis, _HTTPResponse
+from clinkz.agents.exploit import (
+    _BRUTE_FORCE_ATTEMPTS,
+    ExploitAgent,
+    PageAnalysis,
+    _HTTPResponse,
+)
 from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.models.methodology import (
     BruteForceMethodologyResult,
@@ -664,3 +669,162 @@ class TestTheDeterministicClassifierIsTheWholeVerdict:
         assert ptype == BruteForceProtectionType.NONE
         assert protected is False
         assert attempt is None
+
+
+# ===========================================================================
+# The absence this class reports is BOUNDED, and the bound is ours
+# ===========================================================================
+
+
+class TestTheAbsenceIsBoundedAndSaysSo:
+    """A lockout's absence is complete only up to N; a header's is complete at 1.
+
+    ``_test_security_headers`` reads a response and the header is either there
+    or it is not — one observation settles it, and no further request can change
+    the answer. This class asserts that *nothing stopped us*, and that is only
+    ever true up to the number of attempts we made. Emission requires
+    ``protected`` False, so the number is always the ceiling THIS ENGINE chose:
+    a target whose policy trips at nine is byte-identical, from here, to one
+    with no policy at all.
+
+    So the ceiling is carried on the result and rendered in all three
+    client-facing places. These tests are the pin on that, because the failure
+    they guard is silent — a finding that reads "No Brute-Force Protection" is a
+    perfectly well-formed sentence about a claim the evidence does not support.
+    """
+
+    @staticmethod
+    def _unprotected_result() -> BruteForceMethodologyResult:
+        return BruteForceMethodologyResult(
+            phases_completed=4,
+            login_url="http://example.com/login",
+            method="POST",
+            observations=[_obs(i) for i in range(8)],
+            protection_type=BruteForceProtectionType.NONE,
+            protected=False,
+            attempt_ceiling=8,
+            rationale="all responses identical",
+        )
+
+    def test_the_title_never_claims_the_absence_is_unbounded(self) -> None:
+        agent = _make_agent()
+        finding = agent._brute_force_phase4_emit(_login_form(), self._unprotected_result())
+        assert "8 Attempts" in finding.title
+        # The unqualified claim is a substring of the bounded one, so the
+        # assertion is on the QUALIFIER rather than on the phrase's absence.
+        assert "Observed" in finding.title
+
+    def test_the_description_names_the_ceiling_and_whose_it_is(self) -> None:
+        agent = _make_agent()
+        finding = agent._brute_force_phase4_emit(_login_form(), self._unprotected_result())
+        assert "BOUNDED OBSERVATION" in finding.description
+        assert "ceiling of 8 attempts" in finding.description
+        assert "not at a refusal the target made" in finding.description
+        # The specific misreading this exists to prevent.
+        assert "trips at 9" in finding.description
+
+    def test_the_evidence_carries_the_bound_as_a_row(self) -> None:
+        agent = _make_agent()
+        finding = agent._brute_force_phase4_emit(_login_form(), self._unprotected_result())
+        joined = " ".join(finding.evidence)
+        assert "bound=our budget" in joined
+        assert "8 of a 8-attempt ceiling" in joined
+        assert "ceiling_is_our_budget=True" in joined
+
+    def test_an_emitted_finding_is_bounded_by_our_budget_by_construction(self) -> None:
+        """The emission gate is what makes the claim above always true.
+
+        ``_test_brute_force`` emits only when ``protected`` is False, and
+        ``protected`` False is exactly "no attempt in the series was refused".
+        A series that ended at a refusal never reaches phase 4, so no emitted
+        finding has a ceiling that belongs to the target.
+        """
+        assert self._unprotected_result().ceiling_is_our_budget is True
+        refused = self._unprotected_result()
+        refused.protected = True
+        refused.protection_type = BruteForceProtectionType.LOCKOUT
+        assert refused.ceiling_is_our_budget is False
+
+    @pytest.mark.asyncio
+    async def test_the_ceiling_reaches_the_finding_from_the_live_methodology(self) -> None:
+        """End to end, so the constant and the rendered number cannot drift apart."""
+        agent = _make_agent(_ScriptedLLM(answers=[""] * 4))
+        agent._methodology_llm = agent.llm
+        agent._http_post = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="Username and/or password incorrect.")
+        )
+        page = PageAnalysis(
+            url="http://example.com/login",
+            body="",
+            status=200,
+            forms=[_login_form()],
+        )
+        findings = await agent._test_brute_force(page)
+        assert len(findings) == 1
+        assert f"{_BRUTE_FORCE_ATTEMPTS} Attempts" in findings[0].title
+        assert f"{_BRUTE_FORCE_ATTEMPTS}-attempt ceiling" in " ".join(findings[0].evidence)
+
+
+class TestARateLimitVerdictReadsTheDeclaredKind:
+    """A budget with room left in it is not a refusal, and one vocabulary says so.
+
+    Phase 3 used to read ``o.rate_limit_headers`` raw — the presence of ANY
+    ``X-RateLimit-*`` header — while :func:`classify_lockout`, the shared
+    vocabulary this class was migrated onto, requires ``X-RateLimit-Remaining``
+    to have reached zero. Two readings of one observation, and the looser one
+    decided the verdict.
+
+    Measured across the stored trace corpus, every RATE_LIMIT verdict this class
+    has ever recorded came off ``X-RateLimit-Remaining: 99`` on Juice Shop's
+    ``/rest/2fa/setup``: an endpoint advertising 99 remaining requests, graded
+    PROTECTED. That is a suppression on a signal that is not a refusal, which is
+    the direction that hides findings.
+    """
+
+    @staticmethod
+    def _with_headers(n: int, headers: dict[str, str]) -> BruteForceObservation:
+        signal = classify_lockout(200, headers, "")
+        return BruteForceObservation(
+            attempt=n,
+            status=200,
+            length=1024,
+            time_ms=50.0,
+            rate_limit_headers={k.lower(): v for k, v in headers.items()},
+            lockout_kind=signal.kind.value if signal.kind else "",
+            auth_reached=True,
+            auth_reach_reason="test fixture",
+        )
+
+    def test_headroom_advertised_is_not_protection(self) -> None:
+        agent = _make_agent()
+        observations = [
+            self._with_headers(i, {"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "99"})
+            for i in range(8)
+        ]
+        ptype, protected, _a, _r = agent._deterministic_brute_force_analysis(observations)
+        assert ptype == BruteForceProtectionType.NONE
+        assert protected is False
+
+    def test_an_exhausted_budget_is_protection(self) -> None:
+        agent = _make_agent()
+        observations = [
+            self._with_headers(i, {"X-RateLimit-Limit": "100", "X-RateLimit-Remaining": "0"})
+            for i in range(8)
+        ]
+        ptype, protected, _a, _r = agent._deterministic_brute_force_analysis(observations)
+        assert ptype == BruteForceProtectionType.RATE_LIMIT
+        assert protected is True
+
+    def test_a_rate_limit_phrase_in_the_body_is_not_filed_as_a_lockout(self) -> None:
+        """The KIND is the classifier's to declare — the second half of the same fix.
+
+        ``"try again later"`` classifies RATE_LIMIT. The lockout branch used to
+        fire on ``o.body_marker`` being non-empty at all, so a rate-limit phrase
+        reaching it was reported to the client as an account lockout.
+        """
+        agent = _make_agent()
+        observations = [_obs(i, body_marker="try again later" if i == 6 else "") for i in range(8)]
+        ptype, protected, attempt, _r = agent._deterministic_brute_force_analysis(observations)
+        assert ptype == BruteForceProtectionType.RATE_LIMIT
+        assert protected is True
+        assert attempt == 6

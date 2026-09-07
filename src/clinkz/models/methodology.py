@@ -1898,6 +1898,34 @@ class BruteForceMethodologyResult(BaseModel):
     # per-attempt throttle IS a brute-force control; only comparing attempts to
     # each other (looking for growth) reads a deliberate flat delay as absence.
     baseline_ms: float = 0.0
+    # THE CEILING. How many attempts this class was willing to make against one
+    # form — the bound the series was allowed to reach, set by us and not by
+    # the target.
+    #
+    # It is carried because the finding this class emits is a **bounded
+    # absence**, and bounded absences are a different kind of claim from the
+    # ones every other class here makes. A missing ``X-Frame-Options`` is
+    # complete in one response: the header is absent, and no further request
+    # can make it present. "Nothing stopped us" is only ever true *up to a
+    # number* — and when no refusal was observed, that number is this one,
+    # which is a fact about the engine rather than about the application.
+    attempt_ceiling: int = 0
+
+    @property
+    def ceiling_is_our_budget(self) -> bool:
+        """Whether the series ended because WE stopped, not because the target refused.
+
+        A refusal observed at attempt *k* sets :attr:`protected` and ends the
+        series there — an observation about the **target**. With none observed,
+        the series ran out at :attr:`attempt_ceiling`, which is an observation
+        about **us**.
+
+        Emission requires ``protected`` False, so every finding this class emits
+        is bounded this way by construction. The property exists so the emitter
+        READS that rather than assuming it: the assumption is exactly what
+        rendered a budget we chose as a property of the client's login.
+        """
+        return not self.protected
 
 
 # ---------------------------------------------------------------------------

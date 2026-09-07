@@ -108,7 +108,7 @@ def test_finding_titles_resolve_to_the_right_class() -> None:
         "Local File Inclusion in page parameter": "lfi",
         "Open Redirect via redirect parameter (at_syntax)": "open_redirect",
         "IDOR via id parameter (horizontal)": "idor",
-        "No Brute-Force Protection on http://t/login.php": "brute_force",
+        "No Brute-Force Protection Observed in 8 Attempts on http://t/login.php": ("brute_force"),
         "Missing Security Header CSP on http://t": "security_headers",
         "Predictable / Weak Session ID in cookie 'sid'": "weak_session",
         "Server-Side Template Injection in tpl parameter": "ssti",

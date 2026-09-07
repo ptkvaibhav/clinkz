@@ -26,6 +26,73 @@ Emission therefore requires **both**:
 
     result.auth_reached  AND  not result.protected
 
+## The absence is BOUNDED, and the bound is ours
+
+Every other absence this engine reports is complete in the observation that
+found it. A missing `X-Frame-Options` is missing in the one response that had to
+carry it, and no further request can make it present — `_test_security_headers`
+reads a response and the question is settled.
+
+This one is not that shape. The finding asserts *nothing stopped us*, and that is
+only ever true **up to the number of attempts we made**. Worse, the number is
+always **ours**: the emission gate requires `not result.protected`, and
+`protected` False means no attempt in the series was refused, which means the
+series ended when `_BRUTE_FORCE_ATTEMPTS` ran out rather than when the target
+answered. A login whose policy trips at nine is, from here, byte-identical to one
+with no policy at all.
+
+So the ceiling is carried on the result (`BruteForceMethodologyResult.attempt_ceiling`,
+with `ceiling_is_our_budget` naming whose it is) and stated in all three
+client-facing places:
+
+| where | what it says |
+|---|---|
+| title | `No Brute-Force Protection Observed in 8 Attempts on <url>` |
+| description | `BOUNDED OBSERVATION: … the series ended at this engine's own per-form ceiling of 8 attempts, not at a refusal the target made … a policy that trips at 9 would look identical here` |
+| evidence | `bound=our budget: 8 of a 8-attempt ceiling this engine set … a control triggering at attempt 9 would not have been observed` |
+
+`_BRUTE_FORCE_ATTEMPTS` is a named constant rather than a literal in the loop for
+exactly this reason: the emitter has to state the bound to the client, and a
+bound enforced in one place and quoted in another drifts.
+
+## Has the instrument ever fired? — the corpus, swept
+
+A bounded absence is worth nothing if the thing that would bound it can never be
+observed, so the question is empirical: across every stored `trace.jsonl`, has a
+refusal at attempt *k* ever been recorded?
+
+Swept over **2,976 traces / 369 phase-3 verdicts in 153 engagements**:
+
+| verdict | rows | what it was |
+|---|---|---|
+| `none` | 186 | the emitting case |
+| `inconclusive` | 136 | the positive control refusing to conclude |
+| `delay` | 35 | DVWA `medium`'s flat `sleep(2)` |
+| `lockout` | **10** | DVWA `high`, marker `account has been locked` |
+| `rate_limit` | 2 | Juice Shop `/rest/2fa/setup` — and see below |
+
+**The instrument is not dead.** Ten series ended early on a refusal the target
+made: `len(observations) == 1` on all ten, against 359 that ran the full eight.
+
+**But every one of them was `attempt 0`** — the account was already locked when
+the series began, from an earlier run. What has never been observed is a
+*transition*: attempts 1…k−1 answered normally and attempt k refused. That is
+the observation which would let this class report a *measured* ceiling instead of
+an assumed one, and it remains unobserved. Stated rather than claimed.
+
+**And the two `rate_limit` rows were phantoms.** Both came off
+`X-RateLimit-Remaining: 99` — an endpoint advertising ninety-nine remaining
+requests, graded PROTECTED. Phase 3 read `o.rate_limit_headers` raw (any
+`X-RateLimit-*` header at all) while `classify_lockout`, the shared vocabulary
+this class was migrated onto, requires the remaining count to have reached zero.
+Two readings of one observation, and the looser one decided the verdict —
+suppressing a finding on a signal that is not a refusal. Phase 3 now reads the
+**declared** `lockout_kind` for all three kinds, which is invariant 82's rule
+applied to the classifier's own vocabulary: the consumer never re-derives what
+the producer already said. The same change stops a rate-limit phrase in a body
+(`try again later`) being reported to the client as an account lockout, which is
+what `if o.body_marker:` did.
+
 ## G3-a: the positive control (engagement `291617a2`, DVWA `high`)
 
 At `high`, eight attempts came back `[200, 302×7]` with `length=1`. DVWA `high`
