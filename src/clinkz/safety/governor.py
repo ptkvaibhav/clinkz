@@ -585,6 +585,7 @@ class EngagementGovernor:
         status: int,
         headers: dict[str, str] | None = None,
         body: str = "",
+        control_body: str = "",
     ) -> LockoutSignal:
         """Read one login response for evidence that further attempts are pointless.
 
@@ -603,6 +604,10 @@ class EngagementGovernor:
             status: Response status.
             headers: Response headers.
             body: Response body.
+            control_body: The same page served without a credential, when the
+                caller holds one. Phrases present in both are discarded rather
+                than allowed to stop the run — see
+                :func:`~clinkz.safety.lockout.classify_lockout`.
 
         Returns:
             The :class:`~clinkz.safety.lockout.LockoutSignal` — falsy when the
@@ -610,7 +615,17 @@ class EngagementGovernor:
         """
         if not account:
             return NO_LOCKOUT
-        signal = classify_lockout(status, headers, body)
+        signal = classify_lockout(status, headers, body, control_body)
+        if signal.discarded:
+            # A discard is not a stop, and it is not nothing either: it is the
+            # run declining to halt on words the login page was already serving.
+            self._logger.info(
+                "Lockout phrases %s appear in the credential response for %r at %s AND in "
+                "the control, so they are not evidence about this account; not stopping.",
+                ", ".join(repr(d) for d in signal.discarded),
+                account,
+                url,
+            )
         if not signal:
             return NO_LOCKOUT
         key = self._credential_key(url, account)
