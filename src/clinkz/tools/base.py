@@ -289,6 +289,11 @@ class ToolBase(ABC):
             # left no evidence it had ever been tested.
             from clinkz.safety.scope_refusals import record_scope_refusal
 
+            # WHY it refused, not just that it did. A port refusal and an
+            # unknown host read identically as a boolean and have opposite
+            # fixes: one means the scope document is wrong, the other means it
+            # is right and the dispatch was not authorised.
+            reason = self.scope.refusal_reason(target)
             record_scope_refusal(
                 target,
                 # ``_stage`` is the wrapper convention (HTTPClientTool sets it);
@@ -297,10 +302,11 @@ class ToolBase(ABC):
                 # neither is recorded WITHOUT a stage rather than not at all.
                 stage=getattr(self, "_stage", None) or getattr(self, "stage", "") or "",
                 tool=type(self).__name__,
+                reason=reason,
             )
             raise ValueError(
-                f"Target '{target}' is outside the engagement scope. "
-                "Refusing to run tool. Check your scope definition."
+                f"Target '{target}' is outside the engagement scope: {reason}. "
+                "Refusing to run tool."
             )
 
     def _halt_result(self) -> tuple[str, str, int] | None:
