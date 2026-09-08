@@ -730,6 +730,21 @@ detail → `docs/productization-engagement-safety.md`.**
   reference, permitted techniques, emergency contact; every field required, no
   partially-populated shape) ⇒ refusal, with no flag to skip it. An
   `EngagementWindow` is a hard stop re-checked on every request.
+- **A scope entry that names a port BINDS that port** (invariant 97). Three
+  cases, one refusal: an entry with no port authorizes the host and every port
+  on it; an entry with a port against a dispatch naming none is decided by host,
+  because a bare hostname is `nmap -p 1-65535` and not a dispatch to a port; both
+  naming a port must agree. Only a port the operator TYPED counts
+  (`declared_port`) — `https://cal.diy` implies 443 to a parser and declares
+  nothing, and binding to an inferred port refuses what the record permits. A
+  ported EXCLUSION excludes that port only, by the same matcher. `allowed_ports`
+  now binds when it is non-empty; it had been documented as a whitelist and read
+  by nothing. The docker published-port equivalence is exempt because that lookup
+  consumed the target's port to identify the container, which is a tighter bind
+  than a number comparison across a namespace where 8080 and 80 are not
+  comparable. Refusals carry a `reason` (`refusal_reason`) into the
+  scope-refusal record, so "unknown host" and "authorised host, unauthorised
+  port" — opposite fixes — are not one boolean.
 - **Credentials are never on `EngagementScope`** — the scope is `model_dump()`-ed
   into the state store, so keeping the `CredentialSet` off it is structural, not
   disciplinary. `SecretStr` passwords; git-tracked credential files are refused
