@@ -187,17 +187,64 @@ class PackageInventoryReport:
     * ``candidates_seen > 0`` and ``components_emitted == 0`` — input was found
       and every candidate was discarded on the way out. That is the ffuf shape.
       It stays an alarm and no reason string may talk it away.
+
+    A fourth counter, ``inputs_available``, is what makes those three
+    readable. **A zero measured over a PARTIAL input is indeterminate, never
+    not-applicable**: the producer reads at most :data:`MAX_BUNDLES` served
+    bundles, and on a code-split application that is a fraction of what the
+    shell references — cal.diy serves 31 chunks and this producer reads 8. A
+    reason string that says "read 8 input(s) carrying no package/version pair"
+    is true and misleading in the same breath, because it reports a bound as a
+    property of the target. The denominator is declared for the same reason the
+    numerator is: a consumer of bundle bytes states the fraction it read.
     """
 
     inputs_examined: int = 0
+    inputs_available: int = 0
     candidates_seen: int = 0
     components_emitted: int = 0
     detail: str = ""
 
     @property
+    def inputs_truncated(self) -> int:
+        """Inputs the producer could see and did not read."""
+        return max(0, self.inputs_available - self.inputs_examined)
+
+    @property
+    def coverage_note(self) -> str:
+        """The fraction of available input this producer actually read."""
+        if self.inputs_available <= 0:
+            return f"{self.inputs_examined} input(s) read"
+        return (
+            f"{self.inputs_examined}/{self.inputs_available} available input(s) read"
+            f"{f' — {self.inputs_truncated} not fetched' if self.inputs_truncated else ''}"
+        )
+
+    @property
+    def indeterminate_reason(self) -> str:
+        """Why this zero cannot be READ, or ``""`` when it can.
+
+        Set exactly when nothing was emitted and the input was truncated. This
+        is the state ``correctly_empty_reason`` must not claim: the producer
+        did not find that the target carries no package identity, it found
+        that the part of the target it read carries none.
+        """
+        if self.components_emitted > 0 or not self.inputs_truncated:
+            return ""
+        return (
+            f"emitted nothing over {self.coverage_note}; a zero measured over part of the "
+            "input is indeterminate, not a finding about the target"
+        )
+
+    @property
     def correctly_empty_reason(self) -> str:
         """Why emitting nothing was CORRECT, or ``""`` when it was not."""
         if self.components_emitted > 0:
+            return ""
+        # Ordered ahead of both benign branches: a truncated read can satisfy
+        # "no candidates" for the same reason a one-page crawl can, and letting
+        # it answer here is how a bound becomes a verdict about the target.
+        if self.indeterminate_reason:
             return ""
         if self.inputs_examined == 0:
             return (
@@ -582,6 +629,7 @@ def build_inventory(
     tree_components: list[DetectedComponent],
     tree_report: PackageInventoryReport,
     bundle_bodies: list[tuple[str, str]],
+    bundles_available: int | None = None,
 ) -> PackageIdentityOutput:
     """Merge the tree and bundle sources into one declared output.
 
@@ -592,6 +640,12 @@ def build_inventory(
             entry with an empty body still counts as an input examined —
             fetching it is what proves the target serves bundles — and
             contributes no candidates.
+        bundles_available: Bundles the shell REFERENCED, before
+            :data:`MAX_BUNDLES` truncated the list. Declared by the caller
+            because only the caller saw the untruncated set. ``None`` means the
+            caller did not measure it, which reads as "no truncation known" —
+            the same as before this parameter existed, so every existing call
+            keeps its meaning.
 
     Returns:
         A :class:`PackageIdentityOutput` whose ``detected_components()`` is the
@@ -609,13 +663,21 @@ def build_inventory(
         components.extend(rows)
 
     merged = _merge(components)
+    examined = tree_report.inputs_examined + len(bundle_bodies)
+    available = (
+        examined
+        if bundles_available is None
+        else tree_report.inputs_examined + max(bundles_available, len(bundle_bodies))
+    )
     report = PackageInventoryReport(
-        inputs_examined=tree_report.inputs_examined + len(bundle_bodies),
+        inputs_examined=examined,
+        inputs_available=available,
         candidates_seen=tree_report.candidates_seen + bundle_candidates,
         components_emitted=len(merged),
         detail=(
-            f"{tree_report.inputs_examined} tree file(s), {len(bundle_bodies)} served bundle(s); "
-            f"{tree_report.components_emitted} from lockfile/manifest, "
+            f"{tree_report.inputs_examined} tree file(s), "
+            f"{len(bundle_bodies)} of {available - tree_report.inputs_examined} "
+            f"served bundle(s); {tree_report.components_emitted} from lockfile/manifest, "
             f"{bundle_emitted} from artifact strings"
         ),
     )

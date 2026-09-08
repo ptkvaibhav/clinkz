@@ -294,6 +294,86 @@ def test_an_empty_bundle_still_counts_as_an_input_examined() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Law 5 at the input layer: a zero over a partial input is INDETERMINATE
+# ---------------------------------------------------------------------------
+
+
+def _truncated(read: int, available: int) -> PackageInventoryReport:
+    """A run that read *read* of *available* served bundles and emitted nothing."""
+    return build_inventory(
+        tree_components=[],
+        tree_report=PackageInventoryReport(),
+        bundle_bodies=[(f"http://t/{i}.js", "var x=1;") for i in range(read)],
+        bundles_available=available,
+    ).report
+
+
+def test_a_zero_over_a_truncated_input_is_never_correctly_empty() -> None:
+    """The cal.diy row: 8 of 31 chunks read, nothing emitted.
+
+    The old reason string said "read 8 input(s) carrying no package/version
+    pair", which is true of the 8 and says nothing about the 23. The ledger
+    took it as not-applicable and the row rendered as a clean zero.
+    """
+    report = _truncated(read=8, available=31)
+    assert report.components_emitted == 0
+    assert report.correctly_empty_reason == ""
+    assert report.indeterminate_reason
+    assert "8/31" in report.indeterminate_reason
+
+
+def test_the_fraction_is_declared_whether_or_not_it_is_truncated() -> None:
+    """A consumer of bundle bytes states the fraction it read — always.
+
+    A coverage note that only appears when coverage is bad is a note a reader
+    learns to skim, and its absence then has to be read as good news.
+    """
+    assert _truncated(read=8, available=31).coverage_note == (
+        "8/31 available input(s) read — 23 not fetched"
+    )
+    assert _truncated(read=4, available=4).coverage_note == "4/4 available input(s) read"
+
+
+def test_a_complete_read_still_reaches_the_benign_branches() -> None:
+    """The new state must not swallow the fourth fact it sits beside.
+
+    Read everything the shell referenced and find no package/version pair, and
+    that IS a statement about the target — it stays correctly-empty.
+    """
+    report = _truncated(read=3, available=3)
+    assert report.indeterminate_reason == ""
+    assert "carrying no package/version pair" in report.correctly_empty_reason
+
+
+def test_an_unmeasured_denominator_reads_as_no_truncation_known() -> None:
+    """Every existing caller keeps its meaning.
+
+    ``bundles_available=None`` is what a caller that did not measure the
+    untruncated set passes, and it must not manufacture a truncation.
+    """
+    out = build_inventory(
+        tree_components=[],
+        tree_report=PackageInventoryReport(),
+        bundle_bodies=[("http://t/a.js", "var x=1;")],
+    )
+    assert out.report.inputs_truncated == 0
+    assert out.report.indeterminate_reason == ""
+
+
+def test_emitting_something_is_never_indeterminate() -> None:
+    """The state is about a ZERO. A row that emitted has a number to read."""
+    out = build_inventory(
+        tree_components=[],
+        tree_report=PackageInventoryReport(),
+        bundle_bodies=[("http://t/a.js", "/*! jQuery v3.4.1 | (c) JS Foundation */")],
+        bundles_available=31,
+    )
+    assert out.report.components_emitted > 0
+    assert out.report.indeterminate_reason == ""
+    assert out.report.correctly_empty_reason == ""
+
+
+# ---------------------------------------------------------------------------
 # Provenance is what this is for
 # ---------------------------------------------------------------------------
 
