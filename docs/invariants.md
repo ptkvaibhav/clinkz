@@ -2210,3 +2210,78 @@ They are carried on `AuthResult`, rendered by `deterministic_observations()`, an
 the "Fix one of" list now drops "the credentials are wrong" whenever the POST
 demonstrably changed nothing — a request the application did not act on has not
 evaluated a credential, and that is the remedy an operator acts on first.
+
+### 100. A marker that survives an unblocked response is the application's vocabulary, not evidence of blocking
+
+`_looks_blocked` had three arms and only two of them were bounded. A status arm
+(429/503) reads a number the target declared. A soft-status arm needs a WAF header
+beside it. The body arm read ten phrases against any response at any status, and
+its declared mitigation — in
+`tests/test_safety/test_marker_oracle_controls.py`, in writing — was that the halt
+needs CONSECUTIVE blocked responses and that any clean response resets the counter.
+
+That mitigation does not bound an unconditionally-shipped marker. A single-page
+application ships its own error vocabulary in the shell it serves on every route:
+the phrase is in the first response, in the second, and in the response that was
+supposed to reset the counter. "Consecutive" is satisfied by construction, and the
+counter never resets because there is no response without the marker.
+
+The reason recorded for leaving it uncontrolled was that a control here would have
+to be a request the governor dispatched on its own behalf — a rail taking traffic.
+That is not the only source of a control. The engagement already holds responses
+from this target: recon's root fetch, the login GET, every prior success. A
+signature present in one of those was served by an application that was not
+refusing us, so it is not evidence about this response either. The control costs no
+dispatch, and `EngagementGovernor.stats()` names every marker it discarded.
+
+Two ordering decisions carry weight. **Status still outranks keyword** — invariant
+98's rule, kept here: 429 and 503 halt whatever the body says and whatever the
+control holds, because the target declared them. And **learning runs before the
+verdict**, which costs the case of a 200 carrying a block phrase and no WAF header
+of any kind. That response is indistinguishable from an application that ships the
+phrase; the target served it successfully; and judging first would make the halt
+depend on which response arrived first, which a concurrent crawl reorders every
+run. A verdict that changes with traversal order is invariant 53's defect wearing a
+different hat.
+
+What a false trip costs is the reason any of this matters. **A halt is an
+absence-generating event.** Every methodology downstream registers NEVER INVOKED,
+and a report assembled from those rows reads as an engine that looked and found
+nothing — not as a run that was stopped. On cal.diy it cost 29 classes and the
+deliverable said nothing about why. The halt detail now states that the classes not
+yet dispatched are UNTESTED, not clean.
+
+### 101. A zero measured over part of the input is INDETERMINATE, never NOT APPLICABLE
+
+`PackageInventoryReport` classifies its own zero with three counters, and the
+classification is load-bearing: `correctly_empty_reason` is what the recon seam
+passes to the ledger as `not_applicable`, and a row carrying that reason is a row
+an operator reads as "correctly found nothing" — invariant 77's fifth fact.
+
+The three counters could not see the producer's own ceiling. `MAX_BUNDLES = 8`
+bounds how many served bundles are read, and on a code-split application that is a
+fraction of what the shell references. Measured on cal.diy: the root and `/login`
+shells reference **31** chunks, the run read **8**, and the ledger row rendered as
+*read 8 input(s) carrying no package/version pair* — true of the 8, silent about
+the 23, and taken as a statement about the target. The zero was measured over 26%
+of the input.
+
+The fix is the denominator. `_fetch_bundle_bodies` measures the referenced set
+BEFORE applying the bound, because only it sees the untruncated list, and returns
+it; `build_inventory` takes `bundles_available`; `inputs_available` joins the three
+counters. `indeterminate_reason` is set exactly when nothing was emitted and the
+input was truncated, and it is consulted AHEAD of both benign branches — a
+truncated read can satisfy "no candidates" for the same reason a one-page crawl
+can, and letting it answer there is how a bound becomes a verdict about the target.
+
+`coverage_note` renders on every row, clean or not. A coverage number that appears
+only when coverage is bad is one a reader learns to skim, and its absence then has
+to be read as good news.
+
+Re-derivation, over the same target with all 31 chunks fetched: `components_emitted`
+is still 0, and `candidates_seen` is still 0 — this producer's answer does not
+change. That is the point. It was the right answer for the wrong reason, and the
+reason is what a later reader acts on. The auth surface those 23 chunks carry is a
+different consumer's problem: the destination `/api/auth/callback/credentials`
+appears nowhere as a literal, and is composed at runtime in chunk 13 from a base in
+the same chunk and a provider literal in chunk 28.
