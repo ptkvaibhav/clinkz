@@ -238,14 +238,15 @@ DECLARED: dict[str, tuple[str, str]] = {
         _Control.NOT_A_TARGET_BODY,
         "re-encodes the slashes in a payload THIS ENGINE built, before sending it",
     ),
-    # ------------------------------------------------------- stops the run
     "safety/governor.py::_looks_blocked": (
-        _Control.STOPS_THE_RUN,
-        "block signatures in a response body trip the halt. This is the shape "
-        "classify_lockout had and it is NOT fixed in this round: a control here would "
-        "have to be a request the governor itself dispatched, which is a rail taking "
-        "traffic of its own, and the mitigation in place is that the halt needs "
-        "CONSECUTIVE blocked responses and any clean response resets the counter",
+        _Control.HAS_CONTROL,
+        "the body arm takes a control that costs no traffic: a signature this same "
+        "target already served in an unblocked response (a 2xx/3xx carrying no WAF "
+        "header) is its own error vocabulary and is discarded and NAMED in the "
+        "governor summary. The consecutive-blocked mitigation this replaces did not "
+        "bound an unconditionally-shipped marker — an SPA that ships its error "
+        "strings in every shell satisfies CONSECUTIVE by construction and the "
+        "counter never resets. Status still outranks keyword: 429/503 halt regardless",
     ),
     # ------------------------------------------------------ can confirm
     "agents/exploit.py::_xxe_phase5_verify": (
@@ -417,7 +418,6 @@ def test_the_uncontrolled_confirming_set_is_named_and_small() -> None:
     )
     assert uncontrolled == [
         "agents/exploit.py::_xxe_phase5_verify",
-        "safety/governor.py::_looks_blocked",
     ], f"the uncontrolled marker oracles changed: {uncontrolled}"
 
 
@@ -427,3 +427,16 @@ def test_the_two_auth_path_oracles_now_take_a_control() -> None:
         classification, reason = DECLARED[qualname]
         assert classification == _Control.HAS_CONTROL
         assert "control" in reason
+
+
+def test_the_blocking_oracle_now_takes_a_control() -> None:
+    """``_looks_blocked`` left the uncontrolled set, and by which route.
+
+    Pinned separately from the auth-path pair because the control has a
+    different SOURCE: those two dispatch a control request, this one reads a
+    response the engagement already holds. A future edit that reintroduces a
+    dispatch here should have to change this test.
+    """
+    classification, reason = DECLARED["safety/governor.py::_looks_blocked"]
+    assert classification == _Control.HAS_CONTROL
+    assert "no traffic" in reason

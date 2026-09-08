@@ -231,6 +231,13 @@ class EngagementGovernor:
         self._halt_reason = ""
         self._halt_detail = ""
         self._consecutive_blocks = 0
+        # Block-page signatures this target served in a response that was NOT
+        # blocked. The control for the body arm of blocking detection, sourced
+        # from responses the engagement already holds so the rail never
+        # dispatches traffic of its own. Grows monotonically: a marker proved
+        # benign once stays benign, because the proof is about the target's
+        # vocabulary and that does not un-happen.
+        self._benign_markers: set[str] = set()
         self._state_changes_sent = 0
         self._requests_authorized = 0
         # The engagement's REQUEST window, stamped here because this is the one
@@ -731,7 +738,8 @@ class EngagementGovernor:
 
         if self._halted:
             return
-        if _looks_blocked(status, headers or {}, body):
+        self._learn_benign_markers(status, headers or {}, body)
+        if _looks_blocked(status, headers or {}, body, self._benign_block_markers()):
             self._consecutive_blocks += 1
             self._logger.warning(
                 "Target appears to be blocking us (status=%d, %d consecutive)",
@@ -742,16 +750,62 @@ class EngagementGovernor:
                 self.policy.halt_on_blocking
                 and self._consecutive_blocks >= self.policy.blocking_threshold
             ):
+                # A halt is an ABSENCE-GENERATING event. Every methodology
+                # downstream of this point registers NEVER INVOKED in the
+                # ledger, and a report assembled from those rows reads as an
+                # engine that looked and found nothing — not as a run that was
+                # stopped. That is what a false trip costs: on cal.diy it cost
+                # 29 classes, and the deliverable said nothing about why. So
+                # the body arm above is controlled, and the reason recorded
+                # here is what the run-completion banner and the reachability
+                # predicates must be read against.
                 self.halt(
                     HALT_TARGET_BLOCKING,
                     (
                         f"{self._consecutive_blocks} consecutive blocked/throttled responses "
                         f"(latest status {status}) — stopping rather than continuing to "
-                        "hammer a target that is refusing us"
+                        "hammer a target that is refusing us. Every class not yet "
+                        "dispatched is UNTESTED, not clean"
                     ),
                 )
         else:
             self._consecutive_blocks = 0
+
+    def _benign_block_markers(self) -> frozenset[str]:
+        """Block signatures this target served in a response that was not blocked."""
+        return frozenset(self._benign_markers)
+
+    def _learn_benign_markers(self, status: int, headers: dict[str, str], body: str) -> None:
+        """Record signatures carried by a response that is not itself blocked.
+
+        The control the body arm needs is a response we ALREADY HOLD — recon's
+        root fetch, the login GET, any prior success — so learning it costs no
+        dispatch. A response qualifies only when nothing independent of the
+        body says it was refused: a success status, and no WAF header. Both
+        halves matter. A soft-blocking WAF that answers 200 with its own block
+        page would otherwise teach us that its block page is normal, which is
+        the one way this control could disarm the rail it is protecting.
+
+        **Learning runs before the verdict, deliberately.** The alternative —
+        judge, then learn — makes the halt depend on which response arrived
+        first, and the crawl is concurrent, so it emits a different sequence
+        every run. The cost is that a 200 carrying a block phrase and no WAF
+        header of any kind is never read as a block. That response is
+        indistinguishable from an application that ships the phrase, the
+        target served it successfully, and a false halt is the expensive
+        error: it is absence-generating, and the classes it skips render as
+        classes that found nothing.
+        """
+        if not (200 <= status < 400) or _has_waf_evidence(headers):
+            return
+        for marker in _body_block_signatures(body) - self._benign_markers:
+            self._benign_markers.add(marker)
+            self._logger.info(
+                "Block signature %r served in an unblocked %d response — "
+                "recorded as this target's own vocabulary, not evidence of blocking",
+                marker,
+                status,
+            )
 
     # ------------------------------------------------------------------
     # Reporting
@@ -814,6 +868,11 @@ class EngagementGovernor:
             "halt_reason": self._halt_reason,
             "halt_detail": self._halt_detail,
             "consecutive_blocks_at_end": self._consecutive_blocks,
+            # Named, not just counted: a marker discarded as this target's own
+            # vocabulary is a halt that did not happen, and an operator reading
+            # a run that kept going past a WAF-shaped page deserves to see
+            # which phrase was ruled out and why.
+            "benign_block_markers": sorted(self._benign_markers),
             # Per-account, because a total is not evidence about its parts: 24
             # attempts spread over six accounts and 24 against one are the same
             # number and a different engagement.
@@ -908,21 +967,77 @@ def _body_field_names(body: str) -> list[str]:
     return []
 
 
-def _looks_blocked(status: int, headers: dict[str, str], body: str) -> bool:
-    """Whether a response reads as "the target is blocking us"."""
+def _has_waf_evidence(headers: dict[str, str]) -> bool:
+    """Whether *headers* independently name an edge/WAF vendor.
+
+    Read twice, for opposite purposes: it promotes a soft status to a block,
+    and it disqualifies a response from ever serving as a benign-marker
+    control. A WAF that soft-blocks with a 200 is exactly the response that
+    must not teach us its own block page is the app's normal vocabulary.
+    """
+    lower = {k.lower(): (v or "").lower() for k, v in headers.items()}
+    return any(h in lower for h in _WAF_HEADERS) or "cloudflare" in lower.get("server", "")
+
+
+def _body_block_signatures(body: str) -> frozenset[str]:
+    """Block-page signatures present in *body*.
+
+    Returns the matched signatures rather than a boolean so both consumers can
+    name what matched: the halt path needs to know which marker fired, and the
+    control path needs to know which marker to discard.
+    """
+    lower_body = body[:4096].lower() if body else ""
+    if not lower_body:
+        return frozenset()
+    return frozenset(sig for sig in _BLOCK_BODY_SIGNATURES if sig in lower_body)
+
+
+def _looks_blocked(
+    status: int,
+    headers: dict[str, str],
+    body: str,
+    benign_markers: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether a response reads as "the target is blocking us".
+
+    **The body arm takes a control, and it costs no traffic.** A marker this
+    same target already served in a response that was NOT blocked is the
+    application's own error vocabulary, not evidence about this response —
+    the same rule ``_login_verdict`` and ``classify_lockout`` take, sourced
+    from a response the engagement already holds rather than from a request a
+    rail dispatched on its own behalf. Consecutive-blocked was the mitigation
+    of record and it does not bound an unconditionally-shipped marker: an SPA
+    that ships its error strings in every shell satisfies "consecutive" by
+    construction and the counter never resets.
+
+    Ordering is part of the rule, and it is invariant 98's: **a status outranks
+    a keyword.** A 429 or 503 is a block whatever the body says and whatever
+    the control holds, because the target declared it.
+
+    Args:
+        status: HTTP status code.
+        headers: Response headers.
+        body: Response body.
+        benign_markers: Signatures already observed in an unblocked response
+            from this target. Matches against these are discarded.
+
+    Returns:
+        ``True`` when the response is evidence the target is refusing us.
+    """
     if status in _HARD_BLOCK_STATUSES:
         return True
 
+    # The marker comparison stays HERE, in the function that returns the
+    # verdict, rather than behind the helper the learning path calls. The
+    # marker-oracle guard computes its domain from the code that decides, and
+    # a read hoisted into a helper it does not classify as verdict-shaped is a
+    # marker oracle that quietly leaves the guard's sight.
     lower_body = body[:4096].lower() if body else ""
-    if any(sig in lower_body for sig in _BLOCK_BODY_SIGNATURES):
+    if any(sig in lower_body for sig in _BLOCK_BODY_SIGNATURES if sig not in benign_markers):
         return True
 
-    if status in _SOFT_BLOCK_STATUSES:
-        lower_headers = {k.lower(): (v or "").lower() for k, v in headers.items()}
-        if any(h in lower_headers for h in _WAF_HEADERS):
-            return True
-        if "cloudflare" in lower_headers.get("server", ""):
-            return True
+    if status in _SOFT_BLOCK_STATUSES and _has_waf_evidence(headers):
+        return True
     return False
 
 
