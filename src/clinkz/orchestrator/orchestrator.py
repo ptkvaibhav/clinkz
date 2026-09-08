@@ -3388,6 +3388,13 @@ class OrchestratorAgent:
             # attempt, and ``posted_to`` records where the credential actually
             # went, which is not ``login_url`` whenever a form action redirected
             # it somewhere else.
+            # What the deterministic pass over the login page already knew. It
+            # was read on the way in and thrown away here, so the abort message
+            # could only guess — and its two guesses were both wrong on the run
+            # that produced this.
+            observations = result.deterministic_observations()
+            for observation in observations:
+                self._logger.error("Login page observation [%s]: %s", cred.role, observation)
             self._role_sessions[cred.role] = {
                 "established": False,
                 "username": cred.username,
@@ -3395,6 +3402,9 @@ class OrchestratorAgent:
                 "headers": {},
                 "login_url": login_url,
                 "posted_to": result.posted_to,
+                "observations": observations,
+                "post_changed_nothing": result.post_changed_nothing,
+                "form_action_declared": result.form_action_declared,
                 "assertion": AuthAssertion(
                     established=False,
                     why_unproven=(
@@ -3454,6 +3464,12 @@ class OrchestratorAgent:
             # a different diagnosis with a different remedy.
             "login_verdict": result.verdict.value,
             "login_verdict_evidence": result.verdict_evidence,
+            # Recorded on the success path too. A role whose exchange succeeded
+            # and whose assertion failed has the same right to a report of what
+            # its login page stated as one that never got in.
+            "observations": result.deterministic_observations(),
+            "post_changed_nothing": result.post_changed_nothing,
+            "form_action_declared": result.form_action_declared,
         }
         if assertion.established and cred.role == (
             self._credentials.primary().role if self._credentials.primary() else ""
@@ -3543,6 +3559,10 @@ class OrchestratorAgent:
 
         any_reached_assertion = False
         any_dispatched = False
+        # Set by a run where the credential POST demonstrably changed nothing.
+        # "the credentials are wrong" is not sayable about a request the
+        # application did not act on.
+        any_post_changed_nothing = False
         for role, session in self._role_sessions.items():
             assertion: AuthAssertion = session["assertion"]
             login_url = session.get("login_url", "")
@@ -3602,9 +3622,29 @@ class OrchestratorAgent:
                     )
                 lines.append(f"      reason: {assertion.why_unproven or 'not stated'}")
 
+            # Whatever else happened, say what the login page itself stated.
+            # These are observations, not inferences: each one is a fact read
+            # deterministically off the page or off the response to the POST.
+            observations = session.get("observations") or []
+            if observations:
+                lines.append("      what the login page itself stated:")
+                lines += [f"        - {observation}" for observation in observations]
+            if session.get("post_changed_nothing"):
+                any_post_changed_nothing = True
+
         lines += ["", "Fix one of:"]
-        if any_dispatched:
+        if any_dispatched and not any_post_changed_nothing:
+            # Suppressed when the POST demonstrably changed nothing. A request
+            # the application did not act on has not evaluated a credential, so
+            # "the credentials are wrong" is a claim about something that never
+            # happened -- and it is the claim an operator acts on first.
             lines.append("  - the credentials are wrong, or the account is locked")
+        if any_post_changed_nothing:
+            lines.append(
+                "  - the credential POST changed nothing observable, so nothing here is "
+                "evidence about the credentials themselves; the login route we found is "
+                "not the one this application authenticates on"
+            )
         lines.append(
             '  - the login URL is wrong (set "login_url" on the role in the credential file)'
         )

@@ -133,6 +133,19 @@ LITERAL_TESTS: dict[str, tuple[str, str]] = {
         "property, classified separately, and its licence — which names this "
         "function as one of its computed consumers — is recorded below.",
     ),
+    "clinkz.models.scope:declared_port": (
+        "url_syntax",
+        "Tests for '://' and '/' to decide whether a scope entry is a URL, a "
+        "CIDR or a bare host before splitting a port off it. That is URL "
+        "grammar, not anyone's spelling of a page: the answer is the port the "
+        "operator typed, and no target influences the authorization record.",
+    ),
+    "clinkz.models.scope:_resolve_host_addresses": (
+        "engine_token",
+        "Compares the configured tool execution mode against the literal "
+        "'docker' to decide whether to try the container resolver. The string "
+        "is this engine's own setting value, read back from its own config.",
+    ),
     "clinkz.engagement.auth_state:ProbeResponse.location": (
         "header_name",
         "Matches the header NAME 'location' case-insensitively. That is the "

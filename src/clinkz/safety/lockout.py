@@ -27,6 +27,26 @@ and every one of them is a stop condition for the authenticator. A captcha is
 not a lockout — it is a refusal the application made *without evaluating the
 credential*, and reading it as "the password was wrong" and sending N-1 more is
 the same defect with a different marker on it.
+
+**And it does not decide what a DISCARD means, either.** ``control_body`` makes
+a phrase the control already carried fall out of the verdict
+(:attr:`LockoutSignal.discarded`), and the two consumers want opposite things
+from that, because a wrong stop costs them different amounts:
+
+* ``_test_brute_force`` **stops on a discard too**. Its whole purpose is sending
+  failed logins, it is exempt from the per-account budget by declaration
+  (invariant 96), and a login page already displaying a lockout notice is the
+  case where continuing is worst. A false stop there costs a shorter series,
+  disclosed as an `InconclusiveMeasurement` — cheap.
+* :class:`~clinkz.safety.governor.EngagementGovernor` **does not**. A stop there
+  refuses every later credential for the account, halts the engagement, and
+  asserts to the operator that the client account is locked; a page footer
+  reading "rate limit" is not grounds for any of that. What bounds it instead is
+  ``max_credential_attempts_per_account``, which is spent whether or not any
+  phrase ever matches.
+
+The asymmetry is the point: same observation, two verdicts, and the cost of
+being wrong is what sets each one.
 """
 
 from __future__ import annotations
@@ -72,11 +92,18 @@ class LockoutSignal(NamedTuple):
             trace to something the target actually said is a stop they will
             override.
         detail: Where the marker was seen, for the failure message.
+        discarded: Phrases that DID match the body and were thrown away because
+            the control response carries them too. Kept rather than dropped
+            because a discard is the interesting event: it is the difference
+            between "the target locked this account" and "this page has the
+            word *blocked* in its footer", and an operator who sees a run carry
+            on past a phrase needs to be able to see why.
     """
 
     kind: LockoutKind | None
     marker: str
     detail: str
+    discarded: tuple[str, ...] = ()
 
     def __bool__(self) -> bool:
         return self.kind is not None
@@ -131,6 +158,7 @@ def classify_lockout(
     status: int,
     headers: dict[str, str] | None,
     body: str,
+    control_body: str = "",
 ) -> LockoutSignal:
     """Classify one login response as a refusal that is not about the credential.
 
@@ -138,6 +166,29 @@ def classify_lockout(
     application emitted deliberately, and it is read before any body text: it
     cannot be page furniture, and it cannot be attacker-influenced content the
     way a body can. Only then are the phrases consulted.
+
+    **And the phrases are consulted against a CONTROL.** A marker that is
+    present in a response the credential never touched is not evidence about
+    the credential — invariants 27 and 30, which the exploit path enforces on
+    every marker oracle it dispatches and which this function had no equivalent
+    of. It matters more here than almost anywhere else in the engine: this
+    classifier does not grade a target, it STOPS THE RUN, and it stops it by
+    asserting something about the client account. A page whose footer says
+    "temporarily blocked", whose help text says "too many attempts", whose nav
+    links to a captcha lesson — DVWA does exactly that, which is why every
+    phrase below is multi-word — halted the engagement and told the operator
+    their account was locked.
+
+    The control is whatever response this caller holds that the credential did
+    not produce: the login-page GET for the authenticator, the unauthenticated
+    page baseline for ``_test_brute_force``. Absent (``""``), nothing is
+    discarded and the behaviour is exactly what it was — a caller with no
+    control is not silently given a worse answer, it is given the old one.
+
+    Headers and status are deliberately NOT control-compared. That is the same
+    reasoning that puts them first: a ``Retry-After`` is not page furniture, it
+    is the server naming a wait, and a control GET that happens to carry one is
+    a rate limiter we should also stop for.
 
     ``429`` counts on its own. ``Retry-After`` counts on its own — a server that
     names a wait is telling us to wait whatever its status code says.
@@ -149,6 +200,9 @@ def classify_lockout(
         headers: Response headers. Read case-insensitively; ``None`` is treated
             as none present.
         body: Response body.
+        control_body: A response the credential did not produce. Any phrase
+            found in BOTH is discarded and reported in
+            :attr:`LockoutSignal.discarded`.
 
     Returns:
         A :class:`LockoutSignal`. Falsy (:data:`NO_LOCKOUT`) when the response
@@ -175,8 +229,14 @@ def classify_lockout(
         )
 
     low = (body or "").lower()
+    control_low = (control_body or "").lower()
+    discarded: list[str] = []
     for phrase, kind in LOCKOUT_PHRASES:
-        if phrase in low:
-            return LockoutSignal(kind, phrase, "response body")
+        if phrase not in low:
+            continue
+        if control_low and phrase in control_low:
+            discarded.append(phrase)
+            continue
+        return LockoutSignal(kind, phrase, "response body", tuple(discarded))
 
-    return NO_LOCKOUT
+    return LockoutSignal(None, "", "", tuple(discarded)) if discarded else NO_LOCKOUT

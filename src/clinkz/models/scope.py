@@ -46,6 +46,59 @@ class ScopeType(StrEnum):
     URL = "url"
 
 
+class _AddressMatch(StrEnum):
+    """How a target's address was matched to a scope entry.
+
+    The distinction exists because the port gate is only meaningful within one
+    port namespace. A docker published-port match crosses a namespace boundary
+    by construction — the host port is 8080 and the container port is 80 — and
+    comparing those two numbers is comparing two different things.
+    """
+
+    #: No overlap; the target is not this entry.
+    NONE = "none"
+    #: The two hosts resolve to overlapping addresses. Same namespace.
+    RESOLVED = "resolved"
+    #: A loopback host:port matched the sibling container publishing that port.
+    #: The target's PORT is what identified the container, so it is already
+    #: bound and there is nothing left for a number comparison to add.
+    PUBLISHED_PORT = "published_port"
+
+
+def declared_port(value: str) -> int | None:
+    """The port a scope entry EXPLICITLY names, or ``None``.
+
+    "Explicitly" is the whole content of this function. A scheme's default port
+    is something *we* infer: ``https://cal.diy`` says nothing about 443, and
+    treating it as a declaration would silently bind the record to one port the
+    operator never wrote — refusing dispatches an authorization the operator
+    believes is host-wide should permit. Only a port present in the string
+    counts.
+
+    Args:
+        value: A scope entry's ``value`` — a URL, ``host:port``, bare host,
+            IP or CIDR.
+
+    Returns:
+        The port written in *value*, or ``None`` when it names none.
+    """
+    text = (value or "").strip()
+    if "://" in text:
+        try:
+            netloc = urlparse(text).netloc
+        except ValueError:
+            return None
+        # rpartition, not split: an IPv6 literal is full of colons and only the
+        # one after the closing bracket can be a port.
+        host, sep, port = netloc.rpartition(":")
+        return int(port) if sep and host and port.isdigit() else None
+    if "/" in text:
+        # A CIDR block names hosts, never a port.
+        return None
+    host, sep, port = text.rpartition(":")
+    return int(port) if sep and host and port.isdigit() else None
+
+
 class ScopeEntry(BaseModel):
     """A single in-scope (or out-of-scope) target."""
 
@@ -142,9 +195,15 @@ class EngagementScope(BaseModel):
         """Check if a target IP, domain, or URL is within scope.
 
         If *target* looks like a URL (has a ``://`` scheme), the hostname
-        is extracted and checked instead.  Port numbers are stripped so
-        that ``http://172.20.0.2:3000`` correctly matches a scope entry
-        of ``172.20.0.2``.
+        and port are extracted and both are checked.
+
+        **A port an entry names BINDS.** ``http://172.20.0.2:3000`` matches a
+        scope entry of ``172.20.0.2`` — that entry named no port, so it
+        authorizes the host — but it does NOT match an entry of
+        ``http://172.20.0.2:8080``. The port used to be stripped and discarded,
+        so one entry authorised every one of the 65,535 services on a host, and
+        on a lab machine carrying five containers at once that is five targets
+        under one record. See :func:`declared_port` for what counts as "named".
 
         When the literal hostname does not match a scope entry, the
         check falls through to address equivalence: two targets are
@@ -163,7 +222,69 @@ class EngagementScope(BaseModel):
         host, port = self._extract_host_port(target)
         if self._matches_any(host, port, self.excluded):
             return False
+        if not self._port_allowed(port):
+            return False
         return self._matches_any(host, port, self.targets)
+
+    def _port_allowed(self, port: int | None) -> bool:
+        """Whether ``allowed_ports`` permits a dispatch to *port*.
+
+        The field documented itself as "Whitelist of ports to test. Empty list
+        means all ports allowed." and was read by nothing in the engine — a
+        control an operator could write into a scope document, believe, and
+        never have applied. An empty list keeps its documented meaning; a
+        non-empty one now binds.
+
+        A dispatch naming no port is not bounded here, for the same reason a
+        ported entry does not refuse one: a bare host is not a dispatch to a
+        port, and refusing it would refuse the port scan whose whole job is to
+        find out which ports exist.
+        """
+        if not self.allowed_ports or port is None:
+            return True
+        return port in self.allowed_ports
+
+    def refusal_reason(self, target: str) -> str:
+        """Why *target* is out of scope, or ``""`` when it is in scope.
+
+        A boolean refusal is unattributable: "outside the engagement scope"
+        reads the same for a host nobody authorised and for an authorised host
+        reached on a port the record did not name, and those have different
+        fixes. The gate that raises quotes this, so the distinction reaches the
+        action log rather than dying at the ``if``.
+
+        Args:
+            target: IP address, hostname, ``host:port`` or URL.
+
+        Returns:
+            A sentence naming what refused it, or ``""``.
+        """
+        host, port = self._extract_host_port(target)
+        if self._matches_any(host, port, self.excluded):
+            return f"{host} is on the engagement's excluded list"
+        if not self._port_allowed(port):
+            return (
+                f"port {port} is not among the ports this scope permits "
+                f"({sorted(self.allowed_ports)})"
+            )
+        if self._matches_any(host, port, self.targets):
+            return ""
+        # The host IS named; it was the port that refused. Say so — this is the
+        # case an operator reads as "my scope is wrong" when it is right.
+        if port is not None and self._matches_any(host, None, self.targets):
+            named = sorted(
+                {
+                    declared
+                    for entry in self.targets
+                    if (declared := declared_port(entry.value)) is not None
+                    and self._matches_entry(host, None, entry)
+                }
+            )
+            return (
+                f"{host} is in scope but this scope names it at port(s) {named}, "
+                f"and this dispatch went to port {port}"
+            )
+        return f"{host} is named by no entry in the engagement scope"
 
     def addresses_equivalent(self, host_a: str, host_b: str) -> bool:
         """Whether two host/URL strings refer to the same network address.
@@ -250,20 +371,33 @@ class EngagementScope(BaseModel):
         target_port: int | None,
         entry: ScopeEntry,
     ) -> bool:
-        """Check if target matches a single scope entry.
+        """Check if target matches a single scope entry — host AND port.
 
         Tries literal matching first (the cheap, common case) and falls
         through to address equivalence when the literal check fails.
         Equivalence is gated by entry type — it only applies to entries
         that name an addressable host (IP, DOMAIN, URL); CIDR blocks
         keep their original semantics.
+
+        **The port gate applies only where the two are in the same port
+        namespace.** That is the literal-match path and the DNS-overlap
+        equivalence path. It is deliberately NOT applied when the match came
+        from the docker published-port lookup: that lookup *consumed* the
+        target's port to identify which sibling container publishes it, so
+        ``localhost:8080`` matching an entry of ``clinkz-dvwa:80`` is a port
+        already bound — more tightly than a number comparison could bind it,
+        and across a namespace boundary where the numbers are not comparable.
         """
         if entry.type == ScopeType.IP:
-            if target == entry.value:
-                return True
-            return self._addresses_equivalent(target, target_port, entry)
+            # Against the entry's HOST, not its raw value: an IP entry may
+            # carry a port (``10.0.0.5:8080``), and comparing the bare target
+            # host against the whole string never matches such an entry at all.
+            if target == self._extract_host(entry.value):
+                return self._port_binds(entry, target_port)
+            return self._equivalent_and_bound(target, target_port, entry)
 
         if entry.type == ScopeType.CIDR:
+            # A CIDR names no port and cannot: it authorizes a block of hosts.
             try:
                 network = ipaddress.ip_network(entry.value, strict=False)
                 addr = ipaddress.ip_address(target)
@@ -276,22 +410,67 @@ class EngagementScope(BaseModel):
             entry_host = self._extract_host(entry.value)
             # Simple suffix match — handles subdomains
             if target == entry_host or target.endswith(f".{entry_host}"):
-                return True
-            return self._addresses_equivalent(target, target_port, entry)
+                return self._port_binds(entry, target_port)
+            return self._equivalent_and_bound(target, target_port, entry)
 
         return False
 
-    # ------------------------------------------------------------------
-    # Address equivalence (the load-bearing addition)
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _port_binds(entry: ScopeEntry, target_port: int | None) -> bool:
+        """Whether *entry*'s declared port permits a dispatch to *target_port*.
 
-    def _addresses_equivalent(
+        Three cases, and only one of them refuses:
+
+        * **The entry names no port.** It authorizes the host, so every port on
+          it is in scope. This is what a bare ``app.acme.com`` or an
+          ``https://cal.diy`` means — 443 there is a default *we* inferred, not
+          a port the operator typed, and inferring a bound the record does not
+          state is the same defect in the other direction.
+        * **The entry names a port and the dispatch names none.** A bare
+          hostname is not a dispatch *to a port* — it is nmap's ``-p 1-65535``
+          against the host, which is how every recon phase starts. The entry's
+          port cannot refute it, so the host rule decides.
+        * **Both name a port.** They must be equal. This is the refusal:
+          an entry of ``http://host:3000`` and a dispatch to ``host:8080``.
+
+        Args:
+            entry: The scope entry being matched against.
+            target_port: The dispatch's port, or ``None`` for a bare host.
+
+        Returns:
+            ``False`` only when both name a port and the two differ.
+        """
+        entry_port = declared_port(entry.value)
+        if entry_port is None or target_port is None:
+            return True
+        return entry_port == target_port
+
+    def _equivalent_and_bound(
         self,
         target_host: str,
         target_port: int | None,
         entry: ScopeEntry,
     ) -> bool:
-        """Decide whether two host strings refer to the same address.
+        """Address equivalence, with the port gate applied where it is meaningful."""
+        match = self._address_match(target_host, target_port, entry)
+        if match is _AddressMatch.NONE:
+            return False
+        if match is _AddressMatch.PUBLISHED_PORT:
+            # The target's port is what named the container. Nothing to compare.
+            return True
+        return self._port_binds(entry, target_port)
+
+    # ------------------------------------------------------------------
+    # Address equivalence (the load-bearing addition)
+    # ------------------------------------------------------------------
+
+    def _address_match(
+        self,
+        target_host: str,
+        target_port: int | None,
+        entry: ScopeEntry,
+    ) -> _AddressMatch:
+        """Decide whether two host strings refer to the same address, and HOW.
 
         Resolves the target hostname and the entry hostname to IP sets
         (via system DNS, with a docker-network fallback when
@@ -302,19 +481,32 @@ class EngagementScope(BaseModel):
         ``localhost:8080`` matches a scope entry of ``clinkz-dvwa:80``.
 
         Resolution failures (DNS NXDOMAIN, docker not installed) leave
-        the candidate IP set empty and the comparison returns False, so
-        unreachable addresses simply stay out of scope.
+        the candidate IP set empty and the comparison returns
+        :attr:`_AddressMatch.NONE`, so unreachable addresses simply stay out of
+        scope.
+
+        Returns:
+            Which of the two equivalences held, so the caller can decide whether
+            the entry's declared port is comparable with the target's. See
+            :class:`_AddressMatch`.
         """
         entry_host = self._extract_host(entry.value)
         if not target_host or not entry_host:
-            return False
+            return _AddressMatch.NONE
+
+        # Resolve WITHOUT the docker published-port enrichment first, so the two
+        # equivalences stay distinguishable. Folding them together is what would
+        # make a namespace-crossing match indistinguishable from a same-namespace
+        # one, and the port gate reads exactly that difference.
+        plain_target = self._addresses_for(target_host)
+        entry_addrs = self._resolved_addresses(entry_host, None)
+        if entry_addrs and plain_target and (plain_target & entry_addrs):
+            return _AddressMatch.RESOLVED
 
         target_addrs = self._resolved_addresses(target_host, target_port)
-        entry_addrs = self._resolved_addresses(entry_host, None)
-
-        if not target_addrs or not entry_addrs:
-            return False
-        return bool(target_addrs & entry_addrs)
+        if entry_addrs and target_addrs and (target_addrs & entry_addrs):
+            return _AddressMatch.PUBLISHED_PORT
+        return _AddressMatch.NONE
 
     def _resolved_addresses(self, host: str, port: int | None) -> frozenset[str]:
         """Return the set of IPv4 addresses *host* may resolve to.

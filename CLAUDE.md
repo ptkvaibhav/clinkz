@@ -698,6 +698,40 @@ detail when you are about to change the code an invariant governs — not by def
     ungoverned credential POSTs, 81 engagements). **Detail →
     [`docs/methodology/credential-attempts-and-lockout.md`](docs/methodology/credential-attempts-and-lockout.md).**
 
+97. **A scope entry that names a port BINDS that port** (`models/scope.py::
+    declared_port` / `_port_binds`). `contains()` stripped the port and matched
+    on the host, so one record authorised all 65,535 services on it. Only a port
+    the operator TYPED binds — a scheme default is ours, not theirs; a dispatch
+    naming no port is not a dispatch to a port and is decided by host, which is
+    what keeps `nmap -p 1-65535` running; a docker published-port match crosses
+    a namespace and is exempt because the target's port already named the
+    container. `allowed_ports` was declared and read by nothing, and now binds.
+    A refusal NAMES which half refused (`refusal_reason`), because "unknown
+    host" and "authorised host, unauthorised port" have opposite fixes.
+    **Detail → [`docs/productization-engagement-safety.md`](docs/productization-engagement-safety.md).**
+
+98. **The authentication path gets the control arm the exploit path already
+    has.** `_login_verdict` and `classify_lockout` both take a `control_body` —
+    the login page served without credentials — and a marker present in BOTH is
+    discarded and NAMED. Ordering is part of the rule: **session material
+    outranks a keyword**, because a POST that set a cookie must not be refused
+    for a word on the page. **Identical byte length is its own verdict** — the
+    POST changed nothing — and it runs ahead of the INDETERMINATE deferral,
+    since a page that IS the control leaves nothing to defer with. The domain of
+    every marker oracle in the engine is COMPUTED and classified; two remain
+    uncontrolled by declaration (`_looks_blocked`, `_xxe_phase5_verify`).
+    **Detail → [`docs/methodology/authentication-shapes.md`](docs/methodology/authentication-shapes.md).**
+
+99. **A remedy the run's own observations contradict is worse than no remedy.**
+    The deterministic pass over the login page reads three facts and used to
+    discard all three: the `<form>` declared no action (the POST is DEFAULTED,
+    not addressed), a CSRF-shaped field arrived with no cookie of that shape
+    (half a double-submit), and `X-Powered-By` / `Vary: rsc` name the framework
+    (invariant 22's protocol artifact). They are carried on `AuthResult`,
+    rendered by `deterministic_observations()`, and the abort message drops
+    "the credentials are wrong" whenever the POST demonstrably changed nothing —
+    nothing evaluated a credential, so nothing there is a claim about one.
+
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/

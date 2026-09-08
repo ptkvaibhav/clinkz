@@ -56,15 +56,27 @@ class ScopeRefusal:
         host: The host it resolved to, for the by-host tally.
         stage: Which phase reached for it.
         tool: The tool wrapper that refused, when known.
+        reason: WHY the scope refused it, from
+            :meth:`~clinkz.models.scope.EngagementScope.refusal_reason`. A
+            third-party host and the client's own host reached on a port the
+            record did not name are both refusals and are not the same event;
+            without this they are indistinguishable in the artifact.
     """
 
     target: str
     host: str
     stage: str = ""
     tool: str = ""
+    reason: str = ""
 
     def to_dict(self) -> dict[str, str]:
-        return {"target": self.target, "host": self.host, "stage": self.stage, "tool": self.tool}
+        return {
+            "target": self.target,
+            "host": self.host,
+            "stage": self.stage,
+            "tool": self.tool,
+            "reason": self.reason,
+        }
 
 
 def _host_of(target: str) -> str:
@@ -86,7 +98,7 @@ class ScopeRefusalLog:
     _total: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def record(self, target: str, *, stage: str = "", tool: str = "") -> None:
+    def record(self, target: str, *, stage: str = "", tool: str = "", reason: str = "") -> None:
         """Record one refusal. Always — a refusal nobody logged did not happen."""
         host = _host_of(target)
         with self._lock:
@@ -94,9 +106,15 @@ class ScopeRefusalLog:
             self._hosts[host] += 1
             if len(self._refusals) < MAX_RETAINED:
                 self._refusals.append(
-                    ScopeRefusal(target=target, host=host, stage=stage, tool=tool)
+                    ScopeRefusal(target=target, host=host, stage=stage, tool=tool, reason=reason)
                 )
-        logger.info("OUT OF SCOPE, refused: %s (host=%s, stage=%s)", target, host, stage or "-")
+        logger.info(
+            "OUT OF SCOPE, refused: %s (host=%s, stage=%s) — %s",
+            target,
+            host,
+            stage or "-",
+            reason or "not stated",
+        )
 
     def refusals(self) -> list[ScopeRefusal]:
         """The retained refusals, in the order they happened."""
@@ -169,7 +187,7 @@ def get_active_scope_refusal_log() -> ScopeRefusalLog | None:
     return _active_log
 
 
-def record_scope_refusal(target: str, *, stage: str = "", tool: str = "") -> None:
+def record_scope_refusal(target: str, *, stage: str = "", tool: str = "", reason: str = "") -> None:
     """Record an out-of-scope refusal against the active log, if there is one.
 
     Never raises. This is called from inside a scope check that is about to
@@ -179,7 +197,7 @@ def record_scope_refusal(target: str, *, stage: str = "", tool: str = "") -> Non
     if log is None:
         return
     try:
-        log.record(target, stage=stage, tool=tool)
+        log.record(target, stage=stage, tool=tool, reason=reason)
     except Exception:  # noqa: BLE001 — a record must never displace the refusal
         logger.debug("Could not record scope refusal for %s", target, exc_info=True)
 

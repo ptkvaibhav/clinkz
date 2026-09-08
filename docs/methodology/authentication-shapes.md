@@ -845,3 +845,92 @@ MERIDIAN_LOGIN_PATH=/login docker compose -f docker/docker-compose.yml \
 Accounts: `acct-4417` / `s3cure-passphrase` (privilege 0) and `acct-9002` /
 `winter-harbor-77` (privilege 10) — two genuinely different principals, so a
 multi-role engagement against it has an uphill crossing to declare.
+
+
+## The control arm (invariant 98)
+
+Every rule below reads a marker out of a body the target wrote. Until this
+change, none of them compared it against anything.
+
+### What the flow already holds
+
+The form arms fetch the login page, parse its fields, and POST credentials to
+its action. The GET response is a **control by construction**: the same URL, the
+same jar, the same walk, and no credential. It was held in `login_html`, used to
+find field names, and then discarded.
+
+`_login_verdict` and `classify_lockout` both take `control_body` now. A phrase
+found in BOTH is discarded and named in the evidence; a phrase found only in the
+credential response still decides, unchanged. A caller with no control gets the
+old behaviour rather than a worse one — a control arm must not become a way to
+weaken a rule for the callers that cannot supply one.
+
+Headers and status are deliberately **not** control-compared. That is the same
+reasoning that already put them first in `classify_lockout`: a protocol artifact
+the server emitted cannot be page furniture, and a `Retry-After` on a control GET
+is a rate limiter we should also stop for.
+
+### The order is part of the rule
+
+| # | Rule | Verdict |
+|---|---|---|
+| 0 | status >= 400 | `REFUSED` — the server refusing the request |
+| 1 | the credential POST set a cookie, or the body carried a token | `PROVEN` |
+| 2 | a refusal marker **the control does not carry** | `REFUSED` |
+| 3 | a redirect that ACTUALLY occurred, away from the login page | `PROVEN` |
+| 4 | the response is the same size as the control | `REFUSED` — the POST did nothing |
+| 5 | nothing proved it, and there is session material carried from before | `INDETERMINATE` |
+| 6 | nothing at all | `REFUSED`, naming what was absent |
+
+Rule 1 moved above rule 2 and that is half the fix. A POST that came back setting
+a brand-new session cookie used to be REFUSED because the page it landed on
+contained the word "invalid".
+
+Rule 4 sits ahead of rule 5 for a reason that is easy to get backwards. The
+`INDETERMINATE` deferral exists for a framework that promotes its pre-login
+session in place — Django's `cycle_key`, PHP's `session_regenerate_id(False)` —
+which answers a GOOD credential with 200 and no `Set-Cookie`. But such an
+application still renders a **different page** once that session is
+authenticated. A response byte-identical to the login page is the login page
+again, and there is nothing for the assertion to settle.
+
+### Measured on `00ad137e`
+
+| Observation | Value |
+|---|---|
+| login-page GET body | 383,587 bytes |
+| credential POST body | 383,587 bytes, **byte-identical** |
+| failure markers in the CONTROL | `invalid`, `incorrect`, `access denied` |
+| lockout phrases in the CONTROL | `rate limit`, `try again later` |
+| `Set-Cookie` on either request | none |
+
+The old code matched `invalid` and reported that the application had refused the
+credential. `classify_lockout` would have matched `rate limit` and **halted the
+engagement**, asserting the client account was rate-limited. Both are discarded
+now, and the verdict falls to rule 4: the POST changed nothing.
+
+## What the deterministic pass already knows (invariant 99)
+
+Three facts read off the same login-page GET, previously computed and dropped.
+All three are carried on `AuthResult` and rendered by
+`deterministic_observations()`.
+
+* **`form_action_declared`** — `<form noValidate="" data-testid="login-form">`
+  declares no action. `_resolve_post_url` returning the login URL for an empty
+  action is correct HTML and a silent DEFAULT; "the form declared no
+  destination" is the finding.
+* **`csrf_fields_without_cookie`** — a CSRF-shaped hidden field name with no
+  cookie of that shape in the jar (`_csrf_fields_without_cookie`). Matched on
+  the field NAME, which is schema the application chose, never on a value. It
+  NAMES an inconsistency and decides nothing: a synchronizer token stored in the
+  session needs no cookie of its own.
+* **`framework_fingerprint`** — `X-Powered-By`, a `Vary` naming `RSC` /
+  `Next-Router-State-Tree`, or an `x-nextjs-*` header
+  (`_framework_fingerprint`). Headers whose presence is itself the statement, so
+  this is invariant 22's protocol artifact and not a guess. Nothing named a
+  stack means `""`, never a guess.
+
+The abort message renders these and drops **"the credentials are wrong, or the
+account is locked"** whenever the POST demonstrably changed nothing. Nothing
+evaluated a credential, so nothing there is a claim about one — and it is the
+remedy an operator acts on first.

@@ -861,6 +861,7 @@ class TestRedirectChainHasOneMeaning:
             redirect_chain: list[str],
             session_evidence: dict[str, str] | None = None,
             carried_session: dict[str, str] | None = None,
+            control_body: str = "",
         ) -> LoginJudgement:
             captured.append(list(redirect_chain))
             return original(
@@ -871,6 +872,7 @@ class TestRedirectChainHasOneMeaning:
                 redirect_chain,
                 session_evidence,
                 carried_session,
+                control_body,
             )
 
         monkeypatch.setattr(WebAuthenticator, "_login_verdict", staticmethod(_wrapped))

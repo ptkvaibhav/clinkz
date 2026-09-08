@@ -151,6 +151,26 @@ _TOKEN_JSON_PATHS: tuple[tuple[str, ...], ...] = (
 # ---------------------------------------------------------------------------
 
 
+#: Body phrases that read as "this application refused the credential".
+#:
+#: A module constant rather than a local list because a vocabulary that lives
+#: inside the function using it is invisible to the guard that has to enumerate
+#: every marker oracle in the engine — and this one was, until the domain that
+#: found it was widened to notice local literal lists.
+#:
+#: Every one of these is control-discounted before it counts. The list is not
+#: the control; the control is.
+_LOGIN_FAILURE_MARKERS: tuple[str, ...] = (
+    "invalid",
+    "incorrect",
+    "wrong password",
+    "login failed",
+    "authentication failed",
+    "bad credentials",
+    "access denied",
+)
+
+
 class LoginVerdict(StrEnum):
     """What the credential exchange PROVED, in three values rather than two.
 
@@ -265,6 +285,66 @@ class AuthResult(BaseModel):
     # and not found. Carried into the abort message so a failure names absent
     # evidence rather than asserting the credentials were wrong.
     verdict_evidence: str = ""
+    # ---- What the deterministic pass over the login page already knew -------
+    # Each of these was read, used internally, and discarded before anything an
+    # operator sees. Each changes the diagnosis. Defaults are the "nothing
+    # observed" values so a result built anywhere else means exactly what it
+    # did before.
+    #
+    # Whether the login form declared a destination. False means the parser
+    # defaulted the POST to the login URL — which is a DEFAULT, not a
+    # declaration, and "no destination declared" is the finding.
+    form_action_declared: bool = True
+    # Whether the login page served a ``<form>`` at all. False and
+    # ``form_action_declared`` False together are one fact, not two.
+    page_declared_a_form: bool = True
+    # CSRF-shaped hidden fields with no cookie of that shape in the jar.
+    csrf_fields_without_cookie: list[str] = []
+    # What the login page headers say the stack is. Deterministic, never a guess.
+    framework_fingerprint: str = ""
+    # The credential POST came back the same size as the login page GET.
+    post_changed_nothing: bool = False
+
+    def deterministic_observations(self) -> list[str]:
+        """The facts the login page itself stated, as sentences.
+
+        These are the replacement for a remedy list that guessed. On the run
+        that produced this method the operator was offered two fixes — "the
+        credentials are wrong, or the account is locked" and "the login URL is
+        wrong" — and both were false, while three true statements about the
+        page were sitting in local variables.
+
+        Returns:
+            Zero or more observations, each independently true and each read
+            deterministically off the login-page GET or the credential POST.
+        """
+        facts: list[str] = []
+        if not self.page_declared_a_form:
+            facts.append(
+                "the login page served no <form> element at all, so the field names and "
+                "the destination were taken from loose inputs rather than from a form"
+            )
+        elif not self.form_action_declared:
+            facts.append(
+                f"the <form> declared no action, so the credential POST was defaulted to "
+                f"{self.posted_to or self.login_url} rather than sent to a destination the "
+                f"page named"
+            )
+        if self.post_changed_nothing:
+            facts.append(
+                f"the POST to {self.posted_to or self.login_url} returned a response the "
+                f"same size as the login page served without credentials — it changed "
+                f"nothing this response can show"
+            )
+        if self.csrf_fields_without_cookie:
+            names = ", ".join(repr(f) for f in self.csrf_fields_without_cookie)
+            facts.append(
+                f"the page carried the CSRF-shaped field(s) {names} and issued no cookie of "
+                f"that shape, so only half of a double-submit token was ever in hand"
+            )
+        if self.framework_fingerprint:
+            facts.append(f"the login page headers identify the stack: {self.framework_fingerprint}")
+        return facts
 
     @property
     def proven(self) -> bool:
@@ -361,9 +441,16 @@ class _FormFields:
         form_action: The ``action`` attribute, exactly as served.
         form_enctype: The declared ``enctype``, lower-cased, parameters dropped.
         form_method: The declared ``method``, upper-cased.
+        from_form: Whether these fields came from a real ``<form>`` element, or
+            from inputs the page left outside one. The distinction is a
+            different diagnosis and it was not recorded: "the form declares no
+            destination" and "the page served no form at all" are two findings,
+            and the flow reported neither.
     """
 
-    def __init__(self, *, action: str = "", enctype: str = "", method: str = "") -> None:
+    def __init__(
+        self, *, action: str = "", enctype: str = "", method: str = "", from_form: bool = False
+    ) -> None:
         self.hidden_fields: dict[str, str] = {}
         self.submit_fields: dict[str, str] = {}
         self.username_field: str = ""
@@ -371,6 +458,7 @@ class _FormFields:
         self.form_action: str = action
         self.form_enctype: str = enctype
         self.form_method: str = method
+        self.from_form: bool = from_form
 
     def read_input(self, attrs: dict[str, str]) -> None:
         """Absorb one ``<input>`` belonging to this form."""
@@ -446,6 +534,7 @@ class _FormFieldParser(HTMLParser):
                 action=attr_dict.get("action", ""),
                 enctype=attr_dict.get("enctype", "").split(";")[0].strip().lower(),
                 method=attr_dict.get("method", "").upper(),
+                from_form=True,
             )
             self.forms.append(self._current)
             return
@@ -487,6 +576,104 @@ def _parse_form_fields(html: str) -> _FormFields:
     parser = _FormFieldParser()
     parser.feed(html)
     return parser.login_form
+
+
+#: Hidden-field name shapes that declare a cross-site-request token.
+#: Matched on the NAME, which is schema the application chose, never on a value.
+_CSRF_FIELD_TOKENS: tuple[str, ...] = (
+    "csrf",
+    "xsrf",
+    "authenticity_token",
+    "user_token",
+    "_token",
+    "nonce",
+    "requestverificationtoken",
+)
+
+
+def _csrf_fields_without_cookie(hidden_fields: dict[str, str], jar: dict[str, str]) -> list[str]:
+    """CSRF-shaped hidden fields the jar carries no matching cookie for.
+
+    A double-submit token is a PAIR: the field and the cookie are the two halves
+    of one control, and a page that hands out one half is a page whose login we
+    have not actually reached. The flow extracted the field, found no cookie,
+    posted anyway, and reported the result as a credential failure — so the
+    operator was told their password was wrong by a run that had already
+    observed the login was not going to work.
+
+    This does not decide anything. It NAMES an inconsistency, which is all a
+    deterministic reading of one page can honestly do: a synchronizer token
+    stored in the session needs no cookie of its own, so this is a fact to
+    report beside the others, never a refusal on its own.
+
+    Args:
+        hidden_fields: The login form hidden inputs, name to value.
+        jar: The cookies the login-page GET left us holding, name to value.
+
+    Returns:
+        The CSRF-shaped field names with no cookie of the same shape, sorted.
+    """
+    jar_shapes = {
+        token
+        for name in jar
+        for token in _CSRF_FIELD_TOKENS
+        if token in name.lower().replace("-", "_")
+    }
+    unmatched: list[str] = []
+    for field in hidden_fields:
+        normalised = field.lower().replace("-", "_")
+        shapes = [token for token in _CSRF_FIELD_TOKENS if token in normalised]
+        if shapes and not any(shape in jar_shapes for shape in shapes):
+            unmatched.append(field)
+    return sorted(unmatched)
+
+
+def _framework_fingerprint(headers: dict[str, str] | None) -> str:
+    """What the login page HEADERS say the application is built with.
+
+    A deterministic protocol artifact (invariant 22): the server wrote these,
+    they are not an LLM tech list and not a guess off a path. Read only from
+    headers whose presence is itself the statement —
+
+    * ``X-Powered-By`` has no client-side function at all; its only effect is
+      to name the stack.
+    * ``Vary`` naming ``RSC`` / ``Next-Router-State-Tree`` is a React Server
+      Components negotiation, which no other stack performs.
+    * an ``x-nextjs-*`` header is Next.js naming itself.
+
+    Two of the three were on every response of the run that produced this
+    function, and none of them reached the operator. "This is a Next.js
+    application" is the sentence that makes an unreadable HTML login form make
+    sense, and it costs one dict read.
+
+    Args:
+        headers: Response headers from the login-page GET.
+
+    Returns:
+        A short human-readable fingerprint, or ``""`` when nothing named a
+        stack. Never a guess — an empty string is the honest answer.
+    """
+    lower = {k.lower(): (v or "").strip() for k, v in (headers or {}).items()}
+    parts: list[str] = []
+
+    powered = lower.get("x-powered-by", "")
+    if powered:
+        parts.append(f"X-Powered-By: {powered}")
+
+    vary = lower.get("vary", "").lower()
+    rsc_tokens = [t for t in ("rsc", "next-router-state-tree") if t in vary]
+    if rsc_tokens:
+        parts.append("Vary negotiates React Server Components (" + ", ".join(rsc_tokens) + ")")
+
+    nextjs_headers = sorted(k for k in lower if k.startswith("x-nextjs-"))
+    if nextjs_headers:
+        parts.append("Next.js headers: " + ", ".join(nextjs_headers))
+
+    server = lower.get("server", "")
+    if server and not parts:
+        parts.append(f"Server: {server}")
+
+    return "; ".join(parts)
 
 
 def _cookies_from_set_cookie(values: Iterable[str]) -> dict[str, str]:
@@ -711,12 +898,20 @@ class WebAuthenticator(ToolBase):
         status: int,
         headers: dict[str, str] | None,
         body: str,
+        control_body: str = "",
     ) -> None:
         """Hand one login response to the rails for lockout classification.
 
         Recorded, never raised: the refusal happens on the NEXT
         :meth:`_governed_request`, which keeps every stop in the action log
         beside every other one and keeps this off the data path.
+
+        ``control_body`` is the login page served WITHOUT credentials. It
+        matters more here than at the login verdict: a lockout phrase found in
+        page furniture does not merely misread one exchange, it halts the
+        engagement and asserts to the operator that the client account is
+        locked. A phrase the login page already carried is not evidence about
+        an account.
         """
         from clinkz.safety.governor import get_active_governor
 
@@ -724,7 +919,12 @@ class WebAuthenticator(ToolBase):
         if governor is None or not account:
             return
         governor.observe_credential_response(
-            url=url, account=account, status=status, headers=headers, body=body
+            url=url,
+            account=account,
+            status=status,
+            headers=headers,
+            body=body,
+            control_body=control_body,
         )
 
     def _attempt_refused_result(
@@ -844,6 +1044,15 @@ class WebAuthenticator(ToolBase):
                 )
             ),
             verdict_evidence=data.get("verdict_evidence", ""),
+            # The deterministic readings of the login page. Carried across the
+            # seam for the same reason the verdict is: a producer that observed
+            # something and a parser that drops it are indistinguishable from a
+            # producer that observed nothing.
+            form_action_declared=data.get("form_action_declared", True),
+            page_declared_a_form=data.get("page_declared_a_form", True),
+            csrf_fields_without_cookie=data.get("csrf_fields_without_cookie", []),
+            framework_fingerprint=data.get("framework_fingerprint", ""),
+            post_changed_nothing=data.get("post_changed_nothing", False),
         )
         return AuthOutput(
             tool_name=self.name,
@@ -1732,6 +1941,36 @@ class WebAuthenticator(ToolBase):
                     # Step 2: Parse form fields from HTML
                     form = _parse_form_fields(login_html)
 
+                    # What the page STATED, read once and carried. Each of these
+                    # was previously computed, used, and dropped before anything
+                    # an operator sees.
+                    page_facts = {
+                        "form_action_declared": bool(form.form_action.strip()),
+                        "page_declared_a_form": form.from_form,
+                        "csrf_fields_without_cookie": _csrf_fields_without_cookie(
+                            form.hidden_fields, get_cookies
+                        ),
+                        "framework_fingerprint": _framework_fingerprint(get_walk.response.headers),
+                    }
+                    if not page_facts["form_action_declared"]:
+                        self._logger.warning(
+                            "The login form at %s declares no action; the credential POST "
+                            "will DEFAULT to the login URL rather than go somewhere the "
+                            "page named",
+                            form_base,
+                        )
+                    if page_facts["csrf_fields_without_cookie"]:
+                        self._logger.warning(
+                            "CSRF-shaped field(s) %s were extracted and the jar carries no "
+                            "cookie of that shape (jar: %s) — half a double-submit token",
+                            page_facts["csrf_fields_without_cookie"],
+                            sorted(get_cookies),
+                        )
+                    if page_facts["framework_fingerprint"]:
+                        self._logger.info(
+                            "Login page stack (headers): %s", page_facts["framework_fingerprint"]
+                        )
+
                     # Determine field names (override > auto-detect > fallback)
                     ufield = username_field_override or form.username_field or "username"
                     pfield = password_field_override or form.password_field or "password"
@@ -1836,7 +2075,12 @@ class WebAuthenticator(ToolBase):
                                     hop_headers = dict(resp.headers)
                                 if carries_credentials:
                                     self._observe_credential_response(
-                                        hop_url, username, resp.status, hop_headers, hop_body
+                                        hop_url,
+                                        username,
+                                        resp.status,
+                                        hop_headers,
+                                        hop_body,
+                                        control_body=login_html,
                                     )
                                 return HopResponse(
                                     status=resp.status,
@@ -1950,6 +2194,9 @@ class WebAuthenticator(ToolBase):
                     )
 
                     # Step 6: what did the exchange PROVE — in three values.
+                    # The login-page GET is the control: the same URL, the
+                    # same jar, no credential. It was held and compared against
+                    # nothing.
                     judgement = self._login_verdict(
                         post_body,
                         post_status,
@@ -1958,6 +2205,7 @@ class WebAuthenticator(ToolBase):
                         redirect_chain,
                         session_evidence,
                         session_cookies,
+                        control_body=login_html,
                     )
                     success = judgement.verdict is not LoginVerdict.REFUSED
 
@@ -1981,6 +2229,8 @@ class WebAuthenticator(ToolBase):
                             "posted_to": post_url,
                             "negotiated_content_type": negotiated,
                             "failure_stage": ("" if success else judgement.evidence),
+                            **page_facts,
+                            "post_changed_nothing": len(post_body) == len(login_html),
                         }
                     )
 
@@ -2176,6 +2426,37 @@ class WebAuthenticator(ToolBase):
 
             # Step 2: Parse form fields
             form = _parse_form_fields(login_html)
+
+            # The same three readings the aiohttp arm makes, off the same page.
+            # Two arms that disagree about what the login page said would be a
+            # defect the execution mode hides.
+            get_cookies = _cookies_from_set_cookie(get_set_cookies)
+            page_facts = {
+                "form_action_declared": bool(form.form_action.strip()),
+                "page_declared_a_form": form.from_form,
+                "csrf_fields_without_cookie": _csrf_fields_without_cookie(
+                    form.hidden_fields, get_cookies
+                ),
+                "framework_fingerprint": _framework_fingerprint(get_walk.response.headers),
+            }
+            if not page_facts["form_action_declared"]:
+                self._logger.warning(
+                    "The login form at %s declares no action; the credential POST will "
+                    "DEFAULT to the login URL rather than go somewhere the page named",
+                    form_base,
+                )
+            if page_facts["csrf_fields_without_cookie"]:
+                self._logger.warning(
+                    "CSRF-shaped field(s) %s were extracted and the jar carries no cookie "
+                    "of that shape (jar: %s) — half a double-submit token",
+                    page_facts["csrf_fields_without_cookie"],
+                    sorted(get_cookies),
+                )
+            if page_facts["framework_fingerprint"]:
+                self._logger.info(
+                    "Login page stack (headers): %s", page_facts["framework_fingerprint"]
+                )
+
             ufield = username_field_override or form.username_field or "username"
             pfield = password_field_override or form.password_field or "password"
 
@@ -2238,7 +2519,12 @@ class WebAuthenticator(ToolBase):
                     hop_set_cookies.extend(hop_cookies)
                     if carries_credentials:
                         self._observe_credential_response(
-                            hop_url, username, status, headers, resp_body
+                            hop_url,
+                            username,
+                            status,
+                            headers,
+                            resp_body,
+                            control_body=login_html,
                         )
                     return HopResponse(
                         status=status,
@@ -2334,6 +2620,9 @@ class WebAuthenticator(ToolBase):
                     jar_cookies = self._read_cookie_jar(cookie_jar)
                 session_cookies = jar_cookies
 
+            # Same control as the aiohttp arm, for the same reason: a target
+            # that authenticates in one execution mode and not the other is a
+            # defect the mode hides rather than a property of the target.
             judgement = self._login_verdict(
                 post_response_body,
                 post_status,
@@ -2342,6 +2631,7 @@ class WebAuthenticator(ToolBase):
                 redirect_chain,
                 session_evidence,
                 session_cookies,
+                control_body=login_html,
             )
             success = judgement.verdict is not LoginVerdict.REFUSED
             self._logger.info("Auth verdict: %s — %s", judgement.verdict.value, judgement.evidence)
@@ -2359,6 +2649,8 @@ class WebAuthenticator(ToolBase):
                     "posted_to": post_url,
                     "negotiated_content_type": negotiated,
                     "failure_stage": ("" if success else judgement.evidence),
+                    **page_facts,
+                    "post_changed_nothing": len(post_response_body) == len(login_html),
                 }
             )
 
@@ -2442,6 +2734,7 @@ class WebAuthenticator(ToolBase):
         redirect_chain: list[str],
         session_evidence: dict[str, str] | None = None,
         carried_session: dict[str, str] | None = None,
+        control_body: str = "",
     ) -> LoginJudgement:
         """What the credential exchange proved — in three values, not two.
 
@@ -2559,27 +2852,21 @@ class WebAuthenticator(ToolBase):
             )
 
         body_lower = (response_body or "").lower()
-
-        failure_keywords = [
-            "invalid",
-            "incorrect",
-            "wrong password",
-            "login failed",
-            "authentication failed",
-            "bad credentials",
-            "access denied",
-        ]
-        matched = next((kw for kw in failure_keywords if kw in body_lower), "")
-        if matched:
-            return LoginJudgement(
-                LoginVerdict.REFUSED,
-                f"the response body carries the refusal marker {matched!r}",
-            )
+        control_lower = (control_body or "").lower()
 
         # 1. Session material — a cookie the CREDENTIAL POST set, or a token in
         #    its body. Not a cookie the login-page GET set: that one exists
         #    whatever we send, so it cannot distinguish a good credential from a
         #    bad one.
+        #
+        #    THIS RUNS FIRST, and the order is half the fix. The failure-keyword
+        #    rule used to precede it, so a POST that came back carrying a
+        #    brand-new session cookie was reported REFUSED because the page it
+        #    landed on contained the word "invalid". An application that renders
+        #    a validation hint, a password-policy blurb, or a "report an invalid
+        #    listing" link anywhere on its post-login page therefore refused
+        #    every good credential we offered it. Positive evidence about the
+        #    session outranks a word.
         if session_evidence:
             return LoginJudgement(
                 LoginVerdict.PROVEN,
@@ -2591,7 +2878,34 @@ class WebAuthenticator(ToolBase):
                 "the credential response body carried an authentication token",
             )
 
-        # 2. A redirect that ACTUALLY occurred, to somewhere other than login.
+        # 2. A refusal marker THE CONTROL DOES NOT CARRY.
+        #
+        #    The control is the login-page GET: the same URL, fetched without
+        #    credentials, which this flow already holds and previously compared
+        #    against nothing. A marker present in a response the credential
+        #    never touched is not evidence about the credential — invariants 27
+        #    and 30, enforced on every dispatched marker oracle in the exploit
+        #    path and with no equivalent here. Discards are NAMED in the
+        #    evidence rather than dropped: "we saw the word and threw it away"
+        #    is the sentence that lets an operator audit this rule.
+        matched = ""
+        discarded: list[str] = []
+        for keyword in _LOGIN_FAILURE_MARKERS:
+            if keyword not in body_lower:
+                continue
+            if control_lower and keyword in control_lower:
+                discarded.append(keyword)
+                continue
+            matched = keyword
+            break
+        if matched:
+            return LoginJudgement(
+                LoginVerdict.REFUSED,
+                f"the response body carries the refusal marker {matched!r}, which the "
+                f"login page served without credentials does not",
+            )
+
+        # 3. A redirect that ACTUALLY occurred, to somewhere other than login.
         if redirect_chain and login_url:
             login_path = urlparse(login_url).path.rstrip("/")
             away = [r for r in redirect_chain if urlparse(r).path.rstrip("/") != login_path]
@@ -2602,7 +2916,7 @@ class WebAuthenticator(ToolBase):
                     f"which is not the login page",
                 )
 
-        # 3 is deliberately absent. An "authenticated-page marker" — one of eight
+        # An "authenticated-page marker" rule is deliberately absent. One of eight
         #   English nouns in a 2xx body — used to return PROVEN here. It fired
         #   four times in the whole recorded corpus, all four on a site with no
         #   login, and the shape it was there for is rule 4's job. See the
@@ -2610,7 +2924,38 @@ class WebAuthenticator(ToolBase):
         #   because every keyword list has the same defect and a longer one only
         #   moves which page furniture triggers it.
 
-        # 4. Nothing proved it. Is there anything to defer WITH?
+        # 4. The response IS the control. The POST did nothing.
+        #
+        #    Cheap, deterministic, and available on the run that made this
+        #    necessary: the engine held the GET and the POST of the same URL,
+        #    identical byte length, and compared nothing. A credential POST
+        #    whose answer is the page we were already served changed no state
+        #    this response can show — so there is no session, and equally there
+        #    is nothing to defer WITH, which is why this runs ahead of rule 5.
+        #    A framework that promotes its pre-login session in place still
+        #    renders a DIFFERENT page once that session is authenticated; a
+        #    byte-identical one is the login page again.
+        if control_body and len(response_body or "") == len(control_body):
+            same_bytes = (response_body or "") == control_body
+            how = (
+                "byte-identical to the login page served without credentials"
+                if same_bytes
+                else "the same length as the login page served without credentials"
+            )
+            also = (
+                f" (refusal markers present in BOTH and discarded: "
+                f"{', '.join(repr(d) for d in discarded)})"
+                if discarded
+                else ""
+            )
+            return LoginJudgement(
+                LoginVerdict.REFUSED,
+                f"the credential POST to {final_url or login_url} returned {status_code} and a "
+                f"body of exactly {len(control_body)} bytes, {how}, so the POST changed "
+                f"nothing this response can show{also}",
+            )
+
+        # 5. Nothing proved it. Is there anything to defer WITH?
         #
         # Only when the exchange is carrying session material from before the
         # credentials went out, and only when this response is not itself a
@@ -2631,12 +2976,18 @@ class WebAuthenticator(ToolBase):
         # No session material, no redirect, no marker, nothing carried. Say what
         # was absent. ``final_url`` differing from ``login_url`` is deliberately
         # not consulted — see the docstring.
+        also = (
+            f" (refusal markers present in the control too, and discarded: "
+            f"{', '.join(repr(d) for d in discarded)})"
+            if discarded
+            else ""
+        )
         return LoginJudgement(
             LoginVerdict.REFUSED,
             f"the credential POST to {final_url or login_url} returned {status_code}, set "
             f"no cookie, returned no token, was not redirected away from the login page, "
             f"and the exchange held no session material from before it — there is nothing "
-            f"here that could be a session",
+            f"here that could be a session{also}",
         )
 
     @staticmethod

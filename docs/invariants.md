@@ -2069,3 +2069,144 @@ dict-key-based on purpose: the brute-force loop builds its body from
 `{username_field: ..., password_field: ...}` — variable keys — so a domain
 computed from literal dict keys cannot see the single largest ungoverned sender
 in the engine. That is the guard-domain law's own failure mode, one more time.
+
+
+### 97. A scope entry that names a port BINDS that port
+
+`EngagementScope.contains` extracted the hostname from a target and threw the
+port away. The docstring said so plainly — "Port numbers are stripped so that
+`http://172.20.0.2:3000` correctly matches a scope entry of `172.20.0.2`" — and
+the half that is right (a *portless* entry authorizes its host) was written, while
+the half that is wrong went with it: an entry of `http://host:3000` returned
+`True` for a dispatch to `host:445`. On the lab machine that produced this, five
+target containers were published at once, so one authorization record authorised
+all five and every other service on the box.
+
+An authorization record is the one artifact in this system that has to mean
+exactly what it says. Alongside it, `EngagementScope.allowed_ports` had been
+declared since the model was written, documented itself as "Whitelist of ports to
+test. Empty list means all ports allowed", and was read by **nothing** — a
+control an operator could write into a scope document, believe, and never have
+applied.
+
+**The rule is three cases and only one of them refuses.** The entry names no
+port: it authorizes the host, every port on it. The entry names a port and the
+dispatch names none: a bare hostname is not a dispatch *to a port*, it is
+`nmap -p 1-65535` against the host, which is how every recon phase starts and
+which the entry's port cannot refute. Both name a port: they must be equal.
+
+**Only a port the operator TYPED counts** (`declared_port`). `https://cal.diy`
+implies 443 to a URL parser, but that 443 is a default *we* infer, and binding an
+authorization to a port the record does not state refuses dispatches the operator
+authorised. Inferring a bound is the same defect as dropping one, in the other
+direction.
+
+**The docker published-port match is exempt, and the exemption is structural.**
+`localhost:8080` matches an entry of `clinkz-dvwa:80` because the resolver looked
+up which sibling container publishes host port 8080 — that lookup *consumed the
+target's port* to identify the container, so the port is already bound, more
+tightly than a number comparison could bind it, across a namespace boundary where
+8080 and 80 are not comparable quantities. So `_address_match` reports HOW it
+matched (`RESOLVED` vs `PUBLISHED_PORT`) and the port gate is applied only on the
+same-namespace paths.
+
+**The refusal names which half refused.** A boolean is unattributable: "outside
+the engagement scope" reads identically for a host nobody authorised and for an
+authorised host reached on an unauthorised port, and those have opposite fixes —
+one means the scope document is wrong, the other means it is right. The raising
+gate quotes `refusal_reason`, so the distinction reaches the scope-refusal record
+rather than dying at the `if`.
+
+**The corpus audit.** Across 2,562 stored engagements with a readable
+authorization record, **zero** dispatched to a host their record named at a
+different port. 162 dispatched at a raw `172.20.0.x` rather than the scope
+hostname — katana emits the resolved IP while the scope carries the name — and in
+all 162 that address is the scope host's own address as resolved by that same
+run's nmap, which is in scope by equivalence and correctly accepted. So the hole
+was real and unexercised: the guard is a bound on what the next engagement can do,
+not a repair of a past one. (2,746 engagement directories carry no report JSON and
+were outside the audit; that is the bound on the claim.)
+
+### 98. The authentication path gets the control arm the exploit path already has
+
+Invariants 27 and 30 bind every dispatched methodology: no marker oracle confirms
+without a control arm that REFUSED, and the arm must round-trip like the payload.
+The authentication path had no equivalent at all. It held the login-page GET and
+the credential POST of the same URL and compared nothing.
+
+Measured on the run that produced this rule (`00ad137e`, a local Next.js target):
+the GET body and the POST body were **byte-identical, 383,587 bytes each**. The
+login page carries the words `invalid`, `incorrect` and `access denied` — three of
+the seven failure markers — as ordinary page copy, whatever is sent to it. The
+first one matched, and the engine reported that the application had refused the
+credential and that the operator's password was wrong.
+
+The same page carries `rate limit` and `try again later`. `classify_lockout` reads
+those, and it does not merely misread one exchange: it **halts the engagement** and
+tells the operator the client account is rate-limited. That is why the lockout half
+matters more than the verdict half, and why the phrases there are multi-word
+already — DVWA links to its own captcha lesson from the nav bar of every page, so a
+bare `captcha` fires on responses that are nothing of the kind. Multi-word narrows
+the vocabulary; it does not supply a control.
+
+**Three changes, and the ordering is one of them.**
+
+* A marker present in the control is **discarded and named**. The evidence says
+  "we saw the word and threw it away", because a rule nobody can audit is a rule
+  nobody can trust. Headers and status are deliberately *not* control-compared:
+  that is the same reasoning that puts them first, a `Retry-After` is the server
+  naming a wait and cannot be page furniture.
+* **Session material outranks the keyword.** The keyword rule used to run first,
+  so a POST that came back setting a brand-new session cookie was REFUSED because
+  the page it landed on contained a word. Any application that renders a
+  validation hint, a password-policy blurb, or a "report an invalid listing" link
+  on its post-login page refused every good credential offered to it.
+* **Identical byte length is its own verdict.** Cheap, deterministic, and it was
+  available on the run above. A credential POST whose answer is the page we were
+  already served changed no state this response can show. It runs *ahead* of the
+  INDETERMINATE deferral, because the shape that deferral exists for — a framework
+  promoting its pre-login session in place — still renders a DIFFERENT page once
+  the session is authenticated. A byte-identical one is the login page again, and
+  there is nothing to defer with.
+
+**Where else.** The domain is computed: every function under `src/clinkz` that
+tests a marker *we* chose against something body-shaped, classified HAS_CONTROL /
+SAFE_DIRECTION / NOT_A_TARGET_BODY / STOPS_THE_RUN / CAN_CONFIRM. Computing it
+took two passes, and the first was wrong in exactly the way the guard-domain law
+predicts: `_login_verdict` built its vocabulary as a local `failure_keywords = [
+...]` on the line above the loop that read it, so a domain recognising only
+UPPERCASE module constants excluded the one member the exercise was about.
+
+Two members remain uncontrolled by declaration rather than by oversight.
+`safety/governor.py::_looks_blocked` has `classify_lockout`'s exact shape — block
+signatures in a body trip the halt — and a control there would mean the rail
+dispatching traffic of its own; what holds it is that the halt needs CONSECUTIVE
+blocked responses and any clean response resets the counter.
+`agents/exploit.py::_xxe_phase5_verify` confirms an entity-expansion DoS on a
+timing delta OR a 503 OR the phrase "temporarily not available"; the timing arm
+has a benign well-formed control beside it and the phrase arm does not.
+
+### 99. A remedy the run's own observations contradict is worse than no remedy
+
+`_auth_failure_message` was already split by what happened — invariant 8's shape,
+applied to authentication — and it still offered two fixes that were both false on
+the run above: "the credentials are wrong, or the account is locked", and "the
+login URL is wrong". The credentials were fine. The login URL was right. And three
+true statements were sitting in local variables:
+
+* **The `<form>` declared no action.** `<form noValidate="" data-testid="login-form">`
+  — no destination at all. `_resolve_post_url` returns the login URL when the
+  action is empty, which is correct HTML and a silent DEFAULT, and "no destination
+  declared" is the finding rather than the fallback.
+* **A `csrfToken` field was extracted and the GET set no cookie whatsoever.** A
+  double-submit token is a PAIR; a page that hands out one half is a page whose
+  login we have not reached. Named, not silently posted around.
+* **`X-Powered-By: Next.js` and `Vary: rsc, next-router-state-tree`.** A
+  deterministic protocol artifact (invariant 22) on every response of the run, and
+  "this is a Next.js application" is the sentence that makes an unreadable HTML
+  login form make sense. It costs one dict read.
+
+They are carried on `AuthResult`, rendered by `deterministic_observations()`, and
+the "Fix one of" list now drops "the credentials are wrong" whenever the POST
+demonstrably changed nothing — a request the application did not act on has not
+evaluated a credential, and that is the remedy an operator acts on first.
