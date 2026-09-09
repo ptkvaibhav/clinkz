@@ -219,6 +219,59 @@ replacing a two-character value would corrupt every artifact it appears in.
 takes a real password through the action log, the persisted scope, and the
 credential model, and asserts the plaintext appears in none of them.
 
+### Registration has a domain, and the payload is the client's password
+
+`register_secret` is the only thing that makes a password removable from an
+artifact **by value**. The shape rules (`engagement/credential_shapes.py`) catch
+what a secret *looks like* — a JWT, an `sk-` token, a `user:pass@` URL — and a
+password the operator chose looks like nothing. It is protected by having been
+registered, or it is not protected.
+
+`load_credential_file` and `prompt_for_credentials` both register, which is why
+every run driven from the CLI is safe. A credential set assembled **in code** is
+not, and the failure is silent: the artifact is written through the redactor, the
+redactor removes every shape it knows and every value it was told about, and the
+password was neither.
+
+That was measured twice, a month apart, in two different shapes:
+
+* `scripts/live_adaptive_auth_validation.py` built a `CredentialSet` from
+  `--username` / `--password` and left `"password": "pro"` in 28 lines of its own
+  `actions.jsonl`;
+* `scripts/live_cross_service_ssrf_validation.py` and its topology-learning
+  sibling never built a container at all — they POST `{"email": …, "password": …}`
+  with `urllib` and serialise the exchange — and each wrote a redacted JSON
+  artifact carrying a credential it had invented itself
+  (`Cr0ssServ!ceB1`, `L34rnServ!ceB2`) and registered nowhere.
+
+Both were fixed at the site, and the site is not the deliverable. The rule the
+repo applies everywhere else applies here: **a fix for one call site is a fix for
+one call site.** `tests/test_engagement/test_credential_registration_domain.py`
+computes the domain instead, in the two shapes the exposure actually takes:
+
+| | domain | classifications |
+|---|---|---|
+| **A — the container** | every function under `src/clinkz` and `scripts` that builds a `CredentialSet` or `RoleCredential`, by constructor or by a Pydantic factory | `registers` / `no_secret` |
+| **B — the driver** | every module under `scripts` that supplies a password-shaped string **literal** and also writes an artifact | `registers` / `published_default` |
+
+Domain A cannot see domain B — that is the whole reason there are two. Both
+directions are asserted for each, and **both halves of every classification are
+checked against the tree**: a `registers` entry that calls no registrar fails,
+and a `no_secret` entry that has started constructing one fails too. A table that
+can claim a call it does not make is a comment.
+
+`published_default` is the one exemption, and it carries its own precondition
+rather than a promise. It licenses DVWA's documented `admin` / `password`, whose
+value is an ordinary English word: registering it would rewrite the field *name*
+out of every artifact and protect a credential published in DVWA's own README.
+The test checks that precondition — a driver under that classification that
+starts supplying something which is not a short dictionary word fails, rather
+than inheriting the licence.
+
+`scripts/_artifact_io.py::register_lab_credential` is the route for a driver, and
+it existed the whole time. Existing is not the same as being reached, which is
+what a computed domain is for.
+
 ### What a report bundle may contain
 
 Everything under `outputs/<engagement_id>/` is the deliverable — not just

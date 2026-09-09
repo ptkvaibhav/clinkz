@@ -61,7 +61,7 @@ from pathlib import Path
 # Must be set BEFORE importing clinkz so the HTTP client uses host aiohttp (lesson #22).
 os.environ.setdefault("TOOL_EXEC_MODE", "local")
 
-from _artifact_io import write_redacted_json  # noqa: E402
+from _artifact_io import register_lab_credential, write_redacted_json  # noqa: E402
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -128,6 +128,12 @@ def _register_and_login(base: str) -> str | None:
     """Register a throwaway user and log in, returning the JWT the SSRF gate checks."""
     email = f"xsvc2_{uuid.uuid4().hex[:12]}@juice-sh.op"
     password = "L34rnServ!ceB2"
+    # A driver that chooses its own credential is a credential intake route the
+    # engine was never told about, and this driver writes an artifact. Redaction
+    # by VALUE removes only what it was told about, and a password has no shape
+    # for the shape rules to catch (invariant: the engine's redaction reaches
+    # only where the engine writes, and only what it was told to remove).
+    register_lab_credential(password)
     _post_json(
         base,
         "/api/Users",
