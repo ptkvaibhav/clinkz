@@ -80,7 +80,17 @@ src/clinkz/
 │                     #   shared by the redactor and the gate), artifact_scan (the
 │                     #   disclosure gate: outputs/<id>/ AND the companion region
 │                     #   beside it — a guard's ROOT is part of its verdict),
-│                     #   auth_state (detect / PROVE / maintain), dryrun
+│                     #   auth_state (detect / PROVE / maintain),
+│                     #   auth_agent (the adaptive layer, reached ONLY when the
+│                     #   deterministic pass failed to seat a session: the model
+│                     #   PROPOSES a credential destination from framework identity,
+│                     #   assert_authenticated DECIDES, and validate_proposal — ten
+│                     #   named refusals — stands between the two. The model names
+│                     #   FIELDS; the engine supplies every VALUE),
+│                     #   auth_agent_dispatch (that loop's request path: the
+│                     #   engagement's own HTTPClientTool, so scope / governor /
+│                     #   per-account budget / action log all still apply, with an
+│                     #   ISOLATED per-episode cookie jar), dryrun
 ├── safety/           # destructive (default-deny classifier + subresource_guard_spec, the
 │                     #   vocabulary shipped INTO the browser), governor (rate, concurrency,
 │                     #   kill switch, blocking, window, per-account credential budget),

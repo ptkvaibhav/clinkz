@@ -271,9 +271,31 @@ a key at the wrong level is refused by name rather than silently ignored.
 | `assert_url` | A URL known to behave differently authenticated vs anonymous. Tried **first** by the authenticated-state assertion. | The protected surface is named something unconventional, so the assertion's fallback guesses will not find it. |
 | `description` | Free-text note, echoed nowhere sensitive. | Documentation for whoever reads the file next. |
 
-**If authentication fails, the engagement stops.** Credentials supplied and the
-session not provable is a hard abort before any testing (exit code `3`), with a
-message naming what was tried and which of the three causes to fix. The run does
+**When the login page does not say where the credential goes, an agent proposes
+and the oracle decides.** Some applications compose their credential destination
+at runtime — a `<form>` declaring no `action`, a POST that changes nothing, and a
+route assembled from parts no single served file carries. Reading harder does not
+produce that; recognising the framework does. So if, and only if, the
+deterministic path seats no session, an LLM proposes where the exchange actually
+happens from the framework identity in the headers plus the facts the login page
+already stated. The model **names fields and never supplies values**, every
+proposal passes a deterministic gate (scope, method, destructive classification,
+per-account credential budget, no repeats) before anything is sent, and
+`assert_authenticated` — not the model — decides whether a session exists. The
+report says which layer seated the session, on every run. On DVWA, Juice Shop and
+Meridian the layer is unreachable and each records "not engaged", zero model
+calls, zero extra requests.
+
+The per-account credential budget holds back a **reserve** for it
+(`adaptive_auth_credential_reserve`, default 3): the deterministic pass was
+measured spending all 8 of its allowance on a target whose login it could not
+read, which left the layer that runs afterwards nothing at all. Being last is
+what starves a consumer, so it reserves.
+
+**If authentication still fails, the engagement stops.** Credentials supplied and
+the session not provable is a hard abort before any testing (exit code `3`), with
+a message naming what was tried, what the adaptive layer proposed and what came
+back, and which of the causes to fix. The run does
 *not* continue anonymously: scanning an authenticated application without a
 session produces an empty report that reads like a clean bill of health, which is
 worse than no report. Starting with **no** credentials at all is a different and
@@ -457,7 +479,10 @@ clinkz/
 │   ├── comms/           # Message bus + communication protocol
 │   ├── credentials/     # CredentialStore for default-credential chaining
 │   ├── engagement/      # gate (authorization + window refusals), secrets (credential
-│   │                    # intake + redaction), auth_state (detect / PROVE / maintain), dryrun
+│   │                    # intake + redaction), auth_state (detect / PROVE / maintain),
+│   │                    # auth_agent + auth_agent_dispatch (the ADAPTIVE layer,
+│   │                    # reached only when the deterministic pass seated nothing:
+│   │                    # the model PROPOSES, assert_authenticated DECIDES), dryrun
 │   ├── safety/          # destructive (default-deny classifier), governor (rate,
 │   │                    # concurrency, kill switch, blocking detection), action_log
 │   ├── knowledge/       # MITRE ATT&CK + OWASP WSTG/API/LLM datasets,

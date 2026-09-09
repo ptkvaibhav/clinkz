@@ -286,8 +286,9 @@ requirements-ci.lock  # the FULL resolved dependency set CI installs (85 package
 
 Offline drivers in `scripts/`: `regrade_stored_bundles.py`, `regrade_idor_arms.py`,
 `plan_variance_corpus.py`, `cve_reservation_corpus.py`,
-`record_protopoll_fixtures.py`, `juiceshop_benchmark_run.py --record-floor`.
-**Live:** `three_run_envelope.py`.
+`record_protopoll_fixtures.py`, `juiceshop_benchmark_run.py --record-floor`,
+`auth_agent_corpus.py`.
+**Live:** `three_run_envelope.py`, `live_adaptive_auth_validation.py`.
 `docker compose -f docker/docker-compose.yml up -d` starts the test targets.
 
 ## Code Style
@@ -753,6 +754,36 @@ detail when you are about to change the code an invariant governs — not by def
     input(s) carrying no package/version pair*, a bound rendered as a property of
     the target. **Detail →
     [`docs/invariants.md`](docs/invariants.md).**
+
+102. **A destination composed at runtime is not a reading problem, so the model
+    PROPOSES and `assert_authenticated` DECIDES** (`engagement/auth_agent.py`).
+    Reached from exactly two call sites, both guarded by "no session was
+    seated" — DVWA/Juice Shop/Meridian record `NOT_ENGAGED`, zero LLM turns,
+    zero requests. **The model names FIELDS; the engine supplies every VALUE**
+    — no body/header/raw-request field exists on `AuthProposal` to land one in,
+    and a read's JSON keys become referenceable NAMES whose values the loop
+    holds. Ten deterministic refusals gate every proposal (scope, method,
+    encodable type, both credential fields, known carry field, destructive,
+    per-account budget, read ceiling, repeat); `credential_attempts_remaining`
+    is the pre-flight and never disagrees with the gate — a recorded stop
+    returns 0 ahead of the arithmetic, an unset bound returns `None`, never 0.
+    The episode carries its OWN jar (`isolated`). An abstention names what was
+    ABSENT and may never say the credentials were wrong. **The disclosure
+    renders on a clean run too**, naming which layer seated the session. The
+    prompt may not name the answer, and the call-purpose domain was widened
+    BEFORE the caller landed in it. Three rules the live runs then forced:
+    **(a)** `HTTPClientTool._observe_credential` was the THIRD
+    credential-observation site and the only uncontrolled one — cal.diy ships
+    `rate limit` in 383 KB of shell, so it stopped the account on page furniture;
+    the control is armed beside `credential_account` over a COMPUTED domain.
+    **(b) Being last starves a consumer, so it RESERVES**
+    (`adaptive_auth_credential_reserve`, default 3, clamped to `budget-1`) — the
+    deterministic pass spent 8 of 8. **(c) Session evidence is the DELTA, not
+    the jar** (invariant 91 here): a cookie a read was issued two turns earlier is
+    carriage. A proposal's signature carries its FIELD NAMES and a DISPATCHED
+    request is settled, or a corrected retry and a wasted repeat hash alike.
+    **Detail →
+    [`docs/methodology/adaptive-authentication.md`](docs/methodology/adaptive-authentication.md).**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
