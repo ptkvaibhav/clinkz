@@ -394,3 +394,76 @@ def test_the_port_comparison_exists_exactly_once() -> None:
     }
     outside = sorted(q for q in callers if not q.startswith("models/scope.py::"))
     assert not outside, f"declared_port is called outside the scope model at {outside}"
+
+
+# ---------------------------------------------------------------------------
+# The namespace crossing, as a NAMED rule rather than an audit footnote
+# ---------------------------------------------------------------------------
+
+
+class TestThePortGateRule:
+    """The exemption has a name, a reason, and a total mapping.
+
+    ``_equivalent_and_bound`` used to carry this as ``if match is
+    PUBLISHED_PORT: return True`` under a two-line comment, which is where a
+    rule goes to be rediscovered: the next reader sees a branch that skips the
+    port check and has to reconstruct from scratch why skipping it is not a
+    hole. The general form is worth stating, because it is not about docker —
+    **a port that participated in establishing an identity cannot also be
+    evidence against it** — and docker publishing is merely the only namespace
+    crossing this engine resolves today.
+    """
+
+    def test_a_published_port_match_is_already_bound_by_its_port(self) -> None:
+        from clinkz.models.scope import PortGateRule, _AddressMatch, port_gate_rule
+
+        assert (
+            port_gate_rule(_AddressMatch.PUBLISHED_PORT) is PortGateRule.ALREADY_BOUND_BY_THE_PORT
+        )
+
+    def test_a_resolved_match_compares(self) -> None:
+        from clinkz.models.scope import PortGateRule, _AddressMatch, port_gate_rule
+
+        assert port_gate_rule(_AddressMatch.RESOLVED) is PortGateRule.COMPARE
+
+    def test_an_unmatched_address_falls_to_the_strict_answer(self) -> None:
+        """NONE never reaches the gate, and if it ever does it must not exempt.
+
+        The safe direction for a rule nobody expected to be reached is the one
+        that refuses, not the one that permits.
+        """
+        from clinkz.models.scope import PortGateRule, _AddressMatch, port_gate_rule
+
+        assert port_gate_rule(_AddressMatch.NONE) is PortGateRule.COMPARE
+
+    def test_the_mapping_is_total_over_every_address_match(self) -> None:
+        """A new ``_AddressMatch`` member must not silently inherit an answer."""
+        from clinkz.models.scope import PortGateRule, _AddressMatch, port_gate_rule
+
+        for match in _AddressMatch:
+            assert isinstance(port_gate_rule(match), PortGateRule)
+
+    def test_each_rule_states_why_rather_than_labelling(self) -> None:
+        from clinkz.models.scope import PortGateRule
+
+        for rule in PortGateRule:
+            assert len(rule.reason.split()) >= 15, f"{rule}: a rule needs its reason"
+        crossing = PortGateRule.ALREADY_BOUND_BY_THE_PORT.reason
+        assert "namespace" in crossing
+        assert "matched this entry" in crossing
+
+    def test_the_exemption_is_applied_through_the_named_rule_not_a_bare_branch(
+        self,
+    ) -> None:
+        """The call site reads the rule. A re-inlined branch fails here.
+
+        This is the difference between "named" and "documented": a name that
+        nothing calls is a comment with a type annotation.
+        """
+        source = (SRC / "models" / "scope.py").read_text(encoding="utf-8")
+        applied = source.split("def _equivalent_and_bound", 1)[1].split("def ", 1)[0]
+        assert "port_gate_rule(match)" in applied
+        assert "_AddressMatch.PUBLISHED_PORT" not in applied, (
+            "the crossing is decided by the named rule, not by a second comparison "
+            "beside it — two places that must agree is one place that will not"
+        )
