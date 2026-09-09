@@ -63,29 +63,22 @@ tools dynamically.
 
 ## Core Architecture: Orchestrated Multi-Agent System
 
+**Full detail → `docs/architecture-core.md`.**
+
 All inter-agent communication flows through a central **Orchestrator Agent** — no
-agent talks directly to another. It receives the scope, spins phase agents up/down
-**on demand**, passes each phase's result to the next, triggers the Report Agent,
-and owns the global engagement context.
+agent talks directly to another. **What runs is the v2 deterministic phase
+sequence, not LLM-mediated dynamic routing**: `OrchestratorAgent.run()` is a fixed
+sequence of `_run_phase` calls and the bus carries `task` / `result` / `error` /
+`status`. The LLM-routed branch (`_handle_query`, `RESPIN_*`,
+`MAX_CROSS_PHASE_RESPINS`) is unreached code — its only `QUERY` constructor is
+`request_help`, which v2 never dispatches. Describing it as a capability is how
+three other claims in this file went stale.
 
-**What actually runs is the v2 deterministic phase sequence, not LLM-mediated
-dynamic routing.** `OrchestratorAgent.run()` is a fixed sequence of `_run_phase`
-calls; the message bus carries `task` / `result` / `error` / `status`. The
-LLM-routed branch (`_handle_query`, `RESPIN_RECON` / `RESPIN_SCAN` /
-`RESPIN_EXPLOIT`, `MAX_CROSS_PHASE_RESPINS = 3`) is still in the code and has
-**never fired**: the only `QUERY` constructor is the `request_help` tool on
-`AgentBase`, which reaches an agent solely through free-form tool dispatch, and
-v2's deterministic steps + LLM checkpoints never dispatch it. Treat the phase
-sequence as the architecture and that branch as unreached code — it is not a
-capability the engine has, and describing it as one is how three other claims in
-this file went stale.
-
-**Phase shape:** Recon (sequential) → **Scan + Research + Exploit run concurrently**
-sharing SQLite state → Report (sequential). Exploit's only hard dependency is Scan.
-**Credit pre-flight** (`llm/fallback.py::preflight_provider_available`) probes once
-at start; a depleted account is a KNOWN-unusable state classified exactly as
-`providers._classify` classifies it (`KeyStatus.INVALID`), and the agreement
-between the two pre-flights is asserted.
+**Phase shape:** Recon (sequential) → **Scan + Research + Exploit concurrently**
+over shared SQLite state → Report (sequential). Exploit's only hard dependency is
+Scan. **Credit pre-flight** (`llm/fallback.py::preflight_provider_available`)
+probes once at start; a depleted account is `KeyStatus.INVALID`, and the
+agreement between the two pre-flights is asserted.
 
 ### Message format
 ```python
@@ -101,29 +94,36 @@ class AgentMessage(BaseModel):
 ```
 
 All v2 phase agents follow **deterministic steps + LLM checkpoints** — a fixed
-sequence of tool calls and code, LLM invoked only at named reasoning checkpoints
-(planning, classification, synthesis). No free-form ReAct.
-
+sequence of tool calls and code, LLM invoked only at named reasoning checkpoints.
+No free-form ReAct.
 ## Agents
 
-**Detail → [`docs/agents.md`](docs/agents.md).** Every role is Anthropic-primary
+**Detail → `docs/agents.md`.** Every role is Anthropic-primary
 under routing v2 (`claude-sonnet-5` by default — **not Opus**).
 
-| Agent | Role | Load-bearing facts |
-|---|---|---|
-| **Orchestrator** | Coordinator; delegates all tool work | Opens the engagement gate first, before docker/state/packets |
-| **Recon (v2)** | Ports → services → tech stack → package identity → `ReconResult` | `_package_identity.py` is the third component source and names PACKAGES, not servers; a dependency **range** is deliberately not read |
-| **Scan (v2)** | Service-specific methods, coverage expansion, API surface | Budgets its own wall clock (`SCAN_TIME_BUDGET`) — the orchestrator's timeout DISCARDS the return value; four discoverers union into `endpoints`, none carrying an application's vocabulary; safe methods only |
-| **Research (v2)** | CVE/technique runbook → engagement runbook + `clinkz_knowledge.db` | **Not web-grounded by default** — grounding is declared, weakest-wins, and stamped rather than absorbed |
-| **Exploit (v2)** | 26 adaptive `_test_*` methodologies by tier | The deterministic check GATES the LLM; phase-3 ranking is `_plan_ranking.py`, not the model's; P7 is the client-side oracle; TERMINAL classes dispatch last |
-| **Chaining** | Composition as a capability (`src/clinkz/chaining/`) | Graded by its WEAKEST link; only ever ADDS |
-| **Business logic** | Δ where the developer's intent is the APPLICATION | Intent inferred from the app's own surface, with evidence |
-| **Critic** | **Archived** (`agents/_archive/critic.py`) | Registered but invoked in **0 of 2,774** recorded steps; its job is done by deterministic gates on the emitting path |
-| **Report** | **Zero LLM calls** — JSON + Markdown + PDF in <30 s | `report_llm_provider` exists for interface symmetry and nothing reads it at runtime; all three documents render from the SAME redacted structure |
-
+- **Orchestrator** — coordinator; delegates all tool work, opens the engagement
+  gate first, before docker/state/packets.
+- **Recon (v2)** — ports → services → tech stack → package identity.
+  `_package_identity.py` names PACKAGES, not servers; a dependency **range** is
+  deliberately not read.
+- **Scan (v2)** — budgets its own wall clock (`SCAN_TIME_BUDGET`), because the
+  orchestrator's timeout DISCARDS the return value; four discoverers union into
+  `endpoints`; safe methods only.
+- **Research (v2)** — **not web-grounded by default**; grounding is declared,
+  weakest-wins, and stamped rather than absorbed.
+- **Exploit (v2)** — 26 adaptive `_test_*` methodologies by tier. The
+  deterministic check GATES the LLM; phase-3 ranking is `_plan_ranking.py`, not
+  the model's; P7 is the client-side oracle; TERMINAL classes dispatch last.
+- **Chaining** (`src/clinkz/chaining/`) — graded by its WEAKEST link; only ever ADDS.
+- **Business logic** — intent inferred from the app's own surface, with evidence.
+- **Critic** — **archived** (`agents/_archive/critic.py`); invoked in 0 of 2,774
+  recorded steps, its job done by deterministic gates on the emitting path.
+- **Report** — **zero LLM calls**; JSON + Markdown + PDF in <30 s, all three
+  rendered from the SAME redacted structure. `report_llm_provider` exists for
+  interface symmetry and nothing reads it at runtime.
 ## Engagement Setup + Production Safety
 
-**Full detail → [`docs/productization-engagement-safety.md`](docs/productization-engagement-safety.md).**
+**Full detail → `docs/productization-engagement-safety.md`.**
 The hard rules:
 
 - **The gate** (`engagement/gate.py::open_engagement`) is the FIRST statement of
@@ -136,40 +136,35 @@ The hard rules:
   survive, cookie VALUES do not; `redact_structure` is key-aware.
 - **`engagement/artifact_scan.py` is the disclosure gate**, re-reading
   `outputs/<id>/` off disk rather than trusting the logic that wrote it. **One
-  verdict, two regions** (bundle + companion), every skipped file NAMED, an
-  unexplained skip FAILS, and a PDF is read through both its page-text and
-  `/Info` channels.
+  verdict, two regions**, every skipped file NAMED, an unexplained skip FAILS,
+  and a PDF is read through both its page-text and `/Info` channels.
 - **The engine's redaction reaches only where the engine writes** — `scripts/`
-  drivers go through `scripts/_artifact_io.py`, enforced structurally.
+  drivers go through `scripts/_artifact_io.py`, and anything that assembles a
+  credential set registers it (`register_credential_set`). Both are enforced
+  over a computed domain, not by discipline.
 - **The credential the client gave us goes first** — the default-credential sweep
   is `not credentials.authenticating` and nothing else; there is deliberately no
   "…or the supplied credential failed" branch.
 - **A login URL is proven by response SHAPE, never by a status code and never by
   a path NAME.** Names order the shape probing; they never gate it. Nothing
-  proven ⇒ `None`, never the root URL.
-- **No session verdict rests on a destination's SPELLING** — the same rule, and
-  `verify_session` kept the oracle `assert_authenticated` had shed. Both arms
-  walk the redirect and read the response (`_session_survived`: 401/403, or an
-  `<input type="password">`). The DOMAIN is computed from the call graph — every
-  function whose return feeds a verdict sink — and each string-literal test in it
-  is classified; `redirects_to_login` is the one `destination_spelling` entry and
-  carries a licence naming every consumer and its bound.
-- **Session evidence is the DELTA across the credential POST, not the jar** — a
-  cookie the login-page GET issued exists whatever we send. Carriage
-  (`session_cookies`) and evidence are separate questions.
+  proven ⇒ `None`, never the root URL. **No session verdict rests on a
+  destination's SPELLING** — the DOMAIN is computed from the call graph and every
+  string-literal test in it is classified; `redirects_to_login` is the one
+  `destination_spelling` entry and carries a licence naming every consumer.
+- **Session evidence is the DELTA across the credential POST, not the jar** —
+  carriage (`session_cookies`) and evidence are separate questions.
 - **Authenticated state is PROVEN, not assumed** (`engagement/auth_state.py`) —
   only a boundary discriminator is accepted; a body-length delta is refused.
   Credentials supplied + assertion failed ⇒ the engagement aborts loudly.
 - **A login succeeds on POSITIVE evidence only** — session material, or a
   redirect that ACTUALLY occurred (`redirect_chain` non-empty). A 4xx is never
-  success; a different final path is not a redirect; a success carrying no
-  session material is refused at the seam that claimed it. **A 415 is USED**: the
-  response names the encoding, and the same credentials are re-POSTed to the same
-  action under it (`ENCODABLE_CONTENT_TYPES`; prose is never parsed).
+  success. **A 415 is USED**: the same credentials are re-POSTed to the same
+  action under the encoding the response named (`ENCODABLE_CONTENT_TYPES`; prose
+  is never parsed).
 - **The operator's declarations OVERRIDE discovery, never seed it** —
   `login_url` / `login_api_url` / `login_field` / `login_content_type` /
   `assert_url` on `RoleCredential`. A declaration that is discarded is worse than
-  no declaration, because the operator believes the engine knows.
+  no declaration.
 - **Only a session-bearing response is evidence about the session**; the raised
   flag is a hypothesis and `assert_authenticated` is the oracle.
 - **`Set-Cookie` is carried as a LIST the producer declares** (`set_cookie` /
@@ -178,35 +173,31 @@ The hard rules:
 - **The rails are absent by default** — `get_active_governor()` is `None` unless
   an engagement installed one, so direct methodology invocation is byte-identical.
   The governor owns rate (5 req/s), concurrency (4), the kill switch, blocking
-  detection, the window and the action log, and **never raises from the data path**.
+  detection, the window and the action log, and **never raises from the data
+  path**. **`_run_subprocess` gets the halt check ONLY** — a second slot per
+  request would deadlock the semaphore and double-count every rate token.
 - **`safety/destructive.py` is the one destructive vocabulary**, consulted by both
   the navigation and submission gates. A category no request SHAPE can be
-  classified into (`cross_principal_write` — "whose object is this" is a relation,
-  not a property of a request) still lives there and is claimed by the class's
-  own authorization gate. A parameter VALUE is read for semantics only
+  classified into (`cross_principal_write`) still lives there and is claimed by
+  the class's own authorization gate. A parameter VALUE is read for semantics only
   when it looks like an identifier the APP chose.
-- **`_run_subprocess` gets the halt check ONLY** — a second slot per request would
-  deadlock the semaphore and double-count every rate token.
 - **The permitted-technique list gates dispatch**, and every withheld class is
-  named in the report.
-- **`models/vuln_classes.py` is the client-facing class registry**, asserted in
-  sync with `DISPATCHABLE_TEST_METHODS`. A dispatch-table entry that can never
-  emit is a capability claim, so `_test_tier2_technique` / `_test_tier3_technique`
-  are registered `NOT_IMPLEMENTED`.
-
+  named in the report. **`models/vuln_classes.py` is the client-facing class
+  registry**, asserted in sync with `DISPATCHABLE_TEST_METHODS`; a dispatch-table
+  entry that can never emit is registered `NOT_IMPLEMENTED`.
 ## Gray-box Discovery Engine (`src/clinkz/discovery/`)
 
-A **third plan source** alongside the LLM plan and deterministic coverage, active
-when the engagement supplies a source tree (`EngagementScope.source_dir` +
-`discovery_base_url`). Model: **Δ-capability × reachability × provable-impact**.
-Hypotheses lower to `ExploitTask`s and dispatch through the unchanged round-robin
-+ `_persist_finding` chokepoint; discovery failures degrade to black-box. Catalog
-classes: **EGRESS_FETCH** (→ `_test_ssrf`), **FILE_READ** (→ `_test_lfi`),
+**Full detail → `docs/discovery-engine-*.md`.** A **third plan source** alongside
+the LLM plan and deterministic coverage, active when the engagement supplies a
+source tree (`EngagementScope.source_dir` + `discovery_base_url`). Model:
+**Δ-capability × reachability × provable-impact**. Hypotheses lower to
+`ExploitTask`s and dispatch through the unchanged round-robin + `_persist_finding`
+chokepoint; discovery failures degrade to black-box. Catalog classes:
+**EGRESS_FETCH** (→ `_test_ssrf`), **FILE_READ** (→ `_test_lfi`),
 **LOG_INTERPOLATION** (→ `_test_log4shell`). Confirmation reduces to the same
-P1–P7 oracles and is raw-auditable. **Layer-2 capability learning** writes YES-only
-per-technology facts that a later engagement recalls as a **prior** — it re-orders
-the tested set but **never emits**. **Full detail → `docs/discovery-engine-*.md`.**
-
+P1–P7 oracles. **Layer-2 capability learning** writes YES-only per-technology
+facts that a later engagement recalls as a **prior** — it re-orders the tested set
+but **never emits**.
 ## Tool Execution: Dynamic Discovery
 
 Agents never hardcode tool names — they call
@@ -218,79 +209,64 @@ reports the missing capability to the Orchestrator.
 
 ## Tech Stack
 
+**Full detail → `docs/architecture-core.md`.**
+
 - Python 3.12+, asyncio everywhere, Pydantic v2 for all models, structured logging.
 - **LLM-agnostic**: all calls through `llm/base.py`; never import a provider SDK
   outside `llm/`. **Routing v2: Anthropic is priority 1 for EVERY call on EVERY
   phase**; Gemini (`gemini-3.7-flash`, pinned) and OpenAI are the fallback tail;
-  Ollama is a stub and is in no chain. Per-agent overrides via `LLM_PROVIDER_<AGENT>`.
-  Every rotation is a **disqualifying event** — hard failure in `baseline` mode, a
-  stamp plus permanent baseline-ineligibility in `client` mode, **refused outright
-  in both on an emit or suppress path**. **Detail →
-  [`docs/provider-routing.md`](docs/provider-routing.md).**
-- **Operation-level timeouts** (per HTTP request, tool subprocess, and LLM call via
-  `LLM_REQUEST_TIMEOUT`) are the safety valve — the exploit phase has no wall-clock
-  deadline by default.
+  Ollama is a stub in no chain. Per-agent overrides via `LLM_PROVIDER_<AGENT>`.
+  Every rotation is a **disqualifying event**. **Detail →
+  `docs/provider-routing.md`.**
+- **Operation-level timeouts** (per HTTP request, tool subprocess, and LLM call
+  via `LLM_REQUEST_TIMEOUT`) are the safety valve — the exploit phase has no
+  wall-clock deadline by default.
 - SQLite: `clinkz.db` (per-engagement state), `clinkz_knowledge.db` (cross-
-  engagement KB incl. Layer-2 `capability_facts`/`capability_observations`).
-- **Playwright + Chromium** backs P7, and lives in `docker/Dockerfile.tools` where
-  docker tool-mode drives it. That layer is **self-verifying** — it launches the
-  browser at build time, because `--with-deps` can exit 0 on Kali having installed
-  a browser that never launches. Optional for `TOOL_EXEC_MODE=local`; absent, the
-  affected classes record unproven leads exactly as before.
+  engagement KB incl. Layer-2 `capability_facts` / `capability_observations`).
+- **Playwright + Chromium** backs P7 and lives in `docker/Dockerfile.tools`. That
+  layer is **self-verifying** — it launches the browser at build time, because
+  `--with-deps` can exit 0 having installed a browser that never launches.
+  Optional for `TOOL_EXEC_MODE=local`; absent, the affected classes record
+  unproven leads exactly as before.
 - **ReportLab** renders the PDF and **pypdf** reads one back for the disclosure
-  gate. **Not WeasyPrint** — it resolves GTK/Pango at import and does not import on
-  Windows, so it could never have run on the machine that produces the bundle.
-  `jinja2` remains declared and unused — stated rather than quietly dropped.
+  gate. **Not WeasyPrint** — it resolves GTK/Pango at import and cannot run on the
+  machine that produces the bundle. `jinja2` remains declared and unused.
 - **Node** backs one TARGET, not the engine: `docker/protopoll` is a real
-  `Object.prototype` — a Python fixture would have been a MODEL of the one
-  property the oracle rests on. Standard library only, no `package.json`.
+  `Object.prototype`. Standard library only, no `package.json`.
 - MCP Python SDK for tool servers; Docker for sandboxed tool execution
   (`clinkz-tools`; `TOOL_EXEC_MODE=local` for the in-process HTTP path).
 - Typer CLI; `clinkz trace inspect <engagement>` renders execution traces.
-
 ## Project Structure
 
-**Annotated tree → [`docs/project-structure.md`](docs/project-structure.md).**
-
-```
-src/clinkz/
-├── cli.py            # Typer CLI            ├── comms/         # AgentMessage, bus
-├── config.py         # Settings             ├── discovery/     # Δ-model engine
-├── state.py          # SQLite state         ├── knowledge/     # KB, CVE catalogue
-├── orchestrator/     # OrchestratorAgent    ├── llm/           # providers, purpose
-├── agents/           # recon/scan/exploit/  ├── tools/         # ToolBase, resolver
-│                     #   research/report +  ├── oob/           # P6 out-of-band
-│                     #   the pure helpers   ├── browser/       # P7 client oracle
-├── chaining/         # composition oracle   ├── observability/ # trace, ledger
-├── engagement/       # gate, secrets, auth  └── models/        # scope, finding, …
-├── safety/           # governor, destructive
-docker/  scripts/  tests/  docs/
-requirements-ci.lock  # the FULL resolved dependency set CI installs (85 packages)
-```
-
+**Annotated tree → `docs/project-structure.md`.**
+`src/clinkz/` holds `cli.py`, `config.py`, `state.py` and the packages
+`agents/` (recon · scan · exploit · research · report + pure helpers),
+`orchestrator/`, `comms/`, `llm/`, `tools/`, `knowledge/`, `discovery/`,
+`chaining/`, `engagement/`, `safety/`, `browser/`, `oob/`, `observability/`,
+`models/`. Beside it: `docker/`, `scripts/`, `tests/`, `docs/`, and
+`requirements-ci.lock` — the FULL resolved dependency set CI installs.
 ## Commands
 
-**Full reference → [`docs/commands.md`](docs/commands.md).** `python -m clinkz …`:
+**Full reference → `docs/commands.md`.** `python -m clinkz …`:
+`scan --target <t>` is the only end-to-end command and **refuses to start without
+an authorization record** (`--dry-run` previews the profile that will ACTUALLY
+execute; it sends traffic, everything below does not unless noted). `abort <id>`
+is the kill switch and still produces the report; `actions <id>` lists every
+state-changing request; `artifact-scan <id>` re-runs the disclosure gate;
+`report-pdf <id>` re-renders from the stored redacted structure; `trace inspect
+<id>` renders a trace; `tool-invoke <id> <seq>` inspects one invocation
+(**`--replay` RE-EXECUTES**); `step-replay <id> <step>` re-runs one agent step;
+`corpus-replay` is the offline parser regression gate.
 
-| Command | What it does | Sends traffic? |
-|---|---|---|
-| `scan --target <t> …` | Full pentest (recon → scan/research/exploit → report). The only end-to-end command. **Refuses to start without an authorization record.** `--dry-run` previews the profile that will ACTUALLY execute. Exit codes are the interface (`cli.py::EXIT_CODES`): 0 completed · 1 failed · 2 bad input · 3 refused · 4 halted · 5 bundle FAILED the disclosure gate | yes |
-| `abort <id>` | Kill switch — halt cleanly; the report is still produced | no |
-| `actions <id>` | Every state-changing request the run produced | no |
-| `artifact-scan <id>` | The disclosure gate, re-run by hand; exits non-zero on a leak | no |
-| `report-pdf <id>` | Re-render the client PDF from the stored redacted structure | no |
-| `trace inspect <id>` | Render an execution trace | no |
-| `tool-invoke <id> <seq>` | Inspect one tool invocation (`--replay` RE-EXECUTES) | with `--replay` |
-| `step-replay <id> <step>` | Re-run one agent step | maybe |
-| `corpus-replay` | Offline parser regression gate; exits non-zero on drift | no |
+**Exit codes are the interface** (`cli.py::EXIT_CODES`): 0 completed · 1 failed ·
+2 bad input · 3 refused · 4 halted · 5 bundle FAILED the disclosure gate.
 
 Offline drivers in `scripts/`: `regrade_stored_bundles.py`, `regrade_idor_arms.py`,
 `plan_variance_corpus.py`, `cve_reservation_corpus.py`,
 `record_protopoll_fixtures.py`, `juiceshop_benchmark_run.py --record-floor`,
-`auth_agent_corpus.py`.
-**Live:** `three_run_envelope.py`, `live_adaptive_auth_validation.py`.
+`auth_agent_corpus.py`. **Live:** `three_run_envelope.py`,
+`live_adaptive_auth_validation.py`.
 `docker compose -f docker/docker-compose.yml up -d` starts the test targets.
-
 ## Code Style
 
 Python 3.12+ type hints; Pydantic v2 models; async/await for all agent/tool/LLM
@@ -302,9 +278,10 @@ LESSONS #17).
 
 ## Key Design Decisions (invariants — non-negotiable)
 
-**The rule is here; the incident that produced it is in
-[`docs/invariants.md`](docs/invariants.md), same order, same numbering.** Read the
-detail when you are about to change the code an invariant governs — not by default.
+**The rule is here; the incident that produced it is in `docs/invariants.md`,
+same order, same numbering.** Read the detail when you are about to change the
+code an invariant governs — not by default. A `Detail →` pointer names a path
+under the repo root; the header table at the top of this file links them all.
 
 1. **Deterministic steps + LLM checkpoints**; no free-form ReAct.
 2. **Orchestrator-mediated comms** — agents never talk directly. The router is the
@@ -335,7 +312,7 @@ detail when you are about to change the code an invariant governs — not by def
     is worse than a missing section** (`agents/_report_integrity.py`). Every
     reconciliation is pure, reads only engine-declared fields, only ever TIGHTENS,
     and runs at BOTH the build and render seams. **Detail →
-    [`docs/report-integrity.md`](docs/report-integrity.md).**
+    `docs/report-integrity.md`.**
 11. **A session the engine GUESSED is still a session, and the record has to say
     so** — swept credentials file under `SWEPT_CREDENTIAL_ROLE`; `established`
     stays False, because holding session material and having PROVEN a session are
@@ -377,7 +354,7 @@ detail when you are about to change the code an invariant governs — not by def
     (`src/clinkz/browser/`). Everything the page authors is evidence, never a
     verdict input. **A missing browser costs coverage, never honesty** — there is
     no path from a P7 verdict to demoting or suppressing anything. **Detail →
-    [`docs/methodology/client-side-execution-p7.md`](docs/methodology/client-side-execution-p7.md).**
+    `docs/methodology/client-side-execution-p7.md`.**
 24. **An oracle must observe from a machine that can REACH the target.** The
     browser runtime is tied to `TOOL_EXEC_MODE`, never configured separately, so
     the one combination that silently fails every navigation cannot be selected.
@@ -392,7 +369,7 @@ detail when you are about to change the code an invariant governs — not by def
     `MARKER_ORACLE_CLASSES` / `DIFFERENTIAL_CONTROL_CLASSES` /
     `CONTROL_EXEMPT_CLASSES` partition every dispatchable class; an unclassified
     one is a red build. **Detail →
-    [`docs/methodology/never-sent-control.md`](docs/methodology/never-sent-control.md).**
+    `docs/methodology/never-sent-control.md`.**
 28. **Every kill discloses, wherever it happens** — the lead is written inside
     `_run_control_arm`, the one seam every arm passes, so a class cannot forget
     because a class does not do it. The lead says the class could not PROVE the
@@ -402,12 +379,12 @@ detail when you are about to change the code an invariant governs — not by def
     traced `control_arm_key_mismatch` that still refuses.
 30. **An oracle confirms on its class's DEFINING effect, and the arm is what
     proves it does.** **Detail →
-    [`docs/methodology/defining-effect-oracles.md`](docs/methodology/defining-effect-oracles.md).**
+    `docs/methodology/defining-effect-oracles.md`.**
 31. **Whose object is this? is a relation, not a property of a response** —
     four dispatched arms (`self` / `crossing` / `nonexistent` / `anonymous`) plus
     B's own authorized read. The control round-trips like the payload. Reflection
     is deliberately NOT covered by it and keeps its own guard. **Detail →
-    [`docs/methodology/idor.md`](docs/methodology/idor.md).**
+    `docs/methodology/idor.md`.**
 32. **A class that needs two identities declares it in the registry, and the code
     READS the declaration** (`MultiPrincipalRequirement`). Tier 1 multi-role MAY
     CONFIRM; Tier 2 single-role MAY ONLY LEAD. A limitation only the report knows
@@ -476,7 +453,7 @@ detail when you are about to change the code an invariant governs — not by def
     it is the fingerprint too** (`agents/_plan_ranking.py`). A ranking returns the
     order AND `supported`; `attempt_window` never truncates a supported type. The
     tail is never empty. **Detail →
-    [`docs/methodology/plan-ranking.md`](docs/methodology/plan-ranking.md).**
+    `docs/methodology/plan-ranking.md`.**
 53. **The plan order is a function of the endpoint SET, never of the crawl's
     order** — a concurrent crawler emits a different sequence each run. Ties break
     on structural identity, never traversal order.
@@ -523,7 +500,7 @@ detail when you are about to change the code an invariant governs — not by def
     guards; only the CLASSIFICATION is hand-maintained.** Both directions are
     asserted; an exemption is an allow-list entry with a substantive reason, never
     a silent skip. **Detail →
-    [`.claude/skills/clinkz-dev/SKILL.md`](.claude/skills/clinkz-dev/SKILL.md).**
+    `.claude/skills/clinkz-dev/SKILL.md`.**
 68. **Two confirmed findings do not imply the chain between them, and neither does
     a successful second request.** A carriage is proven against a decoy the target
     never issued. Decoy accepted too ⇒ a `ChainResearchLead`, never a finding with
@@ -542,7 +519,7 @@ detail when you are about to change the code an invariant governs — not by def
     alarm classes stay apart because they have different fixes; *declared but
     never invoked* is tracked separately. **Absent by default**, and it never
     raises from the data path. **Detail →
-    [`docs/observability.md`](docs/observability.md).**
+    `docs/observability.md`.**
 73. **A benchmark number a client sees must be what TESTING earned.** The floor is
     **measured, never declared**, KEYED by credential set, and no floor ⇒
     `solved_by_testing: null`, not zero. **A solve binds to a FINDING, not to a
@@ -588,254 +565,156 @@ detail when you are about to change the code an invariant governs — not by def
     its own indicator** (`agents/_auth_bypass.py`). Three arms; **never
     200-plus-a-cookie**. The identity suppression keys on credential POSSESSION,
     not identity coincidence. **Detail →
-    [`docs/methodology/auth-bypass.md`](docs/methodology/auth-bypass.md).**
+    `docs/methodology/auth-bypass.md`.**
 85. **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl`.
     `outputs/` is local-only by policy — never committed.
 86. **Naming an oracle is half a claim; the other half is whether we can DELIVER
     the CVE's input to it** (`KnownComponentCVE.vector`, `CARRIABLE_VECTORS`).
-    Catalogue size is bounded by oracle coverage: an entry with no oracle behind
-    it is declared lead-only at WRITE time, never discovered to be lead-only at
-    run time. Three lead reasons, never merged — no oracle / vector not carried /
-    component unidentifiable. **Band C** (DoS, memory safety, local privesc,
-    unobservable-config-dependent, indistinguishable info leak) is PERMANENTLY
-    lead-only and the deliverable states that as a product property. **Detail →
-    [`docs/methodology/sca-catalogue-breadth.md`](docs/methodology/sca-catalogue-breadth.md).**
+    Lead-only is declared at WRITE time; three lead reasons, never merged; **Band
+    C** is permanently lead-only. **Detail →
+    `docs/methodology/sca-catalogue-breadth.md`.**
 87. **When the payload's effect outlives the request, the CONTROL runs first**
-    (`_run_control_arm_first`). A control dispatched afterwards observes the
-    change the payload made, exhibits the effect too, and kills the true
-    positive it exists to license. The seam owns the order, not the class; write
-    crossings hit the same constraint.
+    (`_run_control_arm_first`) — a control dispatched afterwards observes the change
+    the payload made and kills the true positive it exists to license. The seam owns
+    the order, not the class; write crossings hit the same constraint.
 88. **A class whose effect outlives the RUN is TERMINAL, dispatched last, and a
-    transient task after one is a stop-the-run condition** — not a warning
-    (`TERMINAL_DISPATCH_CLASSES` / `TRANSIENT_DISPATCH_CLASSES`, partitioned over
-    the dispatch table; `assert_terminal_dispatch_order` on every dispatch). A
-    wildcard authorization does not cover a terminal class. **Among terminal
-    classes the order is the table's DECLARATION order, required rather than
-    permitted**, and it is fixed on interference: a write crossing does not change
-    how the target process parses later writes, a prototype write does. **Being
-    last is what starves them, so they RESERVE plan slots in pass 0** — computed
-    from `TERMINAL_DISPATCH_CLASSES`, a floor never a ceiling, remainder returned
-    to the Tier-1 fill, and zero on a surface no terminal class reaches.
+    transient task after one is a stop-the-run condition**
+    (`TERMINAL_DISPATCH_CLASSES` / `TRANSIENT_DISPATCH_CLASSES`;
+    `assert_terminal_dispatch_order`). A wildcard authorization does not cover a
+    terminal class; among them the order is the table's DECLARATION order. **Being
+    last is what starves them, so they RESERVE plan slots in pass 0** — a floor,
+    never a ceiling.
 89. **A change TESTING made that the target cannot undo is stated in the
-    client-facing document, naming the key** (`ResidualMutation`). Recorded on
-    the WITNESSED effect, not on emission — a disclosure that only fires when we
-    also got a finding out of it is a disclosure that serves us. **Every landed
-    write, whichever arm made it**: a refused finding with three landed writes
-    still discloses three. **Detail →
-    [`docs/methodology/prototype-pollution.md`](docs/methodology/prototype-pollution.md).**
+    client-facing document, naming the key** (`ResidualMutation`) — recorded on the
+    WITNESSED effect, on every landed write whichever arm made it. **Detail →
+    `docs/methodology/prototype-pollution.md`.**
 90. **A write is a crossing when a SEPARATE read attributes the persisted object
     to another principal** (`agents/_write_crossing.py`) — never the status code,
     never the create's own body. Six probes in a DECLARED order, asserted on what
-    was dispatched: the owner snapshot and both controls precede the payload,
-    because a control graded through a collection the payload grew, or a
-    reference read out of one, is the payload grading its own evidence. `ref(A)`
-    is what the SERVER assigned when the field was omitted; `ref(B)` is looked up
-    in the pre-write snapshot. Every precondition ABSTAINS with nothing sent —
-    an unprovable write still changes the client's data. One dispatch per
-    (collection, principal-pair) per run. **`CATEGORY_CROSS_PRINCIPAL_WRITE` is
-    never-overridable and the class needs `write_crossing` named explicitly.**
-    **Detail →
-    [`docs/methodology/write-crossings.md`](docs/methodology/write-crossings.md).**
-91. **"The POST set no cookie" has TWO causes and a boolean collapses them.** A
-    framework that promotes its pre-login session in place sets nothing on a
-    SUCCESSFUL login, so an empty `Set-Cookie` delta beside a non-empty carried
-    jar is `INDETERMINATE` (`LoginVerdict`) and the verdict DEFERS to
-    `assert_authenticated` — the stronger oracle, already running. The JSON arm's
-    `2xx + token-or-cookie` rule has the same hole and the same fix, and the
-    cookie half needs one more: **a cookie the server issues to ANY caller is not
-    evidence about a credential** — the JSON arm carries no jar, so a
-    session-starting framework sets one on every route it is offered. A deferral
-    is bounded by `_session_survived`, and so is that cookie branch: a response
-    serving an `<input type="password">` is REFUSED, on an observation rather
-    than on seven English substrings. **A guessed credential may not ride the deferral** — the
-    sweep proves it or marks it invalid. **A login declared failed names the
-    evidence that was ABSENT and never asserts the credentials were wrong.**
-92. **A credential POST is bounded by the component that can see it, and the
-    stop the TARGET declares outranks the budget WE assumed.** The governor slot
-    moves from `authenticate()` to each credential POST, which NAMES the account
+    was dispatched; every precondition ABSTAINS with nothing sent;
+    `CATEGORY_CROSS_PRINCIPAL_WRITE` is never-overridable. **Detail →
+    `docs/methodology/write-crossings.md`.**
+91. **"The POST set no cookie" has TWO causes and a boolean collapses them** —
+    an empty `Set-Cookie` delta beside a non-empty carried jar is `INDETERMINATE`
+    (`LoginVerdict`) and DEFERS to `assert_authenticated`, bounded by
+    `_session_survived`. A cookie the server issues to ANY caller is not evidence
+    about a credential, and a guessed one may not ride the deferral. **A login
+    declared failed names the evidence that was ABSENT and never asserts the
+    credentials were wrong.** **Detail →
+    `docs/methodology/authentication-shapes.md`.**
+92. **A credential POST is bounded by the component that can see it, and the stop
+    the TARGET declares outranks the budget WE assumed.** The governor slot is taken
+    at each credential POST, which NAMES the account
     (`SafetyPolicy.max_credential_attempts_per_account`, default 8, keyed on
-    origin+account) — measured 16-18 POSTs per failing call, 64 across a sweep,
-    against **two** action-log entries. Naming the account also declares the
-    request is a login, not a `credential_change`. `safety/lockout.py` is the one
-    lockout vocabulary, shared with `_test_brute_force`; a lockout, rate limit or
-    captcha is recorded and refuses every later attempt, and the sweep stops on
-    the first evidence for ANY account. **Detail →
-    [`docs/methodology/credential-attempts-and-lockout.md`](docs/methodology/credential-attempts-and-lockout.md).**
+    origin+account). `safety/lockout.py` is the one lockout vocabulary; the sweep
+    stops on the first evidence for ANY account. **Detail →
+    `docs/methodology/credential-attempts-and-lockout.md`.**
 
 93. **An absence that holds only up to N is reported WITH N, and N is ours**
-    (`attempt_ceiling`). A header's absence is complete in one response; a
-    lockout's is not. The emission gate guarantees the ceiling is always the
-    engine's budget — a refusal would have set `protected` — so the title, the
-    description and the evidence each name it, and the class may never render as
-    "no protection exists". **A flag that cannot take its other value where it is
-    read is a comment**: `ceiling_is_our_budget` was `not protected`, read only
-    at the emitter, which runs only when `protected` is False — deleted for a
-    guard (`BruteForceEmissionError`) that makes the caller's gate a precondition
-    of the render. The finding also names the attempts THIS class made. **Detail
-    → [`docs/methodology/brute-force.md`](docs/methodology/brute-force.md).**
+    (`attempt_ceiling`). Title, description and evidence each name it, and the class
+    may never render as "no protection exists". **A flag that cannot take its other
+    value where it is read is a comment** — replaced by `BruteForceEmissionError`.
+    **Detail → `docs/methodology/brute-force.md`.**
 
 94. **A verdict rule with no correct live firing is a dead instrument, and the
     corpus decides which.** Every `_login_verdict` rule is replayable over stored
-    curl dumps. The authenticated-page-marker rule fired 4 times in 762 POSTs,
-    all four on a site with no login — **deleted**; rule 4's INDETERMINATE
-    deferral is the shape it stood in for, and every keyword list has the same
-    defect. A zero that means *not yet reachable here* gets a fixture instead.
-    **Detail →
-    [`docs/methodology/authentication-shapes.md`](docs/methodology/authentication-shapes.md).**
+    curl dumps; the authenticated-page-marker rule fired 4 times in 762 POSTs, all
+    four wrong — deleted. A zero meaning *not yet reachable here* gets a fixture.
+    **Detail → `docs/methodology/authentication-shapes.md`.**
 
 95. **A measurement that refused itself is not a clean result, and a truncated
     sweep is not a negative.** An `INCONCLUSIVE` series RAN, so it is declared
-    (`InconclusiveMeasurement`) and rendered — 136 of 369 recorded verdicts, in
-    none of 4,169 reports. A sweep the target stopped names that it stopped, why,
-    and the pairs never sent — **by account and technology, never by password**,
-    which was never registered for redaction.
+    (`InconclusiveMeasurement`) and rendered; a sweep the target stopped names that
+    it stopped, why, and the pairs never sent — **by account and technology, never
+    by password**, which was never registered for redaction.
 
 96. **A bound the budget cannot SEE bounds nothing, so every credential sender is
     classified.** The per-account budget is spent only where an account is NAMED
     (`credential_account`, assigned once). `_test_brute_force` is EXEMPT
-    deliberately — it cannot share a budget the login flow already spent — and
-    the exemption is DECLARED over a domain computed by AST, because literal
-    dict keys cannot see the variable-keyed loop that sends the most (2,796
-    ungoverned credential POSTs, 81 engagements). **Detail →
-    [`docs/methodology/credential-attempts-and-lockout.md`](docs/methodology/credential-attempts-and-lockout.md).**
+    deliberately, and the exemption is DECLARED over an AST-computed domain, because
+    literal dict keys cannot see the variable-keyed loop that sends the most.
+    **Detail →
+    `docs/methodology/credential-attempts-and-lockout.md`.**
 
-97. **A scope entry that names a port BINDS that port** (`models/scope.py::
-    declared_port` / `_port_binds`). `contains()` stripped the port and matched
-    on the host, so one record authorised all 65,535 services on it. Only a port
-    the operator TYPED binds — a scheme default is ours, not theirs; a dispatch
-    naming no port is not a dispatch to a port and is decided by host, which is
-    what keeps `nmap -p 1-65535` running; a docker published-port match crosses
-    a namespace and is exempt because the target's port already named the
-    container. `allowed_ports` was declared and read by nothing, and now binds.
-    A refusal NAMES which half refused (`refusal_reason`), because "unknown
-    host" and "authorised host, unauthorised port" have opposite fixes.
-    **Detail → [`docs/productization-engagement-safety.md`](docs/productization-engagement-safety.md).**
+97. **A scope entry that names a port BINDS that port**
+    (`models/scope.py::declared_port` / `_port_binds`). Only a port the operator
+    TYPED binds; a dispatch naming no port is decided by host; the docker
+    published-port match crosses a namespace and is a named exemption. A refusal
+    NAMES which half refused (`refusal_reason`). **Detail →
+    `docs/productization-engagement-safety.md`.**
 
 98. **The authentication path gets the control arm the exploit path already
-    has.** `_login_verdict` and `classify_lockout` both take a `control_body` —
-    the login page served without credentials — and a marker present in BOTH is
-    discarded and NAMED. Ordering is part of the rule: **session material
-    outranks a keyword**, because a POST that set a cookie must not be refused
-    for a word on the page. **Identical byte length is its own verdict** — the
-    POST changed nothing — and it runs ahead of the INDETERMINATE deferral,
-    since a page that IS the control leaves nothing to defer with. The domain of
-    every marker oracle in the engine is COMPUTED and classified; two remain
-    uncontrolled by declaration (`_looks_blocked`, `_xxe_phase5_verify`).
-    **Detail → [`docs/methodology/authentication-shapes.md`](docs/methodology/authentication-shapes.md).**
+    has.** `_login_verdict` and `classify_lockout` both take a `control_body`, and a
+    marker present in BOTH is discarded and NAMED. **Session material outranks a
+    keyword**, and **identical byte length is its own verdict**, ahead of the
+    INDETERMINATE deferral. The domain of every marker oracle is COMPUTED and
+    classified. **Detail →
+    `docs/methodology/authentication-shapes.md`.**
 
 99. **A remedy the run's own observations contradict is worse than no remedy.**
-    The deterministic pass over the login page reads three facts and used to
-    discard all three: the `<form>` declared no action (the POST is DEFAULTED,
-    not addressed), a CSRF-shaped field arrived with no cookie of that shape
-    (half a double-submit), and `X-Powered-By` / `Vary: rsc` name the framework
-    (invariant 22's protocol artifact). They are carried on `AuthResult`,
-    rendered by `deterministic_observations()`, and the abort message drops
-    "the credentials are wrong" whenever the POST demonstrably changed nothing —
-    nothing evaluated a credential, so nothing there is a claim about one.
+    The deterministic pass carries its three login-page facts on `AuthResult`
+    (`deterministic_observations()`), and the abort message drops "the credentials
+    are wrong" whenever the POST demonstrably changed nothing.
 
 100. **A marker that survives an UNBLOCKED response is the application's own
-    vocabulary, not evidence of blocking** (`safety/governor.py`). The body arm of
-    blocking detection takes a control that costs no dispatch — a signature this
-    target served in a 2xx/3xx carrying no WAF header is discarded and NAMED in
-    `stats()`. Consecutive-blocked never bounded an unconditionally-shipped
-    marker: an SPA that ships its error strings in every shell satisfies
-    CONSECUTIVE by construction and the counter never resets. **Status still
-    outranks keyword**; learning runs BEFORE the verdict, so a concurrent crawl's
-    ordering cannot decide a halt. **A halt is an ABSENCE-GENERATING event** —
-    every class downstream registers NEVER INVOKED and reads as an engine that
-    found nothing, so the halt detail says they are UNTESTED, not clean.
+    vocabulary, not evidence of blocking** (`safety/governor.py`). The body arm
+    takes a control that costs no dispatch and NAMES what it discarded; **status
+    outranks keyword**; learning runs BEFORE the verdict. **A halt is an
+    ABSENCE-GENERATING event** — the halt detail says the classes downstream are
+    UNTESTED, not clean.
 
 101. **A zero measured over PART of the input is INDETERMINATE, never NOT
-    APPLICABLE** (`agents/_package_identity.py`). A consumer of bundle bytes
-    declares the fraction it read: the denominator is measured before
-    `MAX_BUNDLES` truncates, `indeterminate_reason` is consulted AHEAD of both
-    benign branches, and `coverage_note` renders on a clean run too. Measured on
-    cal.diy — 31 chunks referenced, 8 read, and the ledger row said *read 8
-    input(s) carrying no package/version pair*, a bound rendered as a property of
-    the target. **Detail →
-    [`docs/invariants.md`](docs/invariants.md).**
+    APPLICABLE** (`agents/_package_identity.py`). The denominator is measured before
+    truncation, `indeterminate_reason` is consulted AHEAD of both benign branches,
+    and `coverage_note` renders on a clean run too.
 
 102. **A destination composed at runtime is not a reading problem, so the model
-    PROPOSES and `assert_authenticated` DECIDES** (`engagement/auth_agent.py`).
-    Reached from exactly two call sites, both guarded by "no session was
-    seated" — DVWA/Juice Shop/Meridian record `NOT_ENGAGED`, zero LLM turns,
-    zero requests. **The model names FIELDS; the engine supplies every VALUE**
-    — no body/header/raw-request field exists on `AuthProposal` to land one in,
-    and a read's JSON keys become referenceable NAMES whose values the loop
-    holds. Ten deterministic refusals gate every proposal (scope, method,
-    encodable type, both credential fields, known carry field, destructive,
-    per-account budget, read ceiling, repeat); `credential_attempts_remaining`
-    is the pre-flight and never disagrees with the gate — a recorded stop
-    returns 0 ahead of the arithmetic, an unset bound returns `None`, never 0.
-    The episode carries its OWN jar (`isolated`). An abstention names what was
-    ABSENT and may never say the credentials were wrong. **The disclosure
-    renders on a clean run too**, naming which layer seated the session. The
-    prompt may not name the answer, and the call-purpose domain was widened
-    BEFORE the caller landed in it. Three rules the live runs then forced:
-    **(a)** `HTTPClientTool._observe_credential` was the THIRD
-    credential-observation site and the only uncontrolled one — cal.diy ships
-    `rate limit` in 383 KB of shell, so it stopped the account on page furniture;
-    the control is armed beside `credential_account` over a COMPUTED domain.
-    **(b) Being last starves a consumer, so it RESERVES**
-    (`adaptive_auth_credential_reserve`, default 3, clamped to `budget-1`) — the
-    deterministic pass spent 8 of 8. **(c) Session evidence is the DELTA, not
-    the jar** (invariant 91 here): a cookie a read was issued two turns earlier is
-    carriage. A proposal's signature carries its FIELD NAMES and a DISPATCHED
-    request is settled, or a corrected retry and a wasted repeat hash alike.
-    **Detail →
-    [`docs/methodology/adaptive-authentication.md`](docs/methodology/adaptive-authentication.md).**
+    PROPOSES and `assert_authenticated` DECIDES** (`engagement/auth_agent.py`),
+    from two call sites both guarded by "no session was seated". **The model names
+    FIELDS; the engine supplies every VALUE.** Ten deterministic refusals gate every
+    proposal; the episode carries its OWN jar, keyed by origin; an abstention names
+    what was ABSENT. **The disclosure renders on a clean run too**, naming which
+    layer seated the session. **Detail →
+    `docs/methodology/adaptive-authentication.md`.**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/
-   tests/`. Clean every file the diff touches (dead code, naming, stale comments, `None`
-   guards, no hardcoded secrets). CI pins `ruff==0.15.22` — and a `ruff`
-   on PATH (or in a stale venv) is routinely an OLDER build that reports a
-   different set, so invoke the pinned one explicitly. **The whole dependency
-   set is locked**, not just the three CLI packages: CI installs
-   `pip install -c requirements-ci.lock -e ".[dev]"` and then asserts the result
-   with `python scripts/lockfile.py --check`. Pinning `typer`/`click`/`rich` in
-   `pyproject.toml` closed one instance of the class and left ~80 packages free
-   to resolve differently on CI than on any developer machine. Regenerate with
-   `python scripts/lockfile.py --generate` (resolves for CI's linux/cp312 target,
-   so it is reproducible from any machine) and commit the result.
+   tests/`. Clean every file the diff touches (dead code, naming, stale comments,
+   `None` guards, no hardcoded secrets). CI pins `ruff==0.15.22`, and a `ruff` on
+   PATH is routinely an OLDER build reporting a different set — invoke the pinned
+   one explicitly. **The whole dependency set is locked**: CI runs
+   `pip install -c requirements-ci.lock -e ".[dev]"` then asserts it with
+   `python scripts/lockfile.py --check`. Regenerate with
+   `python scripts/lockfile.py --generate` and commit the result.
 2. **Keyless test gate** — **clear the provider keys** so the run is actually
-   keyless (`config.py` calls `load_dotenv()` at import, so a present `.env`
-   makes `test_exploit_v2` issue LIVE Anthropic calls and the local number is
-   from a different suite than CI's — LESSONS #35):
+   keyless (`config.py` calls `load_dotenv()` at import, so a present `.env` makes
+   `test_exploit_v2` issue LIVE Anthropic calls — LESSONS #35):
    `ANTHROPIC_API_KEY="" GEMINI_API_KEY="" GOOGLE_API_KEY="" OPENAI_API_KEY=""
    pytest tests/ -q --tb=short
    --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop
    --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration`.
-   The `p7_browser` tests self-skip without a Chromium install, so the gate is
-   identical on CI and on a machine that has one. Capture
-   pytest's own exit code directly (`… > out.txt 2>&1; echo "EXIT=$?"`) — never
-   pipe through `tail`/`&&` (LESSONS #24). Run the container gate (integration +
-   the `dvwa_smoke`/`juiceshop_smoke`/`pipeline_smoke` suites) separately when
-   containers are up and the change touches scan/exploit/orchestrator paths.
+   Capture pytest's own exit code directly (`… > out.txt 2>&1; echo "EXIT=$?"`) —
+   never pipe through `tail`/`&&` (LESSONS #24). Run the container gate
+   (integration + the `dvwa_smoke`/`juiceshop_smoke`/`pipeline_smoke` suites)
+   separately when containers are up and the change touches
+   scan/exploit/orchestrator paths.
 3. **Security review** — `/security-review` on the diff when it touches `tools/`,
    scope, credentials, LLM I/O, HTTP/network/subprocess, deserialization,
    user-path file I/O, MCP, or report rendering. Resolve every finding.
 4. **Context budget** — `python .claude/hooks/context_budget.py`. Every
-   always-loaded instruction file must stay under its character budget, measured
-   in the unit the loader counts. **This gate is the one gates 1–2 may not be
-   skipped alongside**: it exists precisely because doc-only edits are what grow
-   these files, and the failure it prevents is silent. See below.
+   always-loaded instruction file must stay under its character budget.
+   **This gate is the one gates 1–2 may not be skipped alongside**: doc-only edits
+   are what grow these files, and the failure it prevents is silent. `CLAUDE.md`
+   reached **152,205 characters against a ~150k load limit**, and that bound
+   degrades by *truncating quietly* — the first symptom would have been rules not
+   in effect. **A bound that degrades quietly is not a bound.** The domain is
+   **computed** (every `CLAUDE.md` in the tree, plus `.claude/LESSONS.md`), so a
+   new always-loaded file cannot escape it.
 
 Doc/config-only changes (no `.py` modified) may skip gates 1–2. **Gate 4 never
 skips** — a doc-only change is exactly the change it guards. Gate 3 still applies
 if runtime behavior can change (new hook, permission, tool entry, payload).
-
-### Why gate 4 exists
-
-`CLAUDE.md` reached **152,205 characters against a ~150k load limit** — it grew
-every week and the bound it was approaching degrades by *truncating silently*, so
-the first symptom would have been rules quietly not in effect with nothing in the
-transcript to say which. Same class as the guard-domain law: **a bound that
-degrades quietly is not a bound.** The guard fails loudly at a budget far below
-the limit, so the file is refused at commit time long before anything is cut, and
-the domain is **computed** (every `CLAUDE.md` in the tree, plus `.claude/LESSONS.md`)
-rather than a hand-listed path that a new always-loaded file would silently escape.
 
 ## Important Rules (NEVER)
 
