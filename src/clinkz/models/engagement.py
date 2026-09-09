@@ -471,6 +471,29 @@ class SafetyPolicy(BaseModel):
     # the observed stop (:mod:`clinkz.safety.lockout`) is the other half and the
     # one that reads the target rather than assuming it.
     max_credential_attempts_per_account: int = Field(default=8, ge=0)
+    #: Credential attempts held back from the DETERMINISTIC login pass, so the
+    #: adaptive layer that runs after it is not starved by construction.
+    #:
+    #: Invariant 88's shape, one component along: being last is what starves a
+    #: consumer, so it RESERVES. Measured on cal.diy — a target whose login the
+    #: parser cannot read — the deterministic pass spent **8 of 8**: two form
+    #: attempts, then the JSON arm walking its route list with two identity-key
+    #: shapes each. Every one of them was a correct thing to try, and between
+    #: them they left the adaptive layer zero, so the capability recorded
+    #: NOT_ATTEMPTED on the one target it exists for. A budget a first consumer
+    #: may exhaust is not a shared budget, it is a first-come one.
+    #:
+    #: A login that has not worked in ``max - reserve`` attempts through the
+    #: deterministic arms will not work on the next one through the same arms:
+    #: those attempts differ in route and field NAME, not in anything that
+    #: learns. So the reserve costs the deterministic pass nothing it was going
+    #: to use, and buys the only consumer that can try something else.
+    #:
+    #: ``0`` disables the reserve, which is the pre-existing behaviour exactly.
+    #: The governor clamps it to ``budget - 1`` so a reserve larger than the
+    #: allowance cannot starve the deterministic pass instead — the same defect
+    #: pointing the other way.
+    adaptive_auth_credential_reserve: int = Field(default=3, ge=0)
 
 
 class RoleCredential(BaseModel):

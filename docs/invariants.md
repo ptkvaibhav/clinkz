@@ -2285,3 +2285,189 @@ reason is what a later reader acts on. The auth surface those 23 chunks carry is
 different consumer's problem: the destination `/api/auth/callback/credentials`
 appears nowhere as a literal, and is composed at runtime in chunk 13 from a base in
 the same chunk and a provider literal in chunk 28.
+
+## 102 — a destination composed at runtime is not a reading problem
+
+Every previous defect in this engine's auth stack was a reading defect, and every
+fix made the deterministic path strictly stronger: a name oracle where a shape
+oracle belonged (invariant 91, 94, 98), a boolean where three values belonged, a
+control arm that was missing. cal.diy is the first one that is not.
+
+The deterministic pass reads its login page correctly and completely: a `<form>`
+declaring **no `action`**, so the credential POST is *defaulted* to `/login`
+rather than addressed; a GET and a POST that come back **byte-identical**
+(~383,5xx bytes) for any account; a `csrfToken` hidden field with **no cookie of
+that shape** in the jar; `X-Powered-By: Next.js` and `Vary: rsc,
+next-router-state-tree` in the headers; **31 referenced chunks, 1.66 MB**. Six
+correct observations, and none of them says where the credential goes.
+
+The destination is composed at runtime from a base in one chunk and a provider
+literal in another. **It is not a literal anywhere.** The route *is* recoverable
+from the full chunk set — engagement `00ad137e` fetched 8 of 31 and missed it,
+which is a real gap in the ingestor worth closing — but closing it does not make
+this a reading problem in general. A framework's route convention is a property
+of the framework, and a deployment need not state it anywhere at all.
+
+What produces the destination is *knowing the stack*, and that is the first thing
+in this project a model can contribute that the deterministic layer cannot
+compute. So the agent's job is stated narrowly: **propose** from the framework
+identity plus the deterministic facts already held. Not find, not search, not
+crawl.
+
+Three rules make a model safe in the credential path, and each is the answer to a
+different question about what could go wrong.
+
+**"Could it claim a session?"** No. `AuthProposal` — the only thing parsed out of
+a model's answer — has no `established`, no `outcome`, no verdict field of any
+kind. `AuthAgentOutcome.AUTHENTICATED` is written at one place, on the line after
+`assert_authenticated` returned `established=True`. The test that pins it is a
+pair: identical proposal, identical dispatch, identical `200`-with-a-cookie,
+differing only in what the asserter says — one authenticates and one abstains. If
+the loop could conclude anything from the exchange itself, the two would not
+differ and the assertion would be decoration.
+
+**"Could it move a secret, or author a request?"** No. The model names FIELDS and
+the engine supplies every VALUE. There is no body field on `AuthProposal`, no
+header field, no raw-request field; a model answering `{"body":
+"user=admin&pass=hunter2"}` has nowhere for it to land. The credential is
+inserted by the loop, never quoted into a prompt. The one path by which a value
+from a response enters a credential body is a read: its JSON keys become
+referenceable NAMES, the loop stores the values, and the model sees only the
+names — which is what makes an application needing a fetched token reachable
+without the model ever authoring the token.
+
+**"Could it send something we would not have sent?"** No. Ten deterministic
+refusals, each named, each with its own fix, and every one of them a rule this
+engine would apply to a request from any source — a gate whose rules only make
+sense because a model wrote the input is a gate nobody can reason about. The
+`destructive` refusal is `safety/destructive.py` unchanged: a login shape is not
+a licence to POST anywhere.
+
+**Deterministic first is a property of the call graph**, not a comment.
+`_adaptive_auth` has exactly two call sites, both in `_authenticate_role`, each
+guarded by a test for the session not being seated. DVWA, Juice Shop and Meridian
+all seat and prove a session deterministically, so on those three the layer is
+unreachable and each records `NOT_ENGAGED` with zero LLM turns and zero requests.
+The test drives the pass with an LLM that **raises on contact**, because a fake
+that merely counted calls would let a zero pass for the wrong reason: a fake
+nobody wired up also records zero. Its paired positive control drives the same
+harness with a failing login and asserts the model IS reached.
+
+**The budget cannot be spent past.** `credential_attempts_remaining` is the
+pre-flight — a loop that proposes an attempt it cannot afford spends a turn and
+learns nothing — and it never disagrees with the gate it is checking; a recorded
+stop returns `0` ahead of the arithmetic (invariant 92), and an unset bound
+returns `None` rather than `0`, which already means *unbounded* to
+`_credential_decision`.
+
+Arming the per-account counter used to be pinned by a COUNT
+(`test_only_one_place_arms_the_chokepoints_counter`), and a count is the wrong
+instrument for the property it protects: it refuses a *correct* second arming
+exactly as loudly as an accidental one. It is a declared table now, so a new
+arming site fails the build until somebody writes down what it sends and why the
+budget should see it.
+
+**The disclosure renders on a clean run too.** A section appearing only when a
+model steered the login makes its presence the signal, and a reader has to know
+the section exists to read its absence — invariant 15's rule. Which layer seated
+the session, what was proposed and why, and what was concluded are three separate
+facts because they are separate in the engine; a session the adaptive layer
+seated is still a session the assertion proved, and the reader deciding how much
+to trust the authenticated coverage is entitled to both facts rather than to the
+stronger one alone.
+
+Measured offline over the whole corpus (`scripts/auth_agent_corpus.py`,
+2026-09-09): **350** login exchanges in **192** bundles, **0** vacuous briefings,
+**0** unfired gate rules. The three richest briefings in the corpus — 11 facts
+each — are the cal.diy exchanges, which is the shape the capability claim needs:
+the most informative input this engine ever had is the target its parser could
+not read. The driver's first version reported `destructive` as unfired, because
+its scope predicate was exact-URL and every destructive case names a path under
+the target, so the out-of-scope rule shadowed it one line earlier. A gate whose
+later rules are shadowed reports clean for the same reason a dead instrument
+does.
+
+**Detail → [`methodology/adaptive-authentication.md`](methodology/adaptive-authentication.md).**
+
+### 102, continued — the three rules the live runs forced
+
+Stage A was validated against four live targets, and every one of them found
+something. The three below are separable rules that the adaptive layer did not
+create — it only made them visible, by being the first consumer to run *after*
+another consumer had already spent from the same account.
+
+**A third credential-observation site had no control.** Invariant 98 gave
+`_login_verdict` and `classify_lockout` a control arm, and the authenticator's
+two form arms pass it. The JSON arm observes somewhere else entirely — through
+`HTTPClientTool`, whose chokepoint calls `observe_credential_response` on every
+credential-bearing POST — and that site passed nothing. cal.diy's login page
+ships the strings `rate limit` and `try again later` in 383 KB of Next.js shell.
+Traced on a live run: **three observations, two controlled and one not.** The two
+form attempts correctly DISCARDED the phrase against their control; the third
+classified the same bytes as a rate-limit stop, which refuses every later
+credential for the account. A stop asserting the client's account is rate
+limited, produced by a marketing string in a page footer — and, because the
+adaptive layer runs after the deterministic pass, a stop that took the whole
+capability with it.
+
+The control is now armed beside `credential_account`, by the same caller, and the
+domain is COMPUTED: `test_every_credential_arming_site_arms_the_control_too`
+walks the source for every assignment of `credential_account` and fails on one
+that never mentions the control. A caller with no un-credentialed response to
+compare against may pass `""` — which discards nothing, exactly the behaviour
+that predates the parameter — but it must do so by naming the attribute rather
+than by never mentioning it.
+
+**Being last is what starves a consumer, so it RESERVES.** Invariant 88's rule,
+one component along. Measured on cal.diy with the control fixed: the
+deterministic pass spent **8 of 8** — two form attempts, then the JSON arm
+walking its route list with two identity-key shapes each. Every one of those was
+a correct thing to try, and between them they left the adaptive layer zero, so
+the capability recorded `NOT_ATTEMPTED` on the one target it exists for. A budget
+a first consumer may exhaust is not a shared budget; it is a first-come one.
+
+`SafetyPolicy.adaptive_auth_credential_reserve` (default 3) is held back from the
+deterministic pass. It is clamped to `budget - 1`, because a reserve larger than
+the allowance starves the deterministic pass instead — the same defect pointing
+the other way — and `0` restores the previous behaviour exactly. The reserve
+costs the deterministic pass nothing it was going to use: its remaining attempts
+differ from its earlier ones in route and field NAME, not in anything that learns
+from the last answer.
+
+`credential_attempts_remaining` is the pre-flight, and the property that matters
+is that it never disagrees with the gate it is checking — a pre-flight saying
+"one left" where `authorize` refuses would send a caller into a refusal it had
+just been told it could avoid.
+
+**Session evidence is the DELTA, not the jar.** Invariant 91's rule, violated by
+this loop's first version and caught on the same run. Turn 1's read of the
+framework's CSRF route was issued two cookies; turn 2's credential POST was
+answered `302` to an explicit rejection and set NONE; and the loop ran the
+authenticated-state assertion anyway — against the CSRF cookies. The assertion
+correctly found nothing, and the abstention then reported "1 credential POST
+produced session material", which was a statement about the jar wearing the
+credential's name. The jar is CARRIAGE — a token fetched two turns earlier has to
+be presented on the POST — and the delta is EVIDENCE: a `Set-Cookie` on *this*
+response, or a token in *this* body.
+
+The same run produced the count defect one layer up: the abstention said "3
+credential POSTs produced session material" above three transcript lines, two of
+which said "set no cookie". A count must name the population its sentence is
+about.
+
+**And a proposal's signature must capture everything that changes the bytes.**
+Against a Ghost admin panel the loop reached the correct endpoint, was answered
+`401` because the API declares its identity field as `username` while the
+proposal sent `email`, and re-POSTed. Whether that second POST was a corrected
+retry or a verbatim repeat is the whole question — and a signature of `(kind,
+method, url, content_type)` gives the same answer to both, so it could neither
+refuse the waste nor permit the fix. The field names are in the signature; the
+repeat rule covers what was DISPATCHED rather than only what was refused; and the
+transcript renders the field NAMES each POST carried, because a reader looking at
+two identical lines cannot tell which of the two happened.
+
+The turn ceiling moved from 3 to 6 for the same class of reason: at 3 it was the
+operative bound rather than the backstop, and the two bounds that are actually
+reasoned about — the credential reserve and the read ceiling — never got to bind.
+It stopped both cal.diy and Ghost exactly one move short of the read that would
+have settled the open question.

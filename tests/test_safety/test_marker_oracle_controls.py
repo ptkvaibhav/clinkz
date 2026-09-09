@@ -440,3 +440,136 @@ def test_the_blocking_oracle_now_takes_a_control() -> None:
     classification, reason = DECLARED["safety/governor.py::_looks_blocked"]
     assert classification == _Control.HAS_CONTROL
     assert "no traffic" in reason
+
+
+def test_the_blocking_body_arm_declares_what_it_lost() -> None:
+    """A control that narrows an oracle has a cost, and the cost is written down.
+
+    ``_looks_blocked``'s body arm discards a signature this target already served
+    in an unblocked response. That is right, and it costs exactly one case: a
+    target that GENUINELY blocks with a phrase it also ships unconditionally.
+    An SPA whose error shell carries "access denied" on every route, and which
+    then really does start refusing us with that same shell, is invisible to the
+    body arm — the marker was learned as benign before the block began.
+
+    The case is accepted rather than mitigated, and the boundary is DECLARED
+    (:data:`~clinkz.safety.governor.BLOCKING_BODY_ARM_BOUNDARY`) rather than left
+    in the commit message that introduced the control. The next reader who finds
+    a run that kept hammering a blocking target should find the sentence saying
+    this was decided, not rediscover it as a bug.
+
+    Two things the declaration must say, because they are what make the trade
+    defensible rather than merely stated: the loss is LATE detection and not
+    absent detection (the status arm is untouched), and the alternative
+    generates absences that read as a clean target.
+    """
+    from clinkz.safety.governor import BLOCKING_BODY_ARM_BOUNDARY
+
+    boundary = BLOCKING_BODY_ARM_BOUNDARY.lower()
+    assert "429" in boundary and "503" in boundary, (
+        "the boundary must name the arm that still fires, or it reads as a hole "
+        "rather than as a narrowing"
+    )
+    assert "late" in boundary, "detected LATE is not the same as never detected"
+    assert "clean target" in boundary, (
+        "the boundary must say what the alternative costs — a false halt generates "
+        "absences that read as an application with nothing to find"
+    )
+    assert len(BLOCKING_BODY_ARM_BOUNDARY.split()) >= 40
+
+
+def test_the_boundary_reaches_the_operator_beside_the_discards(tmp_path) -> None:
+    """The sentence sits in ``stats()`` next to ``benign_block_markers``.
+
+    A boundary only in a source comment is a boundary the operator reading "we
+    ruled out 'access denied'" never sees. They are the person who has to decide
+    whether the run they are looking at was blocked, so the discard and the rule
+    behind it belong in one record.
+    """
+    from clinkz.safety.governor import BLOCKING_BODY_ARM_BOUNDARY, EngagementGovernor
+
+    governor = EngagementGovernor("boundary-test", outputs_root=tmp_path)
+    stats = governor.stats()
+    assert stats["blocking_body_arm_boundary"] == BLOCKING_BODY_ARM_BOUNDARY
+    assert "benign_block_markers" in stats
+
+
+def test_the_chokepoints_credential_observation_takes_a_control() -> None:
+    """The THIRD credential-observation site, and the one invariant 98 missed.
+
+    ``_login_verdict`` and ``classify_lockout`` got a control arm, and the
+    authenticator's two form arms pass it. The JSON arm observes somewhere else
+    entirely — through ``HTTPClientTool``, whose chokepoint calls
+    ``observe_credential_response`` on every credential-bearing POST — and that
+    site passed nothing.
+
+    Measured on cal.diy: its 383 KB login page ships the strings ``rate limit``
+    and ``try again later`` in every response. The two form attempts correctly
+    DISCARDED them against their control; this site then classified the same
+    bytes as a rate-limit stop, which refuses every later credential for the
+    account. A stop asserting the client's account is rate limited, produced by
+    a string in a page footer — and, because the adaptive-auth layer runs after
+    the deterministic pass, a stop that took the whole capability with it.
+
+    Asserted on the SIGNATURE and the wiring rather than on behaviour, because
+    the failure mode is a parameter nobody passes: a control that exists and is
+    not handed over is byte-identical to no control at all.
+    """
+    import inspect
+
+    from clinkz.tools.http_client import HTTPClientTool
+
+    signature = inspect.signature(HTTPClientTool._observe_credential)
+    assert "control_body" in signature.parameters, (
+        "the chokepoint's lockout classifier takes no control — the same defect "
+        "invariant 98 fixed for _login_verdict and classify_lockout"
+    )
+
+    source = inspect.getsource(HTTPClientTool)
+    assert "control_body=self.credential_control_body" in source, (
+        "the control is declared and not handed over, which is byte-identical to having none"
+    )
+    assert "control_body=control_body" in source, (
+        "the control reaches classify_lockout, not just the method boundary"
+    )
+
+
+def test_every_credential_arming_site_arms_the_control_too() -> None:
+    """The account and its control are armed together, or the budget is spent blind.
+
+    A caller that names the account and supplies no control is a caller whose
+    credential attempts can be stopped by the application's own vocabulary — and
+    it is exactly the shape that was live until cal.diy exposed it. Computed
+    over the source rather than listed, so a fourth arming site has to answer
+    this question before it can send anything.
+
+    The exemption is stated where it applies: a site with no un-credentialed
+    response to compare against passes ``""``, which discards nothing and is the
+    behaviour that predates the parameter — but it must do so DELIBERATELY, by
+    naming the attribute, rather than by never mentioning it.
+    """
+    src = Path(__file__).resolve().parents[2] / "src" / "clinkz"
+    arming: dict[str, set[str]] = {}
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        attrs = {
+            target.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Attribute)
+            and target.attr in ("credential_account", "credential_control_body")
+        }
+        if "credential_account" in attrs:
+            arming[path.relative_to(src).as_posix()] = attrs
+
+    assert arming, "the scanner found no arming site at all — it is measuring nothing"
+    blind = sorted(
+        name
+        for name, attrs in arming.items()
+        if "credential_control_body" not in attrs and not name.endswith("http_client.py")
+    )
+    assert not blind, (
+        "these callers name the account for the per-account budget and never mention "
+        f"the lockout control, so their attempts can be stopped by page furniture: {blind}"
+    )

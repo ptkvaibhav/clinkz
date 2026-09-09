@@ -12,7 +12,17 @@ structural view — module layout, phase steps, data flow — see
 
 - **Orchestrator** — coordinator. Anthropic primary, like every other role under
   routing v2 (**detail → [`docs/provider-routing.md`](docs/provider-routing.md)**).
-  Delegates all tool work.
+  Delegates all tool work. It also owns the **only** LLM call in this engine that
+  is not made by a phase agent: the adaptive-auth proposal
+  (`engagement/auth_agent.py`, invariant 102), reached from two guarded call
+  sites in `_authenticate_role` when the deterministic login path seated no
+  session. Its answer shapes what is TESTED — whether the run is authenticated at
+  all — so it is classified `PLANNING`; what bounds a degraded answer is the
+  deterministic proposal gate and `assert_authenticated`, not the provider. That
+  caller is why `engagement` joined the call-purpose classification domain, and
+  the domain was widened on the commit that ADDED the caller rather than after
+  it. **Detail →
+  [`docs/methodology/adaptive-authentication.md`](methodology/adaptive-authentication.md).**
 - **Recon (v2)** — Anthropic (`LLM_PROVIDER_RECON=anthropic`). Full TCP scan → LLM
   analyses ports → service/version detection → LLM extracts tech stack →
   web-specific recon → **package identity** → LLM synthesizes → `ReconResult`.

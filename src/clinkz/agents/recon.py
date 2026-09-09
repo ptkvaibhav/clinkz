@@ -1122,4 +1122,7 @@ class ReconAgent(BaseAgent):
             package_identity_inputs=(
                 package_identity.report.inputs_examined if package_identity is not None else 0
             ),
+            package_identity_coverage_note=(
+                package_identity.report.coverage_note if package_identity is not None else ""
+            ),
         )

@@ -65,6 +65,74 @@ class _AddressMatch(StrEnum):
     PUBLISHED_PORT = "published_port"
 
 
+class PortGateRule(StrEnum):
+    """Whether an entry's declared port is comparable with a dispatch's, and why.
+
+    The port gate has two rules and only one of them is arithmetic, so the
+    second one gets a name. It used to be an ``if`` with a two-line comment
+    inside :meth:`EngagementScope._equivalent_and_bound`, which is where a rule
+    goes to be rediscovered: the next reader sees a branch that skips a check
+    and has to reconstruct from scratch why skipping it is not a hole.
+
+    * :attr:`COMPARE` — the two addresses live in one port namespace, so the
+      numbers mean the same thing and :meth:`EngagementScope._port_binds`
+      decides.
+    * :attr:`ALREADY_BOUND_BY_THE_PORT` — the match was made THROUGH a port. A
+      loopback dispatch to ``localhost:8080`` matched the scope entry
+      ``clinkz-dvwa:80`` because 8080 is the host port that container publishes,
+      so the dispatch's port is what identified the container in the first
+      place. Comparing 8080 against 80 afterwards compares a host-namespace
+      number with a container-namespace one and refuses every docker-mode
+      engagement this project runs.
+
+    The distinction is not a docker convenience. It is the general form: a port
+    that participated in ESTABLISHING an identity cannot also be evidence
+    against it, and the only reason there is one instance of it today is that
+    docker publishing is the only namespace crossing this engine resolves.
+    """
+
+    #: One namespace. The declared port binds, or refuses.
+    COMPARE = "compare"
+    #: The target's port already named the entry. Nothing left to compare.
+    ALREADY_BOUND_BY_THE_PORT = "already_bound_by_the_port"
+
+    @property
+    def reason(self) -> str:
+        """Why this rule applies, for a refusal message or an audit."""
+        if self is PortGateRule.COMPARE:
+            return (
+                "the target and the scope entry resolve within one port namespace, so a "
+                "port each of them names is a port comparable with the other's"
+            )
+        return (
+            "the dispatch's port is what matched this entry — it named the container "
+            "publishing that host port — so the entry's container-side port and the "
+            "dispatch's host-side port are numbers from two different namespaces and "
+            "comparing them would refuse every docker-published target"
+        )
+
+
+def port_gate_rule(match: _AddressMatch) -> PortGateRule:
+    """Which port rule an address match puts a dispatch under.
+
+    Pure, total over :class:`_AddressMatch`, and separate from the code that
+    applies it so the decision is testable without constructing a scope, a
+    docker network and a resolver.
+
+    Args:
+        match: How the target's address matched the entry.
+
+    Returns:
+        The rule. :attr:`_AddressMatch.NONE` never reaches here — an entry that
+        did not match has no port question — and is mapped to
+        :attr:`PortGateRule.COMPARE`, the strict answer, so a future caller that
+        reaches it is refused rather than exempted.
+    """
+    if match is _AddressMatch.PUBLISHED_PORT:
+        return PortGateRule.ALREADY_BOUND_BY_THE_PORT
+    return PortGateRule.COMPARE
+
+
 def declared_port(value: str) -> int | None:
     """The port a scope entry EXPLICITLY names, or ``None``.
 
@@ -455,8 +523,7 @@ class EngagementScope(BaseModel):
         match = self._address_match(target_host, target_port, entry)
         if match is _AddressMatch.NONE:
             return False
-        if match is _AddressMatch.PUBLISHED_PORT:
-            # The target's port is what named the container. Nothing to compare.
+        if port_gate_rule(match) is PortGateRule.ALREADY_BOUND_BY_THE_PORT:
             return True
         return self._port_binds(entry, target_port)
 

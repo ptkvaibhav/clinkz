@@ -4,9 +4,18 @@ Two properties, and they fail for different reasons:
 
 1. **Nobody forgot.** Every ``generate_text`` / ``reason`` / ``research`` call
    made on an LLM client under ``src/clinkz/agents/``,
-   ``src/clinkz/orchestrator/`` and ``src/clinkz/research/`` appears in
-   :data:`DECLARED_CALL_SITES` with a reason, and is lexically wrapped in an
-   ``llm_call_purpose(...)`` block naming the same site and the same purpose.
+   ``src/clinkz/orchestrator/``, ``src/clinkz/research/`` and
+   ``src/clinkz/engagement/`` appears in :data:`DECLARED_CALL_SITES` with a
+   reason, and is lexically wrapped in an ``llm_call_purpose(...)`` block naming
+   the same site and the same purpose.
+
+   **The domain is widened BEFORE the caller lands in it, not after.** ``engagement``
+   held no LLM call site when it was added here, and that is exactly when a domain
+   can be widened for free: a package added to this tuple on the same commit that
+   puts the first call site in it is a package whose guard was written by the person
+   who already knew the answer. Widening afterwards means the first run of the new
+   caller happened under ``PLANNING``-by-default, which is the permissive value and
+   the failure mode this module exists to close.
    Without this, an unclassified call site quietly inherits ``PLANNING`` — the
    permissive value — which is exactly the failure mode routing v2 exists to
    close. Same shape as ``test_tool_wiring_decisions``: a decision that is not
@@ -43,7 +52,12 @@ _SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "clinkz"
 #: The packages whose LLM call sites must be classified. ``llm/`` itself is
 #: excluded: it is the plumbing that dispatches these calls, not a caller with a
 #: purpose of its own.
-_SCANNED = ("agents", "orchestrator", "research")
+#:
+#: ``engagement`` is here because the adaptive-auth agent
+#: (:mod:`clinkz.engagement.auth_agent`) is the first LLM caller outside
+#: ``agents``/``orchestrator``, and a package that reaches an LLM without being in
+#: this tuple is a package where "nobody classified it" is silent rather than red.
+_SCANNED = ("agents", "orchestrator", "research", "engagement")
 
 _LLM_METHODS = frozenset({"generate_text", "reason", "research"})
 

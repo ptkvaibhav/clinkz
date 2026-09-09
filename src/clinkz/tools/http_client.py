@@ -182,6 +182,33 @@ class HTTPClientTool(ToolBase):
         # client-facing action log. Every other caller leaves it empty and this
         # tool behaves byte for byte as before.
         self.credential_account: str = ""
+        # The control for the lockout classifier, armed by the SAME caller that
+        # arms the account and for the same reason: this instance is about to
+        # send a credential, and the caller is the only thing that holds a
+        # response the credential did not produce.
+        #
+        # Without it this was the THIRD credential-observation site and the only
+        # uncontrolled one. Invariant 98 gave ``_login_verdict`` and
+        # ``classify_lockout`` a control arm and reached the authenticator's two
+        # form arms; the JSON arm observes HERE, through the chokepoint, and was
+        # missed. Measured on cal.diy: its 383 KB login page ships the strings
+        # ``rate limit`` and ``try again later`` in every response, the two form
+        # attempts correctly DISCARDED them against their control, and this site
+        # then classified the same bytes as a rate-limit stop — which refuses
+        # every later credential for the account and, with it, the entire
+        # adaptive-auth layer. A stop asserting the client's account is rate
+        # limited, produced by a marketing string in a page footer.
+        #
+        # Empty is the old behaviour exactly: ``classify_lockout`` discards
+        # nothing when it has no control, so a caller that cannot supply one is
+        # given the answer it always got rather than a quietly worse one.
+        self.credential_control_body: str = ""
+        # Whether this instance's credential POSTs may spend the share the
+        # policy holds back for the adaptive layer. Only that layer sets it: it
+        # is the one consumer that runs AFTER another has already spent from the
+        # same account, and a budget a first consumer may exhaust is not a
+        # shared budget.
+        self.credential_reserve: bool = False
 
     @property
     def name(self) -> str:
@@ -362,6 +389,7 @@ class HTTPClientTool(ToolBase):
             body=args.get("body", "") or "",
             stage=self._stage or self.category,
             account=account,
+            credential_reserve=self.credential_reserve,
             # A LOGIN is not a credential CHANGE, and the account naming is the
             # declaration that says which one this is. Without it the
             # destructive classifier reads the body's own field names, and
@@ -407,11 +435,19 @@ class HTTPClientTool(ToolBase):
             session_bearing=args.get("session_mode", SESSION_AMBIENT) == SESSION_AMBIENT,
         )
         if account:
-            self._observe_credential(governor, raw, url=args["url"], account=account)
+            self._observe_credential(
+                governor,
+                raw,
+                url=args["url"],
+                account=account,
+                control_body=self.credential_control_body,
+            )
         return raw
 
     @staticmethod
-    def _observe_credential(governor: Any, raw: str, *, url: str, account: str) -> None:
+    def _observe_credential(
+        governor: Any, raw: str, *, url: str, account: str, control_body: str = ""
+    ) -> None:
         """Classify one login response for lockout / rate-limit / captcha.
 
         Separate from :meth:`_observe`, which is about the target blocking the
@@ -419,6 +455,20 @@ class HTTPClientTool(ToolBase):
         CREDENTIAL, which is a different observation with a different remedy: the
         first halts the run, the second stops offering one account a password.
         A response that never arrived is not evidence either way.
+
+        **And it takes a control**, for the reason every marker oracle in this
+        engine takes one: a phrase the target serves whatever it is sent is the
+        application's own vocabulary and not evidence about this response. See
+        :attr:`credential_control_body` for the measurement that put it here.
+
+        Args:
+            governor: The active governor.
+            raw: The tool's JSON envelope for the response.
+            url: Where the credential went.
+            account: Which account it was for.
+            control_body: A response this same target served that the credential
+                did not produce. ``""`` discards nothing, which is the behaviour
+                this site had before the parameter existed.
         """
         try:
             data = json.loads(raw)
@@ -435,6 +485,7 @@ class HTTPClientTool(ToolBase):
             status=status,
             headers=data.get("response_headers") or {},
             body=data.get("response_body") or "",
+            control_body=control_body,
         )
 
     async def _dispatch(self, args: dict[str, Any]) -> str:

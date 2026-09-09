@@ -74,7 +74,7 @@ from contextlib import asynccontextmanager
 from enum import StrEnum
 from html.parser import HTMLParser
 from typing import Any, NamedTuple
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 from pydantic import BaseModel
 
@@ -304,6 +304,36 @@ class AuthResult(BaseModel):
     framework_fingerprint: str = ""
     # The credential POST came back the same size as the login page GET.
     post_changed_nothing: bool = False
+    # Every input NAME the login form declared — identity, secret, hidden and
+    # submit. Names are schema the application chose, never data, which is why
+    # they travel out of here and values do not. Read by the adaptive-auth
+    # agent, which may reference a name and may never invent one.
+    form_field_names: list[str] = []
+    # Cookie NAMES the login-page GET issued. The same rule one layer along: a
+    # cookie VALUE is a session and is redacted, a cookie NAME is schema. "The
+    # page set no cookie at all" and "the page set one we do not recognise" are
+    # different diagnoses and a bare count collapses them.
+    login_page_cookie_names: list[str] = []
+    # What the login page served ITSELF as. Distinct from the form's enctype:
+    # an application whose login page is already JSON is not a page with a form
+    # whose enctype we failed to read.
+    login_page_content_type: str = ""
+    # Same-origin script URLs the login page referenced. The inventory an agent
+    # reasons over when the credential destination is composed at runtime from
+    # parts no single served file carries.
+    referenced_scripts: list[str] = []
+    # Lockout/rate-limit/captcha phrases the LOGIN PAGE ships — i.e. phrases a
+    # later response cannot be stopped on, because this target serves them
+    # whatever it is sent. The PRODUCER declares them, and it declares the
+    # phrases rather than the page: the control is used for exactly one
+    # comparison, the page is 383 KB on the target that found this, and a field
+    # that large on a model this engine serialises is a transcript nobody reads
+    # and a redaction surface nobody needs.
+    #
+    # Consumed by the adaptive layer, which proposes destinations the engagement
+    # has no un-credentialed baseline for and would otherwise be stopped by the
+    # same string that stopped the deterministic arm.
+    login_page_lockout_markers: list[str] = []
 
     def deterministic_observations(self) -> list[str]:
         """The facts the login page itself stated, as sentences.
@@ -377,10 +407,24 @@ class _EncodingOrder(NamedTuple):
     The reason travels with the order because "we tried the form first" and "we
     tried the form first BECAUSE nothing about this target favoured JSON" are
     different statements, and only the second one is diagnosable.
+
+    ``login_page`` rides along because this method is the one place in the JSON
+    arm's path that fetches the login page WITHOUT a credential, which makes it
+    the only free control the arm can have. Carrying it costs nothing — the
+    fetch already happened — and not carrying it is what left the chokepoint's
+    lockout classifier uncontrolled.
+
+    Attributes:
+        arms: Which arm runs first.
+        reason: The observation that decided.
+        login_page: The login page body this probe fetched, or ``""`` when the
+            order was decided without fetching (an operator declaration) or the
+            fetch failed. Empty means "no control", never "an empty control".
     """
 
     arms: tuple[str, ...]
     reason: str
+    login_page: str = ""
 
 
 class CredentialAttemptRefusedError(Exception):
@@ -674,6 +718,125 @@ def _framework_fingerprint(headers: dict[str, str] | None) -> str:
         parts.append(f"Server: {server}")
 
     return "; ".join(parts)
+
+
+def _form_field_names(form: _FormFields) -> list[str]:
+    """Every input NAME the login form declared, deduplicated and sorted.
+
+    Names only. This list leaves the authenticator and reaches a prompt, and the
+    rule that makes that safe is that a field NAME is schema the application
+    published while a field VALUE may be a CSRF token, a session, or the
+    credential itself. Sorted so two runs against one target produce the same
+    briefing and a transcript diff means something.
+
+    Args:
+        form: The login form, as parsed.
+
+    Returns:
+        The names, sorted. Empty for a page that declared no inputs.
+    """
+    names = {
+        *form.hidden_fields,
+        *form.submit_fields,
+        *([form.username_field] if form.username_field else []),
+        *([form.password_field] if form.password_field else []),
+    }
+    return sorted(n for n in names if n)
+
+
+class _ScriptSrcParser(HTMLParser):
+    """Collect ``<script src>`` values from a page.
+
+    Separate from :class:`_FormFieldParser` rather than folded into it: that one
+    answers "which form does a credential belong in", this one answers "what
+    else did this page load", and a parser that answers two questions is a
+    parser whose second answer nobody checks.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.srcs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "script":
+            return
+        for key, value in attrs:
+            if key == "src" and value:
+                self.srcs.append(value)
+
+
+def _referenced_scripts(html: str, page_url: str, limit: int = 60) -> list[str]:
+    """Same-origin script URLs the page referenced, resolved and deduplicated.
+
+    Same-origin only, and that is a scope statement rather than a tidiness one:
+    a third-party CDN bundle is not this application, an engine that listed one
+    would be inviting a reader to reason about somebody else's code, and a URL
+    a target names is a URL a target chose.
+
+    Args:
+        html: The login page body.
+        page_url: What served it, for resolving a relative ``src``.
+        limit: How many to keep. A code-split application references hundreds;
+            the list is context for a proposal, not an inventory, and the
+            producer that DOES measure the inventory declares its own coverage
+            (:mod:`clinkz.agents._package_identity`).
+
+    Returns:
+        Absolute URLs, in page order, deduplicated, at most *limit*.
+    """
+    parser = _ScriptSrcParser()
+    try:
+        parser.feed(html or "")
+    except Exception:  # noqa: BLE001 — a malformed page yields what parsed
+        pass
+    origin = _origin_of(page_url)
+    seen: dict[str, None] = {}
+    for src in parser.srcs:
+        absolute = urljoin(page_url, src)
+        if origin and _origin_of(absolute) != origin:
+            continue
+        seen.setdefault(absolute, None)
+        if len(seen) >= limit:
+            break
+    return list(seen)
+
+
+def _login_page_lockout_markers(html: str) -> list[str]:
+    """Lockout-vocabulary phrases this login page ships unconditionally.
+
+    Computed from :data:`~clinkz.safety.lockout.LOCKOUT_PHRASES` rather than
+    from a list here, so the control's vocabulary and the classifier's are the
+    same vocabulary by construction. A second copy would go stale on the side
+    nobody is looking at, which is the defect
+    :mod:`clinkz.safety.lockout` was written to close.
+
+    Args:
+        html: The login page as served WITHOUT a credential.
+
+    Returns:
+        The phrases present, sorted. Empty means the page ships none, which is
+        the common case and is why this costs nothing to carry.
+    """
+    from clinkz.safety.lockout import LOCKOUT_PHRASES
+
+    low = (html or "").lower()
+    return sorted({phrase for phrase, _kind in LOCKOUT_PHRASES if phrase in low})
+
+
+def _origin_of(url: str) -> str:
+    """``scheme://host:port`` for *url*, or ``""``."""
+    parsed = urlparse(url or "")
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _served_content_type(headers: dict[str, str] | None) -> str:
+    """The response's own content type, parameters dropped, lower-cased."""
+    for key, value in (headers or {}).items():
+        if key.lower() == "content-type":
+            return (value or "").split(";")[0].strip().lower()
+    return ""
 
 
 def _cookies_from_set_cookie(values: Iterable[str]) -> dict[str, str]:
@@ -1053,6 +1216,11 @@ class WebAuthenticator(ToolBase):
             csrf_fields_without_cookie=data.get("csrf_fields_without_cookie", []),
             framework_fingerprint=data.get("framework_fingerprint", ""),
             post_changed_nothing=data.get("post_changed_nothing", False),
+            form_field_names=data.get("form_field_names", []),
+            login_page_cookie_names=data.get("login_page_cookie_names", []),
+            login_page_content_type=data.get("login_page_content_type", ""),
+            referenced_scripts=data.get("referenced_scripts", []),
+            login_page_lockout_markers=data.get("login_page_lockout_markers", []),
         )
         return AuthOutput(
             tool_name=self.name,
@@ -1165,6 +1333,7 @@ class WebAuthenticator(ToolBase):
                     password,
                     api_login_url=api_login_url,
                     identity_field=identity_field,
+                    control_body=order.login_page,
                 )
                 result = api_result
 
@@ -1312,14 +1481,15 @@ class WebAuthenticator(ToolBase):
             if key.lower() == "content-type":
                 served = (value or "").split(";")[0].strip().lower()
                 break
+        page = parsed.response_body or ""
         if served == "application/json":
-            return _EncodingOrder(("json", "form"), f"the login URL serves {served}")
+            return _EncodingOrder(("json", "form"), f"the login URL serves {served}", page)
 
-        enctype = _parse_form_fields(parsed.response_body or "").form_enctype
+        enctype = _parse_form_fields(page).form_enctype
         if enctype == "application/json":
-            return _EncodingOrder(("json", "form"), f'the form declares enctype="{enctype}"')
+            return _EncodingOrder(("json", "form"), f'the form declares enctype="{enctype}"', page)
 
-        return _EncodingOrder(("form", "json"), "no observation favours JSON first")
+        return _EncodingOrder(("form", "json"), "no observation favours JSON first", page)
 
     async def _try_api_login(
         self,
@@ -1329,6 +1499,7 @@ class WebAuthenticator(ToolBase):
         *,
         api_login_url: str = "",
         identity_field: str = "",
+        control_body: str = "",
     ) -> AuthResult:
         """Attempt JSON/API authentication, declarations first.
 
@@ -1366,6 +1537,15 @@ class WebAuthenticator(ToolBase):
                 discovery; tried first.
             identity_field: Operator-declared identity field name. Overrides the
                 conventional shapes; tried first.
+            control_body: The login page as served WITHOUT a credential, from
+                the encoding-order probe that already fetched it. Handed to the
+                lockout classifier so a phrase this target ships in every
+                response cannot stop the run. It is a control for the ORIGIN
+                rather than for each route — the login page is the only
+                un-credentialed response this arm holds — which is sound for
+                exactly the thing being discarded: a string the application
+                ships unconditionally is its own vocabulary whichever route
+                echoes it back.
 
         Returns:
             AuthResult carrying ``bearer_token`` or ``session_cookies`` on
@@ -1408,7 +1588,7 @@ class WebAuthenticator(ToolBase):
             for body in bodies:
                 try:
                     status, resp_body, set_cookies = await self._api_post_json(
-                        url, body, account=username
+                        url, body, account=username, control_body=control_body
                     )
                 except CredentialRedirectRefusedError as refused:
                     # NOT "this route errored, try the next". The target asked
@@ -1597,7 +1777,7 @@ class WebAuthenticator(ToolBase):
         )
 
     async def _api_post_json(
-        self, url: str, payload: dict[str, str], *, account: str = ""
+        self, url: str, payload: dict[str, str], *, account: str = "", control_body: str = ""
     ) -> tuple[int, str, list[str]]:
         """POST ``payload`` as JSON to ``url``, returning ``(status, body, set_cookies)``.
 
@@ -1626,6 +1806,10 @@ class WebAuthenticator(ToolBase):
             account: The account this credential is for. Handed to the HTTP
                 chokepoint so the attempt is counted against the per-account
                 budget and named in the action log.
+            control_body: The login page served without a credential. Armed on
+                the same instance as *account* and for the same reason — the
+                chokepoint observes this response for lockout signals and only
+                the caller holds something the credential did not produce.
 
         Raises:
             CredentialRedirectRefusedError: A hop's destination is outside scope.
@@ -1645,6 +1829,7 @@ class WebAuthenticator(ToolBase):
         # which is what makes the two arms account for a credential POST the
         # same way.
         http.credential_account = account
+        http.credential_control_body = control_body
         body = json.dumps(payload)
         dispatched_to = url
         # Every hop's Set-Cookie, in order. A login answered 302-with-the-session
@@ -1943,7 +2128,10 @@ class WebAuthenticator(ToolBase):
 
                     # What the page STATED, read once and carried. Each of these
                     # was previously computed, used, and dropped before anything
-                    # an operator sees.
+                    # an operator sees. The last four exist for the adaptive-auth
+                    # agent, which reasons over a login page it could not act on
+                    # — and they are NAMES and URLs the page published, never
+                    # values, because this set reaches a prompt.
                     page_facts = {
                         "form_action_declared": bool(form.form_action.strip()),
                         "page_declared_a_form": form.from_form,
@@ -1951,6 +2139,11 @@ class WebAuthenticator(ToolBase):
                             form.hidden_fields, get_cookies
                         ),
                         "framework_fingerprint": _framework_fingerprint(get_walk.response.headers),
+                        "form_field_names": _form_field_names(form),
+                        "login_page_cookie_names": sorted(get_cookies),
+                        "login_page_content_type": _served_content_type(get_walk.response.headers),
+                        "referenced_scripts": _referenced_scripts(login_html, form_base),
+                        "login_page_lockout_markers": _login_page_lockout_markers(login_html),
                     }
                     if not page_facts["form_action_declared"]:
                         self._logger.warning(
@@ -2427,9 +2620,11 @@ class WebAuthenticator(ToolBase):
             # Step 2: Parse form fields
             form = _parse_form_fields(login_html)
 
-            # The same three readings the aiohttp arm makes, off the same page.
-            # Two arms that disagree about what the login page said would be a
-            # defect the execution mode hides.
+            # The same readings the aiohttp arm makes, off the same page. Two
+            # arms that disagree about what the login page said would be a
+            # defect the execution mode hides, so this block and its sibling are
+            # asserted key-for-key by
+            # ``test_both_transports_read_the_same_login_page_facts``.
             get_cookies = _cookies_from_set_cookie(get_set_cookies)
             page_facts = {
                 "form_action_declared": bool(form.form_action.strip()),
@@ -2438,6 +2633,11 @@ class WebAuthenticator(ToolBase):
                     form.hidden_fields, get_cookies
                 ),
                 "framework_fingerprint": _framework_fingerprint(get_walk.response.headers),
+                "form_field_names": _form_field_names(form),
+                "login_page_cookie_names": sorted(get_cookies),
+                "login_page_content_type": _served_content_type(get_walk.response.headers),
+                "referenced_scripts": _referenced_scripts(login_html, form_base),
+                "login_page_lockout_markers": _login_page_lockout_markers(login_html),
             }
             if not page_facts["form_action_declared"]:
                 self._logger.warning(

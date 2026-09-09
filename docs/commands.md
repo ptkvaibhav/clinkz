@@ -108,6 +108,36 @@ CLAUDE.md keeps a one-line index of the same set.
   arms were never dispatched against the corrected reference. Reporting that as
   a pass is the acceptance-criterion mistake itself; reporting it as a failure
   claims a measurement nobody made.
+- `python scripts/live_adaptive_auth_validation.py --target <url> --username <u>
+  --password <p> [--login-url <url>] [--exec-mode docker|local] [--json]` —
+  **LIVE.** Drives the real authentication path against a target and prints the
+  deterministic pass's observations beside the adaptive layer's transcript: what
+  it read, what it proposed, what came back, what it concluded. Skips recon,
+  scan, research, exploit and report; skips no part of the auth path, and in
+  particular **does not hand in the login URL** unless you pass `--login-url` —
+  the discovery gap a direct auth check hides is the one this project has been
+  bitten by before. Installs the same governor a real engagement installs, so the
+  per-account budget, the reserve, the rate limit and the action log all apply.
+  Exit `0` a session was seated (by either layer), `1` neither did — which is a
+  RESULT, and the transcript says why — `2` bad input.
+- `python scripts/auth_agent_corpus.py [--outputs-root <dir>] [--limit N]
+  [--json]` — **offline** replay of the adaptive-auth observer and proposal gate
+  over every recorded login exchange. Sends nothing; reads the raw curl dumps in
+  `outputs/*/tool_invocations/*_web_authenticator.json` and rebuilds the
+  briefing **through the engine's own reading functions**, imported rather than
+  copied, so a change to how the engine reads a login page changes what this
+  reports. Two questions with different failure modes: *is the briefing
+  non-vacuous on real data* (a briefing that reduces to "we fetched a page" is
+  an agent that could never have worked) and *which gate rules are dead
+  instruments* (invariant 94's shape — a refusal with no firing over the corpus
+  is named rather than assumed sound, and the proposals are synthesised from
+  URLs the corpus actually contains). A **positive control** runs before any
+  corpus number is printed, in both directions: a plainly permissible proposal
+  must pass and a plainly impermissible one must be refused, because a corpus of
+  zeros proves nothing about a measurement that cannot measure. Exits non-zero
+  when that control fails or when every briefing in the corpus is vacuous.
+  Measured 2026-09-09 over 350 exchanges in 192 bundles: 0 vacuous, 0 unfired
+  rules.
 - `python scripts/record_protopoll_fixtures.py` — **offline**, and the only
   driver here that starts its own target: it runs `docker/protopoll/app.js` on
   loopback, dispatches both arms of both prototype-pollution gadgets against

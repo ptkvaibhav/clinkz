@@ -507,6 +507,51 @@ of a needless re-login that rotates a working token mid-phase. Verification
 failure is not proof of health: if the probe cannot be made, it falls through to
 re-authentication.
 
+### When the assertion cannot be reached at all (invariant 102)
+
+Everything above is the deterministic path, and on DVWA, Juice Shop and Meridian
+it is the whole story: each seats and proves a session unaided, and the adaptive
+layer is unreachable on all three. It engages from exactly two call sites, both
+inside `_authenticate_role` and both guarded by *no session was seated* — the
+credential exchange failed, or it produced session material the assertion could
+not prove.
+
+What it does there is narrow: **propose** where this application's credential
+exchange actually happens, from the framework identity in the response headers
+plus the deterministic facts the login page already stated. It is for the case
+where reading harder cannot help — a destination composed at runtime from parts
+no single served file carries — and it changes none of the rules above. The
+assertion is still the oracle; the governor still counts every credential POST
+against the same per-account budget; scope, the destructive classifier and the
+crawl-safety rules are unchanged. The model names FIELDS and the engine supplies
+every VALUE, so nothing a model wrote reaches the wire.
+
+The client-facing document says which layer seated the session, on **every** run
+including the ones where the adaptive layer never engaged.
+
+Two rules in this layer came out of building it, and neither is about the agent.
+
+* **The per-account budget has a RESERVE.**
+  `SafetyPolicy.adaptive_auth_credential_reserve` (default 3) is held back from
+  the deterministic login pass, because measured on cal.diy that pass spent **8
+  of 8** — two form attempts, then the JSON arm walking its route list with two
+  identity-key shapes each — and left the layer that runs after it zero. A budget
+  a first consumer may exhaust is not a shared budget. Clamped to `budget - 1`,
+  so a large reserve cannot starve the login pass instead; `0` restores the
+  previous behaviour exactly. `credential_attempts_remaining` is the pre-flight
+  and never disagrees with the gate it checks.
+* **The chokepoint's lockout classifier takes a control.** `HTTPClientTool`
+  observes every credential-bearing POST for lockout signals, and it was the
+  third such site and the only uncontrolled one — invariant 98 reached the
+  authenticator's two form arms and missed this one. cal.diy's login page ships
+  `rate limit` and `try again later` in 383 KB of shell; the two form attempts
+  correctly discarded them and this site stopped the account on them. The control
+  is armed beside `credential_account`, and the domain is COMPUTED from the
+  source so a fourth arming site cannot skip the question.
+
+**Detail →
+[`methodology/adaptive-authentication.md`](methodology/adaptive-authentication.md).**
+
 `reauthentications` counts **successes only**. It used to be incremented on the
 way *in*, before anything had been attempted, so a run with no credential to
 re-authenticate with still reported having re-authenticated — in the report,
@@ -708,6 +753,8 @@ and it is sound" or "we could not look".
 | `engagement/artifact_scan.py` | the disclosure gate over `outputs/<id>/` **and the companion region beside it** |
 | `scripts/_artifact_io.py` | validation drivers' write path — a call site of `redact_structure`, not a second redactor |
 | `engagement/auth_state.py` | mechanism detection, the assertion, `SessionSentinel` |
+| `engagement/auth_agent.py` | the ADAPTIVE layer — reached only when the deterministic pass seated no session. The model PROPOSES a credential destination, `assert_authenticated` DECIDES, and `validate_proposal`'s ten named refusals stand between them |
+| `engagement/auth_agent_dispatch.py` | that loop's request path: the engagement's own `HTTPClientTool`, so scope, governor, per-account budget and action log all still apply, with an ISOLATED per-episode jar |
 | `engagement/dryrun.py` | `--dry-run` |
 | `safety/destructive.py` | the default-deny classifier |
 | `safety/governor.py` | rate, concurrency, kill switch, blocking, window |
@@ -739,10 +786,17 @@ detail → `docs/productization-engagement-safety.md`.**
   nothing, and binding to an inferred port refuses what the record permits. A
   ported EXCLUSION excludes that port only, by the same matcher. `allowed_ports`
   now binds when it is non-empty; it had been documented as a whitelist and read
-  by nothing. The docker published-port equivalence is exempt because that lookup
-  consumed the target's port to identify the container, which is a tighter bind
-  than a number comparison across a namespace where 8080 and 80 are not
-  comparable. Refusals carry a `reason` (`refusal_reason`) into the
+  by nothing. **The docker published-port exemption is a NAMED rule**
+  (`models/scope.py::PortGateRule`), not an `if` under a comment: that lookup
+  consumed the target's port to identify the container, so 8080 and 80 are
+  numbers from two namespaces and comparing them refuses every docker-mode
+  engagement. The general form is worth stating because it is not about docker —
+  **a port that participated in establishing an identity cannot also be evidence
+  against it** — and docker publishing is merely the only namespace crossing this
+  engine resolves today. `_equivalent_and_bound` READS the rule rather than
+  re-testing the enum beside it, because a name nothing calls is a comment with a
+  type annotation, and two places that must agree is one place that will not.
+  Refusals carry a `reason` (`refusal_reason`) into the
   scope-refusal record, so "unknown host" and "authorised host, unauthorised
   port" — opposite fixes — are not one boolean.
 - **Credentials are never on `EngagementScope`** — the scope is `model_dump()`-ed

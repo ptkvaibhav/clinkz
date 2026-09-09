@@ -365,6 +365,7 @@ class EngagementGovernor:
         field_names: list[str] | None = None,
         labels: list[str] | None = None,
         account: str = "",
+        credential_reserve: bool = False,
     ) -> RequestDecision:
         """Decide whether a request may be sent, and pace it if so.
 
@@ -397,6 +398,12 @@ class EngagementGovernor:
                 and refused once that budget is spent or once the target has
                 shown us it stopped evaluating credentials. Empty — every other
                 request in the engagement — is byte-identical to before.
+            credential_reserve: Whether this attempt may spend the share held
+                back by :attr:`SafetyPolicy.adaptive_auth_credential_reserve`.
+                False — the deterministic login pass, and everything else — is
+                refused once the unreserved share is gone. Only the adaptive
+                layer sets it, because it is the only consumer that runs after
+                another one has already spent from the same account.
 
         Returns:
             A :class:`RequestDecision`. Never raises.
@@ -470,7 +477,7 @@ class EngagementGovernor:
                 return decision
 
         if account:
-            credential_refusal = self._credential_decision(verb, url, account)
+            credential_refusal = self._credential_decision(verb, url, account, credential_reserve)
             if credential_refusal is not None:
                 self._log_refusal(credential_refusal, verb, url, body, stage)
                 return credential_refusal
@@ -529,7 +536,9 @@ class EngagementGovernor:
         """
         return (_origin(url), account)
 
-    def _credential_decision(self, verb: str, url: str, account: str) -> RequestDecision | None:
+    def _credential_decision(
+        self, verb: str, url: str, account: str, reserved: bool = False
+    ) -> RequestDecision | None:
         """Refuse a credential attempt that is spent or already answered, else ``None``.
 
         Two refusals, and they are different facts:
@@ -545,6 +554,12 @@ class EngagementGovernor:
           none of them worked. Production policies trip between three and ten
           attempts, so the alternative to refusing here is locking an account
           the client handed us on the assumption that we would be careful.
+
+        Args:
+            verb: HTTP method, for the refusal's ``state_changing`` flag.
+            url: Where the credential would go.
+            account: Which account it is for.
+            reserved: Whether this caller may spend the adaptive-auth reserve.
 
         Returns:
             The refusal, or ``None`` when the attempt may proceed.
@@ -566,15 +581,25 @@ class EngagementGovernor:
                 state_changing=verb in MUTATING_METHODS,
             )
 
-        budget = self.policy.max_credential_attempts_per_account
+        budget = self._budget_for(reserved)
         spent = self._credential_attempts.get(key, 0)
         if budget and spent >= budget:
+            reserve = self._reserve()
+            held = (
+                ""
+                if reserved or not reserve
+                else (
+                    f" ({reserve} of the {self.policy.max_credential_attempts_per_account} "
+                    f"are held back for the adaptive layer, which is the only consumer "
+                    f"that runs after this one and would otherwise never get a turn)"
+                )
+            )
             return RequestDecision(
                 allowed=False,
                 category=REFUSED_CREDENTIAL_BUDGET,
                 reason=(
                     f"{spent} credential attempts have been made against account "
-                    f"{account!r} at {key[0]} and the per-account budget is {budget}. "
+                    f"{account!r} at {key[0]} and this caller's budget is {budget}{held}. "
                     f"Refusing further attempts. If this login genuinely needs more, "
                     f"declare login_api_url / login_field / login_content_type so it is "
                     f"reached in one, or raise max_credential_attempts_per_account"
@@ -583,6 +608,74 @@ class EngagementGovernor:
                 state_changing=verb in MUTATING_METHODS,
             )
         return None
+
+    def _reserve(self) -> int:
+        """Attempts held back from the deterministic pass, never exceeding the budget.
+
+        A reserve larger than the allowance would starve the deterministic pass
+        instead — the same defect pointing the other way — so it is clamped
+        rather than trusted, and clamped to ``budget - 1`` so the unreserved
+        share is never zero.
+        """
+        budget = self.policy.max_credential_attempts_per_account
+        reserve = max(0, self.policy.adaptive_auth_credential_reserve)
+        if not budget:
+            return 0
+        return min(reserve, max(0, budget - 1))
+
+    def _budget_for(self, reserved: bool) -> int:
+        """This caller's share of the per-account allowance.
+
+        ``0`` still means unbounded, as it always has: an unset allowance has no
+        share to divide, so a reserve against it would be a bound invented out
+        of a policy that declined to set one.
+        """
+        budget = self.policy.max_credential_attempts_per_account
+        if not budget:
+            return 0
+        return budget if reserved else budget - self._reserve()
+
+    def credential_attempts_remaining(
+        self, url: str, account: str, *, reserved: bool = False
+    ) -> int | None:
+        """How many more credentials may be offered to *account* at *url*'s origin.
+
+        Read by a caller that has to DECIDE something before dispatching rather
+        than be refused at dispatch — the adaptive-auth loop, which must know
+        whether it can afford a credential POST before it proposes one, because
+        proposing one it cannot afford spends a turn and teaches nothing.
+
+        **A recorded stop returns zero, ahead of the arithmetic.** The target
+        telling us it has stopped evaluating credentials outranks a budget we
+        assumed (invariant 92): a caller reading "two attempts left" against a
+        locked account would be reading a number that is arithmetically true and
+        operationally false, and :meth:`_credential_decision` would refuse the
+        request anyway. Answering the same way in both places is what keeps a
+        pre-flight check from disagreeing with the gate it is checking.
+
+        Args:
+            url: Any URL on the origin the credential would go to.
+            account: The account identifier.
+            reserved: Whether the asking caller may spend the adaptive-auth
+                reserve. The adaptive loop asks with ``True``, which is the
+                whole reason it can get a non-zero answer after the
+                deterministic pass has spent its own share.
+
+        Returns:
+            Attempts remaining, where ``0`` means the next one will be refused,
+            or ``None`` when this policy configures no per-account bound at all.
+            ``None`` rather than a large number: a caller that has to branch on
+            "is there a bound" must not be handed a bound-shaped value it will
+            print, and ``max_credential_attempts_per_account = 0`` is how
+            :meth:`_credential_decision` already spells *unbounded*.
+        """
+        key = self._credential_key(url, account)
+        stop = self._credential_stops.get(key)
+        if stop and stop.kind is not None:
+            return 0
+        if not self.policy.max_credential_attempts_per_account:
+            return None
+        return max(0, self._budget_for(reserved) - self._credential_attempts.get(key, 0))
 
     def observe_credential_response(
         self,
@@ -873,12 +966,21 @@ class EngagementGovernor:
             # a run that kept going past a WAF-shaped page deserves to see
             # which phrase was ruled out and why.
             "benign_block_markers": sorted(self._benign_markers),
+            # The boundary those discards draw, beside the discards themselves.
+            # An operator reading "we ruled out 'access denied'" is entitled to
+            # the sentence saying what that rules out along with it, in the same
+            # record rather than in a source comment they will not read.
+            "blocking_body_arm_boundary": BLOCKING_BODY_ARM_BOUNDARY,
             # Per-account, because a total is not evidence about its parts: 24
             # attempts spread over six accounts and 24 against one are the same
             # number and a different engagement.
             "max_credential_attempts_per_account": (
                 self.policy.max_credential_attempts_per_account
             ),
+            # Stated apart from the total, because they are two different
+            # allowances and a run where the deterministic pass hit ITS bound is
+            # not a run that exhausted the account.
+            "adaptive_auth_credential_reserve": self._reserve(),
             "credential_attempts": {
                 f"{account} @ {origin}": count
                 for (origin, account), count in sorted(self._credential_attempts.items())
@@ -992,6 +1094,50 @@ def _body_block_signatures(body: str) -> frozenset[str]:
     return frozenset(sig for sig in _BLOCK_BODY_SIGNATURES if sig in lower_body)
 
 
+#: What the body arm of :func:`_looks_blocked` CANNOT see, now that it takes a
+#: control — stated as a boundary rather than left as a footnote in the commit
+#: that introduced it.
+#:
+#: The control discards a block signature this target already served in a
+#: response that was not blocked. That is right, and it costs exactly one case:
+#: **a target that genuinely blocks with a phrase it also ships
+#: unconditionally.** An SPA whose error shell carries "access denied" on every
+#: route, and which then really does start refusing us with that same shell, is
+#: invisible to the body arm — the marker was learned as benign before the block
+#: began and it stays learned.
+#:
+#: The case is accepted rather than mitigated, and the reason is which direction
+#: each error runs in:
+#:
+#: * **What the control prevents** is a FALSE halt. A halt is an
+#:   absence-generating event — every class downstream of it registers NEVER
+#:   INVOKED, and a report assembled from those rows reads as an engine that
+#:   looked and found nothing. On cal.diy that cost 29 classes and the
+#:   deliverable said nothing about why.
+#: * **What the control costs** is a LATE halt on this one shape. Late, not
+#:   absent: the status arm is unaffected and outranks every keyword, so a 429
+#:   or a 503 halts regardless, and a WAF header halts regardless. The body arm
+#:   is the weakest of the three and it is the only one narrowed.
+#:
+#: A run that keeps going against a target refusing it with 200s is a run that
+#: wasted requests; a run that stops against a target serving it normally is a
+#: run that reported an empty application as a clean one. Those are not
+#: symmetric, and the boundary is drawn on the asymmetry.
+#:
+#: Named here, asserted by ``test_the_blocking_body_arm_declares_what_it_lost``,
+#: and quoted in the governor summary's own vocabulary so an operator reading
+#: ``benign_block_markers`` can find the reason a phrase was ruled out.
+BLOCKING_BODY_ARM_BOUNDARY = (
+    "the body arm cannot see a block whose signature this target also ships in "
+    "responses that are not blocked — that marker is learned as this "
+    "application's own vocabulary and stays learned. The status arm (429/503) "
+    "and the WAF-header arm are unaffected and outrank every keyword, so such a "
+    "block is detected LATE rather than never. The alternative is an "
+    "unconditionally-shipped marker halting a run that was never blocked, which "
+    "generates absences that read as a clean target"
+)
+
+
 def _looks_blocked(
     status: int,
     headers: dict[str, str],
@@ -1013,6 +1159,13 @@ def _looks_blocked(
     Ordering is part of the rule, and it is invariant 98's: **a status outranks
     a keyword.** A 429 or 503 is a block whatever the body says and whatever
     the control holds, because the target declared it.
+
+    **What this cannot see is declared**, in
+    :data:`BLOCKING_BODY_ARM_BOUNDARY`: a target that genuinely blocks with a
+    phrase it also ships unconditionally is invisible to the body arm, and is
+    caught late by the status and header arms rather than never. Written down
+    because a control that narrows an oracle has a cost, and a cost nobody
+    stated is a cost the next reader will rediscover as a bug.
 
     Args:
         status: HTTP status code.
@@ -1075,6 +1228,7 @@ __all__ = [
     "RequestDecision",
     "ResponseObserver",
     "TargetBlockingDetectedError",
+    "BLOCKING_BODY_ARM_BOUNDARY",
     "get_active_governor",
     "set_active_governor",
 ]

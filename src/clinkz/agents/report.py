@@ -2252,6 +2252,7 @@ class ReportAgent(BaseAgent):
                 )
                 for line in verdict.contradictions:
                     lines.append(f"  - {line}")
+            lines.extend(ReportAgent._render_adaptive_auth(auth))
 
         safety = report.safety_summary
         if safety:
@@ -2273,6 +2274,74 @@ class ReportAgent(BaseAgent):
                     f"{safety.get('halt_detail')}"
                 )
         lines.extend(["", "---", ""])
+
+    @staticmethod
+    def _render_adaptive_auth(auth: dict[str, Any]) -> list[str]:
+        """Render what the adaptive-auth layer did, on a clean run too.
+
+        **Rendered whether or not it engaged**, and that is the point. A section
+        that appears only on the runs where a model steered the login would tell
+        a reader nothing about the runs where it did not — and "did a model
+        choose where you sent my credentials" is a question a client is entitled
+        to a stated answer to on every engagement, not an inferred answer from a
+        missing heading. The same rule the crawl-budget disclosure follows
+        (invariant 15): a bound that decides coverage renders on a clean run too.
+
+        Three things reach a client here, and they are separated because they
+        are separated in the engine: WHICH layer seated the session, what the
+        adaptive layer proposed, and what it concluded. A session the adaptive
+        layer seated is still a session an oracle proved — the proof is the
+        assertion, above, and it is identical either way — but a reader deciding
+        how much to trust the authenticated coverage should be able to see that
+        a model named the destination.
+        """
+        episodes = auth.get("adaptive_auth") or []
+        if not episodes:
+            return []
+
+        engaged = [e for e in episodes if e.get("outcome") != "not_engaged"]
+        if not engaged:
+            return [
+                "- **Adaptive authentication:** not engaged. The deterministic login "
+                "path read this application's login surface and seated the session "
+                "itself; no model was consulted about where to send the credential, "
+                "and no request beyond the standard login flow was made."
+            ]
+
+        seated_by = auth.get("seated_by") or {}
+        adaptive_roles = sorted(r for r, how in seated_by.items() if how == "adaptive")
+        lines = ["", "### Adaptive authentication", ""]
+        if adaptive_roles:
+            lines.append(
+                "- The deterministic login path could not seat a session for "
+                f"{', '.join(adaptive_roles)}. An LLM proposed where this application's "
+                "credential exchange actually happens; every proposal was checked "
+                "against the engagement scope, the destructive-action classifier and "
+                "the per-account credential budget before anything was sent, and the "
+                "session was PROVEN by the same anonymous-control assertion used "
+                "everywhere else in this engagement. The model proposed; it did not "
+                "decide."
+            )
+        for episode in engaged:
+            role = episode.get("role", "?")
+            outcome = str(episode.get("outcome", "?")).replace("_", " ")
+            lines.append(f"- **{role}** — {outcome}: {episode.get('outcome_reason', '')}")
+            lines.append(
+                f"  - {episode.get('llm_turns', 0)} proposal round(s); "
+                f"{episode.get('credential_posts_dispatched', 0)} credential POST(s) and "
+                f"{episode.get('reads_dispatched', 0)} safe read(s) dispatched; "
+                f"{episode.get('proposals_refused', 0)} proposal(s) refused before dispatch."
+            )
+            for attempt in episode.get("attempts") or []:
+                proposal = attempt.get("proposal") or {}
+                lines.append(
+                    f"  - Turn {attempt.get('turn', '?')}: "
+                    f"{proposal.get('method', '?')} {proposal.get('url', '?')} — "
+                    f"{attempt.get('taught', '')}"
+                )
+                if proposal.get("rationale"):
+                    lines.append(f"    - Proposed because: {proposal['rationale']}")
+        return lines
 
     @staticmethod
     def _render_session_maintenance(auth: dict[str, Any]) -> list[str]:

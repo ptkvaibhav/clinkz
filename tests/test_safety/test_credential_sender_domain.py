@@ -4,10 +4,11 @@
 per ``(origin, account)``. It bounds them at ONE place — ``EngagementGovernor``
 ``.authorize(..., account=...)`` — and a request reaches that place with an
 account named only when the caller says so. ``HTTPClientTool.execute`` reads
-``self.credential_account``, which is set at exactly one line in the whole
-engine (``tools/auth.py``, the JSON arm), and ``WebAuthenticator`` names the
-account at its own credential POST. **Every other credential-bearing request in
-the engine is invisible to the budget**, and the biggest of them is the one
+``self.credential_account``, armed at the small set of DECLARED sites in
+:data:`DECLARED_ARMING_SITES` (``tools/auth.py``'s JSON arm, and the
+adaptive-auth dispatcher), and ``WebAuthenticator`` names the account at its own
+credential POST. **Every other credential-bearing request in the engine is
+invisible to the budget**, and the biggest of them is the one
 component whose entire purpose is to send failed logins:
 ``_test_brute_force`` submits ``_BRUTE_FORCE_ATTEMPTS`` passwords for the
 account ``admin`` against every login form it finds, and the governor counts
@@ -71,6 +72,15 @@ class _Sender:
 #: this is the half a human owns. A reason under six words fails, on the same
 #: rule as the control-arm registry: "n/a" is not a classification.
 DECLARED: dict[str, tuple[str, str]] = {
+    # ------------------------------------------------------------- no dispatch
+    "tools/auth.py::_form_field_names": (
+        _Sender.NO_DISPATCH,
+        "collects the login form's input NAMES, the password field's among them, and "
+        "sends nothing. The distinction it exists to keep is exactly the one this "
+        "table is about: a field NAME is schema the application published and travels "
+        "into the adaptive-auth briefing, while the VALUE never leaves the "
+        "authenticator",
+    ),
     # ---------------------------------------------------------------- governed
     "tools/auth.py::_run_form_arm": (
         _Sender.GOVERNED,
@@ -334,22 +344,75 @@ def test_the_brute_force_class_is_exempt_and_says_so() -> None:
     assert "budget" in reason
 
 
-def test_only_one_place_arms_the_chokepoints_counter() -> None:
-    """``credential_account`` is assigned exactly once under ``src/clinkz``.
+#: Every place that arms ``HTTPClientTool.credential_account``, and why. This
+#: was a COUNT — "assigned exactly once" — and a count is the wrong instrument
+#: for the property it was protecting. The property is that arming the budget is
+#: a decision somebody made deliberately; a count enforces that by refusing the
+#: second one, which refuses a correct second arming exactly as loudly as an
+#: accidental one. The first correct second arming arrived with the
+#: adaptive-auth dispatcher, whose whole reason for routing through the
+#: engagement's HTTP path rather than a bare client is that its proposals must
+#: be counted against the same budget the deterministic attempt spent from.
+#:
+#: So the domain is still computed and the CLASSIFICATION is declared, like
+#: every other guard in this repo. A new arming site fails this test until
+#: somebody writes down what it sends and why the budget should see it.
+DECLARED_ARMING_SITES: dict[str, str] = {
+    "tools/auth.py": (
+        "the JSON auth arm. It walks up to eight routes on one host offering the same "
+        "password each time, so the account is named at the chokepoint and every hop "
+        "is counted"
+    ),
+    "engagement/auth_agent_dispatch.py": (
+        "the adaptive-auth dispatcher's credential POST. Its destination was proposed "
+        "by a model, which is precisely why it must be countable: the loop asks the "
+        "governor how much budget remains before proposing, and the governor refuses "
+        "the attempt if it proposes past it"
+    ),
+}
 
-    The count is the whole argument for this module. Every other credential
-    sender is exempt *because* of this line's uniqueness, so a second assignment
-    is a change to the story and has to be looked at.
+
+def test_every_place_that_arms_the_chokepoints_counter_is_declared() -> None:
+    """``credential_account`` is armed only where somebody wrote down why.
+
+    Both directions, as the guard-domain law requires: an arming site with no
+    entry fails, and an entry naming a file that no longer arms it fails too — a
+    declaration that outlived its code is the same rot as code no declaration
+    covers.
     """
-    assignments = [
-        f"{path.relative_to(SRC).as_posix()}:{node.lineno}"
+    arming = {
+        path.relative_to(SRC).as_posix()
         for path in sorted(SRC.rglob("*.py"))
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
         if isinstance(node, ast.Assign)
         for target in node.targets
         if isinstance(target, ast.Attribute) and target.attr == "credential_account"
-    ]
-    assert len(assignments) == 1, (
-        f"credential_account is assigned at {assignments}; the exemption table in this "
-        "module is written against there being exactly one such site"
+    }
+    undeclared = sorted(arming - set(DECLARED_ARMING_SITES))
+    assert not undeclared, (
+        f"these files arm the per-account credential counter and no entry says what "
+        f"they send or why the budget should see it: {undeclared}"
     )
+    stale = sorted(set(DECLARED_ARMING_SITES) - arming)
+    assert not stale, f"declared for files that no longer arm the counter: {stale}"
+
+
+@pytest.mark.parametrize("path", sorted(DECLARED_ARMING_SITES))
+def test_each_arming_site_states_why_the_budget_should_see_it(path: str) -> None:
+    assert len(DECLARED_ARMING_SITES[path].split()) >= 15, (
+        f"{path}: an arming site needs its reason, not a label"
+    )
+
+
+def test_the_adaptive_layers_credential_post_is_governed_not_exempt() -> None:
+    """The one property the second arming site exists to give.
+
+    A model-proposed credential destination that the budget could not see would
+    be the worst combination available: an unbounded number of attempts against
+    a client's account, aimed by something that is not the operator and not the
+    target. It is bounded by the same number as everything else, and this is
+    where that is written down.
+    """
+    reason = DECLARED_ARMING_SITES["engagement/auth_agent_dispatch.py"]
+    assert "proposed by a model" in reason
+    assert "budget" in reason
