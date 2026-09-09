@@ -218,7 +218,7 @@ def describe_credential_validation_error(exc: Exception) -> str:
     ``SecretStr`` cannot help here: the value is still a raw ``str`` in the
     input dict, because validation is what would have turned it into a
     ``SecretStr`` and validation is what failed. Neither can
-    :func:`redact` — :func:`_register_all` runs only after a *successful*
+    :func:`redact` — :func:`register_credential_set` runs only after a *successful*
     parse, so at this moment the chokepoint has never seen the password.
 
     The window is small and it is the only one there is, so it is closed by
@@ -317,7 +317,7 @@ def load_credential_file(path: Path | str) -> CredentialSet:
             f"{cred_path}: invalid credential set —{chr(10)}{detail}"
         ) from None
 
-    _register_all(cred_set)
+    register_credential_set(cred_set)
     logger.info(
         "Loaded %d credential set(s) from %s — roles: %s",
         len(cred_set.credentials),
@@ -350,12 +350,26 @@ def prompt_for_credentials(roles: list[str]) -> CredentialSet:
         entries.append(RoleCredential(role=label, username=username, password=password))
 
     cred_set = CredentialSet(credentials=entries)
-    _register_all(cred_set)
+    register_credential_set(cred_set)
     return cred_set
 
 
-def _register_all(cred_set: CredentialSet) -> None:
-    """Register every secret in *cred_set*, warning about unredactable ones."""
+def register_credential_set(cred_set: CredentialSet) -> None:
+    """Register every secret in *cred_set* with the redaction chokepoint.
+
+    Public because it has a second caller: a validation driver that constructs a
+    :class:`~clinkz.models.engagement.CredentialSet` in code rather than loading
+    one from a file gets no registration, and every artifact the run writes then
+    carries the plaintext. Measured — ``scripts/live_adaptive_auth_validation.py``
+    left ``"password": "pro"`` in 28 lines of its own ``actions.jsonl``, because
+    the action log's body excerpt is redacted by VALUE and no value had been
+    registered.
+
+    ``load_credentials`` calls it; so must anything else that assembles a
+    credential set and then makes requests with it. It is the same rule the
+    ``scripts/_artifact_io.py`` split encodes one layer out: the engine's
+    redaction reaches only where the engine was told what to redact.
+    """
     for cred in cred_set.credentials:
         secret = cred.secret()
         if not secret:
@@ -418,6 +432,7 @@ __all__ = [
     "prompt_for_credentials",
     "redact",
     "redact_structure",
+    "register_credential_set",
     "register_secret",
     "registered_secret_count",
 ]

@@ -205,3 +205,73 @@ def test_every_allow_list_entry_names_a_script_that_exists() -> None:
     """A stale exemption is an exemption nobody re-examines."""
     for name in _ALLOWED_RAW_WRITES:
         assert (_SCRIPTS / name).is_file(), f"_ALLOWED_RAW_WRITES names a missing script: {name}"
+
+
+# ---------------------------------------------------------------------------
+# A driver that assembles a credential set must REGISTER it
+# ---------------------------------------------------------------------------
+
+
+def test_every_driver_that_builds_a_credential_set_registers_it() -> None:
+    """The same guarantee, one layer earlier: redaction by VALUE needs the value.
+
+    ``load_credentials`` registers every secret in a credential FILE with the
+    redaction chokepoint. A driver that constructs a
+    :class:`~clinkz.models.engagement.CredentialSet` in code skips that, and
+    every artifact the run then writes carries the plaintext — not because a
+    writer was bypassed this time, but because the writers were never told what
+    to remove.
+
+    Measured: ``scripts/live_adaptive_auth_validation.py`` left
+    ``"password": "pro"`` in 28 lines of its own ``outputs/<id>/actions.jsonl``.
+    The action log is an ENGINE writer and it did exactly what it is supposed to
+    — it redacted every registered secret, of which there were none.
+
+    Computed over the source, like its sibling above, because the driver written
+    next month is the one this protects.
+    """
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    offenders: list[str] = []
+    for path in sorted(scripts.glob("*.py")):
+        source = path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(path))
+        builds = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "CredentialSet"
+            for node in ast.walk(tree)
+        )
+        if not builds:
+            continue
+        registers = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "register_credential_set"
+            for node in ast.walk(tree)
+        )
+        if not registers:
+            offenders.append(path.name)
+
+    assert not offenders, (
+        "these drivers assemble a CredentialSet and never register it with the "
+        "redaction chokepoint, so every artifact they cause to be written carries "
+        f"the plaintext secret: {offenders}. Call "
+        "clinkz.engagement.secrets.register_credential_set(cred_set)"
+    )
+
+
+def test_registering_a_credential_set_actually_redacts_it() -> None:
+    """A guard not observed working is not a guard — this module's own rule."""
+    from clinkz.engagement.secrets import redact, register_credential_set
+    from clinkz.models.engagement import CredentialSet, RoleCredential
+
+    clear_secrets()
+    try:
+        secret = "a-long-enough-lab-password"  # noqa: S105 — a fixture, not a credential
+        assert secret in redact(f'{{"password": "{secret}"}}')
+        register_credential_set(
+            CredentialSet(credentials=[RoleCredential(role="admin", username="u", password=secret)])
+        )
+        assert secret not in redact(f'{{"password": "{secret}"}}')
+    finally:
+        clear_secrets()
