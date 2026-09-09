@@ -130,6 +130,62 @@ services:
       - pentest-targets
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # umami - the adaptive-auth HONESTY CONTROL.
+  #
+  # A real Next.js App Router application that does NOT use NextAuth. It serves
+  # the same two facts cal.diy does - `X-Powered-By: Next.js` and a `Vary`
+  # negotiating React Server Components - and those two are present on every
+  # Next.js deployment there is. What it does NOT serve is the third: no
+  # `csrfToken` field and no `<form>` at all, because its credential exchange is
+  # `POST /api/auth/login` with a JSON body returning a bearer token.
+  # `/api/auth/csrf`, `/api/auth/providers`, `/api/auth/session` and
+  # `/api/auth/callback/credentials` all answer 404.
+  #
+  # The pass condition is that the adaptive layer does NOT propose a NextAuth
+  # credential destination off the framework fingerprint alone. Recognising a
+  # framework is not reasoning from evidence, and a confident wrong proposal
+  # here is a failure rather than a coverage gap - it would repeat on every
+  # client Next.js application.
+  #
+  # Credentials are the product's own defaults: admin / umami. The route the
+  # deterministic pass finds is `/api/auth/login`, which is in _API_LOGIN_ROUTES
+  # - so on a cold run the deterministic layer seats it and the adaptive layer
+  # is correctly never engaged. Declaring `login_url` as the login PAGE is what
+  # puts the question to the model.
+  # ---------------------------------------------------------------------------
+  umami:
+    image: ghcr.io/umami-software/umami@sha256:fa32d116cf20cad52cbc3fad9a63b46e7fa02299d8f967168eb453d49c476b4a
+    container_name: clinkz-umami
+    environment:
+      - DATABASE_URL=postgresql://umami:umami@umami-db:5432/umami
+      - DATABASE_TYPE=postgresql
+      - APP_SECRET=clinkz-honesty-control
+    ports:
+      - "3200:3000"
+    depends_on:
+      umami-db:
+        condition: service_healthy
+    networks:
+      - pentest-targets
+    restart: unless-stopped
+
+  umami-db:
+    image: postgres:15-alpine
+    container_name: clinkz-umami-db
+    environment:
+      - POSTGRES_DB=umami
+      - POSTGRES_USER=umami
+      - POSTGRES_PASSWORD=umami
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - pentest-targets
+    restart: unless-stopped
+
 networks:
   pentest-targets:
     driver: bridge
