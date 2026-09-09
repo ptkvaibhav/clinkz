@@ -44,12 +44,23 @@ _OTHER_ROUTE = "http://target.test/api/auth/login"
 _OTHER_ORIGIN = "http://other.test/login"
 
 
-def _governor(tmp_path, budget: int = 3) -> EngagementGovernor:
+def _governor(tmp_path, budget: int = 3, reserve: int = 0) -> EngagementGovernor:
+    """A governor whose whole allowance is the deterministic pass's, by default.
+
+    ``reserve=0`` because every test in this module below was written about the
+    per-account BUDGET and measures the share the login flow may spend. The
+    adaptive-auth reserve splits that allowance in two
+    (:attr:`SafetyPolicy.adaptive_auth_credential_reserve`), and letting the
+    production default apply here would silently re-scale every number in the
+    file — which is the "changed the instrument, kept the readings" mistake.
+    :class:`TestTheAdaptiveAuthReserve` exercises the split explicitly instead.
+    """
     return EngagementGovernor(
         "budget-test",
         SafetyPolicy(
             max_requests_per_second=1000.0,
             max_credential_attempts_per_account=budget,
+            adaptive_auth_credential_reserve=reserve,
         ),
         outputs_root=tmp_path,
     )
@@ -333,3 +344,191 @@ async def test_the_password_never_reaches_the_log(tmp_path) -> None:
     # The FIELD NAME survives — it is schema, not data.
     records = [json.loads(line) for line in raw.splitlines() if line.strip()]
     assert "password" in records[-1]["body_excerpt"]
+
+
+# ---------------------------------------------------------------------------
+# The pre-flight accessor, and the one property it must have
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialAttemptsRemaining:
+    """A caller that must DECIDE before dispatching gets the same answer as the gate.
+
+    The adaptive-auth loop asks this before proposing a credential POST, because
+    proposing one it cannot afford spends a turn and teaches nothing. That makes
+    it a second place the budget is read, and a second reader is a second answer
+    unless the two are held together — which is exactly the shape that produced
+    ``ceiling_is_our_budget`` (invariant 93): a flag read where it could not take
+    its other value.
+    """
+
+    @pytest.mark.asyncio
+    async def test_it_counts_down_with_each_dispatched_attempt(self, tmp_path) -> None:
+        governor = _governor(tmp_path, budget=3)
+        assert governor.credential_attempts_remaining(_LOGIN, "admin") == 3
+        for expected in (2, 1, 0):
+            assert (await _attempt(governor, _LOGIN, "admin")).allowed
+            assert governor.credential_attempts_remaining(_LOGIN, "admin") == expected
+
+    @pytest.mark.asyncio
+    async def test_zero_remaining_and_the_gate_refusing_are_the_same_moment(self, tmp_path) -> None:
+        """The property that matters: the pre-flight never disagrees with the gate.
+
+        A pre-flight that said "one left" where ``authorize`` refuses would send a
+        caller into a refusal it had just been told it could avoid, and the
+        transcript would record a rails refusal where a budget check belonged.
+        """
+        governor = _governor(tmp_path, budget=2)
+        for _ in range(4):
+            remaining = governor.credential_attempts_remaining(_LOGIN, "admin")
+            decision = await _attempt(governor, _LOGIN, "admin")
+            assert decision.allowed == (remaining != 0), (
+                f"pre-flight said {remaining} remaining and the gate said "
+                f"allowed={decision.allowed}"
+            )
+
+    def test_a_recorded_stop_returns_zero_ahead_of_the_arithmetic(self, tmp_path) -> None:
+        """The target's answer outranks the budget we assumed (invariant 92).
+
+        Arithmetically there are attempts left. Operationally there are none: the
+        account is locked and ``_credential_decision`` refuses regardless.
+        Answering "seven remaining" here would be true and useless.
+        """
+        governor = _governor(tmp_path, budget=8)
+        governor.observe_credential_response(
+            url=_LOGIN,
+            account="admin",
+            status=200,
+            headers={},
+            body="Your account has been locked",
+        )
+        assert governor.credential_attempts_remaining(_LOGIN, "admin") == 0
+
+    def test_an_unconfigured_bound_is_none_and_not_a_number(self, tmp_path) -> None:
+        """``0`` already means unbounded to ``_credential_decision``.
+
+        So this must not return ``0`` for it: a caller branching on "is there a
+        bound" would read the unbounded case as the spent case and refuse every
+        attempt. ``None`` is the only value that cannot be mistaken for a count.
+        """
+        governor = _governor(tmp_path, budget=0)
+        assert governor.credential_attempts_remaining(_LOGIN, "admin") is None
+
+    def test_it_is_keyed_on_origin_and_account_like_the_budget_itself(self, tmp_path) -> None:
+        """Same key, or the two readings are of different things."""
+        governor = _governor(tmp_path, budget=4)
+        governor._credential_attempts[governor._credential_key(_LOGIN, "admin")] = 3
+        assert governor.credential_attempts_remaining(_OTHER_ROUTE, "admin") == 1
+        assert governor.credential_attempts_remaining(_LOGIN, "other") == 4
+        assert governor.credential_attempts_remaining(_OTHER_ORIGIN, "admin") == 4
+
+
+# ---------------------------------------------------------------------------
+# The adaptive-auth reserve
+# ---------------------------------------------------------------------------
+
+
+class TestTheAdaptiveAuthReserve:
+    """Being last is what starves a consumer, so it RESERVES (invariant 88's shape).
+
+    Measured on cal.diy, the target the adaptive layer was built for: the
+    deterministic pass spent **8 of 8** — two form attempts, then the JSON arm
+    walking its route list with two identity-key shapes each — and the adaptive
+    layer, which runs only after that pass has failed, recorded NOT_ATTEMPTED
+    with the whole allowance gone. Every one of those eight was a correct thing
+    to try. A budget a first consumer may exhaust is not a shared budget; it is a
+    first-come one, and the consumer that runs second never gets a turn.
+
+    The reserve costs the deterministic pass nothing it was going to use: its
+    remaining attempts differ from its earlier ones in route and field NAME, not
+    in anything that learns from the last answer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_deterministic_pass_is_bounded_by_the_unreserved_share(
+        self, tmp_path
+    ) -> None:
+        governor = _governor(tmp_path, budget=8, reserve=3)
+        allowed = 0
+        for _ in range(10):
+            if (await _attempt(governor, _LOGIN, "admin")).allowed:
+                allowed += 1
+        assert allowed == 5, "the login flow may spend 8 - 3"
+
+    @pytest.mark.asyncio
+    async def test_the_reserve_survives_for_the_caller_that_claims_it(self, tmp_path) -> None:
+        """The property the whole thing exists for.
+
+        With the unreserved share exhausted, an unreserved caller is refused and
+        a reserved one is not — and the reserved one gets exactly the reserve.
+        """
+        governor = _governor(tmp_path, budget=8, reserve=3)
+        for _ in range(10):
+            await _attempt(governor, _LOGIN, "admin")
+
+        assert not (await _attempt(governor, _LOGIN, "admin")).allowed
+        assert governor.credential_attempts_remaining(_LOGIN, "admin") == 0
+        assert governor.credential_attempts_remaining(_LOGIN, "admin", reserved=True) == 3
+
+        for expected in (2, 1, 0):
+            decision = await governor.authorize(
+                "POST", _LOGIN, account="admin", credential_reserve=True
+            )
+            assert decision.allowed
+            governor.release()
+            assert (
+                governor.credential_attempts_remaining(_LOGIN, "admin", reserved=True) == expected
+            )
+        refused = await governor.authorize("POST", _LOGIN, account="admin", credential_reserve=True)
+        assert not refused.allowed, "the reserve is a share, not an exemption"
+
+    @pytest.mark.asyncio
+    async def test_a_zero_reserve_is_byte_identical_to_before(self, tmp_path) -> None:
+        """The pre-existing behaviour is still reachable, and is what ``0`` means."""
+        governor = _governor(tmp_path, budget=3, reserve=0)
+        allowed = 0
+        for _ in range(5):
+            if (await _attempt(governor, _LOGIN, "admin")).allowed:
+                allowed += 1
+        assert allowed == 3
+
+    def test_a_reserve_larger_than_the_budget_cannot_starve_the_login_flow(self, tmp_path) -> None:
+        """The same defect pointing the other way, clamped rather than trusted.
+
+        A reserve of 10 against a budget of 3 would leave the deterministic pass
+        zero attempts — an engine that cannot log in at all, in service of a
+        layer that only runs when logging in failed.
+        """
+        governor = _governor(tmp_path, budget=3, reserve=10)
+        assert governor._reserve() == 2
+        assert governor._budget_for(reserved=False) == 1
+        assert governor._budget_for(reserved=True) == 3
+
+    def test_an_unbounded_allowance_has_no_share_to_divide(self, tmp_path) -> None:
+        """``0`` budget means unbounded, so a reserve against it invents a bound."""
+        governor = _governor(tmp_path, budget=0, reserve=3)
+        assert governor._reserve() == 0
+        assert governor.credential_attempts_remaining(_LOGIN, "admin") is None
+        assert governor.credential_attempts_remaining(_LOGIN, "admin", reserved=True) is None
+
+    def test_the_split_is_stated_in_the_client_facing_summary(self, tmp_path) -> None:
+        """Two allowances, stated apart.
+
+        A run where the login flow hit ITS bound is not a run that exhausted the
+        client's account, and a single total cannot tell an operator which
+        happened.
+        """
+        stats = _governor(tmp_path, budget=8, reserve=3).stats()
+        assert stats["max_credential_attempts_per_account"] == 8
+        assert stats["adaptive_auth_credential_reserve"] == 3
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_names_why_the_share_is_smaller_than_the_budget(
+        self, tmp_path
+    ) -> None:
+        """An operator reading "budget is 5" against a policy of 8 needs the reason."""
+        governor = _governor(tmp_path, budget=8, reserve=3)
+        for _ in range(6):
+            decision = await _attempt(governor, _LOGIN, "admin")
+        assert not decision.allowed
+        assert "held back for the adaptive layer" in decision.reason
