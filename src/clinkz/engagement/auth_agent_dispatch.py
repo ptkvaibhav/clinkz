@@ -15,16 +15,30 @@ every hop rather than handing ``-L`` to the transport.
 
 Two decisions are this module's own.
 
-**The episode carries its own cookie jar** (``session_mode='isolated'``). The
-loop's first turn is often a read whose only purpose is to be issued a token the
-credential POST must then present, so cookies plainly have to persist *across*
-the episode. They must equally not leak *out* of it: the engagement's shared jar
-may already hold a session from a default-credential sweep, and a proposal
-answered by a route that reflects whatever it is sent would then produce a
-"session" the engagement handed itself. Isolated is exactly that pair of
-properties — explicit cookies go out on the wire, nothing that comes back enters
-the shared jar — so the material the assertion is finally run against is
-material *this episode* collected.
+**The episode carries its own cookie jar, KEYED BY ORIGIN**
+(``session_mode='isolated'``). The loop's first turn is often a read whose only
+purpose is to be issued a token the credential POST must then present, so
+cookies plainly have to persist *across* the episode. They must equally not leak
+*out* of it: the engagement's shared jar may already hold a session from a
+default-credential sweep, and a proposal answered by a route that reflects
+whatever it is sent would then produce a "session" the engagement handed itself.
+Isolated is exactly that pair of properties — explicit cookies go out on the
+wire, nothing that comes back enters the shared jar.
+
+**And the jar is per-origin, because `isolated` sends what it is given and asks
+no questions.** The curl backend emits explicit cookies as a raw ``-b
+"name=value"`` header and the aiohttp backend hands them to
+``session.request(cookies=...)``; neither applies cookie-domain scoping, unlike
+the ambient ``-c/-b`` jar file where curl does. A flat jar therefore sends a
+cookie host A issued to host B on the next turn, and an ``EngagementScope``
+routinely names more than one host. The proposal gate checks where a request may
+GO — which is the right check, and not a check on what it may CARRY.
+
+The loop's one legitimate need is same-origin (a token fetched on turn 1,
+presented on turn 2's credential POST to the same application), so keying by
+origin costs the capability nothing and closes the crossing. It is invariants
+63–64's boundary one component along: an origin is where this engine draws the
+line everywhere else, and the material crossing it here is credential material.
 
 **A refusal is reported as a refusal.** ``HTTPClientTool`` returns a safety
 refusal as an error-shaped response rather than raising, which is right for a
@@ -40,7 +54,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from clinkz.engagement.auth_agent import DispatchResponse
 
@@ -87,15 +101,26 @@ class HttpToolDispatcher:
         # The phrases rather than the page, because that is the whole of what
         # the comparison uses and the page is large enough to matter.
         self._control_body = " ".join(control_markers or [])
-        #: Every cookie this episode has been issued, in the order it was
-        #: issued. Presented on each subsequent request and handed to the
-        #: assertion at the end; never written to the transcript.
-        self._jar: dict[str, str] = {}
+        #: Every cookie this episode has been issued, KEYED BY THE ORIGIN THAT
+        #: ISSUED IT. Presented only back to that origin, and handed to the
+        #: assertion at the end; never written to the transcript. See the module
+        #: docstring for why a flat jar is a cross-origin credential leak here
+        #: and is not one on the ambient path.
+        self._jars: dict[str, dict[str, str]] = {}
+        #: The origin the most recent credential POST went to. What the
+        #: assertion is run against, because the session — if there is one —
+        #: belongs to that application and to no other.
+        self._credential_origin: str = ""
 
     @property
     def jar(self) -> dict[str, str]:
-        """The episode's accumulated cookies."""
-        return dict(self._jar)
+        """The cookies of the origin the credential was offered to.
+
+        Not the union. A union would hand the authenticated-state assertion
+        material from an application the credential was never sent to, and the
+        assertion would then be comparing a session it cannot attribute.
+        """
+        return dict(self._jars.get(self._credential_origin, {}))
 
     async def read(self, url: str, method: str) -> DispatchResponse:
         """Issue a safe-method request carrying no credential.
@@ -115,7 +140,7 @@ class HttpToolDispatcher:
                 "method": method,
                 "url": url,
                 "headers": {"Accept": "application/json, text/html;q=0.9"},
-                "cookies": dict(self._jar),
+                "cookies": self._cookies_for(url),
                 "follow_redirects": False,
                 "session_mode": EPISODE_SESSION_MODE,
             },
@@ -149,12 +174,20 @@ class HttpToolDispatcher:
                 "url": url,
                 "headers": headers,
                 "body": body,
-                "cookies": dict(self._jar),
+                "cookies": self._cookies_for(url),
                 "follow_redirects": False,
                 "session_mode": EPISODE_SESSION_MODE,
             },
             account=account,
         )
+
+    def _cookies_for(self, url: str) -> dict[str, str]:
+        """The cookies THIS origin issued, and no others.
+
+        The whole of the fix: a request carries back only what the application
+        it is addressed to gave us.
+        """
+        return dict(self._jars.get(_origin(url), {}))
 
     async def _send(self, request: dict[str, Any], *, account: str) -> DispatchResponse:
         """One request through the engagement's HTTP chokepoint."""
@@ -182,17 +215,34 @@ class HttpToolDispatcher:
             logger.warning("Adaptive-auth dispatch to %s failed: %s", request["url"], exc)
             return DispatchResponse(error=str(exc))
 
+        origin = _origin(request["url"])
         issued = _cookies_from_set_cookie(parsed.set_cookie)
-        self._jar.update(issued)
+        if issued:
+            self._jars.setdefault(origin, {}).update(issued)
+        if account:
+            self._credential_origin = origin
         return DispatchResponse(
             status=parsed.status_code,
             headers=parsed.response_headers or {},
             body=parsed.response_body or "",
             set_cookie_names=sorted(issued),
-            cookies=dict(self._jar),
+            cookies=dict(self._jars.get(origin, {})),
             error=parsed.error or "",
             refused_by_rails=parsed.safety_refusal or "",
         )
+
+
+def _origin(url: str) -> str:
+    """``scheme://host:port`` for *url*, or ``""``.
+
+    The jar's key. Scheme included: ``http://`` and ``https://`` on one host are
+    two origins, and a cookie an https origin issued must not be replayed over
+    cleartext to the same name.
+    """
+    parsed = urlparse(url or "")
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _encode(fields: dict[str, str], content_type: str) -> tuple[str, dict[str, str]]:

@@ -363,6 +363,37 @@ the transcript abstained. On a cold run — with only the public blog root and n
 `/public/member-attribution.min.js` and proposed Ghost's *Members* auth instead,
 which is the auth surface actually visible from there.
 
+### The security review's finding: the jar was not origin-keyed
+
+`/security-review` on the branch found one issue, and it is the kind that only
+appears once a component starts choosing its own destinations.
+
+`HttpToolDispatcher` accumulated every `Set-Cookie` into ONE flat jar and
+presented that jar on every subsequent request. `session_mode='isolated'` sends
+what it is given and asks no questions — the curl backend emits explicit cookies
+as a raw `-b "name=value"` header, the aiohttp backend hands them to
+`session.request(cookies=...)`, and neither applies cookie-domain scoping (the
+ambient `-c/-b` jar file DOES, which is why this had never bitten). An
+`EngagementScope` routinely names more than one host, so a cookie host A issued
+was sent to host B on the next turn.
+
+The proposal gate checks where a request may **go**. That is the right check and
+it is not a check on what it may **carry** — and the thing being carried here is
+credential material crossing the boundary this engine draws everywhere else
+(invariants 63–64).
+
+The jar is keyed by origin now, and `jar` hands the assertion the credential
+origin's cookies rather than the union: a union would give the
+authenticated-state assertion material from an application the credential was
+never offered to, and the assertion would then be comparing a session it cannot
+attribute. The scheme is part of the key, so an https-issued cookie cannot be
+replayed over cleartext to the same host.
+
+It costs the capability nothing. The loop's one legitimate need — a token
+fetched on turn 1, presented on turn 2's credential POST — is same-origin by
+construction, and the regression test asserts both directions: the cross-origin
+cookie is absent, and the same-origin one still rides.
+
 ### The four defects
 
 **A third credential-observation site had no control** (`HTTPClientTool
