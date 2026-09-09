@@ -214,6 +214,122 @@ async def test_halt_on_blocking_can_be_disabled(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The body arm's control — a response we already hold, no new dispatch
+# ---------------------------------------------------------------------------
+
+#: An SPA shell that ships its own error vocabulary. Every route serves it, so
+#: every response carries the marker and "consecutive blocked" is satisfied by
+#: construction — the shape the consecutive-blocked mitigation could not bound.
+_SPA_SHELL = (
+    '<!doctype html><div id="root"></div>'
+    '<script>const E={403:"Request blocked",500:"Server error"};</script>'
+)
+
+
+async def test_a_marker_the_target_serves_on_a_200_is_not_evidence(tmp_path: Path) -> None:
+    """The observed-refusing case: a normal page carrying a blocked signature.
+
+    cal.diy's shell ships its error strings unconditionally. Under the old rule
+    the first response tripped the body arm, every later one tripped it again
+    because the same shell came back, and the engagement halted with 29 classes
+    never dispatched — which the report then rendered as an engine that found
+    nothing.
+    """
+    governor = _governor(tmp_path, blocking_threshold=3)
+    for _ in range(10):
+        governor.observe_response(status=200, headers={}, body=_SPA_SHELL)
+    assert not governor.halted
+    assert governor.stats()["benign_block_markers"] == ["request blocked"]
+
+
+async def test_the_control_is_learned_before_the_first_verdict(tmp_path: Path) -> None:
+    """No warm-up window: the response being judged is its own control.
+
+    A control that only applied from the SECOND response would still halt a
+    threshold-1 engagement on the shell it was about to learn from.
+    """
+    governor = _governor(tmp_path, blocking_threshold=1)
+    governor.observe_response(status=200, headers={}, body=_SPA_SHELL)
+    assert not governor.halted
+
+
+async def test_a_learned_marker_does_not_disarm_the_status_arm(tmp_path: Path) -> None:
+    """Status outranks keyword — invariant 98's ordering, kept here.
+
+    Learning that "request blocked" is the app's own phrase says nothing about
+    a 429. The target declared that one.
+    """
+    governor = _governor(tmp_path, blocking_threshold=2)
+    governor.observe_response(status=200, headers={}, body=_SPA_SHELL)
+    for _ in range(2):
+        governor.observe_response(status=429, headers={}, body=_SPA_SHELL)
+    assert governor.halted
+    assert governor.halt_reason == HALT_TARGET_BLOCKING
+
+
+async def test_an_unlearned_marker_still_trips(tmp_path: Path) -> None:
+    """The control discards ONE marker, not the arm.
+
+    A body carrying a signature the target never served cleanly is still
+    evidence, even on a run that learned a different one. The status here is a
+    403 because a 4xx never qualifies as a control, so nothing about this
+    response is learned and the marker stays unlicensed.
+    """
+    governor = _governor(tmp_path, blocking_threshold=2)
+    governor.observe_response(status=200, headers={}, body=_SPA_SHELL)
+    for _ in range(2):
+        governor.observe_response(status=403, headers={}, body="Incapsula incident ID 1-2-3")
+    assert governor.halted
+    assert governor.stats()["benign_block_markers"] == ["request blocked"]
+
+
+async def test_a_waf_soft_block_at_200_teaches_us_nothing(tmp_path: Path) -> None:
+    """The one way this control could disarm the rail it protects.
+
+    A WAF that answers 200 with its own block page would otherwise be recorded
+    as the application's normal vocabulary. The WAF header disqualifies the
+    response from serving as a control, so the marker is never learned and the
+    body arm keeps firing.
+    """
+    governor = _governor(tmp_path, blocking_threshold=2)
+    for _ in range(2):
+        governor.observe_response(
+            status=200,
+            headers={"CF-RAY": "abc123"},
+            body="You have been blocked",
+        )
+    assert governor.halted
+    assert governor.stats()["benign_block_markers"] == []
+
+
+async def test_the_control_costs_no_dispatch(tmp_path: Path) -> None:
+    """The rail never takes traffic of its own.
+
+    Learning the control reads responses the engagement already holds, so
+    nothing reaches the action log and no request is authorized.
+    """
+    governor = _governor(tmp_path, blocking_threshold=3)
+    for _ in range(5):
+        governor.observe_response(status=200, headers={}, body=_SPA_SHELL)
+    summary = governor.stats()
+    assert summary["requests_authorized"] == 0
+    assert summary["state_changing_sent"] == 0
+    assert summary["benign_block_markers"] == ["request blocked"]
+
+
+async def test_the_halt_detail_says_the_untested_classes_are_untested(tmp_path: Path) -> None:
+    """A halt is absence-generating, and the record has to say so.
+
+    Every class downstream registers NEVER INVOKED. The detail an operator
+    reads must not let those rows be read as a clean result.
+    """
+    governor = _governor(tmp_path, blocking_threshold=1)
+    governor.observe_response(status=503, headers={}, body="")
+    assert governor.halted
+    assert "UNTESTED, not clean" in governor.halt_detail
+
+
+# ---------------------------------------------------------------------------
 # Window hard stop + action ceiling
 # ---------------------------------------------------------------------------
 

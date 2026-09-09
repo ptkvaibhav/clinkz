@@ -732,6 +732,28 @@ detail when you are about to change the code an invariant governs — not by def
     "the credentials are wrong" whenever the POST demonstrably changed nothing —
     nothing evaluated a credential, so nothing there is a claim about one.
 
+100. **A marker that survives an UNBLOCKED response is the application's own
+    vocabulary, not evidence of blocking** (`safety/governor.py`). The body arm of
+    blocking detection takes a control that costs no dispatch — a signature this
+    target served in a 2xx/3xx carrying no WAF header is discarded and NAMED in
+    `stats()`. Consecutive-blocked never bounded an unconditionally-shipped
+    marker: an SPA that ships its error strings in every shell satisfies
+    CONSECUTIVE by construction and the counter never resets. **Status still
+    outranks keyword**; learning runs BEFORE the verdict, so a concurrent crawl's
+    ordering cannot decide a halt. **A halt is an ABSENCE-GENERATING event** —
+    every class downstream registers NEVER INVOKED and reads as an engine that
+    found nothing, so the halt detail says they are UNTESTED, not clean.
+
+101. **A zero measured over PART of the input is INDETERMINATE, never NOT
+    APPLICABLE** (`agents/_package_identity.py`). A consumer of bundle bytes
+    declares the fraction it read: the denominator is measured before
+    `MAX_BUNDLES` truncates, `indeterminate_reason` is consulted AHEAD of both
+    benign branches, and `coverage_note` renders on a clean run too. Measured on
+    cal.diy — 31 chunks referenced, 8 read, and the ledger row said *read 8
+    input(s) carrying no package/version pair*, a bound rendered as a property of
+    the target. **Detail →
+    [`docs/invariants.md`](docs/invariants.md).**
+
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/

@@ -868,11 +868,12 @@ class ReconAgent(BaseAgent):
             tree_rows, tree_report = packages_from_source_tree(
                 getattr(self.scope, "source_dir", None)
             )
-            bundle_bodies = await self._fetch_bundle_bodies()
+            bundle_bodies, bundles_available = await self._fetch_bundle_bodies()
             output = build_inventory(
                 tree_components=tree_rows,
                 tree_report=tree_report,
                 bundle_bodies=bundle_bodies,
+                bundles_available=bundles_available,
             )
         except Exception as exc:  # noqa: BLE001 — recon must not die on a bad tree
             self._logger.warning("Package identity failed: %s", exc)
@@ -889,17 +890,24 @@ class ReconAgent(BaseAgent):
             return PackageIdentityOutput(tool_name="package_identity", success=False)
 
         report = output.report
+        # The fraction rides on every row, clean or not: "8 of 31" is the number
+        # that decides whether the count beside it can be read at all.
+        note = f"{report.detail} [{report.coverage_note}]"
+        if report.indeterminate_reason:
+            note = f"{note} INDETERMINATE: {report.indeterminate_reason}"
         record_contribution(
             name="recon.package_identity",
             kind=ComponentKind.PARSER_SEAM,
             items=report.components_emitted,
-            note=report.detail,
+            note=note,
             # "Correctly found nothing" is the fifth fact, and this producer can
             # prove which one it is: a black-box engagement against a server-
             # rendered app has no lockfile and no bundle, and reporting that as
             # a defect would put a permanent false alarm in front of the
             # operator. Candidates found and none emitted is the ffuf shape and
-            # deliberately reaches none of this — it stays a SILENT alarm.
+            # deliberately reaches none of this — it stays a SILENT alarm. So
+            # does a zero measured over a TRUNCATED input: not-applicable is a
+            # claim about the target, and that zero is a claim about our bound.
             not_applicable=report.correctly_empty_reason,
         )
         if report.components_emitted:
@@ -910,7 +918,7 @@ class ReconAgent(BaseAgent):
             )
         return output
 
-    async def _fetch_bundle_bodies(self) -> list[tuple[str, str]]:
+    async def _fetch_bundle_bodies(self) -> tuple[list[tuple[str, str]], int]:
         """Fetch the same-origin ``.js`` bundles the served shells reference.
 
         Bundle URLs come from :meth:`StaticBundleDiscoverer._bundle_urls`, the
@@ -923,31 +931,42 @@ class ReconAgent(BaseAgent):
         ``http_request`` tool, so scope validation, the rate limiter and the
         action log all apply exactly as they do to any other recon request.
 
+        **The denominator is measured before the bound is applied**, and
+        returned, because only this method sees the untruncated list. A
+        consumer that reports "read 8 inputs" without saying 8 of how many
+        turns its own ceiling into a statement about the target: on cal.diy the
+        shells reference 31 chunks, this reads 8, and the auth surface sits in
+        chunks 13 and 28.
+
         Returns:
-            ``(url, body)`` per bundle fetched. A bundle that answered with an
-            empty body is still returned — it is an input this producer
-            examined, and dropping it would let a target that serves nothing
-            look like a target that was never asked.
+            ``(bodies, available)`` — ``(url, body)`` per bundle fetched, and
+            the number of distinct bundles the shells referenced. A bundle that
+            answered with an empty body is still returned — it is an input this
+            producer examined, and dropping it would let a target that serves
+            nothing look like a target that was never asked.
         """
         if not self._served_page_bodies:
-            return []
+            return [], 0
         http_match = self._resolver.find_tool("http_request")
         if not (http_match and http_match.available and http_match.tool_class):
             self._logger.warning("No http_request tool available for bundle reads")
-            return []
+            return [], 0
 
-        wanted: list[str] = []
+        available: list[str] = []
         seen: set[str] = set()
         for page_url, page_body in self._served_page_bodies:
             for bundle_url in bundle_urls_from_shell(page_body, page_url):
-                if bundle_url in seen:
-                    continue
-                seen.add(bundle_url)
-                wanted.append(bundle_url)
-                if len(wanted) >= MAX_BUNDLES:
-                    break
-            if len(wanted) >= MAX_BUNDLES:
-                break
+                if bundle_url not in seen:
+                    seen.add(bundle_url)
+                    available.append(bundle_url)
+        wanted = available[:MAX_BUNDLES]
+        if len(available) > len(wanted):
+            self._logger.info(
+                "Bundle read bounded at %d of %d referenced chunk(s) — a zero from "
+                "package identity over this input is indeterminate, not a clean result",
+                len(wanted),
+                len(available),
+            )
 
         bodies: list[tuple[str, str]] = []
         for bundle_url in wanted:
@@ -963,7 +982,7 @@ class ReconAgent(BaseAgent):
                 bodies.append((bundle_url, body[:MAX_BUNDLE_BYTES]))
             except Exception as exc:  # noqa: BLE001 — one bad bundle is not a failed step
                 self._logger.warning("Bundle read of %s failed: %s", bundle_url, exc)
-        return bodies
+        return bodies, len(available)
 
     # ------------------------------------------------------------------
     # Step 6: LLM Synthesize
