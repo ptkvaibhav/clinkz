@@ -56,6 +56,13 @@ from clinkz.engagement.artifact_scan import (
     SCAN_REPORT_FILENAME,
     run_disclosure_gate,
 )
+from clinkz.engagement.auth_agent import (
+    AuthAgentLoop,
+    AuthAgentOutcome,
+    AuthTranscript,
+    load_system_prompt,
+    observation_from_auth_result,
+)
 from clinkz.engagement.auth_state import (
     PROTECTED_PATH_CANDIDATES,
     AuthAssertion,
@@ -483,6 +490,19 @@ class OrchestratorAgent:
         # the credential-attack classes have a real injection point on it.
         # ``None`` until a role authenticates; never populated by a guess.
         self._proven_login: dict[str, Any] | None = None
+        # One adaptive-auth transcript per role the deterministic pass touched,
+        # INCLUDING the roles it authenticated: a role whose login worked
+        # carries a NOT_ENGAGED transcript with zero LLM turns and zero
+        # requests, which is how "deterministic first" is shown to a reader
+        # rather than asserted at them.
+        self._auth_transcripts: list[AuthTranscript] = []
+        # What recon observed, in the two shapes the adaptive-auth briefing
+        # needs. Stashed at the auth seam rather than threaded through
+        # ``_authenticate_role``'s signature, because a role authenticating is
+        # the common case and it must not have to carry an argument it never
+        # reads.
+        self._recon_component_labels: list[str] = []
+        self._package_identity_coverage_note: str = ""
         # Scan, Research and Exploit poll the same sentinel concurrently, so the
         # verify-and-refresh sequence is serialised. Two simultaneous re-logins
         # would race to write _role_sessions and push the loser's token.
@@ -3232,6 +3252,7 @@ class OrchestratorAgent:
             )
             return {}, "", {}
 
+        self._absorb_recon_context(recon_result)
         probe = _ToolHttpProbe(self._scope, self._engagement_id or "")
         discovered_login = await self._find_login_url(recon_result)
         detection = await detect_auth_mechanism(
@@ -3414,6 +3435,10 @@ class OrchestratorAgent:
                     ),
                 ),
             }
+            # The deterministic path has failed. Everything it learned on the
+            # way is still in hand, and this is the one point at which a model
+            # can propose something the parser could not read.
+            await self._adaptive_auth(cred, result, login_url)
             return
 
         # The authenticator discovered this target's login route and the body
@@ -3471,12 +3496,190 @@ class OrchestratorAgent:
             "post_changed_nothing": result.post_changed_nothing,
             "form_action_declared": result.form_action_declared,
         }
+        if not assertion.established:
+            # The exchange produced session material and the oracle could not
+            # prove it. Same hook as a failed login, deliberately: both are "the
+            # deterministic path did not seat a session", and a layer that
+            # engaged on one and not the other would be a layer whose engagement
+            # rule an operator could not state in one sentence.
+            await self._adaptive_auth(cred, result, login_url)
+        else:
+            self._auth_transcripts.append(
+                AuthTranscript(
+                    role=cred.role,
+                    outcome=AuthAgentOutcome.NOT_ENGAGED,
+                    outcome_reason=(
+                        "the deterministic login path established and proved the session, "
+                        "so the adaptive layer was never reached"
+                    ),
+                )
+            )
+
         if assertion.established and cred.role == (
             self._credentials.primary().role if self._credentials.primary() else ""
         ):
             # Remember what to re-authenticate with when the session is lost.
             self._reauth_credential = cred
             self._reauth_login_url = login_url
+
+    def _absorb_recon_context(self, recon_result: dict[str, Any]) -> None:
+        """Read the two recon facts the adaptive-auth briefing needs.
+
+        The component inventory, and the package-identity producer's OWN
+        declaration of what fraction of the available bundles it read. The
+        second one is why the first is sayable at all: a component list measured
+        over 8 of 31 served chunks is indeterminate rather than a finding about
+        the target (invariant 101), and an agent reasoning over the list has to
+        be told which of the two it is holding. Handing it the list without the
+        coverage note would be handing it a bound rendered as a property of the
+        application.
+        """
+        result = recon_result.get("result") or {}
+        components = result.get("components") or []
+        labels: list[str] = []
+        for component in components:
+            name = str(component.get("name") or "").strip()
+            if not name:
+                continue
+            version = str(component.get("version") or "").strip()
+            labels.append(f"{name}@{version}" if version else name)
+        self._recon_component_labels = labels
+        self._package_identity_coverage_note = str(
+            result.get("package_identity_coverage_note") or ""
+        )
+
+    async def _adaptive_auth(self, cred: RoleCredential, result: Any, login_url: str) -> None:
+        """Run the adaptive-auth loop for a role the deterministic path could not seat.
+
+        Reached only from the two failure branches above, and that is the whole
+        of the "deterministic first" guarantee: there is no configuration under
+        which this runs on a target whose login the parser could already read.
+        ``tests/test_engagement/test_auth_agent_deterministic_first.py`` asserts
+        it by driving the three targets whose logins DO parse through the pass
+        and finding zero LLM turns and zero adaptive requests.
+
+        Three collaborators are constructed here and injected, each the
+        authority on its own question — the LLM on what to propose, the
+        dispatcher on how a request is made (the engagement's own HTTP path, so
+        scope, the governor, the per-account credential budget and the action
+        log all still apply), and ``assert_authenticated`` on whether a session
+        exists. This method decides only whether to install what came back.
+
+        Never raises. An adaptive layer that aborted an engagement would be
+        strictly worse than the deterministic failure it exists to recover from,
+        so every fault becomes an outcome carrying a reason, and the abort
+        message renders it either way.
+        """
+        from clinkz.engagement.auth_agent_dispatch import HttpToolDispatcher
+        from clinkz.safety.governor import get_active_governor
+
+        transcript = AuthTranscript(role=cred.role)
+        dispatcher = HttpToolDispatcher(
+            self._scope,
+            self._engagement_id or "",
+            # What the login page itself ships, so a phrase in 383 KB of shell
+            # cannot stop an episode the deterministic pass has already part-paid
+            # for. The producer declared these; nothing here re-derives them.
+            # Read by NAME, never through a getattr default (invariant 82): a
+            # rename that silently produced an empty control here would restore
+            # exactly the false stop this parameter exists to prevent.
+            control_markers=list(result.login_page_lockout_markers),
+        )
+        loop: AuthAgentLoop | None = None
+        try:
+            observation = observation_from_auth_result(
+                result,
+                base_url=self._primary_target_url().rstrip("/"),
+                components=self._recon_component_labels,
+                script_coverage_note=self._package_identity_coverage_note,
+            )
+            governor = get_active_governor()
+            budget = (
+                governor.credential_attempts_remaining(
+                    result.posted_to or login_url, cred.username, reserved=True
+                )
+                if governor is not None
+                else None
+            )
+            loop = AuthAgentLoop(
+                llm=self._llm,
+                dispatcher=dispatcher,
+                asserter=lambda cookies, headers: self._assert_role_session(
+                    cred, cookies, headers, login_url
+                ),
+                in_scope=self._scope.contains,
+                system_prompt=load_system_prompt(),
+            )
+            self._logger.warning(
+                "The deterministic login path did not seat a session for role %r. "
+                "Engaging the adaptive layer with %s credential attempt(s) remaining.",
+                cred.role,
+                "no bound on the number of" if budget is None else budget,
+            )
+            transcript = await loop.run(
+                observation,
+                role=cred.role,
+                username=cred.username,
+                secret=cred.secret(),
+                account=cred.username,
+                credential_budget_remaining=budget,
+            )
+        except Exception as exc:  # noqa: BLE001 — an adaptive layer never aborts a run
+            self._logger.error("The adaptive-auth layer failed: %s", exc, exc_info=True)
+            transcript.outcome = AuthAgentOutcome.NOT_ATTEMPTED
+            transcript.outcome_reason = (
+                f"the adaptive layer raised {type(exc).__name__}: {exc}. Nothing it "
+                "proposed was dispatched, so nothing here is a statement about the "
+                "credential"
+            )
+            self._auth_transcripts.append(transcript)
+            return
+
+        self._auth_transcripts.append(transcript)
+        for line in transcript.render_lines():
+            self._logger.info("ADAPTIVE AUTH: %s", line.lstrip("- "))
+
+        if transcript.outcome is not AuthAgentOutcome.AUTHENTICATED:
+            return
+        assertion = loop.assertion if loop is not None else None
+        if assertion is None or not assertion.established:  # pragma: no cover — belt
+            return
+
+        # The session the adaptive layer seated REPLACES the unproven one
+        # recorded above. Directional, and the direction is invariant 43's: a
+        # proven session outranks the absence of one, and there is no path by
+        # which an unproven record demotes a proof.
+        if not self._session_material_source:
+            self._session_material_source = (
+                f"the credential supplied for role {cred.role!r}, logged in at a "
+                "destination the adaptive layer proposed"
+            )
+        self._role_sessions[cred.role] = {
+            "established": True,
+            "username": cred.username,
+            "cookies": dispatcher.jar or loop.session_cookies,
+            "headers": {},
+            "login_url": login_url,
+            "posted_to": next(
+                (a.proposal.url for a in reversed(transcript.attempts) if a.established),
+                login_url,
+            ),
+            "assertion": assertion,
+            "login_verdict": str(result.verdict),
+            "login_verdict_evidence": result.verdict_evidence,
+            "observations": result.deterministic_observations(),
+            "post_changed_nothing": result.post_changed_nothing,
+            "form_action_declared": result.form_action_declared,
+            # WHICH layer seated it. A client reading "authenticated" is
+            # entitled to know, because only one of the two is reproducible from
+            # the target's own bytes and the other one asked a model.
+            "seated_by": "adaptive",
+        }
+        self._logger.warning(
+            "ADAPTIVE AUTH SEATED THE SESSION for role %r — %s",
+            cred.role,
+            transcript.outcome_reason,
+        )
 
     async def _assert_role_session(
         self,
@@ -3631,6 +3834,23 @@ class OrchestratorAgent:
                 lines += [f"        - {observation}" for observation in observations]
             if session.get("post_changed_nothing"):
                 any_post_changed_nothing = True
+
+        # What the adaptive layer did, for every role that reached it. An
+        # abstention here is the most informative part of this whole message: it
+        # is the only section that says what was PROPOSED, and an operator
+        # reading "we reasoned this application authenticates at X and X
+        # answered 404" has something to act on that no remedy list below can
+        # give them.
+        engaged = [t for t in self._auth_transcripts if t.engaged]
+        if engaged:
+            lines += ["", "The adaptive layer then ran, because the above did not seat a session:"]
+            for transcript in engaged:
+                lines += [f"  {line.lstrip('- ')}" for line in transcript.render_lines()]
+                for attempt in transcript.attempts:
+                    if attempt.proposal.rationale:
+                        lines.append(
+                            f"      turn {attempt.turn} reasoning: {attempt.proposal.rationale}"
+                        )
 
         lines += ["", "Fix one of:"]
         if any_dispatched and not any_post_changed_nothing:
@@ -3973,6 +4193,28 @@ class OrchestratorAgent:
             "session_checks_performed": self._session_sentinel.checks_requested,
             "session_false_alarms": self._session_sentinel.false_alarms,
             "reauthentications": self._session_sentinel.reauths_triggered,
+            # WHICH layer seated each proven session. A run whose authentication
+            # was recovered by the adaptive layer is a run whose authenticated
+            # coverage rests on a model's proposal rather than on the target's
+            # own bytes; the oracle that PROVED it is the same either way, and
+            # the reader is entitled to both facts rather than the stronger one
+            # alone.
+            "seated_by": {
+                role: session.get("seated_by", "deterministic")
+                for role, session in sorted(self._role_sessions.items())
+                if session.get("established")
+            },
+            # Every adaptive-auth episode, redacted HERE rather than trusted to
+            # the writer downstream. Two controls, and the transcript's own
+            # rules are the first: cookie VALUES never enter it, only names.
+            # This is the second, and it is the one that catches a token the
+            # target embedded in a body excerpt — which no rule up there could
+            # have anticipated, because the target chose it.
+            "adaptive_auth": [t.redacted() for t in self._auth_transcripts],
+            # The headline, so a reader who scrolls no further sees whether the
+            # adaptive layer ran at all. A run where it did not is the common
+            # case and reads as one.
+            "adaptive_auth_engaged": any(t.engaged for t in self._auth_transcripts),
         }
 
     @staticmethod

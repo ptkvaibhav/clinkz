@@ -501,7 +501,11 @@ class TestJsonApiAuth:
         calls: list[tuple[str, dict[str, str]]] = []
 
         async def fake_api_post(
-            url: str, payload: dict[str, str], *, account: str = ""
+            url: str,
+            payload: dict[str, str],
+            *,
+            account: str = "",
+            control_body: str = "",
         ) -> tuple[int, str, list[str]]:
             calls.append((url, payload))
             if url.endswith("/rest/user/login"):
@@ -541,7 +545,11 @@ class TestJsonApiAuth:
         api_called = {"v": False}
 
         async def fake_api_post(
-            url: str, payload: dict[str, str], *, account: str = ""
+            url: str,
+            payload: dict[str, str],
+            *,
+            account: str = "",
+            control_body: str = "",
         ) -> tuple[int, str, list[str]]:
             api_called["v"] = True
             return 200, json.dumps({"token": "should-not-be-used"}), {}
@@ -564,7 +572,11 @@ class TestJsonApiAuth:
         seen: list[dict[str, str]] = []
 
         async def fake_api_post(
-            url: str, payload: dict[str, str], *, account: str = ""
+            url: str,
+            payload: dict[str, str],
+            *,
+            account: str = "",
+            control_body: str = "",
         ) -> tuple[int, str, list[str]]:
             seen.append(payload)
             if "username" in payload:
@@ -590,7 +602,11 @@ class TestJsonApiAuth:
             return self._form_failure(args)
 
         async def fake_api_post(
-            url: str, payload: dict[str, str], *, account: str = ""
+            url: str,
+            payload: dict[str, str],
+            *,
+            account: str = "",
+            control_body: str = "",
         ) -> tuple[int, str, list[str]]:
             return 404, "", []
 

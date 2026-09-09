@@ -347,3 +347,11 @@ class ReconResult(BaseModel):
     #: property of a black-box engagement against a server-rendered app) from
     #: "the reader found nothing in what it read".
     package_identity_inputs: int = 0
+    #: The package-identity producer's OWN statement of what fraction of the
+    #: available input it read — ``"8/31 available input(s) read — 23 not
+    #: fetched"``. Carried verbatim rather than recomposed downstream from the
+    #: counter above, because the denominator is a number only the producer
+    #: measured (invariant 101) and a consumer that rebuilt the sentence would be
+    #: rebuilding it from the half it can see. Empty when nothing measured it,
+    #: which reads as "no coverage claim" and not as full coverage.
+    package_identity_coverage_note: str = ""
