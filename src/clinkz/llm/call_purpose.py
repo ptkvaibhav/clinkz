@@ -93,10 +93,13 @@ permissive value — because that is what an un-migrated caller, a driver, a
 replay or a direct methodology invocation is. An undeclared *agent* call site
 is not left to that default by accident:
 ``tests/test_llm/test_call_purpose_classification.py`` reads the source of
-``src/clinkz/agents/`` and ``src/clinkz/orchestrator/`` and fails on any LLM
-call site missing from :data:`DECLARED_CALL_SITES` — the same shape as the
-tool-wiring decision test, so "nobody classified it" is a red build rather than
-a silent permission.
+``src/clinkz/agents/``, ``src/clinkz/orchestrator/``, ``src/clinkz/research/``
+and ``src/clinkz/engagement/`` and fails on any LLM call site missing from
+:data:`DECLARED_CALL_SITES` — the same shape as the tool-wiring decision test,
+so "nobody classified it" is a red build rather than a silent permission. That
+tuple is widened on the commit that ADDS a caller to a package, never after it:
+a package outside the domain reaches an LLM under the permissive default with
+nothing in the build to say so.
 
 Being a :class:`~contextvars.ContextVar`, the declaration is per-task: the
 concurrent phase runners each carry their own, and an ``await`` inside the
@@ -137,8 +140,9 @@ class LLMCallPurpose(StrEnum):
         return self is LLMCallPurpose.PLANNING
 
 
-#: The declared purpose of every LLM call site under ``src/clinkz/agents/`` and
-#: ``src/clinkz/orchestrator/``, keyed by ``module.function``. Every entry
+#: The declared purpose of every LLM call site under ``src/clinkz/agents/``,
+#: ``src/clinkz/orchestrator/``, ``src/clinkz/research/`` and
+#: ``src/clinkz/engagement/``, keyed by ``module.function``. Every entry
 #: carries the reason, because the reason is the part that has to survive
 #: somebody moving the code.
 #:
@@ -229,6 +233,22 @@ DECLARED_CALL_SITES: dict[str, tuple[LLMCallPurpose, str]] = {
         "Routes a cross-phase query and answers it from engagement state. No agent "
         "has ever sent a QUERY message, so this is unreached in every recorded run; "
         "were it reached, it would decide which agent re-spins — coverage.",
+    ),
+    "auth_agent._propose_destinations": (
+        LLMCallPurpose.PLANNING,
+        "Proposes where this application's credential POST actually goes, from the "
+        "framework identity and the deterministic facts the login page already stated. "
+        "It shapes what is TESTED — whether the engagement runs authenticated at all — "
+        "and that is the largest single coverage decision a run makes, which is exactly "
+        "why it is disclosable: an abstention names its reason, the report says the "
+        "authenticated surface went unexamined, and the remedy is to declare login_url. "
+        "What bounds the harm of a degraded answer is NOT the provider — it is the "
+        "deterministic proposal gate (scope, method, destructive classification, "
+        "per-account budget, no repeats) which runs identically whoever proposed, and "
+        "assert_authenticated, which is the only thing that can set success. A model "
+        "the engagement did not choose can cost this run its authenticated coverage; "
+        "it cannot send a credential anywhere the gate refuses and it cannot claim a "
+        "session.",
     ),
     "base._react_loop": (
         LLMCallPurpose.PLANNING,
