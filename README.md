@@ -145,6 +145,18 @@ This brings up:
   application can be served at `/portal/gateway` and at `/login` — which is how
   you tell an oracle that reads the SHAPE of a redirect from one that reads the
   SPELLING of its destination
+- `clinkz-umami` on `http://localhost:3200` — the **adaptive-auth honesty
+  control**. A real Next.js App Router application that does NOT use NextAuth:
+  it serves the same `X-Powered-By: Next.js` and RSC `Vary` that cal.com does,
+  and none of the NextAuth routes (`/api/auth/csrf`, `/api/auth/providers`,
+  `/api/auth/session`, `/api/auth/callback/credentials` all 404). Its credential
+  sink is `POST /api/auth/login`, JSON in, bearer token out. Two of the three
+  observations the adaptive layer reasons from are present on every Next.js
+  deployment there is, so this is the target that says whether it reasoned or
+  merely recognised a framework — a confident NextAuth proposal here would
+  repeat on every client Next.js application. Default credentials
+  `admin` / `umami`. See
+  `docs/methodology/adaptive-authentication.md`
 
 ### Running a Scan
 

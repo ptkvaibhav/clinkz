@@ -445,3 +445,164 @@ They were three legitimately different attempts, differing in **content type**,
 and the signature knew it while the render did not. Everything the signature
 treats as making a request different is rendered now, or a reader still cannot
 tell a corrected retry from a wasted one.
+
+## Stage B — the positive control: a session the adaptive layer actually seated
+
+Everything above ends in an abstention. That is an honest result and it is not a
+proven capability: the loop was demonstrated up to the last step, and the last
+step — *does the thing it seats survive the oracle* — is where every
+session-evidence defect in this project has lived.
+
+`clinkz.live@example.com` was registered through cal.com's own signup route
+(`POST /api/auth/signup`, 201), so the credential is the application's, not the
+engine's. Cold run, no `login_url` declared, `TOOL_EXEC_MODE=local` against
+`http://127.0.0.1:3100`.
+
+```
+deterministic  POST /login                             200 · 383,466 bytes, byte-identical
+               (5 attempts, then refused: 3 of 8 reserved for the adaptive layer)
+turn 1   GET   /api/auth/csrf                          200 · JSON {csrfToken}
+                                                       set next-auth.csrf-token,
+                                                           next-auth.callback-url
+turn 2   POST  /api/auth/callback/credentials          302 -> http://caldiy:3000
+               csrfToken, email, password                   · set next-auth.session-token
+assert   GET   /api/users  /api/Users  /api/user       404 / 404 / 404
+         GET   /api/me                    authenticated 200 · anonymous 401
+```
+
+**The Set-Cookie delta on the seating turn is exactly one cookie**:
+`next-auth.session-token`. Turn 1's two cookies were already in the episode's jar
+and are carriage, not evidence — which is invariant 91's rule doing the work it
+was written for, on the run that first needed it to be right.
+
+**The rule that carried it is `status_class`** — anonymous `GET /api/me` gave 401,
+authenticated gave 200. Not `login_redirect`, and that matters: the credential
+POST redirects to `http://caldiy:3000`, a host that does not resolve from the
+machine running the engine, and no verdict depends on where it points.
+
+The verdict tuple the run recorded:
+
+```
+established        True
+seated_by          adaptive
+discriminator      status_class @ http://127.0.0.1:3100/api/me
+login verdict      refused   (the DETERMINISTIC one, unchanged and still correct)
+```
+
+The deterministic verdict staying `refused` beside `established=True` is the
+shape invariant 43 requires: the adaptive session SUPERSEDES the absence of one,
+and nothing rewrites the record of what the earlier layer measured.
+
+### The engagement continued
+
+The same credentials, plus a second account registered the same way, drove a full
+`clinkz scan` (engagement `e4814440`). Both roles seated adaptively; the exploit
+phase received the handoff and ran:
+
+```
+Session handoff   cookies next-auth.csrf-token, next-auth.callback-url, next-auth.session-token
+Principal handoff 2 proven session(s) — user_a, user_b
+```
+
+That is the first downstream measurement this layer has ever produced, and the
+number worth keeping is the plan's, not the findings':
+
+| | |
+|---|---|
+| methodology classes with a candidate | **20 of 32** |
+| tasks dispatched | **150** (the cap) |
+| `_test_xss_dom` + `_test_javascript_attacks` | **72 of the 150** |
+| `_test_idor` / `_test_write_crossing` | **1 each**, with two proven principals in hand |
+| candidates dropped to the cap | 38, all `_test_security_headers` / `_test_weak_session` |
+| confirmed findings | 4, all security-header |
+| unproven leads | 2 |
+
+The plan spent 48% of its budget on the two client-side classes because a Next.js
+build serves ~36 static chunks and each one is a candidate endpoint for them,
+while the two classes that most need several endpoints — and that had the two
+identities to use them — got one task apiece. That is a **ranking** result on a
+modern SPA, not a coverage result, and it is separable from anything the auth
+layer does.
+
+## Stage B — the honesty control: Next.js WITHOUT NextAuth
+
+Two of the three observations that produce cal.diy's answer are present on every
+Next.js deployment there is: the `X-Powered-By` header and the RSC `Vary`. Only
+the `csrfToken`-without-a-cookie is NextAuth's. So the question the cal.diy
+success does not answer is whether the layer reasoned or recognised — and a layer
+that proposes `/api/auth/callback/credentials` off the fingerprint alone would do
+it on every client Next.js application, confidently and wrongly.
+
+**The target is umami** (`docker/docker-compose.yml::umami`, named before the
+run). Real Next.js App Router; `/login` serves the same fingerprint cal.diy does
+and **no `<form>` at all**; `/api/auth/csrf`, `/api/auth/providers`,
+`/api/auth/session` and `/api/auth/callback/credentials` all answer 404; the real
+credential sink is `POST /api/auth/login` with a JSON body returning a bearer
+token.
+
+On a cold run the layer is never engaged, and that is itself worth recording:
+`/api/auth/login` is in `_API_LOGIN_ROUTES`, so `detect_auth_mechanism` finds it,
+the JSON arm proves it, and `established=True seated_by=deterministic` with zero
+model calls. **A canned list solved it, not a model.** Putting the question to
+the model needs the login PAGE declared as `login_url`, which is the operator
+declaration Meridian is run with for the same reason.
+
+Run that way, the result is the pass condition:
+
+```
+4 proposal round(s); 0 credential POST(s) and 4 safe read(s) dispatched
+turn 1  GET /_next/static/chunks/12v-xh68xgzbb.js   200
+turn 2  GET /api/auth/csrf                          404
+turn 3  GET /api/login                              404
+turn 4  GET /_next/static/chunks/3032vw57ok4-5.js   200
+outcome ABSTAINED — "no credential was offered to this application"
+```
+
+The NextAuth hypothesis **did** appear, at turn 2 — and it appeared as a
+`ProposalKind.READ`, spending no credential budget, with its own falsification
+condition written into the rationale before it was sent: *a 404 or non-JSON
+response here would eliminate NextAuth*. It got the 404, and turn 3's rationale
+records the elimination: *the prior read of /api/auth/csrf 404'd, which already
+argues against a stock NextAuth.js credentials-provider deployment*.
+
+That distinction — a hypothesis spent on a free read, versus a confident
+credential destination — is the one the control exists to measure, and it is
+observable only because the engine makes the two kinds structurally different and
+meters one of them. Zero credential POSTs, zero gate refusals, a clean
+abstention.
+
+It did **not** find umami's real login surface. It read `/api/login` and never
+tried `/api/auth/login`, and it spent two of four turns on JS chunks. Under the
+control's terms that is the acceptable half of *the app's real login surface or a
+clean abstention* — but it is a capability bound, and the honest statement of it
+is that this layer recovers a destination the FRAMEWORK implies, not a
+destination a hand-rolled application chose.
+
+### The defect the control found
+
+The run ended on this, logged and then not carried:
+
+```
+OUTPUT BUDGET EXHAUSTED: claude-sonnet-5 produced 16000 tokens against a
+ceiling of 16000 and was CUT OFF (stop_reason=max_tokens).
+```
+
+The transcript's own reason says the loop *stopped early: a proposal round
+returned nothing this engine could parse into a request shape*. Those are not the
+same sentence. **Nothing parseable** reads as a model with nothing to say;
+**truncated at the ceiling** reads as a model cut off mid-answer, and the fix for
+the second is a larger ceiling or a shorter rationale, not a better prompt. The
+engine holds the right fact one layer down and the abstention does not carry it —
+the same shape as invariant 95's rule about a measurement that refused itself,
+one component along.
+
+### What is pinned offline
+
+`tests/test_engagement/test_nextjs_without_nextauth.py`, over the container's own
+recorded bytes (`tests/fixtures/auth/umami_login_curl.txt`), read by the engine's
+own functions rather than restated. It
+asserts the half that must hold with no model in the room: umami and cal.diy
+produce the **same** fingerprint and the **same** "no destination declared" fact,
+and the briefing still tells them apart — on the CSRF observation, which is the
+only one that decides. If the briefing flattened the two, a correct answer on
+either would be luck, and no prompt could fix it.
