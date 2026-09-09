@@ -703,8 +703,15 @@ class AuthTranscript(BaseModel):
                     f"{attempt.gate.reason}"
                 )
                 continue
+            # The content type belongs here for the same reason the field names
+            # do: it is the last thing that distinguishes two POSTs to one URL,
+            # and a live transcript rendered THREE identical lines for three
+            # attempts that differed only in encoding. Everything the signature
+            # treats as making a request different is rendered, or a reader
+            # cannot tell a corrected retry from a wasted one.
             carried = (
-                f" carrying {', '.join(attempt.sent_field_names)}"
+                f" as {attempt.proposal.content_type} carrying "
+                f"{', '.join(attempt.sent_field_names)}"
                 if attempt.sent_field_names
                 else ""
             )

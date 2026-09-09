@@ -435,3 +435,13 @@ the transcript renders the field NAMES each POST carried so a reader can tell th
 two apart. The turn ceiling moved from 3 to 6 for the same reason: at 3 it was
 the operative bound rather than the backstop, and it stopped both cal.diy and
 Ghost one move short of the read that would have settled the question.
+
+The re-validation run after all of that showed the same defect one field along.
+The reserve worked exactly as designed — the deterministic pass was refused at
+5 with the refusal naming why its share was smaller than the policy, and the
+adaptive layer got its 3 — and it spent all three on
+`/api/auth/callback/credentials`, rendering three identical transcript lines.
+They were three legitimately different attempts, differing in **content type**,
+and the signature knew it while the render did not. Everything the signature
+treats as making a request different is rendered now, or a reader still cannot
+tell a corrected retry from a wasted one.

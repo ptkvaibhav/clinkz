@@ -942,7 +942,11 @@ class TestARequestIsNotAskedTwice:
         )
         attempt = transcript.attempts[0]
         assert attempt.sent_field_names == ["csrfToken", "email", "password"]
-        assert "carrying csrfToken, email, password" in " ".join(transcript.render_lines())
+        rendered = " ".join(transcript.render_lines())
+        assert "carrying csrfToken, email, password" in rendered
+        # The content type too: three live attempts differed only in encoding
+        # and rendered as three identical lines.
+        assert "as application/x-www-form-urlencoded carrying" in rendered
         assert "s3cret" not in json.dumps(transcript.redacted())
 
     async def test_the_abstention_counts_the_posts_that_produced_material(self) -> None:
