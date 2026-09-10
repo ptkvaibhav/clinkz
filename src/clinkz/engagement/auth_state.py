@@ -161,6 +161,30 @@ class AuthMechanism(StrEnum):
     UNKNOWN = "unknown"
 
 
+def bearer_header(token: str) -> dict[str, str]:
+    """The session headers a bearer token seats, or ``{}`` when there is none.
+
+    One spelling, because there is one question. ``{"Authorization": f"Bearer
+    {token}"}`` was written out at four sites on the deterministic path and at
+    none on the adaptive one, and the adaptive omission is not a coincidence:
+    an idiom that lives at its call sites is an idiom a new call site has to
+    remember, and :class:`~clinkz.engagement.auth_agent.AuthAgentLoop` did not.
+    It passed ``{}`` to :func:`assert_authenticated`, which then reported "no
+    session material was supplied" about a response that had just returned a
+    token.
+
+    Args:
+        token: The token the login response produced. Empty is not an error —
+            it is the cookie case, and it must yield no header rather than an
+            ``Authorization: Bearer`` with nothing after it.
+
+    Returns:
+        The header mapping, or ``{}``.
+    """
+    token = (token or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 class ProbeResponse(BaseModel):
     """A minimal HTTP response, as the assertion needs to see it.
 
@@ -882,6 +906,7 @@ __all__ = [
     "ProbeResponse",
     "SessionSentinel",
     "assert_authenticated",
+    "bearer_header",
     "detect_auth_mechanism",
     "looks_unauthenticated",
 ]
