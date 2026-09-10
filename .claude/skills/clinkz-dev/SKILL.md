@@ -143,6 +143,55 @@ remembering to edit a list inside the test, the domain is wrong.
 `declared - computed` catches the entry that outlived the thing it described.
 A guard with only the first half rots into documentation of a wish.
 
+**And the domain must be over the thing the property is a property OF.** Computing
+the domain is only half the law. The other half is choosing what to compute it
+over, and getting that wrong produces a guard that is green, computed, both-
+directions-asserted, and blind.
+
+> **A control that is an optional parameter with a permissive default turns a
+> guard about the callee into an unguarded property of every call site.** An
+> oracle marked "has a control" is only as controlled as its least careful
+> caller, and no domain computed over oracle bodies can see a caller.
+
+Measured 2026-09-09, on the guard built for this law. Invariant 98's domain is
+every function that tests a marker **we** chose against something body-shaped —
+the right domain for "which oracles read a marker", and it missed
+`HTTPClientTool._observe_credential`, the site that decides whether *every*
+credential POST in the engine is controlled. Not by accident: that function is
+not a marker oracle. It reads no marker — it parses an envelope and forwards
+`body=` to `classify_lockout` two hops away — and it returns `None`, so it fails
+the verdict-shaped filter too. **Excluded twice, correctly, on the guard's own
+terms.**
+
+The defect was the terms. `classify_lockout` was classified `HAS_CONTROL` because
+it *takes* a `control_body` parameter — declared `control_body: str = ""`, which
+means "discard nothing", which is the pre-fix behaviour. The same permissive
+default sat at every hop. It stayed invisible while the auth path had **one**
+consumer, because then *the oracle takes a control* and *every call passes one*
+were the same sentence. The adaptive-auth layer arrived as a second consumer and
+made them two sentences.
+
+The same measurement over the other two guards found the identical shape, each
+with its own reason a name-shaped or call-shaped domain could not see it:
+
+| guard | domain is over | why the adaptive path was invisible |
+|---|---|---|
+| 96 credential-sender | identifiers matching `password\|passwd\|pwd` | the loop calls its secret `secret`; the one literal `"password"` is a **class-body annotation** and the walk visits only `FunctionDef` |
+| 97 scope port-binding | functions that **call** a containment primitive | the primitive is **handed over as a value** (`in_scope=self._scope.contains`); the delegator calls nothing and the receiver calls a local name |
+| 98 marker-oracle control | functions that **read** a marker | the arming site reads none, returns `None`, and forwards a body two hops |
+
+All three properties held anyway — by construction, not by guard. "It happens to
+be right" is what a guard exists to replace.
+
+**So, before adding a consumer to a guarded seam, recompute every guard's domain
+against it.** The guard modules expose their domain functions; import each by
+path with `importlib.util.spec_from_file_location` and split the returned keys by
+module prefix. Ten minutes, and it is the only way to answer "which guards cover
+this new consumer" without guessing. When a guard comes back empty for the new
+path, the fix is to add a computed source that is about the **call** — a call
+site supplying the control, a function receiving the secret, a primitive passed
+as a value — never to widen the classification table by hand.
+
 **And an exemption is an allow-list entry with a reason, never a silent skip** —
 the same rule as `artifact_scan._SKIP_ALLOWED` and
 `test_mock_shape_audit._DELIBERATE_FICTIONS`. `len(reason.split()) < 6` is a
