@@ -573,3 +573,252 @@ def test_every_credential_arming_site_arms_the_control_too() -> None:
         "these callers name the account for the per-account budget and never mention "
         f"the lockout control, so their attempts can be stopped by page furniture: {blind}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The domain over the CALL — the half a domain over the ORACLE cannot see
+# ---------------------------------------------------------------------------
+#
+# Everything above computes over ORACLE BODIES: a function is in the domain
+# because of what IT reads. That domain was written to answer "where else does
+# the engine decide on a marker", and it answered it — and then the adaptive
+# authentication layer landed with a credential-observation site inside it that
+# the domain did not contain, which is the guard-domain law failing inside the
+# guard built for the guard-domain law.
+#
+# The reason is worth more than the site. ``HTTPClientTool._observe_credential``
+# is NOT a marker oracle: it reads no marker, it parses an envelope and forwards
+# ``body=`` to ``classify_lockout`` two hops away, and it returns ``None`` so it
+# fails ``_verdict_shaped`` as well. It was excluded twice, correctly, on the
+# domain's own terms.
+#
+# **The defect is the terms.** ``classify_lockout`` is classified HAS_CONTROL
+# because it TAKES a ``control_body`` parameter — declared ``control_body: str =
+# ""``, which means "discard nothing", which is the pre-fix behaviour. The same
+# permissive default sat at every hop: ``_observe_credential`` ->
+# ``observe_credential_response(control_body="")`` -> ``classify_lockout(
+# control_body="")``. So:
+#
+#     A control that is an OPTIONAL PARAMETER WITH A PERMISSIVE DEFAULT turns a
+#     guard about the callee into an unguarded property of every call site. An
+#     oracle marked HAS_CONTROL is only as controlled as its least careful
+#     caller, and no domain computed over oracle bodies can see a caller.
+#
+# It stayed invisible while the auth path had ONE consumer, because then "the
+# oracle takes a control" and "every call passes a control" were the same
+# sentence. The adaptive layer made them two sentences.
+#
+# So the domain below is computed over CALLS: every function that hands a body
+# to one of these oracles, or that arms the attribute one of them reads. The
+# classification is computed too — whether the call actually passes a control —
+# and the declaration carries the REASON, so a site that stops supplying one
+# fails against its own entry rather than silently rejoining the pre-fix
+# behaviour.
+
+
+#: Oracles that accept a control body. A call to one of these is a call that
+#: either supplies a control or declines to.
+CONTROL_TAKERS: frozenset[str] = frozenset(
+    {
+        "classify_lockout",
+        "observe_credential_response",
+        "_observe_credential",
+        "_observe_credential_response",
+        "_login_verdict",
+    }
+)
+
+#: The attribute a caller arms so the chokepoint's own observation is
+#: controlled. Assigning it is supplying a control one hop early.
+CONTROL_ATTRIBUTE = "credential_control_body"
+
+
+class _Supply:
+    """What a call site does about the control the oracle it reaches accepts."""
+
+    #: Hands over a control body that is not an empty literal.
+    SUPPLIES = "supplies_a_control"
+    #: Hands over nothing, or an empty literal. Declared, never inferred.
+    NONE = "supplies_no_control"
+
+
+def _is_empty_literal(node: ast.AST) -> bool:
+    """Whether an argument is a hardcoded empty string."""
+    return isinstance(node, ast.Constant) and node.value == ""
+
+
+def _control_sites() -> dict[str, str]:
+    """Every function reaching a control-taking oracle, and what it supplies.
+
+    Two ways to reach one, and both count:
+
+    * calling it, passing (or not passing) ``control_body`` — ``classify_lockout``
+      also takes it fourth positionally, which is how the exploit path's brute-
+      force observation supplies one;
+    * arming :data:`CONTROL_ATTRIBUTE`, which the HTTP chokepoint reads at the
+      credential POST. That is the seam the adaptive-auth dispatcher uses, and
+      it is invisible to any domain that looks only at calls.
+
+    A function supplies a control when every route it takes to an oracle carries
+    one. One uncontrolled route is enough to classify the whole site
+    :attr:`_Supply.NONE`: the guard is about what can reach an oracle
+    uncontrolled, not about what usually does.
+    """
+    sites: dict[str, list[bool]] = {}
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+        rel = path.relative_to(SRC).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            qualname = f"{rel}::{node.name}"
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Assign):
+                    for target in sub.targets:
+                        if isinstance(target, ast.Attribute) and target.attr == CONTROL_ATTRIBUTE:
+                            sites.setdefault(qualname, []).append(not _is_empty_literal(sub.value))
+                if not isinstance(sub, ast.Call):
+                    continue
+                func = sub.func
+                name = (
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else func.id
+                    if isinstance(func, ast.Name)
+                    else None
+                )
+                if name not in CONTROL_TAKERS:
+                    continue
+                keyword = next((k for k in sub.keywords if k.arg == "control_body"), None)
+                if keyword is not None:
+                    supplied = not _is_empty_literal(keyword.value)
+                elif name == "classify_lockout" and len(sub.args) >= 4:
+                    # Its control is the fourth positional.
+                    supplied = not _is_empty_literal(sub.args[3])
+                else:
+                    supplied = False
+                sites.setdefault(qualname, []).append(supplied)
+    return {
+        qualname: _Supply.SUPPLIES if all(flags) else _Supply.NONE
+        for qualname, flags in sites.items()
+    }
+
+
+#: ``qualified name -> reason``. Every entry is a call site the computation
+#: above found; its classification is COMPUTED, so this table carries only the
+#: half a human owns — why the site is shaped that way.
+DECLARED_CONTROL_SITES: dict[str, str] = {
+    # -------------------------------------------------------- the exploit path
+    "agents/exploit.py::_brute_force_phase2_observation": (
+        "passes the class's own baseline body fourth-positionally to classify_lockout, so "
+        "a login page that ships 'too many attempts' as furniture cannot stop the series "
+        "this class exists to measure"
+    ),
+    # -------------------------------------------------- the deterministic path
+    "safety/governor.py::observe_credential_response": (
+        "forwards the caller's control straight through to classify_lockout; the governor "
+        "holds no un-credentialed response of its own and must not invent one"
+    ),
+    "tools/auth.py::_dispatch": (
+        "hands the login page the authenticator already fetched to the credential "
+        "observation, which is the one body on this path the credential provably did not "
+        "produce"
+    ),
+    "tools/auth.py::_execute_aiohttp": (
+        "the host transport's credential exchange: both the login verdict and the lockout "
+        "observation get the login HTML this arm fetched before the POST"
+    ),
+    "tools/auth.py::_execute_curl": (
+        "the docker transport's credential exchange, controlled identically to the host "
+        "one, because a verdict that differs by execution mode is a defect the mode hides"
+    ),
+    "tools/auth.py::_observe_credential_response": (
+        "forwards its caller's control to the governor unchanged; it is a seam, and a seam "
+        "that substituted a control would be inventing evidence"
+    ),
+    "tools/auth.py::_post": (
+        "the form arm's POST hands the login page it just read to the credential "
+        "observation, so a nav-bar phrase cannot halt the engagement"
+    ),
+    # ------------------------------------------------------------ the chokepoint
+    "tools/http_client.py::execute": (
+        "reads credential_control_body off the tool and hands it to the credential "
+        "observation. This is the site the oracle-shaped domain could not see: it reads no "
+        "marker and returns no verdict, and it decides whether every credential POST in "
+        "the engine is controlled"
+    ),
+    "tools/http_client.py::_observe_credential": (
+        "forwards the armed control to the governor. Its own signature still defaults to "
+        "the empty string, which is why this table exists: the default makes the oracle as "
+        "controlled as its least careful caller, so the callers are what is asserted"
+    ),
+    # ------------------------------------------------------- the adaptive path
+    "engagement/auth_agent_dispatch.py::_send": (
+        "arms credential_control_body from the login page's own lockout markers before "
+        "every adaptive credential POST. The adaptive layer runs only after the "
+        "deterministic pass has already spent from this account, so a false stop here does "
+        "not cost a retry — it costs the whole episode"
+    ),
+    "tools/auth.py::_api_post_json": (
+        "arms credential_control_body for the JSON arm's POST, which walks up to eight "
+        "routes on one host offering the same password to each"
+    ),
+}
+
+
+def test_every_call_that_reaches_a_control_taking_oracle_is_declared() -> None:
+    """computed - declared: a new credential-observation site fails the build.
+
+    The test that would have caught the adaptive layer's third site on the day
+    it landed, rather than in a corpus sweep afterwards.
+    """
+    undeclared = sorted(set(_control_sites()) - set(DECLARED_CONTROL_SITES))
+    assert not undeclared, (
+        "these functions hand a body to an oracle that accepts a control, or arm the "
+        "attribute one reads, and no entry says what they supply. An oracle is only as "
+        f"controlled as its least careful caller: {undeclared}"
+    )
+
+
+def test_no_call_site_entry_outlived_its_function() -> None:
+    stale = sorted(set(DECLARED_CONTROL_SITES) - set(_control_sites()))
+    assert not stale, f"declared for call sites that no longer reach an oracle: {stale}"
+
+
+@pytest.mark.parametrize("qualname", sorted(DECLARED_CONTROL_SITES))
+def test_each_call_site_reason_is_substantive(qualname: str) -> None:
+    reason = DECLARED_CONTROL_SITES[qualname]
+    assert len(reason.split()) >= 8, f"{qualname}: a call site needs a reason, not a label"
+
+
+def test_every_declared_call_site_actually_supplies_a_control() -> None:
+    """The property itself, asserted over the COMPUTED domain.
+
+    Not "these sites are declared" — "every site that can reach one of these
+    oracles hands it something the credential did not produce". A site that
+    starts passing ``""`` fails here, which is the failure mode the permissive
+    default was silently reintroducing at each new consumer.
+    """
+    computed = _control_sites()
+    uncontrolled = sorted(q for q, how in computed.items() if how is not _Supply.SUPPLIES)
+    assert not uncontrolled, (
+        "these sites reach an oracle that accepts a control and pass none, so a phrase the "
+        f"target serves whatever it is sent counts as evidence about a credential: "
+        f"{uncontrolled}"
+    )
+
+
+def test_the_adaptive_path_is_inside_this_domain() -> None:
+    """Pinned as a decision, because it was outside it for two merged PRs.
+
+    Measured 2026-09-09: of this module's 36-member oracle domain, ONE member
+    lived on the deterministic auth path and NONE on the adaptive one, while the
+    adaptive dispatcher was arming the control for every credential POST it
+    sent. The property held; the guard could not see that it held.
+    """
+    computed = _control_sites()
+    assert computed.get("engagement/auth_agent_dispatch.py::_send") == _Supply.SUPPLIES
+    assert any(q.startswith("engagement/auth_agent") for q in computed), (
+        "the adaptive-auth path left this domain; if its dispatcher no longer arms the "
+        "control, that is the regression this test exists for"
+    )

@@ -416,3 +416,265 @@ def test_the_adaptive_layers_credential_post_is_governed_not_exempt() -> None:
     reason = DECLARED_ARMING_SITES["engagement/auth_agent_dispatch.py"]
     assert "proposed by a model" in reason
     assert "budget" in reason
+
+
+# ---------------------------------------------------------------------------
+# The senders that never say "password" — a second computed domain
+# ---------------------------------------------------------------------------
+#
+# ``PASSWORD_TOKEN`` is matched against IDENTIFIERS, and it was written that way
+# for a good reason: the brute-force loop builds its body from variable keys, so
+# a domain over literal dict keys cannot see the largest ungoverned sender in
+# the engine. It is still a domain over what a function SPELLS, and the adaptive
+# authentication layer spells it something else.
+#
+# ``AuthAgentLoop.run`` takes ``secret``. ``fields[proposal.secret_field] =
+# secret``. ``HttpToolDispatcher.post_credentials`` takes a generic ``fields:
+# dict`` and an ``account``. The single literal "password" anywhere in that path
+# is ``AuthProposal.secret_field: str = "password"`` — a CLASS-BODY ANNOTATION,
+# and the domain walks only ``FunctionDef``. Invisible twice over, so the whole
+# adaptive path scored ZERO members against a 44-member domain while sending
+# model-proposed credential POSTs.
+#
+# The property held anyway, via ``DECLARED_ARMING_SITES`` below — but by
+# construction, not by guard, and "it happens to be right" is what this module
+# exists to replace. So the domain gains three more computed sources, each about
+# the CALL rather than about the spelling:
+#
+#   * a function DECLARING a secret-shaped parameter — it receives one, whatever
+#     the caller calls it;
+#   * a function PASSING one as a keyword — it hands one on;
+#   * a function NAMING AN ACCOUNT to a credential sender (``account=``, or
+#     arming ``credential_account``) — the budget's own vocabulary, which is the
+#     property this module is actually about.
+#
+# Names are collapsed per file, as everywhere else in this module: ``tools/
+# auth.py`` defines six nested ``_dispatch`` closures and two ``_post`` ones, and
+# one entry covering all of them is the honest granularity for a table a human
+# maintains.
+
+#: Parameter and keyword names that ARE a secret, whatever the module calls it.
+#: Bound to the engine's own credential vocabulary below rather than invented
+#: here — a word this test knows and the redactor does not is a word the engine
+#: does not actually treat as a secret.
+SECRET_PARAM = re.compile(r"^(secret|password|passwd|pwd)s?$", re.IGNORECASE)
+
+#: The words that regex recognises, spelled out so they can be checked against
+#: the engine's vocabulary rather than only used.
+SECRET_WORDS: frozenset[str] = frozenset({"secret", "password", "passwd", "pwd"})
+
+#: The budget's own vocabulary. A call passing this keyword, or an assignment to
+#: this attribute, is a site deciding whether an attempt is countable.
+ACCOUNT_KEYWORD = "account"
+ACCOUNT_ATTRIBUTE = "credential_account"
+
+
+def _call_domain() -> set[str]:
+    """Every function that carries a secret, or names an account to a sender."""
+    found: set[str] = set()
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel = path.relative_to(SRC).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            args = node.args
+            declared = [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+            hit = any(SECRET_PARAM.match(name) for name in declared)
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Assign):
+                    hit = hit or any(
+                        isinstance(t, ast.Attribute) and t.attr == ACCOUNT_ATTRIBUTE
+                        for t in sub.targets
+                    )
+                if isinstance(sub, ast.Call):
+                    hit = hit or any(
+                        kw.arg is not None
+                        and (SECRET_PARAM.match(kw.arg) or kw.arg == ACCOUNT_KEYWORD)
+                        for kw in sub.keywords
+                    )
+            if hit:
+                found.add(f"{rel}::{node.name}")
+    return found
+
+
+#: ``qualified name -> (classification, reason)``, for the members the call
+#: domain adds that the identifier domain never saw. Same vocabulary, same
+#: both-directions assertion; the members are the ones that do not say
+#: "password".
+DECLARED_CALL_SENDERS: dict[str, tuple[str, str]] = {
+    # ------------------------------------------------------------- no dispatch
+    "agents/exploit.py::_jwt_sign": (
+        _Sender.NO_DISPATCH,
+        "signs a token with a candidate key so the JWT class can test whether the "
+        "application accepts it; the secret here is a signing key this engine is "
+        "guessing at, and nothing is offered to a login route",
+    ),
+    "chaining/composition.py::credentials_in": (
+        _Sender.NO_DISPATCH,
+        "parses credential material out of bytes an earlier chain link recovered, into "
+        "ParsedCredential. Turning a file read into a carriable artifact is not offering "
+        "it; the carriage attempt is a separate, later decision",
+    ),
+    "engagement/auth_agent_dispatch.py::read": (
+        _Sender.NO_DISPATCH,
+        "the adaptive loop's safe-method probe. It passes account='' deliberately, which "
+        "is what declares the request credential-free: a read must not spend an attempt "
+        "from a budget that exists to protect a client's account",
+    ),
+    "tools/auth.py::_observe_credential_response": (
+        _Sender.NO_DISPATCH,
+        "reads a login response the caller already has for lockout evidence and forwards "
+        "it to the governor; it names the account to attribute an OBSERVATION, and it "
+        "sends no request of its own",
+    ),
+    "tools/http_client.py::_observe_credential": (
+        _Sender.NO_DISPATCH,
+        "the same observation one layer down, at the chokepoint. The attempt was counted "
+        "by execute() before this runs, and counting it twice would halve every account's "
+        "real allowance",
+    ),
+    # ---------------------------------------------------------------- governed
+    "engagement/auth_agent.py::run": (
+        _Sender.GOVERNED,
+        "the adaptive loop itself. It takes the secret as 'secret', puts it in "
+        "fields[proposal.secret_field], and hands it to post_credentials with the account "
+        "NAMED — and it asks the governor for the remaining balance before it proposes, "
+        "so it cannot spend past a bound it can see",
+    ),
+    "engagement/auth_agent_dispatch.py::post_credentials": (
+        _Sender.GOVERNED,
+        "encodes the adaptive layer's credential body and forwards the account, which is "
+        "what makes a model-proposed destination countable rather than merely reachable",
+    ),
+    "engagement/auth_agent_dispatch.py::_send": (
+        _Sender.GOVERNED,
+        "arms credential_account on the chokepoint tool, so the governor takes the slot "
+        "and the client-facing action log names the account for every adaptive attempt",
+    ),
+    "orchestrator/orchestrator.py::_adaptive_auth": (
+        _Sender.GOVERNED,
+        "hands cred.secret() to the loop above and computes the remaining balance from "
+        "the governor first. It sends nothing itself; everything it starts is counted by "
+        "the two governed sites it constructs",
+    ),
+    "tools/auth.py::_api_post_json": (
+        _Sender.GOVERNED,
+        "the JSON arm's POST. It arms credential_account so every one of the up-to-eight "
+        "routes it walks on a host is counted as the separate attempt it is",
+    ),
+    "tools/auth.py::_dispatch": (
+        _Sender.GOVERNED,
+        "the per-hop dispatchers of both transports, collapsed by name. A hop carrying "
+        "the credential names the account and a hop that does not passes '', because a "
+        "307 re-POSTs the password and is another attempt",
+    ),
+    "tools/auth.py::_post": (
+        _Sender.GOVERNED,
+        "the form arm's credential POST closures, collapsed by name; each dispatches "
+        "through _governed_request, which takes the slot and names the account",
+    ),
+}
+
+
+def test_every_call_that_carries_a_secret_or_names_an_account_is_classified() -> None:
+    """computed - declared, over the CALL domain.
+
+    The test that would have failed on the day the adaptive layer landed. It
+    covers what ``PASSWORD_TOKEN`` structurally cannot: a sender that calls its
+    secret something else.
+    """
+    known = set(DECLARED) | set(DECLARED_CALL_SENDERS)
+    undeclared = sorted(_call_domain() - set(_domain()) - known)
+    assert not undeclared, (
+        "these functions receive a secret, pass one on, or name an account to the "
+        "per-account budget, and no entry says whether the budget can see what they "
+        f"send: {undeclared}"
+    )
+
+
+def test_no_call_domain_entry_outlived_its_function() -> None:
+    stale = sorted(set(DECLARED_CALL_SENDERS) - _call_domain())
+    assert not stale, f"declared for functions that no longer carry a secret: {stale}"
+
+
+@pytest.mark.parametrize("qualname", sorted(DECLARED_CALL_SENDERS))
+def test_each_call_sender_carries_a_substantive_reason(qualname: str) -> None:
+    classification, reason = DECLARED_CALL_SENDERS[qualname]
+    assert classification in {_Sender.GOVERNED, _Sender.EXEMPT, _Sender.NO_DISPATCH}
+    assert len(reason.split()) >= 15, f"{qualname}: a classification needs a reason, not a label"
+
+
+def test_the_adaptive_path_is_inside_this_domain() -> None:
+    """Pinned, because it was outside it while two PRs merged.
+
+    Measured 2026-09-09: of the 44-member identifier domain, 14 members were on
+    the deterministic auth path and ZERO on the adaptive one — while the
+    adaptive dispatcher was sending model-proposed credential POSTs. Nothing was
+    wrong with the code. Everything was wrong with what the guard could see.
+    """
+    adaptive = sorted(q for q in _call_domain() if q.startswith("engagement/auth_agent"))
+    assert adaptive, "the adaptive-auth path left the credential-sender domain entirely"
+    assert "engagement/auth_agent.py::run" in adaptive
+
+
+def test_no_call_domain_sender_is_silently_exempt() -> None:
+    """The property, not the paperwork.
+
+    Every member the call domain ADDS is governed or sends nothing. The one
+    declared exemption in this module (``_test_brute_force``'s observation loop)
+    is in the identifier domain and stays there, with its reason. A second
+    exemption arriving through this door would be a second component allowed to
+    spend a client's account allowance unmetered, and it should have to be
+    written here to happen.
+    """
+    exempt = sorted(q for q, (how, _) in DECLARED_CALL_SENDERS.items() if how == _Sender.EXEMPT)
+    assert not exempt, f"a call-domain sender claimed the brute-force exemption: {exempt}"
+
+
+def test_this_domains_secret_vocabulary_is_the_engines_vocabulary() -> None:
+    """One vocabulary, not two.
+
+    Every word this domain recognises must be one the engine itself treats as
+    naming a secret — either a key the redactor removes
+    (``CREDENTIAL_HEADER_KEYS``) or a spelling this module's own identifier
+    regex already matched before the call domain existed. A word known only here
+    would mean the guard watches for a name nothing else in the engine protects.
+    """
+    from clinkz.engagement.credential_shapes import CREDENTIAL_HEADER_KEYS
+
+    orphans = sorted(
+        word
+        for word in SECRET_WORDS
+        if word not in CREDENTIAL_HEADER_KEYS and not PASSWORD_TOKEN.search(word)
+    )
+    assert not orphans, (
+        "these words are secret-shaped to this test and to nothing else in the engine; "
+        f"a name worth guarding is a name worth redacting: {orphans}"
+    )
+
+
+def test_the_boundary_of_a_name_shaped_domain_is_named() -> None:
+    """What this guard STILL cannot see, written down rather than implied.
+
+    A domain computed from names sees a secret spelled in the engine's
+    vocabulary and nothing else. A sender that invents a word — ``passphrase``,
+    ``passcode`` — declares a parameter no rule here matches, and it enters the
+    domain only if it also names an account, which is precisely the thing an
+    ungoverned sender would not do.
+
+    That is a real remaining hole and it is stated rather than papered over. The
+    remedy when one appears is to add the word to
+    :data:`~clinkz.engagement.credential_shapes.CREDENTIAL_HEADER_KEYS`, where it
+    earns REDACTION as well as this guard's attention — not to widen a regex
+    here, which would protect the value in exactly one place.
+
+    The test asserts the boundary is where this docstring says it is, so a future
+    reader finds a measurement rather than a claim.
+    """
+    from clinkz.engagement.credential_shapes import CREDENTIAL_HEADER_KEYS
+
+    for invented in ("passphrase", "passcode", "shared_key"):
+        assert not PASSWORD_TOKEN.search(invented)
+        assert not SECRET_PARAM.match(invented)
+        assert invented not in CREDENTIAL_HEADER_KEYS
