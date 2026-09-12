@@ -54,6 +54,10 @@ from pathlib import Path
 from typing import Any
 
 from clinkz.config import outputs_root as configured_outputs_root
+from clinkz.observability.invocations import (
+    TRANSPORT_IN_PROCESS,
+    TRANSPORT_SUBPROCESS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +98,14 @@ class InvocationRecord:
     stdout: str
     exit_code: int | None
     duration_ms: float
+    #: Which transport produced ``stdout``. Coalesced to ``subprocess`` for a
+    #: record that carries none, which is safe for a reason that is datable
+    #: rather than hopeful: the in-process transport did not exist until the
+    #: field did, so every record without one IS a subprocess record. The parse
+    #: must branch on it — ``stdout`` from curl and ``stdout`` from the
+    #: in-process path are different formats from the same tool, and feeding one
+    #: to the other's parser produces a confident empty result.
+    transport: str = TRANSPORT_SUBPROCESS
 
     @property
     def stdout_sha(self) -> str:
@@ -108,7 +120,16 @@ class InvocationRecord:
 
     @property
     def key(self) -> str:
-        return f"{self.tool_name}:{self.stdout_sha}"
+        """Baseline key. Carries the transport, because the parse branches on it.
+
+        Two records with identical bytes and different transports parse
+        differently and legitimately, so folding them onto one key would make the
+        baseline self-contradictory. The subprocess spelling is left bare so
+        every key already in the committed baseline is unchanged.
+        """
+        if self.transport == TRANSPORT_SUBPROCESS:
+            return f"{self.tool_name}:{self.stdout_sha}"
+        return f"{self.tool_name}:{self.transport}:{self.stdout_sha}"
 
 
 def load_corpus(
@@ -153,6 +174,7 @@ def load_corpus(
                 # made no claim about how the tool exited.
                 exit_code=int(recorded_exit) if isinstance(recorded_exit, int) else None,
                 duration_ms=float(data.get("duration_ms") or 0.0),
+                transport=str(data.get("transport") or TRANSPORT_SUBPROCESS),
             )
 
 
@@ -177,17 +199,31 @@ def _replay_scope() -> Any:
 
 
 def _parse_http_client(record: InvocationRecord) -> dict[str, Any]:
-    """Run the full curl-stdout → HTTPClientOutput pipeline.
+    """Run the full stdout → HTTPClientOutput pipeline for this record's transport.
 
-    Two stages, because that is what the live path does: ``_parse_curl_output``
-    turns raw curl output into the tool's JSON envelope, and ``parse_output``
-    turns that envelope into the Pydantic model the agents consume. Replaying
-    only the second stage would miss every header/redirect/timing defect.
+    Two stages on the subprocess transport, because that is what the live path
+    does: ``_parse_curl_output`` turns raw curl output into the tool's JSON
+    envelope, and ``parse_output`` turns that envelope into the Pydantic model
+    the agents consume. Replaying only the second stage would miss every
+    header/redirect/timing defect.
+
+    **One stage on the in-process transport**, because there the tool's own
+    output IS the envelope — there is no curl output to parse and no
+    ``_parse_curl_output`` in the live path to replay. Handing an envelope to
+    ``_parse_curl_output`` is not a loud failure: it finds no header block, so it
+    reports a status of 0 and an empty body, and the baseline records that as the
+    parse result. This is the parser-ownership rule
+    (``docs/invariants.md`` #83) at the replay seam — the same tool writes two
+    stdout formats, so the parse reads the producer's declaration instead of
+    assuming the one it has always seen.
     """
     from clinkz.tools.http_client import HTTPClientTool
 
     tool = HTTPClientTool(scope=_replay_scope())
-    envelope = tool._parse_curl_output(record.stdout, record.duration_ms)
+    if record.transport == TRANSPORT_IN_PROCESS:
+        envelope = record.stdout
+    else:
+        envelope = tool._parse_curl_output(record.stdout, record.duration_ms)
     parsed = tool.parse_output(envelope)
     return {
         "status_code": parsed.status_code,

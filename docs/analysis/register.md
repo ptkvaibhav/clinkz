@@ -34,6 +34,16 @@ must check whether adding `js` starves discovery, and see also
 `docs/analysis/spa-write-surface-blocker.md` §3 — bundle reach is already the
 binding constraint there.
 
+**Measured 2026-09-12: R1 is NOT upstream of endpoint candidacy, and the control
+is in the data.** Two of the 32 chunk routes on `e4814440` are `.css`, and `css`
+has been in `STATIC_ASSET_EXTENSIONS` throughout — they became endpoints anyway
+and consumed an `OPTIONS` probe slot anyway. So whatever emits these endpoints
+does not consult the set, and adding `js` would not have stopped the `.js` chunks
+either. R1 was named as a prerequisite for the probe-ordering fix
+([`probe-bound-ordering.md`](probe-bound-ordering.md) §4) and is not one; the
+ordering fix landed without it. R1 stays open on its own merits — it governs how
+a `.js` endpoint is PLANNED, which is where its 72-task consequence lives.
+
 ---
 
 ## R2 · `_test_javascript_attacks` emits no phase events across 36 dispatches
@@ -231,6 +241,27 @@ come back WITH item 1.
 
 ## R9 · The three business-logic classes: 85 dispatches, 0 findings, 0 leads
 
+> **CORRECTED 2026-09-12 (second pass) — see
+> [`business-logic-verdict-trace.md`](business-logic-verdict-trace.md).** This
+> entry's own premise is wrong in two places, and the text below is kept
+> unedited as the record of what was believed rather than quietly rewritten.
+> What the trace measured:
+>
+> * `_test_constraint_violation` **does** reach a verdict — 18 times, all
+>   `violating_value_refused` on Juice Shop — and **does** emit leads. "No
+>   `unproven_leads` entry names them" was a measurement error: the leads are
+>   there, in `20fad9dc`, `88a83878`, `cd9b2555` and others.
+> * The other two abstain at `exploit.py:33574` (`if intent is None: return []`)
+>   on **every** dispatch, and the cause is not the `("form",)` precondition
+>   guessed at below. They are dispatched against the RIGHT endpoints —
+>   `/rest/basket/:id/checkout`, `/rest/user/erasure-request` — which are RPC
+>   **action** endpoints with no collection representation to read, so phase 1's
+>   representation source is structurally empty and its rejection source is
+>   filled at phase 3, downstream of the gate they never pass.
+>
+> Split into **R11** (the per-class capability disclosure) and **R12** (correct
+> negatives filed as `not_instrumentable`). R9 itself is closed.
+
 **Measured 2026-09-12, and the premise it was registered under is wrong in a way
 worth keeping.** Registered as *"never exercised on any target"*. Across the 35
 stored bundles carrying a methodology ledger they have been exercised **85
@@ -278,3 +309,129 @@ hit while measuring this: ledger components are keyed `methodology:_test_x`, not
 registry `title_tokens`. A naive exact-key scan returns a confident `NONE` for
 every class in the engine. Invariant 41's shape, in the measurement rather than
 in the engine.
+
+---
+
+## R10 · The gray-box source ingest selects 2,000 files by path spelling
+
+**Verified.** `discovery/js_source_ingest.py::_read_files` — `candidates =
+sorted(seen)` then `candidates[:_MAX_FILES]`, `_MAX_FILES = 2000`. The selection
+is filesystem path order, so on a monorepo whose early directories are large the
+budget can be exhausted before the ingest reaches the route handlers, and the
+discoverer returns a small model that is indistinguishable from a codebase with
+few call sites.
+
+**Found by the guard, not by reading.**
+`tests/test_agents/test_probe_bounds_select_by_relevance.py` computes the domain
+of bounded slices over sorted collections (nine sites) and requires each to
+declare what it orders by. This one is classified `LEXICAL_REGISTERED`, which the
+guard permits **only** while this entry exists — the test asserts the module is
+named here.
+
+**Why not fixed in the same round as the probe-bound fix.** That fix reused
+`crawl_visit_priority`, an existing, tested relevance function over URLs. There is
+no equivalent for source paths, and inventing one would decide which parts of a
+client's codebase are worth reading on a guess — while the discoverer it bounds
+(producer 3, `JSCallSiteDiscoverer`) is the one the write-surface work is
+currently blocked on. Whoever takes this should measure first: on the recorded
+Juice Shop and cal.com trees, does 2,000 actually bind?
+
+---
+
+## R11 · `capability=SERVER_SIDE` on two classes that have never reached a verdict
+
+**Verified, and narrower than R9's version of it.** Across every stored trace,
+`_test_repeatability` (102 dispatches) and `_test_state_sequence` (62) have
+produced **zero** phase-5 verdicts. Both declare `capability=SERVER_SIDE`, whose
+contract the report renders as a statement about what the engine **can prove**:
+*"the defining effect is observable in a server response, so a finding here is
+confirmable in-band."*
+
+`_test_constraint_violation` is **not** in this entry. It reached a verdict 18
+times and keeps `SERVER_SIDE` on the evidence.
+
+**The disclosure half is FIXED in this round.** *Registered, dispatched, and
+never able to begin* now has its own artifact: all three classes call
+`_record_intent_abstention` at the phase-1 gate, which writes an
+`InconclusiveMeasurement` — the existing carrier for a series that RAN and could
+support no conclusion — and the report renders it under
+`MEASUREMENT_INCONCLUSIVE`. Deliberately not a lead (the class suspects nothing;
+164 "candidate single-use action replayed" rows would be invariant 77's permanent
+false alarm) and not `not_applicable` (the endpoint may well carry the rule; a
+zero measured over part of the input is INDETERMINATE, invariant 101). The shared
+renderer was also corrected: it asserted "its own positive control refused the
+series" for every producer in that category, which is true of the brute-force
+series and false of a class that sends no probe — one caller's mechanism asserted
+about another's evidence. Guard:
+`tests/test_agents/test_business_logic_abstention_declared.py`.
+
+**What stays open: the `capability` declaration itself.** `SERVER_SIDE` still
+reads as *this engine can confirm this class in band*, and for these two that has
+never been exercised. The two candidate fixes are a fourth
+`ConfirmationCapability` member, or a per-class exercise record derived from the
+trace — the second is stronger because it is measured per run rather than declared
+once, but it needs a producer that survives into the bundle.
+
+**Why the declaration is not changed here.** The honest fix is to make the classes
+reach a verdict, and the blocker is R13 below, not the declaration. A capability
+downgrade shipped first would have to be reverted by the round that fixes the
+cause — and the run now DISCLOSES the abstention either way, which is the half
+that a client actually reads. Detail:
+[`business-logic-verdict-trace.md`](business-logic-verdict-trace.md) §4.
+
+---
+
+## R12 · A correct negative filed as `not_instrumentable`
+
+**Verified.** `_emit_business_logic` records every non-confirmation as
+`why="not_instrumentable"`, whatever the verdict's own
+`why_unconfirmed` says. All 18 `_test_constraint_violation` verdicts carry
+`why_unconfirmed="violating_value_refused"` — *the application refused the
+out-of-range value, so it enforces the bound its own records imply* — and each was
+filed as a lead reading `Candidate Business logic — numeric constraint violation:
+quantity persists 0` under "not instrumentable".
+
+That is a measurement of a control WORKING, reported as an unresolved suspicion
+about the endpoint, on every well-built endpoint the class will ever meet. It is
+invariant 77's permanent-false-alarm shape at the lead layer rather than the alarm
+layer: a reader who checks three of these and finds all three benign stops
+checking the fourth.
+
+**What it is not.** Not an argument for suppressing the lead. A `quantity_bound`
+verdict that refused *because the engine could not read the record back* is a
+genuine lead and looks identical from `why="not_instrumentable"` alone. The fix is
+to carry the verdict's own `why_unconfirmed` into the lead — which requires each
+value to be classified as *the target held* versus *we could not tell*, and every
+one added to `UNPROVEN_WHY_UNCONFIRMED` (invariant 40).
+
+---
+
+## R13 · Phase-1 business-logic intent cannot be evidenced on an action endpoint
+
+**Verified, and it is the cause behind R11.** `_business_logic_intent` evidences
+an intent facet from a **representation** (`_observed_records(collection)`) or from
+a **rejection** (`self._business_logic_rejections`). On an RPC action endpoint —
+`/rest/basket/:id/checkout`, `/rest/user/erasure-request`,
+`/rest/repeat-notification` — there is no collection, so the first source is
+structurally empty; and the second is filled by `_remember_rejection`, which the
+three classes call at **phase 3**, after the malformed control goes out, which is
+downstream of the phase-1 gate they never pass.
+
+So the evidence the class needs is a by-product of probes the class never gets to
+send, and the abstention is unconditional rather than target-dependent. Measured:
+`records_observed` is 0 on 41 of 42 Juice Shop `single_use_action` dispatches and
+on 23 of 23 `ordering_constraint` dispatches, while `quantity_bound` — whose
+endpoints are REST collections — read records on 38 of 40.
+
+**Not the write-surface blocker.** These classes were dispatched against write
+endpoints, repeatedly, on a target that has them. The allocation is good; the
+evidence source is what is missing.
+
+**A direction, not a design.** An action endpoint's intent, if it is evidenced at
+all, is evidenced by the *related* collection (`/rest/basket/:id` for
+`/rest/basket/:id/checkout`) or by a refusal the engine has already collected from
+another class's control arm — which would mean seeding
+`_business_logic_rejections` before phase 1 rather than during phase 3. Both need
+the "is this the same resource" question answered without guessing, and a wrong
+answer manufactures an intent the application never declared, which is the one
+thing this family is built not to do.

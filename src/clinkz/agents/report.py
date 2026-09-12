@@ -83,8 +83,15 @@ from clinkz.models.vuln_classes import (
     ConfirmationCapability,
     for_finding,
 )
+from clinkz.observability.audit import INDETERMINATE as AUDIT_INDETERMINATE
+from clinkz.observability.audit import NOTHING_DISPATCHED as AUDIT_NOTHING_DISPATCHED
+from clinkz.observability.audit import audit_summary, reconcile_run_audit
 from clinkz.observability.ledger import get_active_ledger
-from clinkz.observability.plan_alarms import crawl_budget_summary, plan_alarm_summary
+from clinkz.observability.plan_alarms import (
+    crawl_budget_summary,
+    plan_alarm_summary,
+    probe_budget_summary,
+)
 from clinkz.observability.trace import get_active_trace_writer
 from clinkz.safety.action_log import ActionLog, RefusalTally
 from clinkz.safety.scope_refusals import scope_refusal_summary
@@ -347,6 +354,12 @@ _PROMPT_PATH = Path(__file__).parent / "prompts" / "report_system.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
 
+#: Endpoints named inside one grouped inconclusive-measurement row. The COUNT
+#: stays exact past this; a truncated record of a truncation is the failure the
+#: disclosure sections exist to prevent.
+_MAX_INCONCLUSIVE_ENDPOINTS_NAMED = 12
+
+
 class ReportAgent(BaseAgent):
     """Simple report agent — zero LLM calls.
 
@@ -522,6 +535,11 @@ class ReportAgent(BaseAgent):
         # incomplete run "0 findings. Risk rating: Informational" states that
         # the target is clean on the strength of testing that did not happen.
         model_stamp = _active_model_stamp()
+        # Read at the same point and for the same reason: it decides what the
+        # document may claim about itself. A run whose calls left no invocation
+        # record cannot support a reader checking any single claim against the
+        # artifacts, so it is INDETERMINATE rather than clean.
+        run_audit = audit_summary()
         run_completed, incomplete_reason = _run_completion(
             phase_outcomes=dict(input_data.get("phase_outcomes") or {}),
             model_stamp=model_stamp,
@@ -643,11 +661,22 @@ class ReportAgent(BaseAgent):
             # ``provider_degraded: false``. Reconciling HERE puts the honest
             # verdict in ``report.json``, so the JSON, Markdown and PDF cannot
             # disagree about it either.
-            provider_degradation=reconcile_with_model_stamp(degradation_summary(), model_stamp),
+            # Two reconciliations, applied in sequence, both one-way. The model
+            # stamp answers "did routing deliver what was asked for"; the audit
+            # summary answers "can a reader check any of this against the
+            # artifacts". A run that fails the second is not a run with a
+            # smaller finding set — it is a run whose findings cannot be
+            # re-derived, which is what baseline eligibility is for.
+            provider_degradation=reconcile_run_audit(
+                reconcile_with_model_stamp(degradation_summary(), model_stamp),
+                run_audit,
+            ),
+            run_audit=run_audit,
             scope_refusals=scope_refusal_summary(),
             llm_spend=spend_summary(),
             plan_coverage=plan_alarm_summary(),
             crawl_coverage=crawl_budget_summary(),
+            probe_coverage=probe_budget_summary(),
             # What this run OBSERVED, with the provenance of every version.
             # Built here from recon's own rows rather than from
             # ``hosts[].services``, which has been empty on every bundle ever
@@ -985,23 +1014,41 @@ class ReportAgent(BaseAgent):
         # the defect — "No Brute-Force Protection on /vulnerabilities/brute/" in
         # the document, and the same run's /vulnerabilities/csrf/
         # test_credentials.php login inconclusive and silently absent.
+        # Grouped by (class, reason), because one class can reach this state on
+        # every endpoint it was given: the business-logic intent gate abstained on
+        # 41 of 42 endpoints in one recorded run, and 41 near-identical paragraphs
+        # in a client document is the shape a reader learns to skip. The endpoints
+        # are all named inside the row, so nothing is lost by not repeating the
+        # explanation. Insertion-ordered, so the section stays a function of what
+        # the run recorded rather than of dict iteration.
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for measurement in inconclusive_measurements or []:
             if not isinstance(measurement, dict):
                 continue
-            endpoint = str(measurement.get("endpoint") or "")
             method = str(measurement.get("test_method") or "a methodology")
-            attempts = int(measurement.get("attempts") or 0)
+            reason = str(measurement.get("reason") or "no rationale recorded")
+            grouped.setdefault((method, reason), []).append(measurement)
+        for (method, reason), group in grouped.items():
+            endpoints = [str(m.get("endpoint") or "") for m in group]
+            attempts = sum(int(m.get("attempts") or 0) for m in group)
+            one = len(endpoints) == 1
+            where = endpoints[0] if one else f"{len(endpoints)} endpoint(s)"
+            named = ", ".join(endpoints[:_MAX_INCONCLUSIVE_ENDPOINTS_NAMED])
+            if len(endpoints) > _MAX_INCONCLUSIVE_ENDPOINTS_NAMED:
+                named += f", and {len(endpoints) - _MAX_INCONCLUSIVE_ENDPOINTS_NAMED} more"
             items.append(
                 NotTestedItem(
-                    item=f"{method} at {endpoint}",
+                    item=f"{method} at {where}",
                     category=NotTestedCategory.MEASUREMENT_INCONCLUSIVE,
                     reason=(
-                        f"This class dispatched {attempts} request(s) to {endpoint} and its "
-                        f"own positive control refused the series: "
-                        f"{measurement.get('reason') or 'no rationale recorded'} "
-                        f"No conclusion about this endpoint is drawn from it in either "
-                        f"direction — the absence of a finding here is the absence of a "
-                        f"measurement, not the absence of a flaw."
+                        # The mechanism is the PRODUCER's sentence, never this
+                        # renderer's. Two producers reach this category by
+                        # different routes and only they know which.
+                        f"This class dispatched {attempts} request(s) across {named} and "
+                        f"could support no conclusion: {reason} "
+                        f"No conclusion about {'this endpoint' if one else 'these endpoints'} "
+                        f"is drawn in either direction — the absence of a finding here is the "
+                        f"absence of a measurement, not the absence of a flaw."
                     ),
                 )
             )
@@ -1193,11 +1240,13 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_not_tested(lines, report)
             ReportAgent._render_component_ledger(lines, report)
             ReportAgent._render_provider_degradation(lines, report)
+            ReportAgent._render_run_audit(lines, report)
             ReportAgent._render_scope_refusals(lines, report)
             ReportAgent._render_component_inventory(lines, report)
             ReportAgent._render_version_match_disposition(lines, report)
             ReportAgent._render_plan_coverage(lines, report)
             ReportAgent._render_crawl_coverage(lines, report)
+            ReportAgent._render_probe_coverage(lines, report)
             ReportAgent._render_research_grounding(lines, report)
             ReportAgent._render_llm_spend(lines, report)
             return "\n".join(lines)
@@ -1237,11 +1286,13 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_not_tested(lines, report)
         ReportAgent._render_component_ledger(lines, report)
         ReportAgent._render_provider_degradation(lines, report)
+        ReportAgent._render_run_audit(lines, report)
         ReportAgent._render_scope_refusals(lines, report)
         ReportAgent._render_component_inventory(lines, report)
         ReportAgent._render_version_match_disposition(lines, report)
         ReportAgent._render_plan_coverage(lines, report)
         ReportAgent._render_crawl_coverage(lines, report)
+        ReportAgent._render_probe_coverage(lines, report)
         ReportAgent._render_research_grounding(lines, report)
         ReportAgent._render_llm_spend(lines, report)
         return "\n".join(lines)
@@ -1878,6 +1929,153 @@ class ReportAgent(BaseAgent):
         lines.append("")
 
     @staticmethod
+    def _render_probe_coverage(lines: list[str], report: PentestReport) -> None:
+        """Render what the surface-mapping sweeps were allowed to ask.
+
+        Sits above *Crawl coverage* in the pipeline it describes: the crawl budget
+        decides which URLs become endpoints, this one decides which of those
+        endpoints are asked what methods they accept. A sweep that spent its
+        budget on JS bundles returns "no write verb on this target", which is
+        byte-identical to a target that genuinely has none — so the budget and
+        what it dropped are the only way a reader can tell.
+        """
+        probe = dict(report.probe_coverage or {})
+        if not probe:
+            return
+        lines.extend(["## Surface-mapping probe coverage", ""])
+        sweeps = [s for s in (probe.get("sweeps") or []) if isinstance(s, dict)]
+        if not sweeps:
+            lines.extend(
+                [
+                    "No surface-mapping sweep ran, so no route was asked which methods it "
+                    "accepts. Any write endpoint this application exposes and its own "
+                    "frontend never calls is therefore undiscovered rather than absent.",
+                    "",
+                ]
+            )
+            return
+        if probe.get("ordering_failure"):
+            lines.extend(
+                [
+                    f"**Probe ordering failure.** "
+                    f"{int(probe.get('relevant_dropped_count') or 0)} application or API "
+                    f"route(s) were dropped by a probe budget while lower-relevance routes "
+                    f"(static assets, bundles) were probed. Those routes were never asked "
+                    f"which methods they accept, so a write surface on them is undiscovered, "
+                    f"not absent. A larger budget does not fix an ordering defect.",
+                    "",
+                ]
+            )
+        elif probe.get("probe_truncated"):
+            lines.extend(
+                [
+                    f"{int(probe.get('dropped_total') or 0)} of "
+                    f"{int(probe.get('candidates') or 0)} route(s) exceeded a probe budget "
+                    f"and were not asked which methods they accept. Every route dropped was "
+                    f"a static asset or other non-application surface — the selection is by "
+                    f"relevance, so the application and API routes were probed first.",
+                    "",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"Every one of the {int(probe.get('candidates') or 0)} eligible route(s) "
+                    f"was asked which methods it accepts. No route was dropped by a probe "
+                    f"budget, so a verb absent from this report is a verb the target did not "
+                    f"declare rather than one nobody asked about.",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "| Sweep | Budget | Candidates | Probed | Dropped | First omitted |",
+                "| --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for sweep in sweeps:
+            lines.append(
+                f"| `{sweep.get('sweep', '')}` | {sweep.get('budget', 0)} | "
+                f"{sweep.get('candidates', 0)} | {sweep.get('probed', 0)} | "
+                f"{sweep.get('dropped_total', 0)} | "
+                f"{sweep.get('first_omitted') or '-'} |"
+            )
+        lines.append("")
+
+    @staticmethod
+    def _render_run_audit(lines: list[str], report: PentestReport) -> None:
+        """Render whether every call this run made left evidence on disk.
+
+        The neighbouring question to *Provider routing*: that section says
+        whether the answers came from the model asked for, this one says whether
+        a reader can check any claim in the document against the request and
+        response that produced it.
+
+        Rendered clean or not. A local-mode engagement served 100% of its HTTP
+        requests in-process, wrote 0 invocation records, and produced a bundle
+        whose empty ``tool_invocations/`` is byte-identical to a run that
+        dispatched nothing — so the absence of this section is exactly the state
+        it exists to make visible. Omitted only for a bundle written before the
+        measurement existed, which carries no summary to render and gets no
+        invented one.
+        """
+        audit = dict(report.run_audit or {})
+        if not audit:
+            return
+        lines.extend(["## Run auditability", ""])
+        executions = int(audit.get("tool_executions") or 0)
+        recorded = int(audit.get("invocations_recorded") or 0)
+        unrecorded = int(audit.get("unrecorded_executions") or 0)
+        verdict = str(audit.get("verdict") or "")
+        if verdict == AUDIT_NOTHING_DISPATCHED:
+            lines.extend(
+                [
+                    "No tool execution was dispatched during this engagement, so there "
+                    "is nothing to audit. That is not the same as calls having been made "
+                    "and not recorded — see *What was NOT tested* for why nothing ran.",
+                    "",
+                ]
+            )
+            return
+        if verdict == AUDIT_INDETERMINATE:
+            lines.extend(
+                [
+                    f"**{unrecorded} of {executions} tool execution(s) left no invocation "
+                    f"record.** The findings, the coverage counts and the session claims in "
+                    f"this document cannot be re-derived from the engagement's artifacts for "
+                    f"those calls: `tool_invocations/` holds {recorded}. This makes the run "
+                    f"INDETERMINATE rather than negative — it is not a run that found less, "
+                    f"it is a run whose evidence is incomplete — and ineligible as a "
+                    f"baseline.",
+                    "",
+                ]
+            )
+            by_tool = audit.get("unrecorded_by_tool") or {}
+            if isinstance(by_tool, dict) and by_tool:
+                lines.extend(["| Tool | Unrecorded executions |", "| --- | --- |"])
+                for tool, count in sorted(by_tool.items()):
+                    lines.append(f"| `{tool}` | {count} |")
+                lines.append("")
+        else:
+            lines.extend(
+                [
+                    f"All {executions} tool execution(s) wrote a full-fidelity invocation "
+                    f"record. Every request this engagement sent and every response it read "
+                    f"is in `tool_invocations/`, so any claim in this document can be "
+                    f"checked against the exchange that produced it.",
+                    "",
+                ]
+            )
+        by_transport = audit.get("executions_by_transport") or {}
+        if isinstance(by_transport, dict) and by_transport:
+            lines.append(
+                "Executions by execution mode and transport: "
+                + ", ".join(f"`{key}` {count}" for key, count in sorted(by_transport.items()))
+                + "."
+            )
+            lines.append("")
+
+    @staticmethod
     def _render_provider_degradation(lines: list[str], report: PentestReport) -> None:
         """Render which model actually served each call, when it was not the primary.
 
@@ -1900,16 +2098,31 @@ class ReportAgent(BaseAgent):
         # reproduce the claim its own model stamp contradicts. The rule lives in
         # one function; this is its second call site, not a second copy.
         stamp = reconcile_with_model_stamp(stamp, list(report.model_stamp))
+        # And against the run's audit summary, for the same reason and at the same
+        # two seams. A bundle written before ``run_audit`` existed carries none
+        # and gets no tightening — its empty invocation directory is where that
+        # question belongs, not a verdict invented here.
+        stamp = reconcile_run_audit(stamp, dict(report.run_audit or {}))
         lines.extend(["## Provider routing", ""])
         if not stamp.get("provider_degraded"):
-            lines.extend(
-                [
-                    "Every LLM call was served by the provider this run asked for. "
-                    "No fallback activated, no provider was excluded mid-run, and no "
-                    "chain was exhausted, so the run is eligible for use as a baseline.",
-                    "",
-                ]
+            # Routing was clean. Whether the RUN is usable as a baseline is a
+            # second question, and this section must not answer it in the
+            # affirmative when the audit withdrew it — that is how a document
+            # comes to contradict itself while showing only the reassuring half.
+            sentence = (
+                "Every LLM call was served by the provider this run asked for. "
+                "No fallback activated, no provider was excluded mid-run, and no "
+                "chain was exhausted"
             )
+            if stamp.get("baseline_eligible"):
+                sentence += ", so the run is eligible for use as a baseline."
+            else:
+                sentence += (
+                    ". The run is nonetheless **NOT eligible as a baseline**, for a "
+                    "reason that is not about routing: "
+                    f"{stamp.get('baseline_ineligible_reason') or 'see Run auditability below'}."
+                )
+            lines.extend([sentence, ""])
             return
 
         events = [e for e in (stamp.get("events") or []) if isinstance(e, dict)]
@@ -1928,6 +2141,17 @@ class ReportAgent(BaseAgent):
                 "",
             ]
         )
+        if stamp.get("run_audit_verdict"):
+            # A second, independent reason for the same verdict. Stated rather
+            # than absorbed: a reader who fixes the routing and re-runs would
+            # otherwise expect eligibility back and not get it.
+            lines.extend(
+                [
+                    "It is additionally ineligible because "
+                    f"{stamp.get('baseline_ineligible_reason')} — see *Run auditability*.",
+                    "",
+                ]
+            )
         if starved:
             lines.extend(
                 [

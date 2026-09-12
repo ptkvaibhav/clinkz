@@ -127,6 +127,8 @@ src/clinkz/
 │                     #   runtime choice), _container_runner (the browser-driving half —
 │                     #   ZERO clinkz imports, so it runs in the tools container)
 ├── observability/    # trace.py (JSONL), replay.py, corpus_replay.py (offline gate),
+│                  # audit.py (executions vs invocation records; an unrecorded
+│                  #   run is INDETERMINATE and not baseline-eligible),
 │                     #   ledger.py (what each component CONTRIBUTED — the silent-
 │                     #   degradation gate), component_registry.py (what the engine HAS,
 │                     #   declared at start + a COMPUTED reachability predicate settled

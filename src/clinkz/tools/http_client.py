@@ -764,7 +764,17 @@ class HTTPClientTool(ToolBase):
     # ------------------------------------------------------------------
 
     async def _execute_aiohttp(self, args: dict[str, Any]) -> str:
-        """Execute the HTTP request using aiohttp (host-based)."""
+        """Execute the HTTP request using aiohttp (host-based).
+
+        Every return path goes through :meth:`_record_inprocess_request`. That is
+        not tidiness: this method is the transport for **every** HTTP request a
+        ``TOOL_EXEC_MODE=local`` run makes, and until it recorded them a local run
+        produced no evidence at all — engagement ``e4814440`` holds 0 invocation
+        records against 46 discovered endpoints. The failure path is recorded too,
+        because "the request was never sent" and "the request was sent and the
+        transport died" are the two readings of a missing record and only one of
+        them is about the target.
+        """
         import aiohttp
 
         method = args["method"]
@@ -822,7 +832,7 @@ class HTTPClientTool(ToolBase):
                         raw += f"{k}: {v}\n"
                     raw += f"\n{resp_body}"
 
-                    return json.dumps(
+                    envelope = json.dumps(
                         {
                             "status_code": resp.status,
                             "response_headers": resp_headers,
@@ -833,9 +843,13 @@ class HTTPClientTool(ToolBase):
                             "raw": raw,
                         }
                     )
+                    self._record_inprocess_request(
+                        args, envelope, duration_ms=elapsed_ms, failed=False
+                    )
+                    return envelope
         except Exception as exc:
             elapsed_ms = (time.monotonic() - start) * 1000
-            return json.dumps(
+            envelope = json.dumps(
                 {
                     "status_code": 0,
                     "response_headers": {},
@@ -845,6 +859,61 @@ class HTTPClientTool(ToolBase):
                     "error": str(exc),
                 }
             )
+            self._record_inprocess_request(
+                args, envelope, duration_ms=elapsed_ms, failed=True, error=str(exc)
+            )
+            return envelope
+
+    def _record_inprocess_request(
+        self,
+        args: dict[str, Any],
+        envelope: str,
+        *,
+        duration_ms: float,
+        failed: bool,
+        error: str = "",
+    ) -> None:
+        """Write the invocation record for one in-process HTTP exchange.
+
+        The recorded ``request`` is the tool's own args, so the record answers the
+        same question the docker path's argv answers — what went out — through the
+        same redaction chokepoint. The ``stdout`` is the envelope, which is
+        exactly what :meth:`parse_output` consumes, so a stored record replays
+        through the live parser rather than through a reconstruction of it.
+
+        **Session material is recorded as the HEADER the wire carried, under the
+        key ``cookie``, and that spelling is load-bearing.** ``redact_structure``
+        is key-aware, and the keys it acts on are header names — ``cookie``,
+        ``set-cookie``, ``authorization``. A ``{"cookies": {"sess": "…"}}`` dict
+        matches none of them: the outer key is not a header name, the inner key is
+        whatever the TARGET named its cookie, and a session cookie the target named
+        has no intrinsic shape for the string rules to find either. Recorded that
+        way the value reached ``tool_invocations/*.json`` verbatim and the
+        disclosure gate could not see it, because the gate looks for shapes too.
+        Joined into one ``cookie`` header string it meets
+        :func:`~clinkz.engagement.credential_shapes.redact_header_value`, which
+        keeps the cookie NAMES — evidence about the session — and removes the
+        VALUES.
+        """
+        cookies: dict[str, str] = args.get("cookies") or {}
+        self._emit_inprocess_invocation(
+            request={
+                "method": args.get("method"),
+                "url": args.get("url"),
+                "headers": args.get("headers") or {},
+                # Always present, empty string included: "no cookie was sent" is a
+                # fact about the request, and an absent key cannot state it.
+                "cookie": "; ".join(f"{name}={value}" for name, value in cookies.items()),
+                "body": args.get("body", ""),
+                "session_mode": args.get("session_mode", SESSION_AMBIENT),
+                "follow_redirects": bool(args.get("follow_redirects", False)),
+            },
+            descriptor=[str(args.get("method") or "GET"), str(args.get("url") or "")],
+            output=envelope,
+            error=error,
+            failed=failed,
+            duration_ms=duration_ms,
+        )
 
     def parse_output(self, raw_output: str) -> HTTPClientOutput:
         """Parse the JSON response from execute() into structured output."""

@@ -29,6 +29,19 @@ GEMINI_PINNED_MODEL = "gemini-3.7-flash"
 GEMINI_THINKING_LEVELS: frozenset[str] = frozenset({"LOW", "MEDIUM", "HIGH"})
 
 
+#: Every execution mode a tool wrapper may run under. A closed set, because a
+#: guard has to be able to enumerate it: every mode must be shown to emit an
+#: invocation record (``tests/test_observability/test_every_exec_mode_records.py``),
+#: and a mode that emits nothing is a build failure rather than a run that is
+#: quietly unauditable.
+#:
+#: ``docker`` shells out through ``docker exec`` — one subprocess per call.
+#: ``local`` serves HTTP in-process through aiohttp and shells out for everything
+#: else, so it exercises BOTH transports and is the mode the audit hole was found
+#: in.
+TOOL_EXEC_MODES: frozenset[str] = frozenset({"docker", "local"})
+
+
 class Settings(BaseModel):
     """Validated settings loaded from environment variables."""
 
@@ -368,6 +381,14 @@ class Settings(BaseModel):
     # match unrelated host binaries that share a name (e.g., the Python `httpx`
     # CLI masquerading as ProjectDiscovery's httpx). Override with
     # TOOL_EXEC_MODE=local when a developer genuinely wants host execution.
+    #
+    # The vocabulary is :data:`TOOL_EXEC_MODES`, and it is declared rather than
+    # implied so a guard can be computed over it. Until it was, "local" existed
+    # only as the ELSE of `== "docker"` in eleven separate places, and a mode
+    # that emitted no invocation record could not be enumerated, let alone
+    # asserted: a local-mode engagement wrote zero records for every HTTP
+    # request it made and nothing could have noticed, because nothing knew the
+    # mode was one of a closed set.
     tool_exec_mode: str = Field(default="docker", description="'local' or 'docker'")
     docker_container: str = Field(
         default="clinkz-tools", description="Docker container name for tool execution"

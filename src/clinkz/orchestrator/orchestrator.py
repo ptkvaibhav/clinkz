@@ -102,6 +102,13 @@ from clinkz.models.recon import (
     WebReconResult,
 )
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.audit import INDETERMINATE as AUDIT_INDETERMINATE
+from clinkz.observability.audit import NOTHING_DISPATCHED as AUDIT_NOTHING_DISPATCHED
+from clinkz.observability.audit import (
+    AuditRegister,
+    audit_summary,
+    set_active_audit_register,
+)
 from clinkz.observability.component_registry import (
     EngagementReachability,
     ReachabilitySource,
@@ -433,6 +440,7 @@ class OrchestratorAgent:
         # covers for a dead one cannot make the run look healthy.
         self._ledger: ContributionLedger | None = None
         self._plan_alarms: PlanAlarmRegister | None = None
+        self._audit_register: AuditRegister | None = None
         self._degradation: DegradationRegister | None = None
         self._provider_preflight: ProviderPreflight | None = None
         #: Set by the CLI before ``run()`` when the operator declared caps.
@@ -647,6 +655,19 @@ class OrchestratorAgent:
             plan_alarms = PlanAlarmRegister()
             set_active_plan_alarms(plan_alarms)
             self._plan_alarms = plan_alarms
+
+            # Whether this run left evidence its own claims can be re-derived
+            # from. Engagement e4814440 ran in local mode, proved a session,
+            # discovered 46 endpoints, and wrote 0 invocation records: the
+            # in-process transport emitted none, and an empty
+            # ``tool_invocations/`` is indistinguishable from a run that made no
+            # calls. The per-request fix is in ToolBase; this register is the
+            # second witness, so a regression is legible in the deliverable
+            # instead of being discovered by a reader who goes looking for a
+            # request and finds the directory empty.
+            audit_register = AuditRegister()
+            set_active_audit_register(audit_register)
+            self._audit_register = audit_register
 
             # The scope-refusal log. THE control on an external engagement:
             # a real application links out, the crawler follows links, and the
@@ -1208,6 +1229,36 @@ class OrchestratorAgent:
                     self._logger.info("Plan fit inside its cap — no class was truncated.")
                 set_active_plan_alarms(None)
                 self._plan_alarms = None
+
+                # The audit verdict, rendered on a clean run too: "every call
+                # this run made is on disk" is a claim the deliverable should
+                # make, and a section that appears only on a hole cannot be told
+                # apart from one nobody wrote.
+                run_audit = audit_summary()
+                summary["run_audit"] = run_audit
+                if run_audit["verdict"] == AUDIT_INDETERMINATE:
+                    self._logger.error(
+                        "RUN UNAUDITABLE — %d of %d tool execution(s) left no invocation "
+                        "record (%s). The run's claims cannot be re-derived from its "
+                        "artifacts, so it is INDETERMINATE and ineligible as a baseline.",
+                        run_audit["unrecorded_executions"],
+                        run_audit["tool_executions"],
+                        ", ".join(f"{k}={v}" for k, v in run_audit["unrecorded_by_tool"].items())
+                        or "no tool named",
+                    )
+                elif run_audit["verdict"] == AUDIT_NOTHING_DISPATCHED:
+                    self._logger.info(
+                        "No tool execution was dispatched — nothing to audit, and that is "
+                        "not the same as nothing being recorded."
+                    )
+                else:
+                    self._logger.info(
+                        "Run auditable — all %d tool execution(s) left a full-fidelity "
+                        "invocation record.",
+                        run_audit["tool_executions"],
+                    )
+                set_active_audit_register(None)
+                self._audit_register = None
                 set_active_scope_refusal_log(None)
                 set_active_spend_ledger(None)
                 self._scope_refusals = None

@@ -22,7 +22,8 @@ tools dynamically.
 > | Per-methodology forensic history (one file per class) | [`docs/methodology/`](docs/methodology/README.md) |
 > | Engagement setup, authenticated scanning, safety rails | [`docs/productization-engagement-safety.md`](docs/productization-engagement-safety.md) |
 > | What the deliverable may CLAIM | [`docs/report-integrity.md`](docs/report-integrity.md) |
-> | Ledger, alarms, reachability | [`docs/observability.md`](docs/observability.md) |
+> | Ledger, alarms, reachability, run auditability | [`docs/observability.md`](docs/observability.md) |
+| Per-round measurements and the open register | [`docs/analysis/register.md`](docs/analysis/register.md) |
 > | Provider routing and fallback | [`docs/provider-routing.md`](docs/provider-routing.md) |
 > | Gray-box discovery engine | `docs/discovery-engine-*.md` |
 > | Recurring-mistake narratives | [`.claude/LESSONS.md`](.claude/LESSONS.md) → `docs/lessons/` |
@@ -697,6 +698,32 @@ under the repo root; the header table at the top of this file links them all.
     "this class does not hold this" and it REFUSES. A gate presented as shared
     that applies three of its four conditions to one of its three callers is
     grading on a default.
+
+105. **A tool execution that leaves no invocation record is an unauditable run,
+    and every execution mode is asserted to emit** (`tools/base.py::_emit_trace_records`
+    / `_emit_inprocess_invocation`). The domain is COMPUTED from
+    `config.TOOL_EXEC_MODES`; a mode that emits nothing is a red build, not a
+    quiet gap. `transport` is declared with NO default and every reader branches
+    on it — `--replay` refuses an in-process record, and the corpus parser does
+    not hand an envelope to the curl parser. **Zero records beside non-zero
+    executions is INDETERMINATE** (`observability/audit.py`), withdrawing
+    `baseline_eligible` at the build and BOTH render seams, one-way. **Detail →
+    `docs/observability.md`.**
+
+106. **A bound that selects by SPELLING lets the alphabet decide coverage**
+    (`agents/_api_schema.py::_select_routes`). Surface-mapping sweeps order by
+    `crawl_visit_priority` and tie-break on the route, so no bundle set of any size
+    displaces an application route; the drop is disclosed by relevance grade, and
+    *truncated* stays a separate number from *ordering_failure* because a larger
+    budget fixes only the first. The domain is every bounded slice over a `sorted()`
+    result, AST-computed. **Detail → `docs/analysis/probe-bound-ordering.md`.**
+
+107. **Registered, dispatched, and never able to begin is its own state.** A
+    business-logic class that cannot evidence the application's intent declares an
+    `InconclusiveMeasurement` — not a lead (it suspects nothing) and not
+    `not_applicable` (the endpoint may well carry the rule). 164 dispatches across
+    the corpus reached no verdict and said nothing. **Detail →
+    `docs/analysis/business-logic-verdict-trace.md`.**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

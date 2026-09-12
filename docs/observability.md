@@ -12,15 +12,34 @@ For every engagement Clinkz writes under `outputs/<engagement_id>/`:
 | Path                                              | One per                  | Contents |
 | ------------------------------------------------- | ------------------------ | -------- |
 | `trace.jsonl`                                     | engagement               | append-only JSONL — one event per tool call, LLM call, agent step, message handoff, methodology phase. Summary-grade. |
-| `tool_invocations/<seq>_<tool>.json`              | subprocess               | full-fidelity record: exact argv (post-docker-wrap), env overrides, stdin, complete stdout, complete stderr, exit code, duration, parsed Pydantic output. |
+| `tool_invocations/<seq>_<tool>.json`              | tool execution           | full-fidelity record: the argv (post-docker-wrap) or the in-process request, env overrides, stdin, complete stdout, complete stderr, exit code, duration, parsed Pydantic output — and the `transport` that says which of the two it is. |
 | `step_inputs/<step_id>.json`                      | wrapped agent step       | the entire input payload (not a summary), the agent class, the step method name, and replay metadata. |
 
 Two invariants:
 
-1. **Every subprocess produces an invocation file.** `ToolBase._run_subprocess`
-   and `ToolBase._run_subprocess_stdin` are the only paths to a tool
-   subprocess; both call `TraceWriter.record_tool_invocation`. If a tool
-   wrapper bypasses these helpers it bypasses the recorder — don't.
+1. **Every tool EXECUTION produces an invocation file, on every transport.**
+   `ToolBase._run_subprocess` / `_run_subprocess_stdin` cover the subprocess
+   transport and `ToolBase._emit_inprocess_invocation` covers the in-process one;
+   all three go through `_emit_trace_records` → `TraceWriter.record_tool_invocation`.
+   If a tool wrapper bypasses them it bypasses the recorder — don't.
+
+   This invariant used to read "every *subprocess*", and the gap was not
+   theoretical: under `TOOL_EXEC_MODE=local` the HTTP tool serves every request
+   in-process through aiohttp and spawns nothing, so engagement `e4814440` — 46
+   endpoints, a proven authenticated session, a full set of methodology
+   dispatches — wrote **0 invocation records and 0 `tool_call` trace rows**. An
+   empty `tool_invocations/` is byte-identical to a run that made no calls.
+   `tests/test_observability/test_every_exec_mode_records.py` holds the property
+   over a domain computed from `config.TOOL_EXEC_MODES`: a new execution mode that
+   emits nothing fails the build rather than producing an unauditable run.
+
+1a. **A run whose executions left no record is INDETERMINATE, not clean.**
+   `observability/audit.py` counts executions against records and renders the
+   verdict into `report.run_audit` — three states, because "nothing was
+   dispatched" and "things were dispatched and not recorded" have different fixes.
+   An `indeterminate` verdict withdraws `baseline_eligible`, reconciled at the
+   build and both render seams exactly as `reconcile_with_model_stamp` is, and
+   only ever tightening.
 2. **Every wrapped agent step produces a step inputs file.** Agent steps
    that opt into `BaseAgent._record_step("name", inputs=..., replay_info=...)`
    write the input payload at entry and emit an `agent_step` trace event
@@ -35,8 +54,10 @@ Two invariants:
   "ts": "2026-05-18T17:34:21.123456+00:00",
   "tool_name": "nmap",
   "exec_mode": "docker",
+  "transport": "subprocess",
   "cwd": "/work",
   "command": ["docker", "exec", "clinkz-tools", "nmap", "-sV", "..."],
+  "request": null,
   "env_overrides": {},
   "stdin": null,
   "stdout": "Nmap scan report for ...",
@@ -56,6 +77,33 @@ Two invariants:
 active step context (set by `TraceWriter.step` / `BaseAgent._record_step`)
 — so as long as the invocation happens inside a wrapped step, you can
 trace the call back to its owner without a separate join.
+
+### `transport` — and why every reader must branch on it
+
+`transport` is `"subprocess"` or `"in_process"`, it is **required** on the writer
+with no default, and it decides how the rest of the record reads:
+
+| field | `subprocess` | `in_process` |
+| --- | --- | --- |
+| `command` | the argv that was executed | a readable descriptor (`["GET", url]`); **never executed** |
+| `request` | `null` — the argv IS the request | what the tool was handed (method, url, headers, cookies, body) |
+| `stdout` | the process's raw output (a curl dump for `http_client`) | the tool's own output envelope — what its `parse_output` consumes |
+
+The writer has no default deliberately. Every record ever written before the field
+existed came from a subprocess, so `"subprocess"` would have been correct for the
+whole corpus and wrong for the one case the field exists to mark. A *reader* of a
+stored bundle does coalesce an absent transport to `subprocess`, which is provable
+rather than hopeful: the in-process transport did not exist until the field did.
+
+Two readers branch on it, and both would otherwise fail quietly:
+
+* `clinkz tool-invoke … --replay` **refuses** an in-process record. Exec'ing a
+  descriptor either fails confusingly or finds a binary of that name.
+* `observability/corpus_replay.py` runs `_parse_curl_output` only on the
+  subprocess transport. Handing it an in-process envelope is not a loud failure —
+  it finds no header block, reports status 0 and an empty body, and the baseline
+  records that as the parse result. Invariant 83 at the replay seam: the same tool
+  writes two stdout formats, so the parse reads the producer's declaration.
 
 ## CLI
 
@@ -81,6 +129,10 @@ Re-runs the *exact* argv with the recorded `cwd` and `env_overrides`,
 then prints a unified diff of stdout/stderr against the original record.
 The harness does not re-wrap the command in a docker exec — it replays
 what was recorded, so docker-mode invocations replay through docker too.
+
+**Subprocess records only.** An `in_process` record is refused with exit 2 and a
+message naming the transport: there is no command to re-execute, and the full
+request is in the record's `request` field for inspection without `--replay`.
 
 This is how you confirm whether a flaky tool produced different output
 the second time, or whether the original output was deterministic and
