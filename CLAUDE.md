@@ -689,6 +689,15 @@ under the repo root; the header table at the top of this file links them all.
     and answered-but-unusable; only the last is a statement about the target.
     **Detail → `docs/methodology/adaptive-authentication.md`.**
 
+104. **A gate refuses to grade evidence it does not hold, and an absent
+    measurement is never a permissive one.** Every evidence parameter of a shared
+    gate is three-state with NO default, because the two absences fail in
+    OPPOSITE directions: an empty body disables a veto outright, while a `False`
+    measurement licenses one about an effect nobody asked about. `None` is
+    "this class does not hold this" and it REFUSES. A gate presented as shared
+    that applies three of its four conditions to one of its three callers is
+    grading on a default.
+
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/

@@ -248,21 +248,50 @@ them.
 
 ---
 
-## 4 · What is NOT fixed here
+## 4 · Status
 
-Nothing. Per the brief, the set is reported before anything moves. The order the
-fixes want, when they are authorised:
+The set was reported before anything moved. What has happened since:
 
-1. **F1** — largest, and the only one that reaches models: two fields on
-   `models/methodology.py`, the two methodologies that populate them, then the
-   two call sites. It is also the only one on an emission path.
-2. **F3** — smallest: a `ReachabilityKey` for `LLM_PROVIDER` and one argument.
-   Needs a decision on what the predicate should say about a fallback provider
-   that was correctly never reached.
-3. **F2** — needs a design call, not a patch: whether `authorize` grows
+**F1 — LANDED.** `models/methodology.py` gains
+`XSSStoredMethodologyResult.verifying_read_back`, phase 5 of the stored class
+returns the payload-anchored slice it already computed, and both gate parameters
+are now three-state with **no default** — `None` meaning *this class holds no
+such evidence*, on which the gate refuses rather than grades. The invariant is
+CLAUDE.md 104; the incident is `docs/invariants.md` §104.
+
+One consequence worth naming: the DOM caller held neither parameter, so stating
+the absence makes the gate refuse there, and that call site raises on a refusal.
+That closed the unwitnessed DOM emission branch only where a synthesized payload
+existed for the gate to read.
+
+**The branch itself is now deleted**, in a separate commit, because it is a
+deletion on an emission path and was not part of this audit's brief. It was
+provably dead on three independent grounds: `DOMXSSMethodologyResult` defaults to
+`verification_strength="likely"` and `verified=False`;
+`_run_dom_xss_methodology` assigns `"likely"` unconditionally before its only
+other return; and the one writer of `"verified"` onto a DOM result is the P7
+promotion, which passes a witness. `witness` loses its default and the
+precondition is unconditional — it no longer waits for a synthesized payload to
+be present, which is the gap the gate refusal left.
+
+**F3 — ATTEMPTED AND REVERTED; re-opened as R8 in `register.md`.** The finding
+stands. The fix did not: nothing wired `provider_chain_observations()` to
+`orchestrator.py::_build_reachability`, so both new `EngagementReachability`
+fields stayed at `frozenset()` and every uninvoked provider — `anthropic`
+included, priority 1 on every chain — rendered *"no API key was configured for
+X"* from an empty set. That is the wrong one of the two readings the key exists to
+separate, and a record nobody sees beats a record that is confidently wrong about
+the client's configuration. R8 carries the three things a correct fix needs,
+including the one this round discovered: `ReachabilitySource.ENGINE` is added
+unconditionally, so an ENGINE-sourced predicate can never reach invariant 80's
+NOT DETERMINED state.
+
+**F2, F4, F5 — open.** The order they want, when authorised:
+
+1. **F2** — needs a design call, not a patch: whether `authorize` grows
    `field_types`/`values` parameters, or whether the governor is documented as
    the deliberately-weaker of the two gates.
-4. **F4, F5** — comments and a deletion.
+2. **F4, F5** — comments and a deletion.
 
 And the guard itself: the MIXED/NEVER/ALWAYS/UNCALLED walk belongs in
 `tests/` with §3 above as its declared table, both directions asserted, the

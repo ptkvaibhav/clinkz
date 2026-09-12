@@ -232,21 +232,51 @@ class TestG9CharacterMapGatesEveryClass:
         )
         form = {"action": "", "method": "POST", "fields": [{"name": "txtName", "type": "text"}]}
         page = PageAnalysis(url="http://example.com/guestbook", body="", status=200, forms=[form])
-        verified, why = await agent._xss_stored_phase5_verify(
+        verified, why, _slice = await agent._xss_stored_phase5_verify(
             page, form, "txtName", FULLWIDTH_PAYLOAD, page.url, LIVE_ENCODED_MAP
         )
         assert verified is False
         assert why
 
-    def test_dom_class_shares_the_gate(self) -> None:
-        """The DOM class routes through the same gate. Its map is synthetic (the
-        server never sees the fragment), so the capability half is vacuous — but
-        the claim half is not, and a conditional claim still vetoes."""
+    def test_the_gate_refuses_evidence_it_does_not_hold(self) -> None:
+        """A caller that holds no body / no landing measurement gets a REFUSAL.
+
+        This is the shape the DOM class used to call the gate in, and the two
+        omissions failed in opposite directions: ``verifying_body=""`` made the
+        error-block condition return ``None`` unconditionally (a veto that did
+        not exist), while ``literal_landing_witnessed=False`` licensed two prose
+        vetoes about an effect nobody had measured. Neither is now spellable.
+        """
+        agent = _make_agent()
+        ok, why = agent._xss_confirmation_gate(
+            payload=FULLWIDTH_PAYLOAD,
+            landing="js_dom_likely (sinks: document.write)",
+            char_map=agent._xss_phase2_dom_character_fingerprint(),
+            verifying_body=None,
+            literal_landing_witnessed=True,
+        )
+        assert ok is False
+        assert "no verifying body" in why
+
+        ok, why = agent._xss_confirmation_gate(
+            payload=FULLWIDTH_PAYLOAD,
+            landing="js_dom_likely (sinks: document.write)",
+            char_map=agent._xss_phase2_dom_character_fingerprint(),
+            verifying_body="",
+            literal_landing_witnessed=None,
+        )
+        assert ok is False
+        assert "no literal-landing measurement" in why
+
+    def test_a_body_holding_caller_still_gets_every_condition(self) -> None:
+        """The claim half is unchanged for a caller that declares its evidence."""
         agent = _make_agent()
         ok, _why = agent._xss_confirmation_gate(
             payload=FULLWIDTH_PAYLOAD,
             landing="js_dom_likely (sinks: document.write)",
             char_map=agent._xss_phase2_dom_character_fingerprint(),
+            verifying_body="",
+            literal_landing_witnessed=False,
         )
         assert ok is True
         ok, why = agent._xss_confirmation_gate(
@@ -254,6 +284,8 @@ class TestG9CharacterMapGatesEveryClass:
             landing="js_dom_likely (sinks: document.write)",
             char_map=agent._xss_phase2_dom_character_fingerprint(),
             expected_execution="If the browser normalizes the fullwidth brackets it will execute.",
+            verifying_body="",
+            literal_landing_witnessed=False,
         )
         assert ok is False
         assert "conditional" in why
@@ -345,7 +377,7 @@ class TestG10ReflectionInErrorPage:
         )
         form = {"action": "", "method": "POST", "fields": [{"name": "txtName", "type": "text"}]}
         page = PageAnalysis(url="http://example.com/g", body="", status=200, forms=[form])
-        verified, why = await agent._xss_stored_phase5_verify(
+        verified, why, _slice = await agent._xss_stored_phase5_verify(
             page, form, "txtName", payload, page.url, RAW_MAP
         )
         assert verified is False
@@ -367,6 +399,7 @@ class TestG10SuppressDontAnnotate:
                 rationale="Tags survive the store.",
                 expected_execution="If the template layer later decodes the entities, it runs.",
             ),
+            verifying_read_back="<p>Comment: <script>alert(1)</script></p>",
         )
         ok, why = agent._xss_stored_confirmation_gate(result)
         assert ok is False
@@ -641,6 +674,7 @@ class TestG21ProseVetoNeverOverrulesAWitness:
             char_map=RAW_MAP,
             rationale=rationale,
             expected_execution="",
+            verifying_body="",
             literal_landing_witnessed=False,
         )
         assert ok is False
@@ -657,6 +691,7 @@ class TestG21ProseVetoNeverOverrulesAWitness:
                 char_map=RAW_MAP,
                 rationale="The payload lands unescaped in the html_body context.",
                 expected_execution="The browser parses the tag and runs alert(1).",
+                verifying_body="",
                 literal_landing_witnessed=witnessed,
             )
             assert (ok, reason) == (True, "confirmed")
@@ -672,6 +707,7 @@ class TestG21ProseVetoNeverOverrulesAWitness:
             char_map=LIVE_ENCODED_MAP,
             rationale="Lands unescaped.",
             expected_execution="",
+            verifying_body="",
             literal_landing_witnessed=True,
         )
         assert ok is False
@@ -707,6 +743,7 @@ class TestG21ProseVetoNeverOverrulesAWitness:
             char_map=RAW_MAP,
             rationale=self.B2_RATIONALES[0],
             expected_execution="",
+            verifying_body="",
             literal_landing_witnessed=False,
         )
         assert ok is False
@@ -835,6 +872,7 @@ class TestG21ProseVetoNeverOverrulesAWitness:
             landing_context="html_body",
             literal_landing_witnessed=witnessed,
             read_back_url="http://t/vulnerabilities/xss_s/",
+            verifying_read_back=f"<p>Comment: {self.PAYLOAD}</p>",
             synthesized_payload=SynthesizedPayload(
                 payload=self.PAYLOAD,
                 rationale=self.B2_RATIONALES[0],
@@ -843,3 +881,146 @@ class TestG21ProseVetoNeverOverrulesAWitness:
         )
         ok, reason = agent._xss_stored_confirmation_gate(result)
         assert ok is witnessed, reason
+
+
+class TestF1TheGateRefusesEvidenceItDoesNotHold:
+    """The shared XSS gate was applying three of four conditions to one caller.
+
+    ``_xss_confirmation_gate`` presents itself as THE emission gate for
+    reflected, stored and DOM XSS. Two of its four conditions read parameters
+    that only the reflected caller supplied, and the defaults were not neutral —
+    they failed in opposite directions:
+
+    * ``verifying_body=""`` — condition 2 is
+      :func:`_reflection_only_in_error_block`, which returns ``None``
+      unconditionally on an empty body. The error-block veto did not fail for
+      the stored and DOM classes; it did not exist for them.
+    * ``literal_landing_witnessed=False`` — this is a MEASUREMENT ("phase 5
+      looked and saw no literal landing") and it licenses the two prose vetoes.
+      A caller that never asked the question asserted the measurement by
+      omitting it, which is invariant 45 run backwards.
+
+    Neither is a call-site fix, because the producing models could not supply
+    what was missing. Stored now carries the read-back slice phase 5 already
+    held; DOM carries neither and no longer asks.
+    """
+
+    PAYLOAD = "<script>alert(1)</script>"
+
+    def test_an_absent_body_refuses_rather_than_passing_condition_two(self) -> None:
+        agent = _make_agent()
+        ok, why = agent._xss_confirmation_gate(
+            payload=self.PAYLOAD,
+            landing="html_body",
+            char_map=RAW_MAP,
+            rationale="Lands unescaped.",
+            expected_execution="",
+            verifying_body=None,
+            literal_landing_witnessed=True,
+        )
+        assert ok is False
+        assert "no verifying body" in why
+        assert "refusing to grade on a default" in why
+
+    def test_an_absent_measurement_refuses_rather_than_applying_the_prose_veto(
+        self,
+    ) -> None:
+        agent = _make_agent()
+        ok, why = agent._xss_confirmation_gate(
+            payload=self.PAYLOAD,
+            landing="html_body",
+            char_map=RAW_MAP,
+            rationale="Lands unescaped.",
+            expected_execution="",
+            verifying_body="",
+            literal_landing_witnessed=None,
+        )
+        assert ok is False
+        assert "no literal-landing measurement" in why
+
+    def test_the_refusal_precedes_every_condition_it_cannot_evaluate(self) -> None:
+        """A caller holding nothing gets ONE reason, not a verdict from the
+        conditions that happen to be evaluable."""
+        agent = _make_agent()
+        ok, why = agent._xss_confirmation_gate(
+            payload=self.PAYLOAD,
+            landing="html_body",
+            char_map=LIVE_ENCODED_MAP,  # would fail condition 1 on its own
+            rationale="Lands unescaped.",
+            expected_execution="",
+            verifying_body=None,
+            literal_landing_witnessed=None,
+        )
+        assert ok is False
+        assert "no verifying body" in why
+
+    @pytest.mark.asyncio
+    async def test_stored_phase5_returns_the_slice_the_gate_needs(self) -> None:
+        """The evidence was always there; only the model could not carry it."""
+        agent = _make_agent()
+        agent._submit_form_fields = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="")
+        )
+        agent._http_get = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body=f"<p>Comment: {self.PAYLOAD}</p>")
+        )
+        form = {"action": "", "method": "POST", "fields": [{"name": "txtName", "type": "text"}]}
+        page = PageAnalysis(url="http://example.com/g", body="", status=200, forms=[form])
+        verified, _ctx, slice_ = await agent._xss_stored_phase5_verify(
+            page, form, "txtName", self.PAYLOAD, page.url, RAW_MAP
+        )
+        assert verified is True
+        assert self.PAYLOAD in slice_
+
+    def test_the_stored_gate_now_evaluates_its_own_error_block_condition(self) -> None:
+        """The condition that did not exist for this class. Phase 5 also checks
+        the FULL body, so this is the shared contract becoming evaluable rather
+        than coverage being added — but a stored result whose slice is an error
+        block must not confirm at the gate either."""
+        agent = _make_agent()
+        result = XSSStoredMethodologyResult(
+            verified=True,
+            read_back_url="http://example.com/g",
+            landing_context="html_body",
+            character_map=RAW_MAP,
+            literal_landing_witnessed=True,
+            verifying_read_back=(
+                "<br />\n<b>Warning</b>:  include("
+                + self.PAYLOAD
+                + "): Failed to open stream in <b>/var/www/html/x.php</b><br />"
+            ),
+            synthesized_payload=SynthesizedPayload(
+                payload=self.PAYLOAD,
+                rationale="Lands unescaped.",
+                expected_execution="",
+            ),
+        )
+        ok, why = agent._xss_stored_confirmation_gate(result)
+        assert ok is False
+        assert "error block" in why
+
+    def test_a_stored_result_with_no_slice_refuses(self) -> None:
+        """``None`` is "phase 5 recorded no read-back", and it REFUSES.
+
+        Unreachable in practice — the field is assigned only on a confirmation
+        and a confirmation always has a slice — but it is the shape the old
+        ``verifying_body=""`` confirmed through, so it is pinned rather than
+        left to the next producer to rediscover.
+        """
+        agent = _make_agent()
+        result = XSSStoredMethodologyResult(
+            verified=True,
+            read_back_url="http://example.com/g",
+            landing_context="html_body",
+            character_map=RAW_MAP,
+            literal_landing_witnessed=True,
+            verifying_read_back=None,
+            synthesized_payload=SynthesizedPayload(
+                payload=self.PAYLOAD,
+                rationale="Lands unescaped.",
+                expected_execution="",
+            ),
+        )
+        ok, reason = agent._xss_stored_confirmation_gate(result)
+        assert ok is False
+        assert "no verifying body" in reason

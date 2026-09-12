@@ -75,6 +75,15 @@ ran at all on cal.diy** — `_learn_api_schemas` returns early on
 crawl is a live constraint on its own. That is a falsifiable prediction, cheap
 to check in the trace.
 
+> **MEASURED, 2026-09-12 — see [`options-sweep-measurement.md`](options-sweep-measurement.md).**
+> It ran (197 s scan against a 900 s budget; the sweep costs 0.11 s), and it was
+> not checkable *in the trace* — a local-mode run writes no `tool_invocations/`,
+> so it had to be re-run live. **All 44 routes answered and not one named a write
+> verb**: 40 said `Allow: HEAD`, one said `GET, HEAD, OPTIONS`, and the three
+> that matter (`/`, `/api/book/event`, `/api/trpc`) returned no `Allow` at all.
+> Producer 5 is sound and **exhausted on production Next.js**. The work moves to
+> producer 3, as §5.3 anticipated.
+
 ### And §6's law is in this path too
 
 `agents/_js_api_mining.py::_call_site_from_args`:
@@ -207,10 +216,11 @@ Not scoped here, deliberately. What the constraint says about it:
    precondition `_test_write_crossing` declares is downstream of a queue gate
    that never fires. Building more oracle is building on a road that does not
    reach.
-2. **The cheapest measurement first**: did the `OPTIONS` sweep run on cal.diy,
-   and what did the target answer? Producer 5 already exists for this exact
-   case. If it ran and got no `Allow`, that is the answer and the work moves to
-   producer 3.
+2. ~~**The cheapest measurement first**: did the `OPTIONS` sweep run on
+   cal.diy, and what did the target answer?~~ **Done** —
+   [`options-sweep-measurement.md`](options-sweep-measurement.md). It ran and
+   the target names no write verb on any of the 44 routes, so **the work moves
+   to producer 3**, exactly as the conditional here said it would.
 3. **Producer 3 has two independent defects** and they need separating: bundle
    *coverage* (12 of ~31) and method *readability* (the `GET` fallback, plus
    tRPC/server-action shapes the miner has no pattern for). The second is the

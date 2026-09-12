@@ -260,7 +260,7 @@ class TestPhase5Verification:
             )
         )
         page = _make_page()
-        verified, ctx = await agent._xss_stored_phase5_verify(
+        verified, ctx, _slice = await agent._xss_stored_phase5_verify(
             page, _make_form(), "txtName", "<script>alert(1)</script>", page.url
         )
         assert verified is True
@@ -279,7 +279,7 @@ class TestPhase5Verification:
             )
         )
         page = _make_page()
-        verified, ctx = await agent._xss_stored_phase5_verify(
+        verified, ctx, _slice = await agent._xss_stored_phase5_verify(
             page, _make_form(), "txtName", "<script>alert(1)</script>", page.url
         )
         assert verified is False
@@ -312,6 +312,7 @@ class TestPhase6FindingEmission:
             read_back_url="http://example.com/guestbook",
             verified=True,
             verification_strength="verified",
+            verifying_read_back="<p>Comment: <script>alert(1)</script></p>",
         )
         finding = agent._xss_stored_phase6_emit("http://example.com/guestbook", "txtName", result)
         joined = " ".join(finding.evidence)
@@ -485,7 +486,7 @@ class TestStoredXSSConfirmationGate:
         )
         agent._http_get = get_mock  # type: ignore[method-assign]
         page = _make_page()
-        verified, ctx = await agent._xss_stored_phase5_verify(
+        verified, ctx, _slice = await agent._xss_stored_phase5_verify(
             page, _make_form(), "txtName", "<script>alert(1)</script>", None
         )
         assert verified is False
@@ -504,7 +505,7 @@ class TestStoredXSSConfirmationGate:
             return_value=_HTTPResponse(status=200, body="<p>alert1</p>")
         )
         page = _make_page()
-        verified, ctx = await agent._xss_stored_phase5_verify(
+        verified, ctx, _slice = await agent._xss_stored_phase5_verify(
             page, _make_form(), "txtName", "alert1", page.url
         )
         assert verified is False
@@ -596,6 +597,7 @@ class TestStoredXSSConfirmationGate:
                 expected_execution="No JavaScript execution occurs.",
             ),
             verified=True,  # deterministic check passed
+            verifying_read_back="<p>Comment: <b>alert1</b></p>",
         )
         ok, reason = agent._xss_stored_confirmation_gate(result)
         assert ok is False
@@ -630,6 +632,7 @@ class TestStoredXSSConfirmationGate:
                 expected_execution="Script tag executes on render.",
             ),
             verified=True,
+            verifying_read_back="<p>Comment: <script>alert(1)</script></p>",
         )
         ok, reason = agent._xss_stored_confirmation_gate(result)
         assert ok is True

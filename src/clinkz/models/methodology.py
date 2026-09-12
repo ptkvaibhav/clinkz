@@ -1368,6 +1368,25 @@ class XSSStoredMethodologyResult(BaseModel):
     # ``_xss_stored_phase5_verify`` only returns True through that check, so it
     # is set on every confirmation this class makes.
     literal_landing_witnessed: bool = False
+    # The read-back slice phase 5 confirmed on, anchored on the payload — the
+    # same shape and bound as :attr:`MethodologyResult.verifying_response`.
+    #
+    # It exists so the SHARED emission gate can evaluate its own error-block
+    # condition on this class's evidence instead of on a default. Before it, the
+    # stored caller omitted the body and the gate's ``verifying_body=""`` made
+    # ``_reflection_only_in_error_block`` return ``None`` unconditionally: the
+    # veto did not fail, it did not exist. Phase 5 does run that check on the
+    # FULL body, so nothing was ever emitted dishonestly — but "the condition is
+    # discharged one layer up" is a fact the gate could not see, and a gate that
+    # cannot tell a discharged condition from an unevaluated one is grading on a
+    # default.
+    #
+    # ``None`` — the default — is "phase 5 recorded no read-back for this
+    # result", and it is what the gate refuses on. It is NOT ``""``: an empty
+    # string claims a body that happened to be empty, and that is the exact
+    # shape the gate used to confirm through. Only a confirmation assigns this,
+    # and a confirmation always has a slice.
+    verifying_read_back: str | None = None
     # The phase-3 synthesis rationale, preserved verbatim for the evidence chain
     # even when a phase-4 bypass payload replaces the phase-3 one. Kept separate
     # so the emission gate's no-execution veto judges the payload that is
