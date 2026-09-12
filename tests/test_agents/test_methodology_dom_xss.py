@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from clinkz.agents.exploit import ExploitAgent, PageAnalysis, _HTTPResponse
+from clinkz.browser.witness import ExecutionWitness, WitnessVerdict
 from clinkz.llm.base import LLMClient, LLMMessage
 from clinkz.models.methodology import (
     DOMSourceSinkPair,
@@ -34,6 +35,23 @@ SCOPE = EngagementScope(
     name="methodology-dom-xss-test",
     targets=[ScopeEntry(value="example.com", type=ScopeType.DOMAIN)],
 )
+
+
+def _witnessed(url: str = "http://example.com/page#payload") -> WitnessVerdict:
+    """A P7 verdict that observed execution — the only input phase 6 accepts."""
+    verdict = WitnessVerdict(
+        nonce="aaaaaaaaaaaaaaaa",
+        control_nonce="bbbbbbbbbbbbbbbb",
+        binding_name="__clinkz_w_1234abcd",
+        injected_payload="<script>window.__clinkz_w_1234abcd('aaaaaaaaaaaaaaaa')</script>",
+        template_id="inline_script",
+        navigated_url=url,
+        witnesses=[ExecutionWitness(value="aaaaaaaaaaaaaaaa", frame_url=url)],
+        policy_in_force="script-src 'self' 'unsafe-inline'",
+        policy_source="header",
+    )
+    verdict.decide()
+    return verdict
 
 
 class _ScriptedLLM(LLMClient):
@@ -233,13 +251,15 @@ class TestPhase6Emission:
             "http://example.com/page",
             None,
             result,
+            witness=_witnessed(),
         )
         joined = " ".join(finding.evidence)
-        assert "path=source_to_sink" in joined
-        assert "phases_completed=6" in joined
+        assert "location.hash" in joined and "innerHTML" in joined
         assert finding.severity.value == "high"
-        # G2: the evidence must never assert an observation nobody made.
-        assert "executed by client-side JS" not in joined
+        assert "script execution witnessed" in finding.title
+        # The request line is the probe P7 actually navigated to, never the
+        # LLM's synthesized payload.
+        assert finding.evidence[0] == "Request: GET http://example.com/page#payload"
 
     def test_phase6_refuses_an_unwitnessed_result(self) -> None:
         """The emission path is closed to a ``likely`` strength by construction."""
@@ -259,6 +279,44 @@ class TestPhase6Emission:
         )
         with pytest.raises(RuntimeError, match="without witnessed execution"):
             agent._dom_xss_phase6_emit("http://example.com/page", None, result)
+
+    def test_phase6_gate_refuses_the_evidence_this_class_does_not_hold(self) -> None:
+        """An unwitnessed emission now dies at the gate, not on a default.
+
+        ``DOMXSSMethodologyResult`` holds no response body and makes no literal-
+        landing measurement. The gate used to be handed neither and graded
+        anyway: ``verifying_body=""`` disabled the error-block condition
+        outright, and ``literal_landing_witnessed=False`` licensed two prose
+        vetoes about an effect nobody had measured. Whether this site crashed or
+        emitted a confirmed high severity was decided by two parameter defaults.
+
+        The absences are now stated, so the gate REFUSES — and this site already
+        treats a refusal as a caller bug. Note what this does not close: the gate
+        is only consulted when a synthesized payload exists. An unconditional
+        precondition is a separate change.
+        """
+        agent = _make_agent()
+        result = DOMXSSMethodologyResult(
+            phases_completed=6,
+            detection_path=DOMXSSDetectionPath.SOURCE_TO_SINK,
+            source_sink_pairs=[
+                DOMSourceSinkPair(
+                    source="location.hash",
+                    sink="innerHTML",
+                    script_excerpt="x.innerHTML = location.hash",
+                )
+            ],
+            synthesized_payload=SynthesizedPayload(
+                payload="<img src=x onerror=alert(1)>",
+                rationale="innerHTML sink",
+                expected_execution="image error handler",
+            ),
+            verified=True,
+            verification_strength="verified",
+        )
+        with pytest.raises(RuntimeError, match="confirmation gate rejects") as excinfo:
+            agent._dom_xss_phase6_emit("http://example.com/page", None, result)
+        assert "no verifying body" in str(excinfo.value)
 
     def test_canary_finding_includes_param(self) -> None:
         from clinkz.models.methodology import ReflectionContext, ReflectionPoint
@@ -287,10 +345,10 @@ class TestPhase6Emission:
             "http://example.com/search",
             "q",
             result,
+            witness=_witnessed("http://example.com/search?q=payload"),
         )
-        assert "q" in (finding.evidence[0] + finding.evidence[1])
-        joined = " ".join(finding.evidence)
-        assert "path=canary_script_context" in joined
+        assert "q" in finding.title
+        assert "script execution witnessed" in finding.title
 
 
 # ===========================================================================

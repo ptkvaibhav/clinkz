@@ -248,21 +248,31 @@ them.
 
 ---
 
-## 4 · What is NOT fixed here
+## 4 · Status
 
-Nothing. Per the brief, the set is reported before anything moves. The order the
-fixes want, when they are authorised:
+The set was reported before anything moved. What has happened since:
 
-1. **F1** — largest, and the only one that reaches models: two fields on
-   `models/methodology.py`, the two methodologies that populate them, then the
-   two call sites. It is also the only one on an emission path.
-2. **F3** — smallest: a `ReachabilityKey` for `LLM_PROVIDER` and one argument.
-   Needs a decision on what the predicate should say about a fallback provider
-   that was correctly never reached.
-3. **F2** — needs a design call, not a patch: whether `authorize` grows
+**F1 — LANDED.** `models/methodology.py` gains
+`XSSStoredMethodologyResult.verifying_read_back`, phase 5 of the stored class
+returns the payload-anchored slice it already computed, and both gate parameters
+are now three-state with **no default** — `None` meaning *this class holds no
+such evidence*, on which the gate refuses rather than grades. The invariant is
+CLAUDE.md 104; the incident is `docs/invariants.md` §104.
+
+One consequence worth naming: the DOM caller held neither parameter, so stating
+the absence makes the gate refuse there, and that call site raises on a refusal.
+It closes the unwitnessed DOM emission branch only where a synthesized payload
+exists for the gate to read. The branch is provably dead for a second reason —
+`_run_dom_xss_methodology` assigns `"likely"` unconditionally — and removing it
+outright is a separate change, kept separate because it is a deletion on an
+emission path and was not part of this audit's brief.
+
+**F2, F4, F5 — open.** The order they want, when authorised:
+
+1. **F2** — needs a design call, not a patch: whether `authorize` grows
    `field_types`/`values` parameters, or whether the governor is documented as
    the deliberately-weaker of the two gates.
-4. **F4, F5** — comments and a deletion.
+2. **F4, F5** — comments and a deletion.
 
 And the guard itself: the MIXED/NEVER/ALWAYS/UNCALLED walk belongs in
 `tests/` with §3 above as its declared table, both directions asserted, the

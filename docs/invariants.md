@@ -2592,3 +2592,78 @@ exactly what an ungoverned sender would not do. The remedy when one appears is t
 add the word to `credential_shapes.CREDENTIAL_HEADER_KEYS`, where it earns
 redaction as well as this guard's attention — not to widen a regex in a test,
 which would protect the value in one place.
+
+## 104 — a gate refuses to grade evidence it does not hold
+
+`_xss_confirmation_gate` presents itself as THE emission gate for reflected,
+stored and DOM XSS: one gate, four conditions, so a class cannot drift out of the
+contract. Two of those four conditions read parameters that only one of the three
+callers supplied.
+
+```python
+def _xss_confirmation_gate(
+    self, *, payload, landing, char_map,
+    rationale: str = "",
+    expected_execution: str = "",
+    verifying_body: str = "",                  # 1 of 3 callers supplied
+    literal_landing_witnessed: bool = False,   # 2 of 3 callers supplied
+) -> tuple[bool, str]:
+```
+
+| caller | `verifying_body` | `literal_landing_witnessed` |
+|---|---|---|
+| reflected | `result.verifying_response` | `result.literal_landing_witnessed` |
+| stored | **omitted** | `result.literal_landing_witnessed` |
+| DOM | **omitted** | **omitted** |
+
+The defaults were not neutral, and they did not fail the same way.
+
+**`verifying_body=""` is the permissive absence.** Condition 2 is
+`_reflection_only_in_error_block(verifying_body, payload, _ERROR_BLOCK_MARKERS)`
+— invariant 42's second never-confirm shape, a reflection inside a framework
+error page. On an empty body that function returns `None` unconditionally. So for
+the stored and DOM classes the error-block veto did not *fail*; it did not
+**exist**. The gate reported "confirmed" having evaluated two of its four
+conditions, and the docstring above it described all four.
+
+**`literal_landing_witnessed=False` is the strict absence, and it is worse than
+it looks.** `False` is a *measurement* — phase 5 looked and saw no literal
+landing — and it is what licenses the two prose vetoes. A caller that never asked
+the question asserted that measurement by omitting it. That is invariant 45 run
+backwards: a veto that reads the model's prose is licensed only for an effect
+nobody witnessed, and this caller claimed nobody witnessed one without looking.
+
+**Neither was a call-site fix**, which is what set the size of the work. The
+producing models could not supply what was missing: `XSSStoredMethodologyResult`
+carried `read_back_url` and never the read-back body, and
+`DOMXSSMethodologyResult` carried neither. Phase 5 of the stored class *held* the
+body — it ran the same error-block check on the full response, which is strictly
+stronger than the anchored slice — and then dropped it on the floor when it
+returned. The honest coverage was there; what was missing was the gate being able
+to see it, and **a gate cannot tell a discharged condition from an unevaluated
+one.**
+
+The fix is three-state parameters with no defaults. `None` means *this class does
+not hold this*, and the gate refuses instead of grading:
+
+* stored now carries `verifying_read_back` — the payload-anchored slice phase 5
+  already computed. `None` is "phase 5 recorded no read-back", and it is what the
+  gate refuses on. It is deliberately **not** `""`: an empty string claims a body
+  that happened to be empty, which is the exact shape the gate used to confirm
+  through.
+* DOM holds neither, and now says so.
+
+**Why `None` rather than a default that fails closed.** A default that refused
+would have been safe and still wrong in the same way: the next producer wiring in
+a new XSS variant inherits a verdict the gate never reached, and nothing in the
+signature tells them. Requiring the parameter makes the omission unspellable
+rather than merely unlucky — the same reason `ledger.declare` cannot default its
+reachability key (invariants 79-80), and the same reason a guard's domain has to
+be computed over the CALL and not the callee (invariant 67): **a control that is
+an optional parameter with a permissive default makes a gate only as controlled
+as its least careful caller.**
+
+This was found by the default-control audit
+(`docs/analysis/default-control-audit.md` F1) — a sweep by call-site
+DISAGREEMENT rather than by name, which is what surfaced a parameter that two
+callers supplied and one did not.
