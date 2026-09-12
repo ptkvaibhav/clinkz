@@ -136,3 +136,93 @@ classification it needs. The guard itself — the MIXED/NEVER/ALWAYS/UNCALLED
 walk in `tests/`, both directions asserted, the four blind spots named in the
 module docstring — is not written. Until it is, §3 is documentation of a
 measurement rather than a test that goes red.
+
+---
+
+## R8 · F3 (`llm:<provider>` reachability) — attempted, reverted, re-opened
+
+**Verified, and the revert is the finding.** `docs/analysis/default-control-audit.md`
+F3 is real: `llm/fallback.py` declares every provider in a chain with no
+reachability key, so `resolve_reachability` skips the record outright and no
+`llm:<provider>` ever produces a reachability answer in either direction.
+
+A fix was written and reverted in the same round. It added
+`ReachabilityKey.LLM_PROVIDER_WAS_A_CHAIN_PRIMARY`, the two halves it needs on
+`EngagementReachability` (`llm_providers_with_credentials`, `llm_chain_primaries`),
+a predicate, and a producer in `fallback.py` recording both facts at the
+declaration seam — which is the right seam, because the chain's declared order
+and the key check are three lines apart there and neither survives to report time.
+
+**Why it came out.** Nothing wired the producer to the consumer.
+`provider_chain_observations()` had zero callers — `orchestrator.py`'s
+`_build_reachability` is the only place `EngagementReachability` is constructed,
+and it never read it — so both new fields stayed at their `frozenset()` default.
+Measured against the attempt, with the state the orchestrator actually builds:
+
+```
+llm_providers_with_credentials : frozenset()
+llm_chain_primaries            : frozenset()
+llm:anthropic: holds=False
+  -> no API key was configured for anthropic, so every chain it is declared in
+     skipped it before reaching a call — an absent credential, not an unused
+     capability
+```
+
+That sentence is produced from an empty set, for **anthropic** — priority 1 on
+every chain of every phase. It is a confident client-facing claim about the
+operator's configuration, and it is precisely the WRONG one of the two readings
+the key's own docstring says both halves exist to separate: *no credential*
+versus *a fallback nothing rotated onto*, the second of which is routing behaving
+correctly (invariant 6) and must never alarm (invariant 81).
+
+Before the change the record was skipped and an operator saw nothing. **A record
+nobody sees is better than a record that is confidently wrong about the client's
+configuration.** The four failing tests — all
+`TypeError: declare_component() missing 1 required keyword-only argument` in
+`tests/test_observability/test_component_ledger.py`
+(`test_no_ledger_installed_means_every_helper_is_a_no_op`,
+`test_declared_but_never_invoked_is_not_reported_as_silent`,
+`test_no_view_is_a_second_population`,
+`test_the_cve_component_has_exactly_one_registration`) — were not the reason for
+the revert. They were how it was noticed.
+
+**What a correct fix requires.** Three things, none of them large, all of them
+absent from the attempt:
+
+1. **The producer's observations have to reach the consumer.**
+   `orchestrator.py::_build_reachability` — the one `EngagementReachability(...)`
+   construction — must read `provider_chain_observations()` and pass both sets.
+   Until it does, the predicate answers from a default, which is the same defect
+   class F3 itself reports.
+
+2. **`ReachabilitySource.ENGINE` must stop being unconditional for this
+   predicate.** `_build_reachability` opens with
+   `reported = {ReachabilitySource.ENGINE}`, before any producer check, so
+   `state.unreported_reason(ENGINE)` is `""` and an ENGINE-sourced predicate can
+   never reach the NOT DETERMINED fourth state invariant 80 exists to provide
+   (confirmed by the same measurement above). A provider-chain observation is
+   exactly the case that needs it: a run whose chains were never walked — credit
+   pre-flight refused, zero LLM calls — has said *nothing* about which provider
+   was a primary, and that is not the same fact as "none was". Either this
+   predicate gets its own source whose membership is conditional on the producer
+   having spoken, or ENGINE's unconditional add becomes a real check — and the
+   second changes behaviour for the three existing ENGINE predicates, so it is a
+   decision, not a patch.
+
+3. **`reset_provider_chain_observations()` has to be wired, and the module-level
+   state question answered.** The attempt defined it and called it from nowhere.
+   Module-level sets that accumulate across engagements in one process are their
+   own defect: `scripts/three_run_envelope.py` runs several engagements per
+   process, so run 2's answer would carry run 1's chain walks. Note the sibling
+   `reset_account_disabled_providers()` already has that shape — called only from
+   tests, never at engagement start — so the gap is pre-existing in
+   `llm/fallback.py`'s module state rather than introduced by the F3 fix. Worth
+   closing at engagement setup for both, not per-consumer.
+
+**What is NOT in dispute.** The `declare` / `declare_component` half — making
+`reachability` a required parameter, and giving a record created without one
+`set_reachability_undetermined` instead of a silent `continue` — is sound and
+independent of the above. It was reverted only because it is what forces every
+caller, including the `llm:<provider>` one, to name a key; landing it without a
+correct predicate for that caller is what produced the wrong sentence. It should
+come back WITH item 1.

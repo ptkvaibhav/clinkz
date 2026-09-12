@@ -274,6 +274,18 @@ promotion, which passes a witness. `witness` loses its default and the
 precondition is unconditional — it no longer waits for a synthesized payload to
 be present, which is the gap the gate refusal left.
 
+**F3 — ATTEMPTED AND REVERTED; re-opened as R8 in `register.md`.** The finding
+stands. The fix did not: nothing wired `provider_chain_observations()` to
+`orchestrator.py::_build_reachability`, so both new `EngagementReachability`
+fields stayed at `frozenset()` and every uninvoked provider — `anthropic`
+included, priority 1 on every chain — rendered *"no API key was configured for
+X"* from an empty set. That is the wrong one of the two readings the key exists to
+separate, and a record nobody sees beats a record that is confidently wrong about
+the client's configuration. R8 carries the three things a correct fix needs,
+including the one this round discovered: `ReachabilitySource.ENGINE` is added
+unconditionally, so an ENGINE-sourced predicate can never reach invariant 80's
+NOT DETERMINED state.
+
 **F2, F4, F5 — open.** The order they want, when authorised:
 
 1. **F2** — needs a design call, not a patch: whether `authorize` grows
