@@ -467,3 +467,232 @@ class TestThePortGateRule:
             "the crossing is decided by the named rule, not by a second comparison "
             "beside it — two places that must agree is one place that will not"
         )
+
+
+# ---------------------------------------------------------------------------
+# The primitive handed over as a VALUE
+# ---------------------------------------------------------------------------
+#
+# ``_domain()`` above finds every function that CALLS a containment primitive.
+# That is the right domain for a decider, and it is blind to the other way a
+# scope decision travels: ``in_scope=self._check_scope``, a primitive passed as
+# a first-class function into something that will call it through a parameter
+# name. Neither end is visible — the site handing it over calls nothing, and the
+# site calling it calls a local name the AST cannot resolve to a primitive.
+#
+# The adaptive-auth layer is entirely on that side. ``_adaptive_auth`` passes
+# ``in_scope=self._scope.contains`` into ``AuthAgentLoop``, and
+# ``validate_proposal`` refuses a proposal by calling it. Measured 2026-09-09:
+# zero of this module's 29 domain members were on the adaptive path, while every
+# model-proposed destination was being scope-checked through a primitive handed
+# in from the orchestrator.
+#
+# So the domain gains the two halves of a handover:
+#
+#   * a function REFERENCING a primitive without calling it — it is delegating
+#     the scope decision to somebody else;
+#   * a function DECLARING an ``in_scope`` parameter — it is the somebody else.
+#
+# ``in_scope`` is a single name rather than a shape because it IS the engine's
+# one name for a handed-over scope check, asserted below: a second spelling is a
+# second rule, exactly as a second implementation would be.
+
+#: The parameter name a handed-over containment primitive arrives under.
+IN_SCOPE_PARAMETER = "in_scope"
+
+
+class _Handover:
+    """Which end of a handed-over scope check a function is."""
+
+    #: Hands a primitive to somebody else. The port rule travels with it.
+    DELEGATES = "delegates_the_primitive"
+    #: Receives one and calls it. It never sees the entries, so it cannot
+    #: re-derive the port rule and does not try to.
+    RECEIVES = "receives_the_primitive"
+
+
+def _handover_domain() -> dict[str, str]:
+    """Every function on either end of a handed-over containment primitive."""
+    found: dict[str, str] = {}
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+        rel = path.relative_to(SRC).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            qualname = f"{rel}::{node.name}"
+            args = node.args
+            declared = [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+            if IN_SCOPE_PARAMETER in declared:
+                found[qualname] = _Handover.RECEIVES
+                continue
+            called = {id(sub.func) for sub in ast.walk(node) if isinstance(sub, ast.Call)}
+            for sub in ast.walk(node):
+                if (
+                    isinstance(sub, ast.Attribute)
+                    and sub.attr in PRIMITIVES
+                    and id(sub) not in called
+                ):
+                    found[qualname] = _Handover.DELEGATES
+                    break
+    return found
+
+
+#: ``qualified name -> (classification, reason)``. Both ends declared, because
+#: they fail differently: a delegator that hands over the wrong callable breaks
+#: every check downstream of it, and a receiver that re-derives containment for
+#: itself is a second rule.
+DECLARED_HANDOVERS: dict[str, tuple[str, str]] = {
+    # ------------------------------------------------------------- delegating
+    "orchestrator/orchestrator.py::_adaptive_auth": (
+        _Handover.DELEGATES,
+        "hands EngagementScope.contains itself to the adaptive loop, so a model-proposed "
+        "destination is judged by the record's own entries and the port rule reaches it "
+        "unchanged. This is the site the call-shaped domain could not see",
+    ),
+    "tools/auth.py::_api_post_json": (
+        _Handover.DELEGATES,
+        "hands the tool's raising gate to the redirect walker, so the destination of a 307 "
+        "that re-POSTs the credential is checked by the same gate the first hop was",
+    ),
+    "tools/auth.py::_classify_credential_redirect": (
+        _Handover.DELEGATES,
+        "the seam that binds the shared redirect classifier to THIS tool's scope gate, so "
+        "a refusal reaches the run's scope-refusal record attributed to the authenticator",
+    ),
+    "tools/auth.py::_execute_aiohttp": (
+        _Handover.DELEGATES,
+        "the host transport hands its gate to every redirect walk it starts; the credential "
+        "body survives a 307 and the destination it survives to must be in scope",
+    ),
+    "tools/auth.py::_execute_curl": (
+        _Handover.DELEGATES,
+        "the docker transport does the same, because a scope decision that differs by "
+        "execution mode is a hole the mode hides rather than a property of the target",
+    ),
+    "tools/auth.py::_post": (
+        _Handover.DELEGATES,
+        "the form arm's POST closures hand the gate to their walk, so the second "
+        "destination a credential reaches is checked as the first one was",
+    ),
+    "tools/auth.py::_verify_session_aiohttp": (
+        _Handover.DELEGATES,
+        "a session verification follows redirects too, and it carries the session cookie, "
+        "so its walk is gated by the same primitive",
+    ),
+    "tools/auth.py::_verify_session_curl": (
+        _Handover.DELEGATES,
+        "the docker-mode twin of the verification above, gated identically for the same reason",
+    ),
+    # -------------------------------------------------------------- receiving
+    "engagement/auth_agent.py::__init__": (
+        _Handover.RECEIVES,
+        "stores the primitive the orchestrator handed the adaptive loop; it holds no scope "
+        "entries of its own and has no way to answer containment except by asking",
+    ),
+    "engagement/auth_agent.py::validate_proposal": (
+        _Handover.RECEIVES,
+        "the deterministic gate on a model's proposal. It calls the handed-in primitive and "
+        "refuses on a False; an out-of-scope destination never becomes a request, and the "
+        "port rule applies because the primitive is the rule",
+    ),
+    "tools/redirect_walk.py::classify_redirect": (
+        _Handover.RECEIVES,
+        "decides one hop of a redirect walk. It compares no hostname and reads no port; it "
+        "asks the caller's gate and reports the refusal it was given",
+    ),
+    "tools/redirect_walk.py::walk_redirects": (
+        _Handover.RECEIVES,
+        "drives the walk over that classifier, passing the same gate down; the walk owns "
+        "the ordering and owns no scope verdict",
+    ),
+}
+
+
+def test_every_end_of_a_handed_over_scope_check_is_classified() -> None:
+    """computed - declared: a new delegation fails the build until named."""
+    known = set(DECLARED) | set(DECLARED_HANDOVERS)
+    undeclared = sorted(set(_handover_domain()) - set(_domain()) - known)
+    assert not undeclared, (
+        "these functions hand a containment primitive to somebody else, or receive one, "
+        "and no entry says which. A scope decision that travels as a value is still a "
+        f"scope decision: {undeclared}"
+    )
+
+
+def test_no_handover_entry_outlived_its_function() -> None:
+    stale = sorted(set(DECLARED_HANDOVERS) - set(_handover_domain()))
+    assert not stale, f"declared for functions that no longer hand over a primitive: {stale}"
+
+
+@pytest.mark.parametrize("qualname", sorted(DECLARED_HANDOVERS))
+def test_each_handover_carries_a_substantive_reason(qualname: str) -> None:
+    classification, reason = DECLARED_HANDOVERS[qualname]
+    assert classification in {_Handover.DELEGATES, _Handover.RECEIVES}
+    assert len(reason.split()) >= 12, f"{qualname}: a classification needs a reason, not a label"
+    computed = _handover_domain()[qualname]
+    assert computed == classification, (
+        f"{qualname} is declared {classification} and computes as {computed}"
+    )
+
+
+def test_a_receiver_never_re_derives_containment() -> None:
+    """The property that makes RECEIVES safe.
+
+    A receiver that also called a primitive of its own would be answering the
+    containment question twice, and the second answer is the one with no entries
+    behind it. Every receiver must reach the decision only through what it was
+    handed.
+    """
+    reimplementing = sorted(
+        qualname
+        for qualname, (how, _) in DECLARED_HANDOVERS.items()
+        if how == _Handover.RECEIVES and qualname in _domain()
+    )
+    assert not reimplementing, (
+        "these functions receive a scope check AND call a containment primitive "
+        f"themselves, which is two rules where there must be one: {reimplementing}"
+    )
+
+
+def test_in_scope_is_the_engines_one_name_for_a_handed_over_gate() -> None:
+    """A second spelling would be a second rule, and this domain would miss it.
+
+    The whole extension rests on ``in_scope`` being the name, so the name is
+    asserted rather than assumed: every parameter anywhere under src with a
+    scope gate's SHAPE is called ``in_scope``.
+
+    The shape is a SYNCHRONOUS callable of one ``str`` — the two return
+    annotations in use are both legitimate and both mean "decides containment":
+    ``-> bool`` is the predicate ``EngagementScope.contains`` is, and ``-> None``
+    is the raising gate ``ToolBase._check_scope`` is. An awaited callable or one
+    taking two arguments is something else (``oracle_confirms``, ``dispatch``)
+    and is deliberately not matched.
+    """
+    shapes = {"Callable[[str], bool]", "Callable[[str], None]"}
+    others: list[str] = []
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+        rel = path.relative_to(SRC).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            args = node.args
+            for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+                if arg.arg == IN_SCOPE_PARAMETER or arg.annotation is None:
+                    continue
+                if ast.unparse(arg.annotation).replace(" ", "") in {
+                    shape.replace(" ", "") for shape in shapes
+                }:
+                    others.append(f"{rel}::{node.name}({arg.arg})")
+    assert not others, (
+        "these parameters take a scope gate's shape under another name; if one of them "
+        f"is a scope check, this domain cannot see it: {others}"
+    )
+
+
+def test_the_adaptive_path_is_inside_this_domain() -> None:
+    """Pinned, because it was outside it while two PRs merged."""
+    domain = _handover_domain()
+    assert domain.get("orchestrator/orchestrator.py::_adaptive_auth") == _Handover.DELEGATES
+    assert domain.get("engagement/auth_agent.py::validate_proposal") == _Handover.RECEIVES

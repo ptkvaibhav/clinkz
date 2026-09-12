@@ -69,6 +69,7 @@ from clinkz.engagement.auth_state import (
     AuthMechanism,
     SessionSentinel,
     assert_authenticated,
+    bearer_header,
     detect_auth_mechanism,
 )
 from clinkz.engagement.gate import EngagementAbortedError, open_engagement
@@ -3072,7 +3073,7 @@ class OrchestratorAgent:
             f"{base_url}/index.php",
             login_url,
         ]
-        headers = {"Authorization": f"Bearer {result.bearer_token}"} if result.bearer_token else {}
+        headers = bearer_header(result.bearer_token)
         assertion = await assert_authenticated(
             probe,
             candidates,
@@ -3145,7 +3146,7 @@ class OrchestratorAgent:
         # cookie-flow concern; JWTs outlive a single engagement).
         if bearer:
             self._logger.info("Bearer session active for '%s'", authenticated_as)
-            return cookies, authenticated_as, {"Authorization": f"Bearer {bearer}"}
+            return cookies, authenticated_as, bearer_header(bearer)
 
         # Verify the cookie session
         from clinkz.tools.auth import WebAuthenticator
@@ -3187,11 +3188,7 @@ class OrchestratorAgent:
                         agent="orchestrator",
                         bearer_token=result.bearer_token,
                     )
-                auth_headers = (
-                    {"Authorization": f"Bearer {result.bearer_token}"}
-                    if result.bearer_token
-                    else {}
-                )
+                auth_headers = bearer_header(result.bearer_token)
                 return result.session_cookies, matched_cred.username, auth_headers
 
         self._logger.warning("Re-authentication failed — proceeding without session")
@@ -3461,7 +3458,7 @@ class OrchestratorAgent:
                 ", ".join(self._proven_login["fields"]),
             )
 
-        headers = {"Authorization": f"Bearer {result.bearer_token}"} if result.bearer_token else {}
+        headers = bearer_header(result.bearer_token)
         # Session material is HELD from here, whether or not the assertion below
         # goes on to prove it. The two are separate facts and the report needs
         # both: a held-but-unproven session is the case that must reconcile
@@ -3658,7 +3655,10 @@ class OrchestratorAgent:
             "established": True,
             "username": cred.username,
             "cookies": dispatcher.jar or loop.session_cookies,
-            "headers": {},
+            # The bearer half. A JSON login route seats its session in a header
+            # and sets no cookie, so a hardcoded ``{}`` here would install an
+            # empty session for a role the assertion had just PROVEN.
+            "headers": loop.session_headers,
             "login_url": login_url,
             "posted_to": next(
                 (a.proposal.url for a in reversed(transcript.attempts) if a.established),
@@ -3966,7 +3966,7 @@ class OrchestratorAgent:
             self._session_sentinel.clear(reauthenticated=False)
             return
 
-        headers = {"Authorization": f"Bearer {result.bearer_token}"} if result.bearer_token else {}
+        headers = bearer_header(result.bearer_token)
         self._role_sessions.setdefault(cred.role, {}).update(
             {"cookies": result.session_cookies, "headers": headers, "username": cred.username}
         )

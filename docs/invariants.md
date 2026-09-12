@@ -2471,3 +2471,124 @@ operative bound rather than the backstop, and the two bounds that are actually
 reasoned about — the credential reserve and the read ceiling — never got to bind.
 It stopped both cal.diy and Ghost exactly one move short of the read that would
 have settled the open question.
+
+## 103 — session material has two carriers, and a guard's domain has to be over the call
+
+Two defects, both left open at the end of Stage B and both the same shape: the
+engine held the right fact and reported a different one.
+
+### The token never reached the oracle
+
+`DispatchResponse.credential_session_material` counts a `Set-Cookie` on this
+response **or** a token in its body — deliberately, because an API login returns
+the second and never the first. The loop then ran:
+
+```python
+assertion = await self._assert_session(dict(response.cookies), {})
+```
+
+On a JSON+bearer application the jar is empty as well, so `assert_authenticated`
+received nothing and answered *"No session material was supplied — there is
+nothing to assert. Authentication did not produce cookies or a bearer token"* —
+about a response that had just returned a token. Latent only because cal.diy is a
+cookie app and DVWA / Juice Shop / Meridian never engage this layer.
+
+A response knows which carrier its own session uses, so it is the response that
+says: `session_headers()` is the header half of the same question, and the loop
+presents both. `AuthAgentLoop.session_headers` carries it out to the
+orchestrator, whose role-session record hardcoded `"headers": {}` too — so a
+bearer session the assertion had **proven** was seated empty.
+
+Proven live on umami (engagement `e5d6901e`, 2026-09-10), the one target where
+the deterministic path abstains *and* the sink is a bearer route. Turn 1 proposed
+`POST /api/auth/login`, got `HTTP 200 … set no cookie`, and the assertion
+discriminated `200` against an anonymous `401` at `/api/me`. Both facts are only
+simultaneously true if the `Authorization` header reached the oracle.
+
+A test caught a second thing on the way: the token was landing verbatim in
+`AuthAttempt.body_excerpt`, which is written to disk. Cookie VALUES are held as
+instance state for exactly that reason and the token had no such rule. It is
+masked at the site that read it out by name — leaving `<token REDACTED>` — rather
+than left to shape matching, which would remove a JWT-shaped value and keep an
+opaque one.
+
+### Three failures wearing one sentence
+
+`_propose_destinations` returned a bare `None` for an unreachable model, a model
+cut off at its output ceiling, and a model that answered something unusable. The
+umami honesty run logged `OUTPUT BUDGET EXHAUSTED … 16000/16000 … CUT OFF` and
+the transcript said the model *returned nothing this engine could parse into a
+request shape*. Only one of the three is a statement about the target; the fix
+for the truncation is a larger ceiling, and no amount of prompt work addresses it.
+
+A truncation is now reported **only where the provider declared one** —
+`stop_reason`, never inferred from a short answer. Reading it exposed a smaller
+gap: `LLMClient` declares `last_call_stats` and `ResilientLLMClient` never
+populated it, so the one seam that knows which provider served a call folded its
+numbers into the run totals and published nothing, and every agent held a client
+whose declared field was permanently `None`.
+
+### Why invariant 98's guard did not see any of this
+
+The question worth more than the three fixes. Invariant 98's domain is every
+function that tests a marker **we** chose against something body-shaped, and it
+missed `HTTPClientTool._observe_credential` — the site that decides whether every
+credential POST in the engine is controlled.
+
+Not by accident. That function is not a marker oracle: it reads no marker (it
+parses an envelope and forwards `body=` two hops), and it returns `None`, so it
+fails the verdict-shaped filter too. **Excluded twice, correctly, on the guard's
+own terms.**
+
+The defect is the terms. The domain is over the ORACLE; the property wanted is a
+property of the CALL. `classify_lockout` is classified `HAS_CONTROL` because it
+*takes* a `control_body` — declared `control_body: str = ""`, i.e. "discard
+nothing", i.e. the pre-fix behaviour. Same permissive default at every hop. So:
+
+> **A control that is an optional parameter with a permissive default turns a
+> guard about the callee into an unguarded property of every call site.** An
+> oracle marked HAS_CONTROL is only as controlled as its least careful caller,
+> and no domain computed over oracle bodies can see a caller.
+
+It stayed invisible while the auth path had one consumer, because then *the
+oracle takes a control* and *every call passes one* were the same sentence.
+
+Measured across all three guards on 2026-09-09, by computing each domain and
+splitting the members by module:
+
+| guard | domain | deterministic auth | adaptive auth |
+|---|---|---|---|
+| 96 credential-sender | 44 | 14 | **0** |
+| 98 marker-oracle control | 36 | 1 | **0** |
+| 97 scope port-binding | 29 | 2 | **0** |
+
+Each had its own reason, and none of them was that the code was wrong:
+
+* **96** matches identifiers against `password|passwd|pwd`. The loop calls its
+  secret `secret`, and the one literal `"password"` on the path is
+  `AuthProposal.secret_field: str = "password"` — a **class-body annotation**,
+  while the walk visits only `FunctionDef`. Invisible twice over.
+* **97** finds functions that CALL a containment primitive. The adaptive path
+  hands one over as a value (`in_scope=self._scope.contains`): the delegator
+  calls nothing, and the receiver calls a local parameter name.
+* **98** as above.
+
+All three properties held anyway — via `DECLARED_ARMING_SITES`, via the
+dispatcher arming `credential_control_body`, via the gate calling the primitive
+it was given. By construction, not by guard, and "it happens to be right" is what
+a guard exists to replace.
+
+Each domain now gains a computed source that is about the CALL: a call site
+supplying (or arming) a control body; a function receiving or passing a secret,
+or naming an account to the budget; a function delegating or receiving a
+containment primitive. The classifications are declared with reasons as before,
+and each guard carries a test pinning that the adaptive path is inside it — every
+one of which was observed failing when the property was removed.
+
+**The boundary is stated rather than implied.** A name-shaped domain sees a
+secret spelled in the engine's own vocabulary and nothing else; a sender that
+invents a word (`passphrase`) enters only if it also names an account, which is
+exactly what an ungoverned sender would not do. The remedy when one appears is to
+add the word to `credential_shapes.CREDENTIAL_HEADER_KEYS`, where it earns
+redaction as well as this guard's attention — not to widen a regex in a test,
+which would protect the value in one place.

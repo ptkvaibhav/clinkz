@@ -143,6 +143,55 @@ remembering to edit a list inside the test, the domain is wrong.
 `declared - computed` catches the entry that outlived the thing it described.
 A guard with only the first half rots into documentation of a wish.
 
+**And the domain must be over the thing the property is a property OF.** Computing
+the domain is only half the law. The other half is choosing what to compute it
+over, and getting that wrong produces a guard that is green, computed, both-
+directions-asserted, and blind.
+
+> **A control that is an optional parameter with a permissive default turns a
+> guard about the callee into an unguarded property of every call site.** An
+> oracle marked "has a control" is only as controlled as its least careful
+> caller, and no domain computed over oracle bodies can see a caller.
+
+Measured 2026-09-09, on the guard built for this law. Invariant 98's domain is
+every function that tests a marker **we** chose against something body-shaped —
+the right domain for "which oracles read a marker", and it missed
+`HTTPClientTool._observe_credential`, the site that decides whether *every*
+credential POST in the engine is controlled. Not by accident: that function is
+not a marker oracle. It reads no marker — it parses an envelope and forwards
+`body=` to `classify_lockout` two hops away — and it returns `None`, so it fails
+the verdict-shaped filter too. **Excluded twice, correctly, on the guard's own
+terms.**
+
+The defect was the terms. `classify_lockout` was classified `HAS_CONTROL` because
+it *takes* a `control_body` parameter — declared `control_body: str = ""`, which
+means "discard nothing", which is the pre-fix behaviour. The same permissive
+default sat at every hop. It stayed invisible while the auth path had **one**
+consumer, because then *the oracle takes a control* and *every call passes one*
+were the same sentence. The adaptive-auth layer arrived as a second consumer and
+made them two sentences.
+
+The same measurement over the other two guards found the identical shape, each
+with its own reason a name-shaped or call-shaped domain could not see it:
+
+| guard | domain is over | why the adaptive path was invisible |
+|---|---|---|
+| 96 credential-sender | identifiers matching `password\|passwd\|pwd` | the loop calls its secret `secret`; the one literal `"password"` is a **class-body annotation** and the walk visits only `FunctionDef` |
+| 97 scope port-binding | functions that **call** a containment primitive | the primitive is **handed over as a value** (`in_scope=self._scope.contains`); the delegator calls nothing and the receiver calls a local name |
+| 98 marker-oracle control | functions that **read** a marker | the arming site reads none, returns `None`, and forwards a body two hops |
+
+All three properties held anyway — by construction, not by guard. "It happens to
+be right" is what a guard exists to replace.
+
+**So, before adding a consumer to a guarded seam, recompute every guard's domain
+against it.** The guard modules expose their domain functions; import each by
+path with `importlib.util.spec_from_file_location` and split the returned keys by
+module prefix. Ten minutes, and it is the only way to answer "which guards cover
+this new consumer" without guessing. When a guard comes back empty for the new
+path, the fix is to add a computed source that is about the **call** — a call
+site supplying the control, a function receiving the secret, a primitive passed
+as a value — never to widen the classification table by hand.
+
 **And an exemption is an allow-list entry with a reason, never a silent skip** —
 the same rule as `artifact_scan._SKIP_ALLOWED` and
 `test_mock_shape_audit._DELIBERATE_FICTIONS`. `len(reason.split()) < 6` is a
@@ -320,3 +369,94 @@ Examples:
 - `Apply clinkz-dev. diagnose the SSRF blind-deferred non-finding on Juice Shop. Smoke-gate only; full-run at batch end. Out of scope: wiring an OOB collaborator.`
 
 That inherits the full generality law, honesty discipline, validation standard, and git protocol from this file — nothing else needs restating.
+
+---
+
+## 6 · The default-control law
+
+Every law in §4 is retrospective. Each one names a guard that had already
+failed and says what its author should have computed instead. This one is not:
+it names a **shape in ordinary code** and says where to go looking before
+anything has gone wrong. It is the first rule here that predicts.
+
+> **A control supplied as an optional parameter with a permissive default makes
+> an oracle only as controlled as its least careful caller. The default IS the
+> absence.**
+
+`control_body: str = ""` does not mean "no control was needed". It means
+*discard nothing*, which is the pre-control behaviour, spelled as a signature
+that advertises a control. The same holds for `baseline_body: str = ""`,
+`benign_markers: frozenset = frozenset()`, `principal_values = frozenset()`,
+`verifying_body: str = ""`, `reachability: str = ""` — every one of them is a
+guarantee that evaporates when a caller says nothing.
+
+**Why it hides.** While a seam has ONE consumer, *the oracle takes a control*
+and *every call passes one* are the same sentence. Nothing distinguishes them,
+so nothing tests the difference. A second consumer arrives and they become two
+sentences — and the new one is written by whoever was reading the signature,
+which says the parameter is optional. Invariant 98 was measured this way on
+2026-09-09: `classify_lockout` was classified `HAS_CONTROL` because it *takes* a
+`control_body`, declared `control_body: str = ""`, at every hop of the auth
+path.
+
+### The domain — computed from signatures, no vocabulary
+
+The obvious domain is "every parameter whose name sounds like a control", and
+the pattern law in §4 already says why that is a guess: the author enumerates
+the spellings they can picture and the coverage is bounded by their
+imagination. `secret` is not `password`; `benign_markers` is a control and
+`decoy` is one too.
+
+The domain that needs no vocabulary is the **call sites' disagreement**:
+
+> A parameter with an absence-default is in the domain when its call sites
+> DISAGREE — at least one supplies a real value, at least one takes the
+> default. That split is the failure mode itself, and it is computable from an
+> AST walk over signatures plus one over calls, with nothing hand-written.
+
+Four tiers fall out, and each says something different:
+
+| tier | meaning | what to ask |
+|---|---|---|
+| **MIXED** | supplied somewhere, omitted somewhere | is the omitting caller weaker than the supplying one? |
+| **NEVER** | every call site omits it | the parameter is a **comment** (invariant 93's shape) |
+| **ALWAYS** | every call site supplies it | the default is unreachable — delete it, or make it required |
+| **UNCALLED** | no call site in the tree | dynamic dispatch, an alias, or dead |
+
+Measured on the tree at `b45b239`: **642** defaulted parameters over 160
+modules, **551** of them permissive — MIXED 172, NEVER 71, ALWAYS 215,
+UNCALLED 93. Measure the denominator before trusting any verdict; a sweep that
+reports a hit count against a total it never computed cannot tell "nothing to
+find" from "nothing findable".
+
+### The classification — declared, three questions
+
+Per member, and only the third is about the caller:
+
+1. **Does the default mean *discard nothing*, or does it mean *manufacture the
+   value here*?** `_run_control_arm(decoy=None)` mints a decoy when none is
+   given — the seam produces the control rather than skipping it, and that is
+   the shape to copy. `_make_finding(control_arm_parameter=None)` falls back to
+   `parameter`, which is the correct key in every case but the renaming one.
+   Neither is a defect. `control_body=""` and `verifying_body=""` are.
+2. **Can the omitting caller supply it at all?** This is the sharper question,
+   and it is where the audit stops being about call sites: if the PRODUCING
+   model carries no such field, the omission is structural and no call-site fix
+   reaches it. `XSSStoredMethodologyResult` has no response body, so stored XSS
+   cannot pass `verifying_body` however carefully it is written.
+3. **Is the omitting caller the weaker one?** A default that is the strict
+   direction costs coverage; one that is the permissive direction costs
+   honesty. Both are worth finding and they are not the same bug.
+
+### The audit's own blind spots — name them, do not paper over them
+
+A call graph matched on callee NAME cannot see: a method dispatched through
+`getattr` (every `_test_*`), an aliased import (`grade as grade_pollution`), a
+callable handed over as a value, or two methods that share a name on different
+classes. Each one is the guard-domain law one level up. State the blind spot
+next to the number; a domain that quietly excludes dynamic dispatch is the
+same defect this section exists to name.
+
+**And run it before adding a consumer, not after.** That is the whole claim to
+being predictive: the audit is cheap, it is one AST walk, and its MIXED tier is
+a list of the seams where the next consumer will be the least careful caller.

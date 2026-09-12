@@ -95,9 +95,9 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-from clinkz.engagement.auth_state import AuthAssertion
+from clinkz.engagement.auth_state import AuthAssertion, bearer_header
 from clinkz.engagement.secrets import redact_structure
-from clinkz.llm.base import LLMClient
+from clinkz.llm.base import EmptyResponseError, LLMClient
 from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
 
 logger = logging.getLogger(__name__)
@@ -145,6 +145,12 @@ ENCODABLE_CONTENT_TYPES: frozenset[str] = frozenset(
 #: diagnostic record, not a capture, and every byte of it goes through
 #: :func:`~clinkz.engagement.secrets.redact_structure` on the way to disk.
 BODY_EXCERPT = 400
+
+#: The provider's own word for "I ran out of output budget mid-answer". Named
+#: once, because the whole point of reading it is that a truncation and an
+#: unusable answer are different events, and a literal repeated at two sites is
+#: how one of them quietly stops being checked.
+_STOP_REASON_TRUNCATED = "max_tokens"
 
 #: Body keys that name a session token. Read only as part of the credential
 #: POST's own DELTA — a token in the response to the credentials is produced by
@@ -524,6 +530,51 @@ class DispatchResponse(BaseModel):
                 return value.strip()
         return ""
 
+    def session_headers(self) -> dict[str, str]:
+        """The headers this response's session material has to be presented in.
+
+        The other half of :attr:`credential_session_material`. That property
+        counts a body token as session material — correctly, because an API
+        login returns one instead of a cookie — and the loop then handed the
+        assertion the cookie jar and an empty header mapping. On a JSON+bearer
+        application the jar is empty too, so ``assert_authenticated`` was asked
+        to prove a session from nothing and answered "No session material was
+        supplied", which is a false statement about a response that had just
+        returned a token.
+
+        Carriage, not evidence: an empty mapping here means this response
+        produced no token, never that a session does not exist.
+        """
+        return bearer_header(self.bearer_token)
+
+    def redacted_body_excerpt(self, limit: int) -> str:
+        """A short excerpt of the body with any session token MASKED.
+
+        The token this response returned is session material, and the same rule
+        that keeps a cookie VALUE out of the transcript applies to it: the
+        transcript's whole purpose is to be written to disk. It reached the
+        excerpt anyway, because the excerpt was a slice of the raw body and
+        nothing in the slicing knew that one of those bytes was the session.
+
+        Masked here rather than left to
+        :func:`~clinkz.engagement.secrets.redact_structure`, which removes what
+        a secret IS and what it LOOKS LIKE — a JWT-shaped value would go, and an
+        opaque one an application happens to issue would not. This is the one
+        place that knows the value is a token because it is the place that read
+        it out by name.
+
+        Args:
+            limit: How many characters of the excerpt to keep.
+
+        Returns:
+            The excerpt, token values replaced, truncated to *limit*.
+        """
+        body = self.body or ""
+        for name, value in self.json_values().items():
+            if name.lower() in _TOKEN_KEYS and value.strip():
+                body = body.replace(value, f"<{name} REDACTED>")
+        return body[:limit]
+
     def json_keys(self) -> list[str]:
         """Top-level keys of the body, when it is a JSON object.
 
@@ -581,6 +632,15 @@ class AuthAttempt(BaseModel):
         dispatched: Whether a request actually left the engine.
         status: Its status code.
         set_cookie_names: Cookie names the response set.
+        bearer_token_returned: Whether this response's body carried a session
+            token. The token itself never appears here — the flag does, because
+            a transcript that shows a credential POST answering ``200`` with no
+            ``Set-Cookie`` reads as "produced nothing" on exactly the
+            applications where it produced everything.
+        session_header_names: NAMES of the headers the session was presented
+            in, when the assertion ran. ``["Authorization"]`` for a bearer
+            session, empty for a cookie one. Names, like every other field
+            here; the value is the session.
         response_content_type: What the response declared itself as.
         location: Its ``Location`` header, when it redirected.
         sent_field_names: The field NAMES this credential POST carried, sorted.
@@ -602,6 +662,8 @@ class AuthAttempt(BaseModel):
     dispatched: bool = False
     status: int = 0
     set_cookie_names: list[str] = Field(default_factory=list)
+    bearer_token_returned: bool = False
+    session_header_names: list[str] = Field(default_factory=list)
     sent_field_names: list[str] = Field(default_factory=list)
     response_content_type: str = ""
     location: str = ""
@@ -1088,6 +1150,10 @@ class AuthAgentLoop:
         # because a cookie VALUE must not live in a structure whose whole
         # purpose is to be written to disk.
         self._session_cookies: dict[str, str] = {}
+        #: The headers the proven session has to be presented in — the bearer
+        #: case. Same reason as the cookies above: a token is session material
+        #: and must not be written to a structure that reaches disk.
+        self._session_headers: dict[str, str] = {}
         self._assertion: AuthAssertion | None = None
 
     async def run(
@@ -1143,7 +1209,9 @@ class AuthAgentLoop:
         posts_used = 0
 
         for turn in range(1, self._max_turns + 1):
-            proposal = await self._propose_destinations(observation, history, turn)
+            proposal, no_proposal_reason = await self._propose_destinations(
+                observation, history, turn
+            )
             if proposal is None:
                 if transcript.attempts:
                     # The round produced nothing, and earlier rounds produced
@@ -1154,14 +1222,12 @@ class AuthAgentLoop:
                     transcript.outcome = AuthAgentOutcome.ABSTAINED
                     transcript.outcome_reason = (
                         f"{_abstention_reason(transcript)}. The loop then stopped early: "
-                        "a proposal round returned nothing this engine could parse into a "
-                        "request shape"
+                        f"{no_proposal_reason}"
                     )
                 else:
                     transcript.outcome = AuthAgentOutcome.NOT_ATTEMPTED
                     transcript.outcome_reason = (
-                        "no proposal was obtained — the model was unreachable or returned "
-                        "nothing this engine could parse into a request shape. Nothing was "
+                        f"no proposal was obtained — {no_proposal_reason}. Nothing was "
                         "sent and nothing was concluded about the credentials"
                     )
                 return transcript
@@ -1227,9 +1293,10 @@ class AuthAgentLoop:
             attempt.dispatched = True
             attempt.status = response.status
             attempt.set_cookie_names = list(response.set_cookie_names)
+            attempt.bearer_token_returned = bool(response.bearer_token)
             attempt.response_content_type = response.content_type
             attempt.location = response.location
-            attempt.body_excerpt = (response.body or "")[:BODY_EXCERPT]
+            attempt.body_excerpt = response.redacted_body_excerpt(BODY_EXCERPT)
             attempt.taught = _teach(proposal, response)
             history.append(f"Turn {turn}: {proposal.method} {proposal.url} — {attempt.taught}")
 
@@ -1255,7 +1322,13 @@ class AuthAgentLoop:
                 and response.credential_session_material
             ):
                 attempt.assertion_ran = True
-                assertion = await self._assert_session(dict(response.cookies), {})
+                # BOTH carriers. A cookie session presents cookies, an API
+                # session presents an Authorization header, and which one this
+                # application uses is the response's to say — not this loop's,
+                # and certainly not a hardcoded ``{}``.
+                session_headers = response.session_headers()
+                attempt.session_header_names = sorted(session_headers)
+                assertion = await self._assert_session(dict(response.cookies), session_headers)
                 attempt.established = assertion.established
                 attempt.assertion_discriminator = assertion.discriminator
                 transcript.attempts.append(attempt)
@@ -1269,6 +1342,7 @@ class AuthAgentLoop:
                         f"control {assertion.anonymous_status})"
                     )
                     self._session_cookies = dict(response.cookies)
+                    self._session_headers = dict(session_headers)
                     self._assertion = assertion
                     return transcript
                 history.append(
@@ -1289,29 +1363,103 @@ class AuthAgentLoop:
         return dict(self._session_cookies)
 
     @property
+    def session_headers(self) -> dict[str, str]:
+        """The headers that session has to be presented in, or ``{}``.
+
+        Empty is the cookie case, not the absent case: :attr:`session_cookies`
+        answers that half.
+        """
+        return dict(self._session_headers)
+
+    @property
     def assertion(self) -> AuthAssertion | None:
         """The assertion that proved it, or ``None``."""
         return self._assertion
 
     async def _propose_destinations(
         self, observation: AuthObservation, history: list[str], turn: int
-    ) -> AuthProposal | None:
-        """Ask the model for the next proposal. Returns ``None`` on any failure.
+    ) -> tuple[AuthProposal | None, str]:
+        """Ask the model for the next proposal, and say why when there is none.
 
         The prompt carries the briefing and the history and nothing else. It
         does not carry the credential, and it does not carry a list of routes to
         pick from — a prompt naming the answer is the same defect as a
         benchmark-tuned list, and this module's whole claim is that the model
         supplies framework knowledge the engine does not have.
+
+        **Three failures, three sentences.** This returned a bare ``None`` and
+        the loop rendered every one of them as "returned nothing this engine
+        could parse into a request shape". On the umami honesty control that was
+        false in the way that matters: the provider logged ``OUTPUT BUDGET
+        EXHAUSTED … 16000/16000 … CUT OFF``, so the engine held the right fact
+        one layer down and reported the wrong one — the same misdirection class
+        as an assertion telling an operator no session material was supplied
+        when a token was. An unreachable model, a model cut off mid-answer and a
+        model that answered something unusable are three different problems with
+        three different fixes, and only the second one is ours.
+
+        Returns:
+            ``(proposal, "")`` when one was parsed, or ``(None, reason)``. The
+            reason is a sentence fragment the transcript composes into its
+            outcome, and it never speculates: a truncation is reported only
+            where the provider declared one.
         """
         prompt = _build_prompt(self._system_prompt, observation, history, turn)
         try:
             with llm_call_purpose(LLMCallPurpose.PLANNING, site="auth_agent._propose_destinations"):
                 answer = await self._llm.generate_text(prompt)
+        except EmptyResponseError as exc:
+            # The provider answered and the answer carried no text. Its own
+            # stop_reason says whether the budget ended it, and that is the one
+            # case where "nothing parseable" would name the wrong absence.
+            self._logger.warning("Auth proposal round %d returned no text: %s", turn, exc)
+            if exc.stop_reason == _STOP_REASON_TRUNCATED:
+                return None, (
+                    "the model's answer was CUT OFF by its own output budget "
+                    f"(stop_reason={exc.stop_reason}) before any text was produced. "
+                    "Nothing was parsed because nothing arrived, which is a bound on "
+                    "this engine's request and not a statement about the application"
+                )
+            return None, (
+                "the model returned an empty answer "
+                f"(stop_reason={exc.stop_reason or 'not reported'})"
+            )
         except Exception as exc:  # noqa: BLE001 — an abstention, never an abort
             self._logger.warning("Auth proposal round %d failed: %s", turn, exc)
-            return None
-        return parse_proposal(answer)
+            return None, (
+                f"the model was unreachable — the call raised {type(exc).__name__}: {exc}"
+            )
+
+        proposal = parse_proposal(answer)
+        if proposal is not None:
+            return proposal, ""
+
+        # Text came back and did not parse. Whether it was CUT OFF is a fact the
+        # provider reported, read by NAME off the field the base client declares
+        # rather than through a getattr default that would turn a rename into a
+        # permanently silent truncation (invariant 82).
+        stats = self._llm.last_call_stats
+        if stats is not None and stats.stop_reason == _STOP_REASON_TRUNCATED:
+            self._logger.warning(
+                "Auth proposal round %d was TRUNCATED: %s produced %d token(s) against a "
+                "ceiling of %d and was cut off",
+                turn,
+                stats.model,
+                stats.output_tokens,
+                stats.max_output_tokens,
+            )
+            return None, (
+                "the model's answer was CUT OFF by its own output budget "
+                f"({stats.output_tokens} token(s) against a ceiling of "
+                f"{stats.max_output_tokens}, stop_reason={stats.stop_reason}), so the "
+                "partial text held no complete request shape. The answer was truncated, "
+                "not empty, and this is a bound on this engine's request rather than a "
+                "statement about the application"
+            )
+        return None, (
+            "the model returned nothing this engine could parse into a request shape "
+            f"({len(answer)} character(s) of text, no complete proposal in it)"
+        )
 
 
 def _build_prompt(

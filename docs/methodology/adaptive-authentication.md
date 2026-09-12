@@ -606,3 +606,138 @@ produce the **same** fingerprint and the **same** "no destination declared" fact
 and the briefing still tells them apart — on the CSRF observation, which is the
 only one that decides. If the briefing flattened the two, a correct answer on
 either would be luck, and no prompt could fix it.
+
+## The bearer carrier — and the seat that proves it
+
+The Stage-B honesty control left two defects open. Both were the same class of
+error the layer was built to eliminate: **the engine held the right fact and
+reported a different one.**
+
+### The token never reached the oracle
+
+`DispatchResponse.credential_session_material` counts two things, deliberately:
+a `Set-Cookie` on this response, or a token in its body. An API login returns the
+second and never the first. And then:
+
+```python
+assertion = await self._assert_session(dict(response.cookies), {})
+```
+
+`headers` hardcoded `{}`. On a JSON+bearer application the jar is empty too, so
+`assert_authenticated` was handed nothing at all and answered:
+
+> No session material was supplied — there is nothing to assert. Authentication
+> did not produce cookies or a bearer token.
+
+which is **false about a response that had just returned a token**. Latent only
+because cal.diy is a cookie app and DVWA / Juice Shop / Meridian never engage
+this layer at all.
+
+The fix is one question asked in one place. `DispatchResponse.session_headers()`
+is the header half of `credential_session_material` — the response says which
+carrier its own session uses, and the loop presents both:
+
+```python
+session_headers = response.session_headers()          # {} for a cookie session
+assertion = await self._assert_session(dict(response.cookies), session_headers)
+```
+
+`AuthAgentLoop.session_headers` then carries it out to the orchestrator, which
+installs it on the role session beside the cookies. That field was `{}` there
+too, so a bearer session the assertion had **proven** was seated with nothing in
+it.
+
+`{"Authorization": f"Bearer {token}"}` was written out at four sites on the
+deterministic path and at none on the adaptive one, and the omission is not a
+coincidence: an idiom that lives at its call sites is an idiom a new call site
+has to remember. It is now
+:func:`~clinkz.engagement.auth_state.bearer_header`, one spelling, and an empty
+token yields no header rather than an `Authorization: Bearer` with nothing after
+it.
+
+**A test found a second thing on the way.** The token was reaching
+`AuthAttempt.body_excerpt` verbatim — a slice of the raw body, and nothing in
+slicing knows that some of those bytes are the session. The transcript's whole
+purpose is to be written to disk, which is why cookie VALUES are held as
+instance state and never as transcript fields; the token had no such rule.
+`DispatchResponse.redacted_body_excerpt` masks it at the one place that knows the
+value is a token *because it is the place that read it out by name* — the key
+survives as `<token REDACTED>`, the value does not. Left to
+`redact_structure`, a JWT-shaped value would have gone and an opaque one an
+application happens to issue would not.
+
+### The proof: umami, seated adaptively, on a header
+
+The unit tests pin the carriage. They cannot prove the layer engages, so the
+claim is made on a live target where the **deterministic path abstains** — on a
+target it seats, the agent never runs and the fix is unobserved.
+
+umami is that target and it is the same container the honesty control uses:
+`POST /api/auth/login`, JSON in, `{"token": "..."}` out, **no `Set-Cookie` at
+all**. Cold it is not a test of anything — `/api/auth/login` is in
+`_API_LOGIN_ROUTES`, so the deterministic JSON arm wins with zero model calls.
+Declaring the login PAGE (`login_url: http://umami:3000/login`) is what puts the
+question to the model, exactly as Meridian needs.
+
+Engagement `e5d6901e`, 2026-09-10:
+
+```
+The deterministic login path did not seat a session for role 'admin'.
+Engaging the adaptive layer with 3 credential attempt(s) remaining.
+
+Turn 1: proposed POST http://umami:3000/api/auth/login as application/json
+        carrying password, username — HTTP 200; content-type application/json;
+        set no cookie
+
+ADAPTIVE AUTH SEATED THE SESSION for role 'admin' — the credential POST
+proposed for turn 1 produced session material, and assert_authenticated PROVED
+it via status_class at http://umami:3000/api/me (authenticated 200, anonymous
+control 401)
+```
+
+Read the middle line and the last one together: the response **set no cookie**,
+and the assertion nonetheless discriminated 200 against an anonymous 401. There
+is exactly one way both are true, and it is that the `Authorization` header
+reached the oracle. Before this change the same exchange produced "No session
+material was supplied".
+
+One turn, one credential POST, zero reads — against four rounds and a clean
+abstention on the honesty run. The difference is not the fix; it is the model.
+What the fix decides is what happens to the answer once it is right.
+
+The seat also survives the handoff, which is the half the orchestrator owns:
+
+```
+ScanAgent received auth headers: ['Authorization']
+```
+
+### A truncated answer is not an unparseable one
+
+The second defect: `_propose_destinations` returned a bare `None` for three
+different failures, and the loop rendered all three as *the model returned
+nothing this engine could parse into a request shape*. On the honesty run that
+was false in the way that matters — the provider had logged `OUTPUT BUDGET
+EXHAUSTED … 16000/16000 … CUT OFF`.
+
+It now returns `(proposal, reason)` and the three failures get three sentences:
+
+| what happened | what the transcript says |
+|---|---|
+| the call raised | *the model was unreachable — the call raised `TimeoutError: …`* |
+| answered, no text, `stop_reason=max_tokens` | *CUT OFF by its own output budget before any text was produced* |
+| answered, text, `stop_reason=max_tokens` | *CUT OFF … N tokens against a ceiling of M*, so the partial text held no complete request shape |
+| answered, text, finished | *nothing this engine could parse into a request shape (N characters of text)* |
+
+A truncation is reported **only where the provider declared one** — never
+inferred from a short answer. The declaration is read by NAME off
+`LLMClient.last_call_stats`, which the base class already declared and
+`ResilientLLMClient` was not populating: the one seam that knows which provider
+served a call folded its stats into the run totals and never published them, so
+a caller holding the resilient client (which is every agent) could not read the
+field its own type declares. It is cleared before dispatch, so a caller reading
+it after a failure sees *this call reported nothing* rather than the previous
+call's numbers.
+
+Each case names a cause somebody can act on, and only one of them is a statement
+about the target — the other three are statements about this engine, which is
+what makes reporting the difference worth the code.

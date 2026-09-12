@@ -361,6 +361,9 @@ class ResilientLLMClient(LLMClient):
         writer = get_active_trace_writer()
         stopwatch = Stopwatch()
         flat = flatten_prompt(prompt)
+        # Cleared before dispatch, so a caller reading it after a failure sees
+        # "this call reported nothing" rather than the previous call's numbers.
+        self.last_call_stats = None
         try:
             response = await self._dispatch("generate_text", prompt, budget=budget)
         except Exception as exc:
@@ -411,6 +414,14 @@ class ResilientLLMClient(LLMClient):
         stats = getattr(client, "last_call_stats", None)
         if stats is None:
             return None
+        # Published on this client too, not only folded into the totals. The
+        # base class declares ``last_call_stats`` as the contract for "what the
+        # provider reported about the call that just returned", and this seam is
+        # the only one that knows which provider served it — so a caller holding
+        # the resilient client (which is every agent) could not read the field
+        # its own type declares. The adaptive-auth loop needs exactly one thing
+        # out of it: whether the answer it could not parse was CUT OFF.
+        self.last_call_stats = stats
         self.run_totals.add(stats)
         self._record_cache_economics(stats)
         # Fold into the engagement's spend ledger here, for the same reason the

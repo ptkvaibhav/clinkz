@@ -499,7 +499,10 @@ under the repo root; the header table at the top of this file links them all.
 67. **A guard's DOMAIN is computed from the same source of truth as the thing it
     guards; only the CLASSIFICATION is hand-maintained.** Both directions are
     asserted; an exemption is an allow-list entry with a substantive reason, never
-    a silent skip. **Detail →
+    a silent skip. **And the domain is over the CALL whenever the property is a
+    property of the call** — a control that is an optional parameter with a
+    permissive default makes an oracle only as controlled as its least careful
+    caller, and no domain computed over callee bodies can see a caller. **Detail →
     `.claude/skills/clinkz-dev/SKILL.md`.**
 68. **Two confirmed findings do not imply the chain between them, and neither does
     a successful second request.** A carriage is proven against a decoy the target
@@ -676,6 +679,15 @@ under the repo root; the header table at the top of this file links them all.
     what was ABSENT. **The disclosure renders on a clean run too**, naming which
     layer seated the session. **Detail →
     `docs/methodology/adaptive-authentication.md`.**
+
+103. **Session material has TWO carriers, and the response declares which** — a
+    `Set-Cookie` or a body token (`DispatchResponse.session_headers`). A carrier
+    the loop does not present is a session the oracle is told does not exist, and
+    a token is redacted at the site that read it out by NAME, never left to shape
+    matching. **A failure to obtain a model answer is three failures** —
+    unreachable, CUT OFF (`stop_reason` the provider DECLARED, never inferred),
+    and answered-but-unusable; only the last is a statement about the target.
+    **Detail → `docs/methodology/adaptive-authentication.md`.**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

@@ -36,6 +36,7 @@ from clinkz.engagement.auth_agent import (
     validate_proposal,
 )
 from clinkz.engagement.auth_state import AuthAssertion
+from clinkz.llm.base import CallStats, EmptyResponseError
 from clinkz.tools.auth import AuthResult, LoginVerdict
 
 # ---------------------------------------------------------------------------
@@ -44,11 +45,19 @@ from clinkz.tools.auth import AuthResult, LoginVerdict
 
 
 class FakeLLM:
-    """Answers a scripted sequence of proposals and records every prompt it saw."""
+    """Answers a scripted sequence of proposals and records every prompt it saw.
 
-    def __init__(self, answers: list[str]) -> None:
+    ``last_call_stats`` is part of the mock because it is part of the REAL
+    contract: :class:`~clinkz.llm.base.LLMClient` declares it, and a double that
+    omits it is a double that agrees with the consumer's assumptions rather than
+    with the producer's model (invariant 82). ``None`` is the honest default —
+    "this call reported nothing" — and a test that wants a truncation sets it.
+    """
+
+    def __init__(self, answers: list[str], stats: CallStats | None = None) -> None:
         self.answers = list(answers)
         self.prompts: list[str] = []
+        self.last_call_stats: CallStats | None = stats
 
     async def generate_text(self, prompt, **_kwargs) -> str:  # noqa: ANN001
         self.prompts.append(str(prompt))
@@ -979,3 +988,284 @@ class TestARequestIsNotAskedTwice:
         )
         assert transcript.credential_posts_dispatched == 2
         assert "1 of 2 credential POST(s) produced session material" in (transcript.outcome_reason)
+
+
+# ---------------------------------------------------------------------------
+# The bearer carrier
+# ---------------------------------------------------------------------------
+
+
+class RecordingAsserter:
+    """An asserter that answers on what it was HANDED, and remembers it.
+
+    ``asserter()`` above returns a fixed verdict whatever it receives, which is
+    right for every test about the loop's ordering and useless for a test about
+    what the loop passes. This one establishes a session only when the material
+    it was given could actually prove one — which is the property the bearer fix
+    is about, and the property a fixed-verdict double cannot fail.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[dict[str, str], dict[str, str]]] = []
+
+    async def __call__(self, cookies: dict[str, str], headers: dict[str, str]) -> AuthAssertion:
+        self.calls.append((dict(cookies), dict(headers)))
+        if not cookies and not headers:
+            return AuthAssertion(
+                established=False,
+                why_unproven=(
+                    "No session material was supplied — there is nothing to assert. "
+                    "Authentication did not produce cookies or a bearer token."
+                ),
+            )
+        return AuthAssertion(
+            established=True,
+            url="http://t.test/api/me",
+            discriminator="status_class",
+            authenticated_status=200,
+            anonymous_status=401,
+        )
+
+
+def bearer_loop(llm, dispatcher, recorder) -> AuthAgentLoop:  # noqa: ANN001
+    return AuthAgentLoop(
+        llm=llm,
+        dispatcher=dispatcher,
+        asserter=recorder,
+        in_scope=lambda url: url.startswith("http://t.test"),
+        system_prompt="SYSTEM",
+    )
+
+
+@pytest.mark.asyncio
+class TestABearerTokenReachesTheOracle:
+    """A token IS session material, so the oracle has to be given it.
+
+    ``credential_session_material`` counts a body token — deliberately, because
+    an API login returns one instead of a cookie — and the loop then called
+    ``self._assert_session(dict(response.cookies), {})``. On a JSON+bearer
+    application the jar is empty too, so the oracle was handed nothing and
+    returned "No session material was supplied", which is false about a response
+    that had just returned a token. It is the same misdirection class as an
+    abstention naming the wrong absence: the engine held the fact and reported
+    its opposite.
+    """
+
+    async def test_the_token_is_presented_as_an_authorization_header(self) -> None:
+        llm = FakeLLM([proposal_json(url="http://t.test/api/auth/login")])
+        dispatcher = FakeDispatcher(
+            {
+                "http://t.test/api/auth/login": DispatchResponse(
+                    status=200,
+                    headers={"Content-Type": "application/json"},
+                    body=json.dumps({"token": "eyJhbGciOi.PAYLOAD.SIG"}),
+                )
+            }
+        )
+        recorder = RecordingAsserter()
+        transcript = await bearer_loop(llm, dispatcher, recorder).run(
+            OBSERVATION,
+            role="admin",
+            username="u@t.test",
+            secret="s3cret",
+            account="u@t.test",
+            credential_budget_remaining=4,
+        )
+        assert transcript.outcome is AuthAgentOutcome.AUTHENTICATED
+        cookies, headers = recorder.calls[-1]
+        assert cookies == {}
+        assert headers == {"Authorization": "Bearer eyJhbGciOi.PAYLOAD.SIG"}
+
+    async def test_the_seated_session_carries_the_header_to_the_orchestrator(self) -> None:
+        """``session_cookies`` alone cannot describe a bearer session."""
+        llm = FakeLLM([proposal_json(url="http://t.test/api/auth/login")])
+        dispatcher = FakeDispatcher(
+            {
+                "http://t.test/api/auth/login": DispatchResponse(
+                    status=200,
+                    headers={"Content-Type": "application/json"},
+                    body=json.dumps({"access_token": "TOK"}),
+                )
+            }
+        )
+        loop_ = bearer_loop(llm, dispatcher, RecordingAsserter())
+        await loop_.run(
+            OBSERVATION,
+            role="admin",
+            username="u@t.test",
+            secret="s3cret",
+            account="u@t.test",
+            credential_budget_remaining=4,
+        )
+        assert loop_.session_cookies == {}
+        assert loop_.session_headers == {"Authorization": "Bearer TOK"}
+
+    async def test_a_cookie_session_still_presents_no_header(self) -> None:
+        """The fix must not invent an ``Authorization`` where there is no token."""
+        llm = FakeLLM([proposal_json(url="http://t.test/login")])
+        dispatcher = FakeDispatcher(
+            {
+                "http://t.test/login": DispatchResponse(
+                    status=302, set_cookie_names=["sid"], cookies={"sid": "abc"}
+                )
+            }
+        )
+        recorder = RecordingAsserter()
+        loop_ = bearer_loop(llm, dispatcher, recorder)
+        await loop_.run(
+            OBSERVATION,
+            role="admin",
+            username="u@t.test",
+            secret="s3cret",
+            account="u@t.test",
+            credential_budget_remaining=4,
+        )
+        cookies, headers = recorder.calls[-1]
+        assert cookies == {"sid": "abc"}
+        assert headers == {}
+        assert loop_.session_headers == {}
+
+    async def test_the_transcript_says_a_token_came_back_without_carrying_it(self) -> None:
+        """NAMES and flags, never the value — the same rule as every other field."""
+        llm = FakeLLM([proposal_json(url="http://t.test/api/auth/login")])
+        dispatcher = FakeDispatcher(
+            {
+                "http://t.test/api/auth/login": DispatchResponse(
+                    status=200,
+                    headers={"Content-Type": "application/json"},
+                    body=json.dumps({"token": "SUPERSECRETTOKEN"}),
+                )
+            }
+        )
+        transcript = await bearer_loop(llm, dispatcher, RecordingAsserter()).run(
+            OBSERVATION,
+            role="admin",
+            username="u@t.test",
+            secret="s3cret",
+            account="u@t.test",
+            credential_budget_remaining=4,
+        )
+        attempt = transcript.attempts[-1]
+        assert attempt.bearer_token_returned is True
+        assert attempt.session_header_names == ["Authorization"]
+        # The excerpt keeps the SHAPE and loses the session, which is the same
+        # split every other field in this module makes. The token reached the
+        # excerpt verbatim before this: a body slice cannot know that one of the
+        # bytes it copied is the session.
+        assert "SUPERSECRETTOKEN" not in transcript.model_dump_json()
+        assert "<token REDACTED>" in attempt.body_excerpt
+
+    async def test_bearer_header_is_empty_for_an_empty_token(self) -> None:
+        """A header with nothing after ``Bearer`` is worse than no header."""
+        from clinkz.engagement.auth_state import bearer_header
+
+        assert bearer_header("") == {}
+        assert bearer_header("   ") == {}
+        assert bearer_header(" tok ") == {"Authorization": "Bearer tok"}
+
+
+# ---------------------------------------------------------------------------
+# A truncated answer is not an unparseable one
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestATruncatedAnswerIsReportedAsOne:
+    """The engine held ``stop_reason=max_tokens`` and reported "nothing parseable".
+
+    Measured on the umami honesty control: the provider logged ``OUTPUT BUDGET
+    EXHAUSTED ... 16000/16000 ... CUT OFF`` and the transcript told the operator
+    the model "returned nothing this engine could parse into a request shape".
+    Both sentences describe the same round and only one of them names a cause
+    the operator can act on.
+    """
+
+    async def test_a_cut_off_answer_says_it_was_cut_off(self) -> None:
+        llm = FakeLLM(
+            ['{ "kind": "credential_post", "url": "http://t.test/api/auth/lo'],
+            stats=CallStats(
+                provider="anthropic",
+                model="claude-sonnet-5",
+                output_tokens=16000,
+                max_output_tokens=16000,
+                stop_reason="max_tokens",
+            ),
+        )
+        transcript = await loop(llm, FakeDispatcher({}), established=False).run(
+            OBSERVATION,
+            role="admin",
+            username="u@t.test",
+            secret="s3cret",
+            account="u@t.test",
+            credential_budget_remaining=4,
+        )
+        assert transcript.outcome is AuthAgentOutcome.NOT_ATTEMPTED
+        reason = transcript.outcome_reason
+        assert "CUT OFF" in reason
+        assert "16000" in reason
+        assert "stop_reason=max_tokens" in reason
+        assert "nothing this engine could parse" not in reason
+
+    async def test_an_answer_that_finished_and_did_not_parse_still_says_that(self) -> None:
+        """The other branch keeps its own sentence — and its own length."""
+        llm = FakeLLM(
+            ["I would suggest trying the login route."],
+            stats=CallStats(
+                provider="anthropic",
+                model="claude-sonnet-5",
+                output_tokens=9,
+                max_output_tokens=16000,
+                stop_reason="end_turn",
+            ),
+        )
+        transcript = await loop(llm, FakeDispatcher({}), established=False).run(
+            OBSERVATION,
+            role="admin",
+            username="u@t.test",
+            secret="s3cret",
+            account="u@t.test",
+            credential_budget_remaining=4,
+        )
+        reason = transcript.outcome_reason
+        assert "nothing this engine could parse into a request shape" in reason
+        assert "39 character(s)" in reason
+        assert "CUT OFF" not in reason
+
+    async def test_an_empty_answer_cut_off_before_any_text_says_so(self) -> None:
+        """A thinking model can spend the whole budget and emit no text at all."""
+
+        class RaisingLLM(FakeLLM):
+            async def generate_text(self, prompt, **_kwargs) -> str:  # noqa: ANN001
+                raise EmptyResponseError("no text blocks", stop_reason="max_tokens")
+
+        transcript = await loop(RaisingLLM([]), FakeDispatcher({}), established=False).run(
+            OBSERVATION,
+            role="admin",
+            username="u@t.test",
+            secret="s3cret",
+            account="u@t.test",
+            credential_budget_remaining=4,
+        )
+        reason = transcript.outcome_reason
+        assert "CUT OFF" in reason
+        assert "before any text was produced" in reason
+
+    async def test_an_unreachable_model_names_the_exception(self) -> None:
+        """Three failures, three sentences — and this one is not ours to fix."""
+
+        class DeadLLM(FakeLLM):
+            async def generate_text(self, prompt, **_kwargs) -> str:  # noqa: ANN001
+                raise TimeoutError("read timed out")
+
+        transcript = await loop(DeadLLM([]), FakeDispatcher({}), established=False).run(
+            OBSERVATION,
+            role="admin",
+            username="u@t.test",
+            secret="s3cret",
+            account="u@t.test",
+            credential_budget_remaining=4,
+        )
+        reason = transcript.outcome_reason
+        assert "unreachable" in reason
+        assert "TimeoutError" in reason
+        assert "CUT OFF" not in reason
