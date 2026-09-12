@@ -435,3 +435,50 @@ another class's control arm — which would mean seeding
 the "is this the same resource" question answered without guessing, and a wrong
 answer manufactures an intent the application never declared, which is the one
 thing this family is built not to do.
+
+---
+
+## R14 · A registered sweep password is substring-redacted out of URLs, payloads and oracle markers
+
+**Verified, and the KEY half of it is fixed; this entry is the VALUE half.**
+
+`OrchestratorAgent` registers each default-credential candidate for redaction
+before it is offered, so one that WORKS is not left in an artifact in plaintext.
+The catalogue includes `test`, `root`, `admin` and `password`, and
+`register_secret` accepts anything at least `_MIN_REDACTABLE_LEN = 4` characters.
+Registered secrets are replaced as **substrings, everywhere**.
+
+Measured on engagement `92c89d0d` (cal.diy, local mode, 1,466 invocations):
+
+| what it corrupted | example |
+|---|---|
+| a URL in the deliverable | `/auth/forgot-password` → `/auth/forgot-[REDACTED]` (25×) |
+| an oracle's own evidence marker | `root:x:0:0:` → `[REDACTED]:x:0:0:` (20×) |
+| a class name in the trace | `_test_javascript_attacks` → `_[REDACTED]_javascript_attacks` (20×) |
+| a payload | `;sleep 5` prefixed by `[REDACTED]` (10×) |
+
+**Already fixed, separately:** the same substring rule was applied to dict KEYS,
+which turned `test_start` into `[REDACTED]_start` and made
+`PentestReport.model_validate` reject the report's own dump for two missing
+required fields — **no report.json, no Markdown and no PDF on any run where the
+sweep fired.** A key is schema, not data
+(`engagement/secrets.py::_redact_key`, guarded by
+`tests/test_engagement/test_a_key_is_schema_not_data.py`). That is the half that
+was a total outage; it is closed.
+
+**Why the value half is NOT fixed here.** Both candidate fixes are safety
+decisions, not mechanical ones:
+
+* *Raise the bar for what may be substring-registered.* A length threshold is the
+  wrong instrument — `password` is eight characters and still a substring of
+  `forgot-password` and `password_field`. The right instrument is a vocabulary of
+  words too common to replace globally, which is a new vocabulary to own.
+* *Register the guess only when it WORKS.* Argued straight from the registration
+  site's own comment — "a default password is public until it WORKS" — and it
+  would remove the registration on every run where the sweep finds nothing, which
+  is nearly all of them. The cost is the window the comment names: the attempt's
+  own action-log body excerpt carries the candidate while it is being tried.
+
+A deliverable whose URLs read `/auth/forgot-[REDACTED]` is degraded but honest;
+one that is never written is not. The outage half was taken; the trade-off half
+belongs to a round that can weigh it.
