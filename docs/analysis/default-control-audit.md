@@ -261,11 +261,18 @@ CLAUDE.md 104; the incident is `docs/invariants.md` §104.
 
 One consequence worth naming: the DOM caller held neither parameter, so stating
 the absence makes the gate refuse there, and that call site raises on a refusal.
-It closes the unwitnessed DOM emission branch only where a synthesized payload
-exists for the gate to read. The branch is provably dead for a second reason —
-`_run_dom_xss_methodology` assigns `"likely"` unconditionally — and removing it
-outright is a separate change, kept separate because it is a deletion on an
-emission path and was not part of this audit's brief.
+That closed the unwitnessed DOM emission branch only where a synthesized payload
+existed for the gate to read.
+
+**The branch itself is now deleted**, in a separate commit, because it is a
+deletion on an emission path and was not part of this audit's brief. It was
+provably dead on three independent grounds: `DOMXSSMethodologyResult` defaults to
+`verification_strength="likely"` and `verified=False`;
+`_run_dom_xss_methodology` assigns `"likely"` unconditionally before its only
+other return; and the one writer of `"verified"` onto a DOM result is the P7
+promotion, which passes a witness. `witness` loses its default and the
+precondition is unconditional — it no longer waits for a synthesized payload to
+be present, which is the gap the gate refusal left.
 
 **F2, F4, F5 — open.** The order they want, when authorised:
 

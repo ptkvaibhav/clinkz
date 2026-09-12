@@ -278,22 +278,18 @@ class TestPhase6Emission:
             verification_strength="likely",
         )
         with pytest.raises(RuntimeError, match="without witnessed execution"):
-            agent._dom_xss_phase6_emit("http://example.com/page", None, result)
+            agent._dom_xss_phase6_emit("http://example.com/page", None, result, witness=None)
 
-    def test_phase6_gate_refuses_the_evidence_this_class_does_not_hold(self) -> None:
-        """An unwitnessed emission now dies at the gate, not on a default.
+    def test_phase6_refuses_a_verified_strength_carrying_no_witness(self) -> None:
+        """The half the shared confirmation gate used to decide, on defaults.
 
         ``DOMXSSMethodologyResult`` holds no response body and makes no literal-
-        landing measurement. The gate used to be handed neither and graded
-        anyway: ``verifying_body=""`` disabled the error-block condition
-        outright, and ``literal_landing_witnessed=False`` licensed two prose
-        vetoes about an effect nobody had measured. Whether this site crashed or
-        emitted a confirmed high severity was decided by two parameter defaults.
-
-        The absences are now stated, so the gate REFUSES — and this site already
-        treats a refusal as a caller bug. Note what this does not close: the gate
-        is only consulted when a synthesized payload exists. An unconditional
-        precondition is a separate change.
+        landing measurement, so the gate was reading ``verifying_body=""`` (which
+        disables the error-block condition entirely) and
+        ``literal_landing_witnessed=False`` (which licenses two prose vetoes
+        about an effect nobody measured) — and this site RAISED on the answer.
+        Whether it crashed or emitted a confirmed high was decided by two
+        parameter defaults. The precondition is the witness, and it says so.
         """
         agent = _make_agent()
         result = DOMXSSMethodologyResult(
@@ -314,9 +310,8 @@ class TestPhase6Emission:
             verified=True,
             verification_strength="verified",
         )
-        with pytest.raises(RuntimeError, match="confirmation gate rejects") as excinfo:
-            agent._dom_xss_phase6_emit("http://example.com/page", None, result)
-        assert "no verifying body" in str(excinfo.value)
+        with pytest.raises(RuntimeError, match="no.*P7 witness"):
+            agent._dom_xss_phase6_emit("http://example.com/page", None, result, witness=None)
 
     def test_canary_finding_includes_param(self) -> None:
         from clinkz.models.methodology import ReflectionContext, ReflectionPoint
