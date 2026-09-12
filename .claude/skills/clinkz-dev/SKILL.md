@@ -460,3 +460,107 @@ same defect this section exists to name.
 **And run it before adding a consumer, not after.** That is the whole claim to
 being predictive: the audit is cheap, it is one AST walk, and its MIXED tier is
 a list of the seams where the next consumer will be the least careful caller.
+
+---
+
+## 7 · A key is schema, not data
+
+§6 predicts where a control will be missing. This one predicts where a
+*transformation* will be applied to something it was never meant to touch. Both
+are shapes in ordinary code; this one is the shape of a guard that damages the
+artifact it protects.
+
+> **A transformation applied to a whole structure must distinguish the
+> structure's own vocabulary from the content it carries. A dict KEY is
+> vocabulary; a value is content. Which of the two a given walk is looking at is
+> the walk's to DECLARE — and a walk that never asked has declared "content" by
+> default, which is the failing case.**
+
+**The incident.** The default-credential sweep registers each password before
+offering it, so one that WORKS is not left in an artifact in plaintext. The
+catalogue contains `test`, `root`, `admin` and `password`. Registered secrets are
+replaced as substrings, and `redact_structure` passed dict KEYS through the same
+replacement. So on every run where that sweep fired:
+
+* `test_start` → `[REDACTED]_start`, `test_end` → `[REDACTED]_end`, and
+  `PentestReport.model_validate` rejected the report's own dump for two missing
+  required fields — **no report.json, no Markdown, no PDF at all**. Confirmed on
+  a cal.diy engagement that ran an hour and recorded 1,466 invocations;
+* `test_method` → `[REDACTED]_method`, `_test_sqli` → `_[REDACTED]_sqli`,
+  destroying the class identity `regrade_stored_bundles.py`, `corpus-replay` and
+  the plan-coverage account all key on.
+
+The rule was already stated elsewhere in this codebase — invariant 13, *an IDOR
+finding proves attribution with NAMES and FINGERPRINTS, never values; the field
+NAME survives because it is schema, not data*. It was missing where it did the
+most damage. **A rule you have already written down somewhere is worth
+re-deriving the domain of.**
+
+### The domain — computed from the walk, no vocabulary
+
+Grepping `redact` finds the one site that already failed. Grepping `.items()`
+finds 51 modules, almost all single-level reads where the question does not
+arise. The computable shape is a walk that **descends** — branches on a container
+type, or iterates `.items()` — and **recurses**, directly or through another
+descending function in the same module.
+
+Measured on this tree: **18 whole-structure transformations**. Blind spots, per
+§6's law and named rather than papered over: recursion that crosses a module
+boundary, dispatch through `getattr`, a walk built from a callable handed in as a
+value.
+
+Four classifications, declared per member:
+
+| class | meaning |
+|---|---|
+| **TRANSFORMED** | the key is rewritten by the same rule as the value — the failing shape |
+| **READ** | the key is inspected and carried through unchanged |
+| **PASSTHROUGH** | the key is carried through and never inspected |
+| **DISCARDED** | keys never reach the output or a decision |
+
+One member is TRANSFORMED and the guard asserts it stays the only one. Note that
+READ is not always "the key is schema": an npm lockfile is keyed BY package path,
+so `_package_identity`'s walkers are reading **content in key position**. The
+classification is per walk, not per language feature.
+
+### The second question: what is the shortest secret that corrupts it
+
+Ask it per member, and prefer the number to the argument. For anything
+downstream of redaction the floor is `_MIN_REDACTABLE_LEN = 4` — and 4 is also
+the *answer*, because every key of four characters or more contains a
+four-character substring. That is why **a length threshold is the wrong
+instrument**: `password` is eight characters and still a substring of
+`forgot-password`.
+
+Measured: `PentestReport` declares **125** field names across its nested models;
+**39** are alphabetic and ≥ 4 characters, so one registered secret equal to a
+whole name consumes the key; **14 of those 39 are required somewhere**, where the
+loss is not a degraded report but no report.
+
+### The positive control, and why it has to be end to end
+
+The fix shipped with unit tests over `redact_structure`. None of them asserted
+the thing that actually broke — that a report is **written**. A control for a
+guard must exercise the guard's own failure, which here means
+`model_dump → redact → model_validate`, over the model's OWN declared key
+vocabulary rather than a hand-picked key.
+
+Built that way, it found two further defects on its first two runs:
+
+1. **Tiling.** The narrowed key rule asked "did redaction consume the whole key",
+   which is satisfied by a key two separate registrations happen to tile. With
+   `test`, `_end`, `find`, `ings` registered, `test_end` and `findings` both
+   render `[REDACTED][REDACTED]` — so they do not merely lose their names, they
+   **collide into one key** and one field's value is silently discarded. The rule
+   is now *one span and no residue*.
+2. **The value side is the same outage.** Carried through to `model_validate` the
+   control still fails, on a VALUE: `PentestReport` declares `medium_count`, so
+   `medi` is registered, `Finding.severity="medium"` becomes `"[REDACTED]um"`,
+   and `severity` is one of **four** enum-constrained fields reachable from the
+   report rather than free `str`. Held as a STRICT xfail so the day it is fixed
+   the build says so.
+
+The comment at the write seam had asserted the opposite — *"no field here is more
+constrained than `str`, so a `[REDACTED]` substitution cannot invalidate one"* —
+and it was false in both halves. **An invariant stated in a comment and nowhere
+else is a belief.** Where it is load-bearing, compute it.

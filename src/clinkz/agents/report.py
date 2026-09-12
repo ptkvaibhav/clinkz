@@ -712,8 +712,19 @@ class ReportAgent(BaseAgent):
         # Deliberately not wrapped in a `try` — if redaction produced something
         # this model rejects, that is a defect in redaction, and a fallback to
         # the old path would silently restore the weaker document under the same
-        # filename. No field here is more constrained than `str`, so a
-        # `[REDACTED]` substitution cannot invalidate one.
+        # filename.
+        #
+        # This used to add "no field here is more constrained than `str`, so a
+        # `[REDACTED]` substitution cannot invalidate one", and that sentence is
+        # false in both halves. A KEY substitution invalidated it — `test_start`
+        # became `[REDACTED]_start` and two required fields went missing, so no
+        # report was written on any run where the default-credential sweep fired
+        # (fixed: `secrets._redact_key`). And FOUR fields reachable from here are
+        # enum-constrained rather than free `str` — `Finding.severity`,
+        # `Finding.status`, `NotTestedItem.category`, `Service.protocol` — so a
+        # value substitution can invalidate one too: register `medi` and
+        # `severity="medium"` becomes `"[REDACTED]um"`, which the enum refuses.
+        # That half is open, as the value half of R14.
         redacted_report = PentestReport.model_validate(report_dict)
 
         # Reports live alongside the rest of the engagement artifacts under

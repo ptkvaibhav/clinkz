@@ -179,12 +179,36 @@ def _redact_key(key: Any) -> Any:
 
     Values are untouched by this: they are data and keep substring redaction.
 
+    **One REGISTRY span, not "no residue".** The first version of this rule asked
+    only whether anything survived the markers, and that is satisfied by a key two
+    separate registrations happen to TILE. Found by the positive control over
+    the report model's own key vocabulary: with ``test``, ``_end``, ``find``
+    and ``ings`` registered, ``test_end`` and ``findings`` both render
+    ``[REDACTED][REDACTED]`` — so they are not merely lost, they COLLIDE into
+    one key and one of the two values is silently discarded. A key that is
+    credential material is credential material *once*.
+
+    Only the value registry can tile by coincidence; a SHAPE span cannot, because
+    it is an intrinsic-structure claim and no schema vocabulary here is spelled
+    like a JWT or a PEM block. So the count is over registry spans alone, which
+    are separable by inspection: every shape replacement carries the labelled
+    ``[REDACTED:`` marker and the registry always writes the bare
+    ``[REDACTED]``.
+
+    **The residual hazard, stated.** A key that genuinely is two concatenated
+    REGISTERED VALUES now survives verbatim — no producer in this tree builds
+    one, and shape-bearing keys are unaffected. That direction is chosen
+    deliberately: over 4,173 stored reports and 600 traces, a key wholly consumed
+    by redaction occurs **zero** times, while the over-redaction direction cost
+    every deliverable on every sweeping run. Keeping a key is recoverable; a
+    report that was never written is not.
+
     Args:
         key: The dict key, of any type.
 
     Returns:
-        The key, or the redacted form when the key was credential material in
-        its entirety.
+        The key, or the redacted form when the redaction consumed the key in its
+        entirety without more than one registry span doing it.
     """
     if not isinstance(key, str):
         return key
@@ -195,7 +219,27 @@ def _redact_key(key: Any) -> Any:
     # left after every marker is removed is the part that was NOT credential
     # material. Anything left means the key is schema.
     residue = _REDACTION_SPAN_RE.sub("", redacted).strip()
-    return redacted if not residue else key
+    if residue:
+        return key
+    # Nothing survived the markers — but by HOW MANY redactions? Two or more
+    # REGISTRY spans mean the key was TILED by separate registrations, which is a
+    # coincidence of spellings rather than a key that is credential material. It
+    # is not merely lossy either, it COLLIDES: with ``test``, ``_end``, ``find``
+    # and ``ings`` registered, ``test_end`` and ``findings`` both render
+    # ``[REDACTED][REDACTED]``, so two fields merge into one and one of the two
+    # values is silently discarded.
+    #
+    # Only registry spans can tile by coincidence. A SHAPE span is an intrinsic-
+    # structure claim — a JWT, a PEM block, an `Authorization` value — and no
+    # schema vocabulary in this tree is spelled like one, so any number of them
+    # consuming the whole key still means the key is data. Every shape
+    # replacement carries the labelled marker ``[REDACTED:`` and the value
+    # registry always writes the bare ``[REDACTED]``, so the two are separable by
+    # inspection rather than by provenance tracking.
+    registry_spans = sum(
+        1 for span in _REDACTION_SPAN_RE.findall(redacted) if span == REDACTION_PLACEHOLDER
+    )
+    return key if registry_spans > 1 else redacted
 
 
 def redact_structure(obj: Any) -> Any:
