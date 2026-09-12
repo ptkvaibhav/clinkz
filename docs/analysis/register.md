@@ -226,3 +226,55 @@ independent of the above. It was reverted only because it is what forces every
 caller, including the `llm:<provider>` one, to name a key; landing it without a
 correct predicate for that caller is what produced the wrong sentence. It should
 come back WITH item 1.
+
+---
+
+## R9 · The three business-logic classes: 85 dispatches, 0 findings, 0 leads
+
+**Measured 2026-09-12, and the premise it was registered under is wrong in a way
+worth keeping.** Registered as *"never exercised on any target"*. Across the 35
+stored bundles carrying a methodology ledger they have been exercised **85
+times**:
+
+| class | ledger rows | dispatches |
+|---|---|---|
+| `methodology:_test_repeatability` | 23 / 35 bundles | **35** |
+| `methodology:_test_constraint_violation` | 23 / 35 | **30** |
+| `methodology:_test_state_sequence` | 23 / 35 | **20** |
+
+They reach the plan through the LLM planner, which is exactly the route R6 says
+is their only one. So the deterministic pass never queues them (R6, unchanged)
+and they still run.
+
+**What is true, and is the disclosure issue:** across those 85 dispatches they
+produced **zero confirmed findings and zero unproven leads** — no finding title
+in any stored bundle matches any of their `title_tokens`, and no
+`unproven_leads` entry names them. Each declares `capability=SERVER_SIDE`, whose
+contract is *"the defining effect is observable in a server response, so a
+finding here is confirmable in-band."* That claim has never been exercised to a
+verdict of any kind.
+
+Zero *leads* is the sharper half. Each class's `limitation` says that where the
+rule cannot be evidenced from the application's own surface the result is an
+unproven lead — so 85 dispatches should have left a trail of leads even against
+targets with nothing to find. They left none, which means all 85 abstained
+*upstream* of the lead-emitting path. The likely cause is the same write-surface
+blocker (`spa-write-surface-blocker.md` §4): their preconditions need a write to
+act on, and the `("form",)` precondition they all carry grades 0 on an all-GET
+crawl.
+
+**Why this is disclosure and not capability.** `SERVER_SIDE` is read by the
+report as a statement about what the engine can prove. A class that has never
+reached a verdict on any target is not a class whose in-band confirmability has
+been demonstrated. Either the capability is downgraded to match the evidence, or
+the classes are shown to reach a verdict on a target that has the surface — and
+the second is the better fix, but it is downstream of producer 3
+(`options-sweep-measurement.md` §6).
+
+**Method note for whoever picks this up.** Two reading failures to avoid, both
+hit while measuring this: ledger components are keyed `methodology:_test_x`, not
+`_test_x`, and findings carry **no class key field** — only
+`title`/`description`, so a class's emissions must be matched through its
+registry `title_tokens`. A naive exact-key scan returns a confident `NONE` for
+every class in the engine. Invariant 41's shape, in the measurement rather than
+in the engine.
