@@ -142,6 +142,41 @@ def get_session_cookies(engagement_id: str) -> dict[str, str]:
     return cookies
 
 
+def _redact_envelope_for_the_record(envelope: str) -> str:
+    """Redact the in-process response envelope as a STRUCTURE, not as a string.
+
+    The envelope carries the target's response headers twice — ``response_headers``
+    and ``set_cookie`` — and a session cookie the TARGET named has no intrinsic
+    shape, so the only thing identifying it is the header key it arrived under.
+    Handing the flattened JSON to the string redactor throws that key away; handing
+    the parsed object to :func:`~clinkz.engagement.secrets.redact_structure` puts it
+    in front of the key-aware branch, which keeps the cookie NAMES and removes the
+    VALUES.
+
+    Only the RECORDED copy passes through here. The live envelope the caller
+    returns is untouched, because the engine needs the real cookie to seat the
+    session.
+
+    Args:
+        envelope: The JSON envelope this tool produced for one exchange.
+
+    Returns:
+        The same JSON with credential material removed, or the input unchanged if
+        it is not parseable JSON — a recorder must never raise on the data path,
+        and an unparseable envelope still reaches the outer string redaction.
+    """
+    from clinkz.engagement.secrets import redact_structure
+
+    try:
+        parsed = json.loads(envelope)
+    except (json.JSONDecodeError, TypeError):
+        return envelope
+    try:
+        return json.dumps(redact_structure(parsed), default=str)
+    except (TypeError, ValueError):  # pragma: no cover — dumps of a JSON round-trip
+        return envelope
+
+
 class HTTPClientTool(ToolBase):
     """Send arbitrary HTTP requests for manual testing and exploitation.
 
@@ -894,6 +929,29 @@ class HTTPClientTool(ToolBase):
         :func:`~clinkz.engagement.credential_shapes.redact_header_value`, which
         keeps the cookie NAMES — evidence about the session — and removes the
         VALUES.
+
+        **And the RESPONSE side needs the same treatment, for the same reason.**
+        The envelope is handed to the recorder as a STRING, so the outer
+        ``redact_structure`` pass sees one opaque ``stdout`` value and applies
+        the string rules to it — and the string rules cannot find a target-named
+        cookie inside JSON. ``COOKIE_INLINE_RE`` wants ``set-cookie:``; JSON
+        spells it ``"Set-Cookie":``, with a quote between the name and the colon,
+        and ``"set_cookie"`` has an underscore where the pattern needs a hyphen.
+        The one copy the rule does reach is inside ``raw``, where the header is
+        spelled on its own line — but ``json.dumps`` escapes the newlines, so
+        that pattern's trailing group, which stops at a carriage return or a line
+        feed, runs to the end of the blob and covers nothing BEFORE ``raw``.
+        Measured on a synthetic exchange: 2 of the 3 copies of the session cookie
+        survived.
+
+        So the envelope is redacted as a STRUCTURE before it is recorded, which
+        is what puts ``response_headers`` and ``set_cookie`` in front of the
+        key-aware branch. The LIVE envelope this method was handed is untouched
+        and is what the caller returns — the engine still needs the real cookie to
+        seat the session. Only the copy that reaches disk is masked, which is
+        exactly the split the docker path already has between the stdout it parses
+        and the stdout it records. ``parse_output`` still consumes the stored shape:
+        the keys and the cookie NAMES survive, only the values go.
         """
         cookies: dict[str, str] = args.get("cookies") or {}
         self._emit_inprocess_invocation(
@@ -909,7 +967,7 @@ class HTTPClientTool(ToolBase):
                 "follow_redirects": bool(args.get("follow_redirects", False)),
             },
             descriptor=[str(args.get("method") or "GET"), str(args.get("url") or "")],
-            output=envelope,
+            output=_redact_envelope_for_the_record(envelope),
             error=error,
             failed=failed,
             duration_ms=duration_ms,

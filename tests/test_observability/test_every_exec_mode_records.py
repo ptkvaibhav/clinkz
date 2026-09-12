@@ -161,11 +161,17 @@ class _FakeResponse:
                 return [] if default is None else default
             return [value]
 
+    #: The response header the leak lived in. A response that sets NO cookie makes
+    #: every assertion about response-side redaction pass for the wrong reason —
+    #: the corpus has 3,170 recorded in-process envelopes and not one of them
+    #: carries a ``Set-Cookie``, so "no leak observed" was never evidence.
+    SET_COOKIE = "connect.sid=s%3AaZ9qkT7vXpLm2Nd8.Hb4Rj1xYwQz0KcVe3Ts6Ug; Path=/; HttpOnly"
+
     def __init__(self) -> None:
         self.status = 200
         self.reason = "OK"
         self.version = self._Version()
-        self.headers = self._Headers({"Content-Type": "text/html"})
+        self.headers = self._Headers({"Content-Type": "text/html", "Set-Cookie": self.SET_COOKIE})
         self.history: list[Any] = []
         self.url = "http://target.test/probe"
 
@@ -481,4 +487,26 @@ async def test_the_session_cookie_does_not_survive_into_the_record(
     )
     # The cookie NAME survives, because it is evidence about the session.
     assert "next-auth.session-token" in written
+
+    # --- and the RESPONSE side, which is where this leak actually lived --------
+    #
+    # The envelope carries the target's response headers TWICE, as
+    # ``response_headers`` and ``set_cookie``, and it reaches the recorder as a
+    # STRING — so the outer walker sees one opaque ``stdout`` and applies only the
+    # string rules. Those rules cannot find a target-named cookie inside JSON:
+    # ``COOKIE_INLINE_RE`` wants ``set-cookie:`` and JSON spells it
+    # ``"Set-Cookie":``, with a quote between the name and the colon. The one copy
+    # it does reach is inside ``raw`` — but ``json.dumps`` escapes the newlines, so
+    # the match runs to the end of the blob and covers nothing before ``raw``.
+    # Measured on this exact exchange before the fix: 2 of 3 copies survived.
+    issued = _FakeResponse.SET_COOKIE.split("=", 1)[1].split(";", 1)[0]
+    assert issued not in written, (
+        "the cookie the TARGET issued reached the invocation record verbatim. The "
+        "envelope must be redacted as a STRUCTURE before it is recorded, so "
+        "response_headers and set_cookie meet the key-aware branch — a session "
+        "cookie the target named has no shape the string rules can find, and the "
+        "disclosure gate shares those rules, so it would have certified this CLEAN."
+    )
+    # The response cookie's NAME survives too, on the same rule as the request's.
+    assert "connect.sid" in written
     assert "Authorization" in written
