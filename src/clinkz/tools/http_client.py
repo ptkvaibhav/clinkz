@@ -142,6 +142,41 @@ def get_session_cookies(engagement_id: str) -> dict[str, str]:
     return cookies
 
 
+def _redact_envelope_for_the_record(envelope: str) -> str:
+    """Redact the in-process response envelope as a STRUCTURE, not as a string.
+
+    The envelope carries the target's response headers twice — ``response_headers``
+    and ``set_cookie`` — and a session cookie the TARGET named has no intrinsic
+    shape, so the only thing identifying it is the header key it arrived under.
+    Handing the flattened JSON to the string redactor throws that key away; handing
+    the parsed object to :func:`~clinkz.engagement.secrets.redact_structure` puts it
+    in front of the key-aware branch, which keeps the cookie NAMES and removes the
+    VALUES.
+
+    Only the RECORDED copy passes through here. The live envelope the caller
+    returns is untouched, because the engine needs the real cookie to seat the
+    session.
+
+    Args:
+        envelope: The JSON envelope this tool produced for one exchange.
+
+    Returns:
+        The same JSON with credential material removed, or the input unchanged if
+        it is not parseable JSON — a recorder must never raise on the data path,
+        and an unparseable envelope still reaches the outer string redaction.
+    """
+    from clinkz.engagement.secrets import redact_structure
+
+    try:
+        parsed = json.loads(envelope)
+    except (json.JSONDecodeError, TypeError):
+        return envelope
+    try:
+        return json.dumps(redact_structure(parsed), default=str)
+    except (TypeError, ValueError):  # pragma: no cover — dumps of a JSON round-trip
+        return envelope
+
+
 class HTTPClientTool(ToolBase):
     """Send arbitrary HTTP requests for manual testing and exploitation.
 
@@ -764,7 +799,17 @@ class HTTPClientTool(ToolBase):
     # ------------------------------------------------------------------
 
     async def _execute_aiohttp(self, args: dict[str, Any]) -> str:
-        """Execute the HTTP request using aiohttp (host-based)."""
+        """Execute the HTTP request using aiohttp (host-based).
+
+        Every return path goes through :meth:`_record_inprocess_request`. That is
+        not tidiness: this method is the transport for **every** HTTP request a
+        ``TOOL_EXEC_MODE=local`` run makes, and until it recorded them a local run
+        produced no evidence at all — engagement ``e4814440`` holds 0 invocation
+        records against 46 discovered endpoints. The failure path is recorded too,
+        because "the request was never sent" and "the request was sent and the
+        transport died" are the two readings of a missing record and only one of
+        them is about the target.
+        """
         import aiohttp
 
         method = args["method"]
@@ -822,7 +867,7 @@ class HTTPClientTool(ToolBase):
                         raw += f"{k}: {v}\n"
                     raw += f"\n{resp_body}"
 
-                    return json.dumps(
+                    envelope = json.dumps(
                         {
                             "status_code": resp.status,
                             "response_headers": resp_headers,
@@ -833,9 +878,13 @@ class HTTPClientTool(ToolBase):
                             "raw": raw,
                         }
                     )
+                    self._record_inprocess_request(
+                        args, envelope, duration_ms=elapsed_ms, failed=False
+                    )
+                    return envelope
         except Exception as exc:
             elapsed_ms = (time.monotonic() - start) * 1000
-            return json.dumps(
+            envelope = json.dumps(
                 {
                     "status_code": 0,
                     "response_headers": {},
@@ -845,6 +894,84 @@ class HTTPClientTool(ToolBase):
                     "error": str(exc),
                 }
             )
+            self._record_inprocess_request(
+                args, envelope, duration_ms=elapsed_ms, failed=True, error=str(exc)
+            )
+            return envelope
+
+    def _record_inprocess_request(
+        self,
+        args: dict[str, Any],
+        envelope: str,
+        *,
+        duration_ms: float,
+        failed: bool,
+        error: str = "",
+    ) -> None:
+        """Write the invocation record for one in-process HTTP exchange.
+
+        The recorded ``request`` is the tool's own args, so the record answers the
+        same question the docker path's argv answers — what went out — through the
+        same redaction chokepoint. The ``stdout`` is the envelope, which is
+        exactly what :meth:`parse_output` consumes, so a stored record replays
+        through the live parser rather than through a reconstruction of it.
+
+        **Session material is recorded as the HEADER the wire carried, under the
+        key ``cookie``, and that spelling is load-bearing.** ``redact_structure``
+        is key-aware, and the keys it acts on are header names — ``cookie``,
+        ``set-cookie``, ``authorization``. A ``{"cookies": {"sess": "…"}}`` dict
+        matches none of them: the outer key is not a header name, the inner key is
+        whatever the TARGET named its cookie, and a session cookie the target named
+        has no intrinsic shape for the string rules to find either. Recorded that
+        way the value reached ``tool_invocations/*.json`` verbatim and the
+        disclosure gate could not see it, because the gate looks for shapes too.
+        Joined into one ``cookie`` header string it meets
+        :func:`~clinkz.engagement.credential_shapes.redact_header_value`, which
+        keeps the cookie NAMES — evidence about the session — and removes the
+        VALUES.
+
+        **And the RESPONSE side needs the same treatment, for the same reason.**
+        The envelope is handed to the recorder as a STRING, so the outer
+        ``redact_structure`` pass sees one opaque ``stdout`` value and applies
+        the string rules to it — and the string rules cannot find a target-named
+        cookie inside JSON. ``COOKIE_INLINE_RE`` wants ``set-cookie:``; JSON
+        spells it ``"Set-Cookie":``, with a quote between the name and the colon,
+        and ``"set_cookie"`` has an underscore where the pattern needs a hyphen.
+        The one copy the rule does reach is inside ``raw``, where the header is
+        spelled on its own line — but ``json.dumps`` escapes the newlines, so
+        that pattern's trailing group, which stops at a carriage return or a line
+        feed, runs to the end of the blob and covers nothing BEFORE ``raw``.
+        Measured on a synthetic exchange: 2 of the 3 copies of the session cookie
+        survived.
+
+        So the envelope is redacted as a STRUCTURE before it is recorded, which
+        is what puts ``response_headers`` and ``set_cookie`` in front of the
+        key-aware branch. The LIVE envelope this method was handed is untouched
+        and is what the caller returns — the engine still needs the real cookie to
+        seat the session. Only the copy that reaches disk is masked, which is
+        exactly the split the docker path already has between the stdout it parses
+        and the stdout it records. ``parse_output`` still consumes the stored shape:
+        the keys and the cookie NAMES survive, only the values go.
+        """
+        cookies: dict[str, str] = args.get("cookies") or {}
+        self._emit_inprocess_invocation(
+            request={
+                "method": args.get("method"),
+                "url": args.get("url"),
+                "headers": args.get("headers") or {},
+                # Always present, empty string included: "no cookie was sent" is a
+                # fact about the request, and an absent key cannot state it.
+                "cookie": "; ".join(f"{name}={value}" for name, value in cookies.items()),
+                "body": args.get("body", ""),
+                "session_mode": args.get("session_mode", SESSION_AMBIENT),
+                "follow_redirects": bool(args.get("follow_redirects", False)),
+            },
+            descriptor=[str(args.get("method") or "GET"), str(args.get("url") or "")],
+            output=_redact_envelope_for_the_record(envelope),
+            error=error,
+            failed=failed,
+            duration_ms=duration_ms,
+        )
 
     def parse_output(self, raw_output: str) -> HTTPClientOutput:
         """Parse the JSON response from execute() into structured output."""

@@ -202,6 +202,109 @@ class CrawlBudgetTruncation:
         }
 
 
+@dataclass(frozen=True)
+class ProbeBudgetTruncation:
+    """What a surface-mapping sweep's probe budget never asked about.
+
+    The third layer of the same rule, and the one where the bound decided what
+    could be DISCOVERED rather than what could be tested. The plan cap decides
+    which discovered endpoints get a methodology; the crawl budget decides which
+    discovered URLs become endpoints; this budget decides which routes are asked
+    what METHODS they accept — so it sits upstream of the write surface existing
+    at all.
+
+    Measured on cal.diy (``e4814440``): 44 routes, ``MAX_OPTIONS_PROBES = 40``,
+    and the selection was ``sorted(by_route)[:40]`` — lexicographic over the full
+    URL. On a Next.js target ``_`` (0x5F) sorts before ``a`` (0x61), so every
+    ``/_next/static/chunks/…`` bundle sorted ahead of every ``/api/…`` route.
+    **32 of the 40 probes went to JS and CSS chunks**, which can never declare a
+    write verb, and the three application routes sat at sorted indices 33, 34 and
+    35 — inside the budget by six slots. The login page alone references 31
+    chunks; a crawl that had found 41 would have spent the entire budget on
+    bundles and probed **no application route at all**, and the sweep would have
+    returned a clean zero meaning nothing.
+
+    Two facts, held apart, exactly as :class:`PlanTruncation` holds truncation
+    apart from a ranking inversion:
+
+    * **the budget was too small** — the tail was dropped, and a larger budget
+      would probe it. Benign when the tail is static assets.
+    * **the ordering was wrong** — a route that could have answered the sweep's
+      question was dropped while one that structurally cannot was probed. A
+      larger budget does not fix that, and it is what happened here.
+
+    So the dropped routes are broken down by RELEVANCE GRADE
+    (:func:`~clinkz.agents._url_shape.crawl_visit_priority`), and a drop at a
+    grade the sweep exists to reach is recorded separately from a dropped static
+    asset.
+
+    Attributes:
+        sweep: Which sweep reported — ``"options_methods"`` or
+            ``"representation_schema"``. Named rather than merged: they probe
+            different things with different budgets and a shared total would hide
+            which one was starved.
+        budget: The probe budget in force.
+        candidates: Distinct routes eligible for this sweep.
+        probed: How many were actually probed.
+        first_omitted: The highest-priority route the budget did not reach, so a
+            reader can check the ordering rather than take it on trust.
+        probed_by_grade: Per relevance grade, how many were probed.
+        dropped_by_grade: Per relevance grade, how many were not.
+        relevant_dropped: Routes dropped at a grade this sweep exists to reach
+            (an application or API route, not a static asset). Bounded by
+            :data:`MAX_RETAINED_PER_CLASS`; the count above stays exact.
+    """
+
+    sweep: str
+    budget: int
+    candidates: int
+    probed: int
+    first_omitted: str = ""
+    probed_by_grade: dict[int, int] = field(default_factory=dict)
+    dropped_by_grade: dict[int, int] = field(default_factory=dict)
+    relevant_dropped: list[str] = field(default_factory=list)
+
+    @property
+    def dropped_total(self) -> int:
+        """How many eligible routes the budget never probed."""
+        return max(0, self.candidates - self.probed)
+
+    @property
+    def truncated(self) -> bool:
+        """Whether the budget dropped anything at all."""
+        return self.dropped_total > 0
+
+    @property
+    def ordering_failure(self) -> bool:
+        """Whether a route the sweep exists to reach was dropped.
+
+        Separate from :attr:`truncated` and reported separately, because the two
+        have different fixes. A dropped ``favicon.ico`` costs the sweep nothing;
+        a dropped ``/api/trpc`` is the sweep failing at its own purpose while
+        reporting a clean result.
+        """
+        return bool(self.relevant_dropped)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Render for ``report.json``."""
+        return {
+            "sweep": self.sweep,
+            "budget": self.budget,
+            "candidates": self.candidates,
+            "probed": self.probed,
+            "dropped_total": self.dropped_total,
+            "first_omitted": self.first_omitted,
+            # Stringified keys: this dict is serialised to JSON, where an int key
+            # becomes a string anyway — doing it here means the built dict and the
+            # round-tripped one compare equal instead of drifting at the seam.
+            "probed_by_grade": {str(k): v for k, v in sorted(self.probed_by_grade.items())},
+            "dropped_by_grade": {str(k): v for k, v in sorted(self.dropped_by_grade.items())},
+            "ordering_failure": self.ordering_failure,
+            "relevant_dropped_count": len(self.relevant_dropped),
+            "relevant_dropped": self.relevant_dropped[:MAX_RETAINED_PER_CLASS],
+        }
+
+
 @dataclass
 class PlanAlarmRegister:
     """Every planning pass's cap outcome, for the report.
@@ -212,6 +315,7 @@ class PlanAlarmRegister:
 
     _passes: list[PlanTruncation] = field(default_factory=list)
     _crawl_budgets: list[CrawlBudgetTruncation] = field(default_factory=list)
+    _probe_budgets: list[ProbeBudgetTruncation] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record(self, event: PlanTruncation) -> None:
@@ -249,6 +353,56 @@ class PlanAlarmRegister:
         """Every recorded enrichment pass, in the order it happened."""
         with self._lock:
             return list(self._crawl_budgets)
+
+    def record_probe_budget(self, event: ProbeBudgetTruncation) -> None:
+        """Record one surface-mapping sweep's budget outcome."""
+        with self._lock:
+            self._probe_budgets.append(event)
+        if event.ordering_failure:
+            logger.warning(
+                "PROBE ORDERING FAILURE recorded for the report — the %s sweep dropped %d "
+                "application/API route(s) the sweep exists to reach (budget=%d, "
+                "candidates=%d). A larger budget does not fix an ordering defect.",
+                event.sweep,
+                len(event.relevant_dropped),
+                event.budget,
+                event.candidates,
+            )
+        elif event.truncated:
+            logger.info(
+                "PROBE BUDGET recorded for the report — the %s sweep left %d of %d route(s) "
+                "unprobed (budget=%d); every one dropped was a static asset.",
+                event.sweep,
+                event.dropped_total,
+                event.candidates,
+                event.budget,
+            )
+
+    def probe_budgets(self) -> list[ProbeBudgetTruncation]:
+        """Every recorded sweep, in the order it happened."""
+        with self._lock:
+            return list(self._probe_budgets)
+
+    def probe_summary(self) -> dict[str, Any]:
+        """Render the surface-mapping budgets for ``report.json``.
+
+        Present on a clean run too. "Every route was asked what methods it
+        accepts" is a claim the deliverable should make explicitly — and on this
+        sweep in particular, because a sweep that probed only static assets
+        returns exactly what a sweep that found no write verb returns.
+        """
+        events = self.probe_budgets()
+        return {
+            "probe_truncated": any(e.truncated for e in events),
+            "ordering_failure": any(e.ordering_failure for e in events),
+            "sweeps_recorded": len(events),
+            "candidates": sum(e.candidates for e in events),
+            "probed": sum(e.probed for e in events),
+            "dropped_total": sum(e.dropped_total for e in events),
+            "relevant_dropped_count": sum(len(e.relevant_dropped) for e in events),
+            "first_omitted": next((e.first_omitted for e in events if e.first_omitted), ""),
+            "sweeps": [e.to_dict() for e in events],
+        }
 
     def crawl_summary(self) -> dict[str, Any]:
         """Render the crawl budget for ``report.json``.
@@ -316,6 +470,7 @@ class PlanAlarmRegister:
         with self._lock:
             self._passes.clear()
             self._crawl_budgets.clear()
+            self._probe_budgets.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +519,26 @@ def record_crawl_budget(event: CrawlBudgetTruncation) -> None:
     register.record_crawl_budget(event)
 
 
+def record_probe_budget(event: ProbeBudgetTruncation) -> None:
+    """Record a surface-mapping sweep against the active register, if there is one.
+
+    Never raises and never creates a register: a sweep run outside an engagement
+    — a unit test, an offline driver — has no report to carry it.
+    """
+    register = _active_register
+    if register is None:
+        return
+    register.record_probe_budget(event)
+
+
+def probe_budget_summary() -> dict[str, Any]:
+    """The active register's probe summary, or the clean shape when none exists."""
+    register = _active_register
+    if register is None:
+        return PlanAlarmRegister().probe_summary()
+    return register.probe_summary()
+
+
 def crawl_budget_summary() -> dict[str, Any]:
     """The active register's crawl summary, or the clean shape when none exists."""
     register = _active_register
@@ -385,10 +560,13 @@ __all__ = [
     "CrawlBudgetTruncation",
     "PlanAlarmRegister",
     "PlanTruncation",
+    "ProbeBudgetTruncation",
     "crawl_budget_summary",
     "get_active_plan_alarms",
     "plan_alarm_summary",
+    "probe_budget_summary",
     "record_crawl_budget",
     "record_plan_truncation",
+    "record_probe_budget",
     "set_active_plan_alarms",
 ]

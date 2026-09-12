@@ -83,6 +83,9 @@ from clinkz.llm.degradation import reconcile_with_model_stamp
 from clinkz.models.finding import Finding, Severity
 from clinkz.models.report import NotTestedCategory, NotTestedItem, PentestReport
 from clinkz.models.vuln_classes import for_finding
+from clinkz.observability.audit import INDETERMINATE as AUDIT_INDETERMINATE
+from clinkz.observability.audit import NOTHING_DISPATCHED as AUDIT_NOTHING_DISPATCHED
+from clinkz.observability.audit import reconcile_run_audit
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from reportlab.platypus import Flowable
@@ -1129,13 +1132,73 @@ class _PDFReport:
             self.note,
         )
         self._provider_routing()
+        self._run_auditability()
         self._research_grounding()
         self._component_contribution()
         self._component_inventory()
         self._plan_coverage()
         self._crawl_coverage()
+        self._probe_coverage()
         self._scope_refusals()
         self._spend()
+
+    def _run_auditability(self) -> None:
+        """Whether every call this run made left evidence a reader can check.
+
+        Rendered clean or not, and omitted only for a stored bundle written
+        before the measurement existed. A local-mode engagement wrote 0
+        invocation records for 100% of its HTTP requests, and an empty
+        ``tool_invocations/`` reads exactly like a run that dispatched nothing -
+        which is why the absence of this section is the state it makes visible.
+        """
+        audit = dict(self.report.run_audit or {})
+        if not audit:
+            return
+        self._heading("Run auditability", self.h3)
+        executions = int(audit.get("tool_executions") or 0)
+        recorded = int(audit.get("invocations_recorded") or 0)
+        unrecorded = int(audit.get("unrecorded_executions") or 0)
+        verdict = str(audit.get("verdict") or "")
+        if verdict == AUDIT_NOTHING_DISPATCHED:
+            self._para(
+                "No tool execution was dispatched during this engagement, so there is "
+                "nothing to audit. That is not the same as calls having been made and not "
+                "recorded."
+            )
+            return
+        if verdict == AUDIT_INDETERMINATE:
+            self._para(
+                f"<b>{unrecorded} of {executions} tool execution(s) left no invocation "
+                f"record.</b> For those calls the findings, coverage counts and session "
+                f"claims in this document cannot be re-derived from the engagement's "
+                f"artifacts: the bundle holds {recorded}. That makes the run INDETERMINATE "
+                f"rather than negative - not a run that found less, a run whose evidence is "
+                f"incomplete - and ineligible as a baseline."
+            )
+            by_tool = audit.get("unrecorded_by_tool") or {}
+            if isinstance(by_tool, dict) and by_tool:
+                rows = [["Tool", "Unrecorded executions"]]
+                rows.extend(
+                    [self._text(tool), self._text(count)] for tool, count in sorted(by_tool.items())
+                )
+                self._grid(rows, [240, 140])
+        else:
+            self._para(
+                f"All {executions} tool execution(s) wrote a full-fidelity invocation record, "
+                f"so any claim in this document can be checked against the exchange that "
+                f"produced it."
+            )
+        by_transport = audit.get("executions_by_transport") or {}
+        if isinstance(by_transport, dict) and by_transport:
+            self._para(
+                "Executions by execution mode and transport: "
+                + ", ".join(
+                    f"{self._text(key)} {self._text(count)}"
+                    for key, count in sorted(by_transport.items())
+                )
+                + ".",
+                self.note,
+            )
 
     def _provider_routing(self) -> None:
         report = self.report
@@ -1148,15 +1211,31 @@ class _PDFReport:
             # disagreement — a clean routing claim its own model stamp
             # contradicts. Third call site of one rule, never a third copy.
             stamp = reconcile_with_model_stamp(stamp, list(report.model_stamp))
+            # Second witness, same two seams, same one-way rule: a run whose
+            # calls left no invocation record is not a baseline, whatever routing
+            # did. Withdrawn here as well so the PDF cannot claim eligibility the
+            # JSON and the Markdown withheld.
+            stamp = reconcile_run_audit(stamp, dict(report.run_audit or {}))
         self._heading("Provider routing", self.h3)
         if not stamp:
             self._para("No provider-routing record was captured for this run.")
         elif not stamp.get("provider_degraded"):
-            self._para(
+            sentence = (
                 "Every LLM call was served by the provider this run asked for. No fallback "
-                "activated, no provider was excluded mid-run, and no chain was exhausted - "
-                "so the run is eligible for use as a baseline."
+                "activated, no provider was excluded mid-run, and no chain was exhausted"
             )
+            if stamp.get("baseline_eligible"):
+                sentence += " - so the run is eligible for use as a baseline."
+            else:
+                sentence += (
+                    ". The run is nonetheless <b>NOT eligible as a baseline</b>, for a reason "
+                    "that is not about routing: "
+                    + self._text(
+                        stamp.get("baseline_ineligible_reason") or "see Run auditability below"
+                    )
+                    + "."
+                )
+            self._para(sentence)
         else:
             self._para(
                 f"<b>This run is NOT eligible as a baseline.</b> "
@@ -1455,6 +1534,63 @@ class _PDFReport:
                 f"{self._text(crawl.get('first_omitted'))}</font>",
                 self.note,
             )
+
+    def _probe_coverage(self) -> None:
+        """What the surface-mapping sweeps were allowed to ask, and never asked.
+
+        One layer above the crawl budget: that decides which URLs become
+        endpoints, this decides which endpoints are asked which METHODS they
+        accept. A sweep that spent its budget on JS bundles reports "no write
+        verb", which is what a target with none reports, so the budget is the
+        only thing that distinguishes them.
+        """
+        probe = self.report.probe_coverage or {}
+        self._heading("Surface-mapping probe coverage", self.h3)
+        if not probe:
+            self._para("No surface-mapping bound was recorded for this run.")
+            return
+        sweeps = [s for s in (probe.get("sweeps") or []) if isinstance(s, dict)]
+        if not sweeps:
+            self._para(
+                "No surface-mapping sweep ran, so no route was asked which methods it "
+                "accepts. A write endpoint this application exposes and its own frontend "
+                "never calls is therefore undiscovered rather than absent."
+            )
+            return
+        if probe.get("ordering_failure"):
+            self._para(
+                f"<b>Probe ordering failure.</b> "
+                f"{self._text(probe.get('relevant_dropped_count', 0))} application or API "
+                f"route(s) were dropped by a probe budget while lower-relevance routes were "
+                f"probed. Those were never asked which methods they accept, so a write "
+                f"surface on them is undiscovered, not absent - and a larger budget does not "
+                f"fix an ordering defect."
+            )
+        elif probe.get("probe_truncated"):
+            self._para(
+                f"{self._text(probe.get('dropped_total', 0))} of "
+                f"{self._text(probe.get('candidates', 0))} route(s) exceeded a probe budget. "
+                f"Selection is by relevance, so every route dropped was a static asset or "
+                f"other non-application surface and the API routes were probed first."
+            )
+        else:
+            self._para(
+                f"Every one of the {self._text(probe.get('candidates', 0))} eligible route(s) "
+                f"was asked which methods it accepts, so a verb absent from this report is a "
+                f"verb the target did not declare rather than one nobody asked about."
+            )
+        rows = [["Sweep", "Budget", "Candidates", "Probed", "Dropped"]]
+        rows.extend(
+            [
+                self._text(sweep.get("sweep", "")),
+                self._text(sweep.get("budget", 0)),
+                self._text(sweep.get("candidates", 0)),
+                self._text(sweep.get("probed", 0)),
+                self._text(sweep.get("dropped_total", 0)),
+            ]
+            for sweep in sweeps
+        )
+        self._grid(rows, [150, 60, 80, 60, 60])
 
     def _scope_refusals(self) -> None:
         refusals = self.report.scope_refusals or {}

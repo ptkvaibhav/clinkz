@@ -45,9 +45,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess  # noqa: S404 — list-form, no shell=True; used for git hygiene checks
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from clinkz.engagement.credential_shapes import (
     CREDENTIAL_HEADER_KEYS,
@@ -136,6 +137,111 @@ def redact(text: str) -> str:
     return out
 
 
+#: A redaction marker as it appears in already-redacted text — ``[REDACTED]`` and
+#: the labelled forms. Used to ask whether a redaction consumed the WHOLE of a
+#: string or only part of it.
+#:
+#: One level of nesting is allowed, because the labelled forms carry a bracketed
+#: field of their own: a JWT redacts to
+#: ``[REDACTED:JWT sha256=… alg=HS256 claims=[sub]]``. A pattern that stopped at
+#: the first ``]`` would leave the outer bracket as residue and read a key that
+#: was nothing but a token as schema.
+_REDACTION_SPAN_RE: Final = re.compile(r"\[REDACTED(?:[^\[\]]|\[[^\]]*\])*\]")
+
+
+def _redact_key(key: Any) -> Any:
+    """Redact a dict KEY only when the key is credential material END TO END.
+
+    **A key is schema; a value is data.** This is the same rule the IDOR oracle
+    states about attribution — the field NAME survives because it is schema — and
+    it was missing here, where it does the most damage.
+
+    The default-credential sweep registers each password it is about to try, so
+    that one which WORKS is not left in an artifact in plaintext. The catalogue
+    contains ``test``, ``root``, ``admin`` and ``password``. Registered secrets
+    are replaced as SUBSTRINGS, and the walker was passing keys through the same
+    replacement, so on every run where that sweep fired:
+
+    * ``test_start`` became ``[REDACTED]_start`` and ``test_end`` became
+      ``[REDACTED]_end``, so ``PentestReport.model_validate`` rejected the
+      redacted structure for two missing required fields and **no report.json,
+      no Markdown and no PDF were written at all**;
+    * ``test_method`` became ``[REDACTED]_method`` and every ``_test_sqli`` key
+      became ``_[REDACTED]_sqli``, so the class identity that
+      ``regrade_stored_bundles.py``, ``corpus-replay`` and the plan-coverage
+      account all key on was destroyed in the trace.
+
+    A guard that damages the artifact it protects protects nothing. The fix is
+    not to stop redacting keys — a dict genuinely keyed BY a token should still
+    be redacted — but to require that the whole key was credential material.
+    ``test_start`` merely CONTAINS a registered word and is schema with an
+    unlucky substring; a key that is nothing but a JWT is not schema.
+
+    Values are untouched by this: they are data and keep substring redaction.
+
+    **One REGISTRY span, not "no residue".** The first version of this rule asked
+    only whether anything survived the markers, and that is satisfied by a key two
+    separate registrations happen to TILE. Found by the positive control over
+    the report model's own key vocabulary: with ``test``, ``_end``, ``find``
+    and ``ings`` registered, ``test_end`` and ``findings`` both render
+    ``[REDACTED][REDACTED]`` — so they are not merely lost, they COLLIDE into
+    one key and one of the two values is silently discarded. A key that is
+    credential material is credential material *once*.
+
+    Only the value registry can tile by coincidence; a SHAPE span cannot, because
+    it is an intrinsic-structure claim and no schema vocabulary here is spelled
+    like a JWT or a PEM block. So the count is over registry spans alone, which
+    are separable by inspection: every shape replacement carries the labelled
+    ``[REDACTED:`` marker and the registry always writes the bare
+    ``[REDACTED]``.
+
+    **The residual hazard, stated.** A key that genuinely is two concatenated
+    REGISTERED VALUES now survives verbatim — no producer in this tree builds
+    one, and shape-bearing keys are unaffected. That direction is chosen
+    deliberately: over 4,173 stored reports and 600 traces, a key wholly consumed
+    by redaction occurs **zero** times, while the over-redaction direction cost
+    every deliverable on every sweeping run. Keeping a key is recoverable; a
+    report that was never written is not.
+
+    Args:
+        key: The dict key, of any type.
+
+    Returns:
+        The key, or the redacted form when the redaction consumed the key in its
+        entirety without more than one registry span doing it.
+    """
+    if not isinstance(key, str):
+        return key
+    redacted = redact(key)
+    if redacted == key:
+        return key
+    # Did the redaction consume the whole key, or just a piece of it? What is
+    # left after every marker is removed is the part that was NOT credential
+    # material. Anything left means the key is schema.
+    residue = _REDACTION_SPAN_RE.sub("", redacted).strip()
+    if residue:
+        return key
+    # Nothing survived the markers — but by HOW MANY redactions? Two or more
+    # REGISTRY spans mean the key was TILED by separate registrations, which is a
+    # coincidence of spellings rather than a key that is credential material. It
+    # is not merely lossy either, it COLLIDES: with ``test``, ``_end``, ``find``
+    # and ``ings`` registered, ``test_end`` and ``findings`` both render
+    # ``[REDACTED][REDACTED]``, so two fields merge into one and one of the two
+    # values is silently discarded.
+    #
+    # Only registry spans can tile by coincidence. A SHAPE span is an intrinsic-
+    # structure claim — a JWT, a PEM block, an `Authorization` value — and no
+    # schema vocabulary in this tree is spelled like one, so any number of them
+    # consuming the whole key still means the key is data. Every shape
+    # replacement carries the labelled marker ``[REDACTED:`` and the value
+    # registry always writes the bare ``[REDACTED]``, so the two are separable by
+    # inspection rather than by provenance tracking.
+    registry_spans = sum(
+        1 for span in _REDACTION_SPAN_RE.findall(redacted) if span == REDACTION_PLACEHOLDER
+    )
+    return key if registry_spans > 1 else redacted
+
+
 def redact_structure(obj: Any) -> Any:
     """Recursively redact every string inside *obj*.
 
@@ -172,7 +278,12 @@ def redact_structure(obj: Any) -> Any:
     if isinstance(obj, dict):
         out: dict[Any, Any] = {}
         for key, value in obj.items():
-            new_key = redact_structure(key)
+            # A key is SCHEMA — see :func:`_redact_key`. It used to go through the
+            # same substring replacement as a value, which is how the word
+            # ``test``, registered by the default-credential sweep, turned
+            # ``test_start`` into ``[REDACTED]_start`` and took the whole report
+            # down with it.
+            new_key = _redact_key(key)
             if isinstance(key, str) and key.strip().lower() in CREDENTIAL_HEADER_KEYS:
                 if isinstance(value, str):
                     out[new_key] = redact(redact_header_value(key, value))

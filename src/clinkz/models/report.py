@@ -149,13 +149,23 @@ class NotTestedCategory(StrEnum):
             which is about a capability that was absent. This one is a boundary
             of the METHOD, and it renders on a clean run because it is a
             property of the class rather than of this target.
-        MEASUREMENT_INCONCLUSIVE: The class RAN against this endpoint and its own
-            positive control refused the series — requests went out and did not
-            measure what the class needed measured. Distinct from every category
-            above, all of which are reasons the class did not run: this one ran
-            and may not speak. It is the loudest silence in the corpus — 136 of
-            369 recorded brute-force verdicts, across 75 engagements, and the
-            word never once reached a client document.
+        MEASUREMENT_INCONCLUSIVE: The class RAN against this endpoint and could
+            support no conclusion — requests went out and did not measure what the
+            class needed measured. Distinct from every category above, all of
+            which are reasons the class did not run: this one ran and may not
+            speak. It is the loudest silence in the corpus — 136 of 369 recorded
+            brute-force verdicts, across 75 engagements, and the word never once
+            reached a client document.
+
+            **WHY the series could not conclude comes from the producer**, in the
+            producer's own words, and the shared rendering must not assert a
+            mechanism. Two producers reach this category by different routes: a
+            brute-force series whose positive control refused it (requests reached
+            no authentication handler), and a business-logic class that could not
+            evidence the application's intent and therefore sent no probe at all.
+            A renderer that said "its own positive control refused the series" for
+            both would describe the second wrongly — the same failure shape as a
+            shared gate applying one caller's conditions to another's evidence.
         SWEEP_STOPPED: The default-credential sweep stopped on the target's own
             refusal (a lockout, a rate limit, a captcha) with candidate pairs
             left unsent. Its own category because the remedy is the client's:
@@ -302,6 +312,31 @@ class PentestReport(BaseModel):
     #: one-way — a degraded answer is already inside the findings, so no later
     #: clean call un-shapes it.
     provider_degradation: dict[str, object] = Field(default_factory=dict)
+    #: Whether this run left evidence its own claims can be re-derived from:
+    #: how many tool executions it made, and how many of those wrote a
+    #: full-fidelity invocation record. A local-mode engagement served every HTTP
+    #: request in-process, emitted no record for any of them, and produced an
+    #: empty ``tool_invocations/`` that reads exactly like a run that made no
+    #: calls at all. Two numbers rather than one, because "nothing was
+    #: dispatched" and "things were dispatched and not recorded" are different
+    #: facts with different fixes.
+    #:
+    #: Populated on a clean run too. A run whose verdict is ``indeterminate``
+    #: is ineligible as a baseline — withdrawn from ``provider_degradation``
+    #: rather than asserted separately, so the deliverable has one eligibility
+    #: flag and not two that can disagree.
+    run_audit: dict[str, object] = Field(default_factory=dict)
+    #: What the surface-mapping sweeps were allowed to ask, and what they never
+    #: asked. Strictly upstream of ``crawl_coverage`` and ``plan_coverage``: this
+    #: budget decides which routes are asked what METHODS they accept, so it
+    #: bounds whether a write surface is discovered at all. Carries the drop
+    #: broken down by relevance grade, because "the budget dropped four static
+    #: assets" and "the budget dropped the only route that could have answered"
+    #: are different facts and a larger budget fixes only the first.
+    #:
+    #: Rendered on a clean run too — a sweep that probed nothing but bundles
+    #: returns exactly what a sweep that found no write verb returns.
+    probe_coverage: dict[str, object] = Field(default_factory=dict)
     #: Every out-of-scope target the engagement reached for and refused. THE
     #: control on an external engagement: a real application links out, the
     #: crawler follows links, and this is the evidence that the ones leaving
