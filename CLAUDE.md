@@ -23,7 +23,7 @@ tools dynamically.
 > | Engagement setup, authenticated scanning, safety rails | [`docs/productization-engagement-safety.md`](docs/productization-engagement-safety.md) |
 > | What the deliverable may CLAIM | [`docs/report-integrity.md`](docs/report-integrity.md) |
 > | Ledger, alarms, reachability, run auditability | [`docs/observability.md`](docs/observability.md) |
-| Per-round measurements and the open register | [`docs/analysis/register.md`](docs/analysis/register.md) |
+> | Per-round measurements and the open register | [`docs/analysis/register.md`](docs/analysis/register.md) |
 > | Provider routing and fallback | [`docs/provider-routing.md`](docs/provider-routing.md) |
 > | Gray-box discovery engine | `docs/discovery-engine-*.md` |
 > | Recurring-mistake narratives | [`.claude/LESSONS.md`](.claude/LESSONS.md) → `docs/lessons/` |
@@ -724,6 +724,26 @@ under the repo root; the header table at the top of this file links them all.
     `not_applicable` (the endpoint may well carry the rule). 164 dispatches across
     the corpus reached no verdict and said nothing. **Detail →
     `docs/analysis/business-logic-verdict-trace.md`.**
+
+108. **A transformation applied to a whole structure distinguishes the
+    structure's own vocabulary from the content it carries** — a KEY is schema, a
+    value is data, and a walk that never asked has answered "content"
+    (`engagement/secrets.py::_redact_key`). A key is rewritten only when a
+    SINGLE redaction consumed it end to end; two registrations that TILE a key
+    COLLIDE two fields into one. The domain is every recursive container walk,
+    AST-computed, and exactly one member may rewrite keys. **A guard that damages
+    the artifact it protects protects nothing**, and its positive control must
+    exercise the real seam — `model_dump → redact → model_validate` over the
+    model's OWN declared vocabulary, never a hand-picked key. **Detail →
+    `.claude/skills/clinkz-dev/SKILL.md` §7.**
+
+109. **A gate that needs evidence only passing the gate can produce is its own
+    state — UNREACHABLE PRECONDITION, not unexercised and not not-applicable.**
+    The domain is computed from precondition SOURCES: an attribute a gate reads
+    whose every informative writer is downstream of a gate; an `= []` initialiser
+    is an absence, not a source. The disclosure names WHOSE limit it is — a class
+    that cannot begin is a capability the engine lacks, never a reading of the
+    endpoint. **Detail → `docs/analysis/register.md` R13.**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

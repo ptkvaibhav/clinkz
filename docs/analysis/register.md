@@ -7,6 +7,17 @@ inherit a guess.
 
 Opened 2026-09-10 (tree at `b45b239`), during the default-control audit.
 
+## States
+
+An entry's state says what KIND of thing is open, because the three read very
+differently and only one of them is waiting for a target.
+
+| state | meaning |
+|---|---|
+| **OPEN** | a defect or a gap; the fix is known or findable, and it is scheduled |
+| **OPEN — trade** | the fix requires a decision with a real cost on the other side, not just work |
+| **UNREACHABLE PRECONDITION** | a gate needs evidence the engine can only produce by first passing that gate. Not *unexercised* — dispatched and measured. Not *not applicable* — the target may well carry the rule. It is a capability the engine does not have, and the deliverable must not describe it as a class waiting for a better target |
+
 ---
 
 ## R1 · `js` is absent from `STATIC_ASSET_EXTENSIONS`
@@ -43,6 +54,11 @@ either. R1 was named as a prerequisite for the probe-ordering fix
 ([`probe-bound-ordering.md`](probe-bound-ordering.md) §4) and is not one; the
 ordering fix landed without it. R1 stays open on its own merits — it governs how
 a `.js` endpoint is PLANNED, which is where its 72-task consequence lives.
+
+**Carried 2026-09-12, unchanged.** Deliberately not bundled with the redaction
+round: the open question is still whether adding `js` starves the discoverers
+that mine bundles, and that is measured against a discovery run, not a redaction
+one.
 
 ---
 
@@ -336,6 +352,11 @@ client's codebase are worth reading on a guess — while the discoverer it bound
 currently blocked on. Whoever takes this should measure first: on the recorded
 Juice Shop and cal.com trees, does 2,000 actually bind?
 
+**Carried 2026-09-12, unchanged.** Still `LEXICAL_REGISTERED` in
+`test_probe_bounds_select_by_relevance.py`, which keeps failing the build if this
+entry is removed before the ordering is fixed. The measurement it asks for has
+not been taken.
+
 ---
 
 ## R11 · `capability=SERVER_SIDE` on two classes that have never reached a verdict
@@ -408,6 +429,11 @@ one added to `UNPROVEN_WHY_UNCONFIRMED` (invariant 40).
 
 ## R13 · Phase-1 business-logic intent cannot be evidenced on an action endpoint
 
+**State: UNREACHABLE PRECONDITION** (2026-09-12). This is the entry the state was
+added for. R13 is not a class waiting for the right target — it is a gate that
+needs what only passing the gate produces, and it now has a computed domain, a
+guard and a client-facing disclosure. See *The state, computed* below.
+
 **Verified, and it is the cause behind R11.** `_business_logic_intent` evidences
 an intent facet from a **representation** (`_observed_records(collection)`) or from
 a **rejection** (`self._business_logic_rejections`). On an RPC action endpoint —
@@ -435,6 +461,70 @@ another class's control arm — which would mean seeding
 the "is this the same resource" question answered without guessing, and a wrong
 answer manufactures an intent the application never declared, which is the one
 thing this family is built not to do.
+
+### The state, computed
+
+**The cycle.** `_business_logic_intent` accepts two evidence sources. On an RPC
+action endpoint the representation is structurally empty, so the rejection pool
+is the only one left — and every writer of that pool is a `_remember_rejection`
+call at **phase 3**, inside the three classes it gates, downstream of the phase-1
+check the value is needed to pass.
+
+**Measured across 2,989 stored traces:**
+
+| skill | phase-1 | with a representation | phase-5 verdicts |
+|---|---|---|---|
+| `business_logic_ordering_constraint` | 64 | **0** | **0** |
+| `business_logic_single_use_action` | 104 | **1** | **0** |
+| `business_logic_quantity_bound` | 50 | 38 | 18 |
+
+Assertions carrying `evidence_source="rejection"`: **zero, ever.** The one
+`single_use_action` dispatch that did see a record evidenced `entity_type` and
+`ownership_relation` — not the facet it needed.
+
+**Where the strict reading has to soften, and it matters.** The cycle is not
+quite closed: `_test_constraint_violation` passes phase 1 off a *collection's*
+representation, reaches phase 3, and fills the shared pool for a later class. That
+bootstrap edge exists, so "zero reachable paths" overstates it. It is dead for a
+second and independent reason: what `_remember_rejection` is handed is the
+response to a **malformed-value control** (`clinkz-control-not-a-valid-value`),
+which is a SCHEMA refusal — while `_SINGLE_USE_REJECTION_RE` and
+`_ORDERING_REJECTION_RE` look for BUSINESS-RULE refusals ("this coupon has
+already been used", "must be paid first"). A type error cannot say that. **One
+bootstrap edge, dead for a reason of its own** is the accurate statement, and it
+is a better guide to the fix than "unreachable" would be: seeding the pool is not
+enough, the pool has to be fed a refusal of the right KIND.
+
+**The domain — is anything else this shape?**
+`tests/test_agents/test_precondition_sources_are_reachable.py` computes it: an
+instance attribute a methodology gate READS whose every *informative* writer sits
+in a `_test_*` method or a helper reachable only from one. **11 members.** Nine
+are latches — a dedup set, a once-per-run flag, an accumulator read where it is
+written. Two have a gate that reads without writing, and they point opposite
+ways:
+
+* `_p7_runs_used` — read by `_p7_oracle` against `_MAX_P7_RUNS`. A **CEILING**:
+  the empty value PASSES, and being downstream-written is the point.
+* `_business_logic_rejections` — read by `_business_logic_intent` as
+  **EVIDENCE**: the empty value FAILS. The only member of its class.
+
+Two refinements are what make the sweep see anything at all, and both are the
+guard-domain law in miniature: an assignment that can only write the EMPTY value
+is not a source but the declaration of an absence (`= []` in `__init__` makes a
+naive sweep report **zero** members for the whole tree), and the gate usually
+lives in a shared helper rather than the `_test_*` body, so restricting reads to
+`_test_*` misses the one member the file exists for.
+
+**Disclosed** (`_record_intent_abstention`). The abstention already wrote an
+`InconclusiveMeasurement`, and its sentence was a statement about the TARGET —
+*its surface evidenced nothing here*. For the two self-satisfied facets that is
+not the whole truth, and a reader told only that goes looking at their own
+application. When the representation was empty and the facet is one of the two,
+the reason now adds: *this is a limit of the test, not a reading of the endpoint
+— the only other evidence this class accepts is the application's own refusal
+wording, which the engine collects only from probes it sends AFTER this check has
+passed.* `QUANTITY_BOUND` is excluded deliberately: its source is a collection
+representation, which is upstream of every gate, and it is the facet that works.
 
 ---
 
@@ -482,3 +572,172 @@ decisions, not mechanical ones:
 A deliverable whose URLs read `/auth/forgot-[REDACTED]` is degraded but honest;
 one that is never written is not. The outage half was taken; the trade-off half
 belongs to a round that can weigh it.
+
+### The value half, weighed (2026-09-12) — **State: OPEN — trade**
+
+**Nothing changed in this round. This section is the measurement and the
+options.** Three things are new since the entry above was written, and two of
+them move the decision.
+
+#### 1 · The outage class is NOT closed
+
+The key fix stopped a KEY from being rewritten. It does not stop a VALUE from
+being rewritten into something a required field will not accept. `PentestReport`
+declares `medium_count`, so the four-character floor admits `medi`; `medi` is a
+substring of the VALUE `"medium"` that `Finding.severity` carries; and `severity`
+is one of **four** enum-constrained fields reachable from the report rather than
+free `str` (`Finding.severity`, `Finding.status`, `NotTestedItem.category`,
+`Service.protocol`). Registering `high` alone is enough: no report.json, no
+Markdown, no PDF, the same total outage by a different route.
+
+The comment at the write seam asserted the opposite — *"no field here is more
+constrained than `str`, so a `[REDACTED]` substitution cannot invalidate one"* —
+and it was false in both halves. Corrected in place, and the positive control
+that finds it is held as a STRICT xfail in
+`tests/test_engagement/test_whole_structure_transformations.py`, so the day this
+is fixed the build says so.
+
+**This escalates R14 from "degraded but honest" to "can still produce no
+deliverable at all."**
+
+#### 2 · Boundary-awareness does not fix the cases R14 was opened for
+
+Measured on `92c89d0d`, the bundle the entry's table came from. 711,918 redactions
+sit inside a longer string; classifying each by whether the replaced text was at a
+token boundary:
+
+| | count | would a boundary rule help? |
+|---|---|---|
+| at a token boundary | 256,023 | **no** |
+| mid-word | 455,895 | yes |
+
+And the four named cases, classified individually:
+
+| case | occurrences | at a boundary? | boundary rule |
+|---|---|---|---|
+| `/auth/forgot-[REDACTED]` | 6,227 | yes (`-` before, end after) | **does NOT help** |
+| `[REDACTED]:x:0:0:` | 64 | yes (start, `:` after) | **does NOT help** |
+| `_[REDACTED]_javascript_attacks` | 25 | no | would help — *already fixed by the key rule* |
+| `[REDACTED]_field` | 2 | no | would help — *already fixed by the key rule* |
+
+So the two cases that motivate the entry are both at token boundaries, and the
+two a boundary rule reaches are both KEYS the key fix already closed. A boundary
+rule buys 64% of the raw occurrences and **none of the argument**.
+
+#### 3 · What the 711,918 actually is
+
+Overwhelmingly cal.com's own i18n bundle, where `admin` appears in ordinary
+English prose: *"Only the organization's [REDACTED] or owner can manage SSO
+settings"*. The crawl fetched the translation chunks and value redaction rewrote
+their vocabulary. That is the blast radius on a bundle-heavy target, and it is
+also the clue: **the corruption is concentrated in artifacts written far away in
+time from the eight credential POSTs that justify the registration.**
+
+### The options
+
+| # | option | closes the outage? | cost |
+|---|---|---|---|
+| **A** | boundary-aware replacement | no | leaves 256,023 occurrences and both named cases; new rule, no argument served |
+| **B** | a length threshold on `register_secret` | no | `password` is eight characters and still eats 6,227 URLs. Wrong axis |
+| **C** | a vocabulary of words too common to replace globally | partly | a new vocabulary to own and to keep current against every target's prose; misses any word not in it |
+| **D** | register the guess only once it WORKS | yes, for the sweep | the window the registration comment defends: the attempt's own action-log body excerpt carries the candidate while it is being tried |
+| **E** | **scoped registration — register for the attempt, unregister on failure** | yes, for the sweep | none that D does not already pay, and it pays it only inside the window |
+| **F** | redact values only under credential-bearing keys (provenance, not spelling) | yes | reintroduces exactly the gap the registry exists to close: *"it catches the route nobody thought of"* |
+| **G** | exact-leaf-match instead of substring | yes | too weak — `username=x&password=admin` in a body excerpt is one leaf and would survive. This is a real leak, not a theoretical one |
+| **H** | refuse at intake when an operator credential collides with the engine's own vocabulary | operator half only | does nothing for the catalogue passwords, which are the ones guaranteed to collide with English |
+
+### The recommendation, and the decision that was delegated
+
+**E, plus H.** They are independent and address the two different registration
+sources.
+
+**E — scoped registration.** The registration's lifetime should match the window
+in which the secret can leak, not the run. A catalogue password is public until
+it works; register it before the POST, and on a failed attempt unregister it.
+Artifacts written *during* the attempt keep the redaction, which is the whole of
+what the comment at the registration site defends — and it is a handful of action
+log lines, not a crawl of a translation bundle. A guess that WORKS stays
+registered, because at that moment it stops being public and becomes a live
+credential for the client's system. This removes essentially all of the 711,918,
+because the crawl and the exploit phase do not run inside a credential POST.
+
+**H — collision refusal at intake.** The delegated decision was whether a
+registered secret below some threshold should be refused. **No — length is the
+wrong axis**, and the measurement is the argument: `password` is eight characters
+and corrupts 6,227 URLs in one bundle. The same instinct on the right axis is a
+*collision* check, not a length check: at `register_credential_set`, test the
+operator's password against the report model's 125 declared field names and its
+four enum vocabularies, and refuse the engagement with a message naming the
+collision. That converts a silent total outage into a loud refusal at setup,
+costs nothing at runtime, and weakens redaction not at all. It cannot help the
+catalogue passwords — `admin` and `root` will collide with any English target —
+which is exactly why E is the other half and not an alternative to it.
+
+**Not chosen: F and G**, because both weaken the guarantee rather than narrow its
+window, and the module docstring's case for value redaction — a live run wrote
+five session JWTs into `trace.jsonl`, one carrying a password hash, with every
+writer already redacting correctly — is a case about the route nobody thought of.
+E narrows *when* the rule is armed; F and G narrow *what it can catch*.
+
+---
+
+## R15 · The disclosure gate shares the write path's blind spot for a JSON-spelled header
+
+**State: OPEN.** Opened 2026-09-12 by the security review of the in-process
+recorder, whose write-path half is FIXED in the same round.
+
+**What was fixed.** `HTTPClientTool._execute_aiohttp` hands its response envelope
+to the recorder as a **string**, so the outer `redact_structure` pass saw one
+opaque `stdout` value and applied only the string rules — and those cannot find a
+target-named cookie inside JSON. `COOKIE_INLINE_RE` wants `set-cookie:`; JSON
+spells it `"Set-Cookie":`, with a quote between the name and the colon, and the
+model spelling `set_cookie` has an underscore where the pattern needs a hyphen.
+The one copy the rule does reach is inside `raw`, where the header sits on its own
+line — but `json.dumps` escapes the newlines, so the match's `[^\r\n]+`
+runs to the end of the blob and covers nothing before `raw`. **Measured on a synthetic
+exchange: 2 of 3 copies of the session cookie survived.** The envelope is now
+redacted as a STRUCTURE before it is recorded
+(`http_client.py::_redact_envelope_for_the_record`), which is what puts
+`response_headers` and `set_cookie` in front of the key-aware branch; the live
+envelope is untouched, because the engine needs the real cookie to seat the
+session. Guard: the response side of
+`tests/test_observability/test_every_exec_mode_records.py::test_the_session_cookie_does_not_survive_into_the_record`,
+observed red against the pre-fix code.
+
+**Never observed in the wild, and the zero is the uninformative kind.** Across
+every stored bundle: **3,358** in-process invocation records, **3,170** parseable
+envelopes, and **zero** carrying a `Set-Cookie` at all. The recorder is one commit
+old and the sessions in those runs were seated through `AuthTool`, which records
+differently. So the corpus says the leak never fired, not that it could not — the
+same survivorship shape as LESSONS #59.
+
+**What stays open: the GATE.** `engagement/artifact_scan.py` detects through
+`credential_shapes.find_shapes`, which shares `COOKIE_INLINE_RE` — by design, so
+that a shape the redactor removes is a shape the scanner looks for. The
+consequence is that the gate had the *same* blind spot and would have certified
+such a bundle CLEAN. The write path no longer produces one, but the gate's job is
+to catch what the write path missed, from any writer.
+
+**Why a JSON-spelled rule was NOT added.** Measured before writing it, over
+315,213 files in `outputs/`: a candidate
+`"(?:set[-_])?cookies?"\s*:\s*"…"` rule matches **3,194** unredacted sites, and
+**not one of them is a cookie value** — 2,957 are the empty string (the
+deliberate "no cookie was sent" record, whose absence cannot state the fact),
+214 are the bare name `dvwaSession`, 23 the bare name `PHPSESSID`. As a redaction
+rule it is a no-op on the entire corpus; as a detector it is a no-op too, because
+`_COOKIE_PAIR_RE` needs a `name=value` pair and none of the 3,194 has one. Adding
+an always-on rule with no demonstrable true positive, in the round whose lesson is
+that over-redaction cost every deliverable, is the wrong trade — and invariant 77
+is explicit that a detector which never fires correctly is one an operator learns
+to skim.
+
+**What the round that takes this should do instead.** The gap is not "one missing
+regex", it is that the shape vocabulary is defined over the WIRE spelling of a
+header while artifacts increasingly carry headers as STRUCTURED JSON. The
+candidates are (a) make the gate parse a `.json` artifact and walk it with the
+same key-aware rule the writer uses, rather than scanning it as text — which
+needs the gate to keep working on the non-JSON artifacts too; or (b) assert at
+the writers that no header-bearing structure is ever flattened to a string before
+redaction, which is a computed domain over the write sites rather than a
+detector. (b) is closer to this codebase's grain: it removes the producer instead
+of widening the net.

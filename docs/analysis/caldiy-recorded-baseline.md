@@ -81,3 +81,41 @@ marker as `[REDACTED]:x:0:0:`.
 That is worth knowing before reading `918e2b71`'s findings: **the URLs and payload
 strings in it are partially redacted by a rule that should not have touched
 them.** The invocation records, the counts and the class identities are intact.
+
+## 5 · `918e2b71` is NOT a client-facing baseline
+
+Stated plainly, because §4 stops one step short of the consequence and a bundle
+that is a reference for one purpose gets reached for as a reference for every
+purpose.
+
+Measured on the bundle:
+
+| | |
+|---|---|
+| client-facing URL fields in `report.json` (`target` / `endpoint` / `a_endpoint` / `b_target`) | 18 |
+| …carrying a redaction marker | **6** |
+| the damaged spelling | `http://127.0.0.1:3100/auth/forgot-[REDACTED]` |
+| occurrences in the Markdown deliverable | 13 of its 64 markers |
+| redactions sitting inside a longer string, bundle-wide | **728,995** |
+
+**A finding whose endpoint is unreadable is a finding a client cannot act on.**
+Six of eighteen is not a blemish on a deliverable, it is a third of the
+addresses. So this run is the reference for *what the engine did* — every request
+re-derivable from the invocation records, which is what §1 established — and it
+is **not** a document to put in front of a client, and not the artifact to
+measure client-facing rendering against. Both halves of that sentence have to
+travel together.
+
+Two further readings hold, and neither is a client-facing qualification:
+
+* the damage is confined to URL and payload STRINGS. Invocation records, counts,
+  class identities and the audit verdict are intact, which is what makes §1–§3
+  sound;
+* 728,995 is not a measure of how much was at risk. It is overwhelmingly the
+  target's own i18n bundle, where the word `admin` appears in ordinary English
+  prose — the crawl fetched cal.com's translation chunks and value redaction
+  rewrote their vocabulary. That is the scale of the R14 blast radius on a
+  bundle-heavy target, and it is the reason the value half cannot be left as
+  "degraded but honest" indefinitely.
+
+The successor run that closes R14 is the one to re-measure this section against.

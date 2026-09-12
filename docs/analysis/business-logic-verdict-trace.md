@@ -170,3 +170,38 @@ own constraint** — the engine measured a control working. Filing that as a
 every well-built endpoint the class ever meets. That is the permanent-false-alarm
 shape invariant 77 exists for, at the lead layer rather than the alarm layer.
 Registered as R12.
+
+## 6 · R13 has a name now: UNREACHABLE PRECONDITION
+
+**2026-09-12.** §4 landed the disclosure and left the cause as "R13". The cause
+turned out to be a *kind* of defect rather than one defect, so it now has a
+register state, a computed domain and a sharper disclosure. Full account:
+[`register.md`](register.md) R13.
+
+The short version of what changed here:
+
+* **Measured on 2,989 traces rather than one target.** `ordering_constraint` 64
+  phase-1 / **0** with a representation / 0 verdicts; `single_use_action` 104 /
+  **1** / 0; `quantity_bound` 50 / 38 / **18**. Assertions carrying
+  `evidence_source="rejection"`: **zero, ever.**
+* **The cycle is not quite closed, and the softening is the useful part.**
+  `_test_constraint_violation` bootstraps off a collection's representation and
+  can fill the shared pool for a later class, so the graph has an edge. It is
+  dead for an independent reason: `_remember_rejection` is fed the response to a
+  **malformed-value control**, which is a SCHEMA refusal, while the single-use
+  and ordering regexes look for BUSINESS-RULE refusals. Seeding the pool earlier
+  is therefore *not sufficient* — it has to be fed a refusal of the right KIND,
+  which is a better brief for whoever fixes it than "unreachable" would have
+  been.
+* **The disclosure now names whose limit it is.** *"Its surface evidenced nothing
+  here"* sends a reader to look at their own application. When the representation
+  was empty and the facet is one of the two self-satisfied ones, the reason adds
+  that this is a limit of the test rather than a reading of the endpoint, and why.
+* **The domain is computed** — 11 attributes read by a methodology gate and
+  written only downstream of one; 9 latches, 1 ceiling (`_p7_runs_used`, where
+  the empty value PASSES), 1 evidence (`_business_logic_rejections`). Guard:
+  `tests/test_agents/test_precondition_sources_are_reachable.py`.
+
+R11's open half is unchanged by this: `capability=SERVER_SIDE` on the two classes
+still reads as a claim the engine has never exercised, and it stays as it is
+until the cause is fixed rather than being downgraded and reverted.
