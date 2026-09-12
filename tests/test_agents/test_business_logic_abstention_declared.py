@@ -220,3 +220,65 @@ def test_a_different_reason_keeps_its_own_row() -> None:
         "_test_brute_force",
         "_test_repeatability",
     }
+
+
+class TestWhoseLimitationIsIt:
+    """R13: the abstention has to say when the cause is the ENGINE, not the target.
+
+    The reason above is a statement about the endpoint — *its surface evidenced
+    nothing here*. For two of the three facets that is not the whole truth. With
+    no collection representation, the only remaining evidence source is the
+    rejection pool, and the pool is written by ``_remember_rejection`` at phase 3
+    — downstream of the phase-1 gate it is needed to pass. The check therefore
+    cannot pass on an endpoint of that shape whatever the application does, and a
+    reader told only the first sentence goes looking at their own application.
+
+    ``QUANTITY_BOUND`` is excluded deliberately: it is evidenced from a
+    collection's representation, which is upstream of every gate, and it is the
+    one facet of the three that has ever reached a verdict.
+    """
+
+    @pytest.mark.parametrize(
+        "facet_name",
+        ["SINGLE_USE_ACTION", "ORDERING_CONSTRAINT"],
+    )
+    def test_a_structural_abstention_names_the_engine(self, agent: Any, facet_name: str) -> None:
+        from clinkz.agents._business_logic import IntentFacet
+
+        agent._record_intent_abstention(
+            test_method="_test_repeatability",
+            page=_Page("http://target.test/rest/basket/1/checkout"),
+            facet=getattr(IntentFacet, facet_name),
+            records_observed=0,
+        )
+        reason = agent._inconclusive_measurements[0].reason
+        assert "a limit of the test, not a reading of the endpoint" in reason
+        assert "AFTER this check has passed" in reason
+
+    def test_a_representation_that_answered_is_a_reading_of_the_endpoint(self, agent: Any) -> None:
+        """With records in hand the class DID read the surface and found nothing.
+
+        The engine-limit sentence would be false here: the evidence source was
+        available and answered. One recorded Juice Shop dispatch is this case.
+        """
+        from clinkz.agents._business_logic import IntentFacet
+
+        agent._record_intent_abstention(
+            test_method="_test_repeatability",
+            page=_Page("http://target.test/rest/image-captcha/1"),
+            facet=IntentFacet.SINGLE_USE_ACTION,
+            records_observed=1,
+        )
+        assert "a limit of the test" not in agent._inconclusive_measurements[0].reason
+
+    def test_the_quantity_bound_facet_never_claims_the_engine_limit(self, agent: Any) -> None:
+        """The facet that works reads an upstream source and must not borrow this."""
+        from clinkz.agents._business_logic import IntentFacet
+
+        agent._record_intent_abstention(
+            test_method="_test_constraint_violation",
+            page=_Page("http://target.test/rest/products"),
+            facet=IntentFacet.QUANTITY_BOUND,
+            records_observed=0,
+        )
+        assert "a limit of the test" not in agent._inconclusive_measurements[0].reason
