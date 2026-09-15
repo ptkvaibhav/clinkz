@@ -42,13 +42,16 @@ from clinkz.engagement.gate import (
     require_window_open,
 )
 from clinkz.engagement.secrets import (
+    CredentialCollisionError,
     CredentialFileError,
     clear_secrets,
     load_credential_file,
     prompt_for_credentials,
+    provisional_secret,
     redact,
     redact_structure,
     register_secret,
+    release_secret,
 )
 
 from clinkz.engagement.auth_state import (  # isort: skip — must follow gate/secrets
@@ -71,6 +74,7 @@ __all__ = [
     "AuthMechanism",
     "AuthStateError",
     "AuthorizationRequiredError",
+    "CredentialCollisionError",
     "CredentialFileError",
     "DryRunPlan",
     "EngagementAbortedError",
@@ -84,10 +88,12 @@ __all__ = [
     "load_credential_file",
     "open_engagement",
     "prompt_for_credentials",
+    "provisional_secret",
     "redact",
     "redact_shapes",
     "redact_structure",
     "register_secret",
+    "release_secret",
     "render_dry_run",
     "require_authorization",
     "require_window_open",

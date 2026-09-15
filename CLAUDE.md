@@ -745,6 +745,19 @@ under the repo root; the header table at the top of this file links them all.
     that cannot begin is a capability the engine lacks, never a reading of the
     endpoint. **Detail → `docs/analysis/register.md` R13.**
 
+110. **A registration is scoped to WHERE the secret can appear, and a credential
+    that spells the engine's own schema is refused at INTAKE.** A swept guess is
+    armed for its attempt and released when it fails (`provisional_secret`); one
+    that WORKS is kept. The registry is COUNTED, so one source's release cannot
+    disarm another's. A credential equal to a declared field name, or inside a
+    declared enum value, is REFUSED at intake naming the colliding key
+    (`engagement/schema_vocabulary.py`, computed from the models — the catalogue
+    words collide with nothing and are the OTHER half's job). And the closed
+    vocabulary the ENGINE declares is schema in a VALUE's position too, matched
+    EXACTLY: containment would hand the target a suppression primitive.
+    **Detail → `.claude/skills/clinkz-dev/SKILL.md` §7,
+    `docs/analysis/register.md` R14.**
+
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/

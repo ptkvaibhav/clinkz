@@ -573,7 +573,10 @@ A deliverable whose URLs read `/auth/forgot-[REDACTED]` is degraded but honest;
 one that is never written is not. The outage half was taken; the trade-off half
 belongs to a round that can weigh it.
 
-### The value half, weighed (2026-09-12) — **State: OPEN — trade**
+### The value half, weighed (2026-09-12) — **State: CLOSED 2026-09-15**
+
+*The weighing below is kept as written, because it is the argument that picked
+the fix. What landed is at the end of the entry.*
 
 **Nothing changed in this round. This section is the measurement and the
 options.** Three things are new since the entry above was written, and two of
@@ -681,10 +684,81 @@ E narrows *when* the rule is armed; F and G narrow *what it can catch*.
 
 ---
 
+### What landed (2026-09-15) — **E + H, and the outage class as well**
+
+The recommendation was **E + H**. Both landed, and the measurement taken while
+pricing them showed the outage class above (§1) was also a small fix rather than
+a structural one, so it landed with them. Three changes, three different sources:
+
+| | what | where |
+|---|---|---|
+| **E** | a swept guess is armed for the ATTEMPT and released when it fails; one that WORKS is kept, because at that moment it stops being a public default | `secrets.provisional_secret` / `orchestrator._attempt_login` |
+| **H** | an operator credential that is a word the engine's own models declare is REFUSED at intake, naming the colliding key and the change that resolves it | `secrets.register_credential_set` / `engagement/schema_vocabulary.py` |
+| **§1** | a LEAF that is exactly one of the engine's own closed-vocabulary words is schema in a value's position, and is not rewritten | `secrets._redact_leaf` |
+
+**The registry is COUNTED, not a set, and that is the part worth remembering.**
+E releases a registration, and two sources register independently — the
+operator's credential file and the sweep's catalogue. With a set, a failed guess
+of a value the operator also supplied removes the OPERATOR's registration, and
+the second redaction layer is silently off for the rest of the run. That is the
+same failure R14 is about, arriving through the fix for it. A count releases only
+the registration its own caller took
+(`test_a_failed_guess_does_not_disarm_another_sources_registration`).
+
+**H's boundary is a test, not a footnote.** `admin`, `root` and `test` collide
+with no declared field name and no declared enum value in this tree, and they are
+exactly the words that rewrote 711,918 sites. The intake refusal cannot help them
+and does not pretend to — `test_the_catalogue_words_are_not_refused` pins that,
+so the two halves are not mistaken for one. The predicates differ for the same
+reason the mechanisms do: a field name collides on **equality** (only a single
+registration consuming a key end to end rewrites one — a proper substring leaves
+residue and the key survives), an enum value on **containment** (it is data and
+keeps substring redaction, so any substring of it is enough).
+
+**§1's fix, and why it is not the key rule again.** `_redact_leaf` exempts a leaf
+that is EXACTLY a declared enum value — 152 of the 167 the models declare are
+long enough for a registration to reach. Matching on containment instead would
+hand the target a suppression primitive (a body echoing `medium` beside the
+credential would carry the credential out), which is invariant 55's rule, so the
+match is exact and ordinary data keeps substring redaction in full. The strict
+xfail that tracked this is now a passing control, plus two new ones: the
+exemption is exact, and the domain is asserted in both directions over every
+declared enum value rather than a list.
+
+**What is NOT closed, stated.** A secret DISCOVERED mid-run whose whole value is
+one of those 152 words (`bash`, `HS256`, …) now survives in an artifact. An
+operator credential cannot reach that state — H refuses it — so the residue is
+`exploit.py`'s registration of a found artifact's value, at four to six
+characters, which the module docstring already declares as the honest gap in
+value redaction. And an operator credential that is a substring of a **free
+`str`** value is still degraded-but-honest: `/auth/forgot-password` renders as
+`/auth/forgot-[REDACTED]` if the operator's password is literally `password` —
+except that H refuses that one too, because `password` is a declared field name.
+
+**The measurement that decided §1 was small.** Run before writing it: the
+candidate rule makes the strict xfail XPASS, the protected set is 152 values,
+and every one of them is lowercase words and underscores except ten JWT
+algorithm names and `jinja2`. Nothing in that set is plausible as a credential,
+which is what made it a ten-line change rather than schema-aware redaction
+(passing the model class down to every writer that calls `redact_structure` on a
+plain dict — structural, and it would have waited).
+
+---
+
 ## R15 · The disclosure gate shares the write path's blind spot for a JSON-spelled header
 
 **State: OPEN.** Opened 2026-09-12 by the security review of the in-process
 recorder, whose write-path half is FIXED in the same round.
+
+**Provenance, because it changes how the zero below reads.** The leak was
+INTRODUCED by the audit fix — `72dd1ba`, the commit that made local mode record
+at all (invariant 105). Before it, a local run wrote no invocation records, so
+there was nothing for the recorder to leak into and nothing for the gate to
+certify; the gate would have said CLEAN because the bundle was empty, not because
+it was clean. So the corpus zero below is uninformative **by construction**, and
+the reason is worth keeping attached to it: a detector's zero means "never fired"
+and says nothing about "could not fire" unless you also know the producer was
+live. This one's producer is one commit old.
 
 **What was fixed.** `HTTPClientTool._execute_aiohttp` hands its response envelope
 to the recorder as a **string**, so the outer `redact_structure` pass saw one

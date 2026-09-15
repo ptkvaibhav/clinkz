@@ -75,7 +75,13 @@ src/clinkz/
 ├── engagement/       # gate (the refusals), cli_inputs (operator flags -> validated models:
 │                     #   target/scope classification, authorization assembly),
 │                     #   resume (rebuild a stopped run's REPORT, never its testing),
-│                     #   secrets (credentials + redaction chokepoint),
+│                     #   secrets (credentials + redaction chokepoint; a registration
+│                     #   is SCOPED — provisional_secret arms a swept guess for its
+│                     #   attempt only, and the registry is COUNTED so one source's
+│                     #   release cannot disarm another's),
+│                     #   schema_vocabulary (the engine's OWN declared words, computed
+│                     #   from the models: a credential that spells one is refused at
+│                     #   INTAKE, and such a word in a VALUE position is schema),
 │                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
 │                     #   shared by the redactor and the gate), artifact_scan (the
 │                     #   disclosure gate: outputs/<id>/ AND the companion region

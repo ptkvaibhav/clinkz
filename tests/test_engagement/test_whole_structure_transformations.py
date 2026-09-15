@@ -55,15 +55,21 @@ value half of R14 in ``docs/analysis/register.md``.
 What the control found that the key fix does not reach
 ------------------------------------------------------
 
-Run against the model's own vocabulary, this control fails at
+Run against the model's own vocabulary, this control failed at
 ``model_validate`` — and not on a key. ``PentestReport`` declares
 ``medium_count``, so the control registers ``medi``; ``medi`` is a substring of
 the VALUE ``"medium"`` that ``Finding.severity`` carries; substring redaction
-makes it ``"[REDACTED]um"``; and ``severity`` is one of **four** enum-constrained
+made it ``"[REDACTED]um"``; and ``severity`` is one of **four** enum-constrained
 fields reachable from ``PentestReport`` rather than free ``str``. So the
-deliverable is lost again, by a different route, and the key fix cannot reach it
-because nothing here is a key. Held as a STRICT xfail, so the day R14's value
-half lands it XPASSes and forces the register entry closed.
+deliverable was lost again, by a different route, and the key fix could not reach
+it because nothing there is a key.
+
+It was held as a STRICT xfail until R14's value half landed, and the rule that
+closed it is the same one stated for keys, applied to the one kind of value that
+is also schema: **a closed vocabulary the ENGINE declares is not data**
+(``secrets._redact_leaf``). The match is EXACT — a leaf that merely contains one
+of those words is ordinary data and keeps substring redaction, because a
+containment rule would hand the target a suppression primitive.
 """
 
 from __future__ import annotations
@@ -447,29 +453,86 @@ def test_a_credential_that_is_a_substring_of_every_schema_key_still_writes_a_rep
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "R14, the VALUE half. The same control, carried one step further to the failure "
-        "that actually happened — the model rejecting its own dump — still fails, and NOT "
-        "on a key. PentestReport declares `medium_count`, so the control registers `medi`, "
-        "and `medi` is a substring of the VALUE 'medium' that `Finding.severity` carries. "
-        "Substring redaction turns it into '[REDACTED]um' and the enum refuses it, so no "
-        "report.json, no Markdown and no PDF are written — the same total outage the key "
-        "fix closed, reached by a different route. Four fields reachable from PentestReport "
-        "are enum-constrained rather than free `str`, which is what makes a value "
-        "substitution able to invalidate the document. Strict, so the day the value half "
-        "lands this XPASSes and forces R14 closed."
-    ),
-)
 def test_a_credential_inside_a_schema_value_still_writes_a_report() -> None:
-    """The half the key fix does not reach. See the xfail reason and R14."""
+    """R14's VALUE half, which was a strict xfail here until it landed.
+
+    The same control as above, carried one step further — to the failure that
+    actually happened, the model rejecting its own dump. It used to fail here,
+    and NOT on a key: ``PentestReport`` declares ``medium_count``, so the control
+    registers ``medi``; ``medi`` is a substring of the VALUE ``"medium"`` that
+    ``Finding.severity`` carries; substring redaction turned it into
+    ``"[REDACTED]um"`` and the enum refused it. No report.json, no Markdown, no
+    PDF — the same total outage the key fix closed, by a route the key fix
+    cannot see, because nothing here is a key.
+
+    Four fields reachable from ``PentestReport`` are enum-constrained rather than
+    free ``str`` (``Finding.severity``, ``Finding.status``,
+    ``NotTestedItem.category``, ``Service.protocol``), which is what makes a
+    VALUE substitution able to invalidate the document.
+
+    Closed by ``secrets._redact_leaf``: a closed vocabulary the engine declares
+    is schema in a value's position too, matched EXACTLY so that ordinary data
+    containing one of those words keeps substring redaction in full.
+    """
     dumped = _populated_report().model_dump(mode="json")
     for name in _declared_field_names():
         if len(name) > _MIN_REDACTABLE_LEN:
             register_secret(name[:_MIN_REDACTABLE_LEN])
             register_secret(name[-_MIN_REDACTABLE_LEN:])
-    PentestReport.model_validate(redact_structure(dumped))
+    revalidated = PentestReport.model_validate(redact_structure(dumped))
+    assert revalidated.findings[0].severity.value == "medium", (
+        "the enum value survived, which is the whole of the fix"
+    )
+
+
+def test_the_leaf_exemption_is_exact_and_does_not_protect_ordinary_data() -> None:
+    """The exemption is a match on the WHOLE leaf, never containment.
+
+    A leaf that merely contains an engine word is data — a response body, a log
+    line, a URL — and keeps substring redaction. Widening this to containment
+    would hand the target a suppression primitive: a body echoing the word
+    ``medium`` beside the credential would carry the credential out.
+    """
+    register_secret("medi")
+    out = redact_structure(
+        {
+            "severity": "medium",
+            "body": "risk=medium&note=medical",
+            "url": "http://target.example/media/upload",
+        }
+    )
+    assert out["severity"] == "medium", "an exact engine word is schema"
+    assert "medi" not in out["body"], "a leaf CONTAINING one is data and keeps redaction"
+    assert "medi" not in out["url"]
+
+
+def test_the_leaf_exemption_covers_every_enum_the_models_declare() -> None:
+    """The domain is computed, and both directions are asserted.
+
+    Forward: every registerable enum value the models declare survives a
+    registration of one of its own substrings. Backward: a word that is NOT
+    declared gets no protection — otherwise the exemption is a hand-list wearing
+    a computed label.
+    """
+    from clinkz.engagement.schema_vocabulary import declared_enum_values
+
+    protected = [v for v in declared_enum_values() if len(v) >= _MIN_REDACTABLE_LEN]
+    assert len(protected) > 100, f"only {len(protected)} protectable values — the walk broke"
+
+    for value in protected:
+        clear_secrets()
+        register_secret(value[:_MIN_REDACTABLE_LEN])
+        assert redact_structure({"f": value})["f"] == value, (
+            f"the declared enum value {value!r} was rewritten by a registration of its "
+            "own first four characters"
+        )
+
+    clear_secrets()
+    register_secret("sett")
+    assert redact_structure({"f": "settlement"})["f"] != "settlement", (
+        "an undeclared word must keep substring redaction — the exemption is the "
+        "engine's vocabulary, not a list of words that look like schema"
+    )
 
 
 def test_a_common_word_credential_produces_a_complete_report_with_the_value_gone() -> None:

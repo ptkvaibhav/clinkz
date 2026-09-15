@@ -121,3 +121,44 @@ def test_a_non_string_key_is_returned_unchanged() -> None:
     """Integer and tuple keys reach the walker from model dumps and must survive."""
     out = redact_structure({1: "a", (2, 3): "b"})
     assert set(out) == {1, (2, 3)}
+
+
+def test_two_registrations_that_tile_a_key_do_not_collide_two_fields_into_one() -> None:
+    """The tiling collision, as its own regression. A dropped VALUE has no symptom.
+
+    Found by the positive control over the report model's own key vocabulary
+    (``test_whole_structure_transformations.py``), which registers the leading
+    and trailing four characters of every declared field name. With ``test``,
+    ``_end``, ``find`` and ``ings`` registered, ``test_end`` and ``findings``
+    each redact to ``[REDACTED][REDACTED]`` — the SAME key. The first rule asked
+    only whether anything survived the markers, which this satisfies, so both
+    keys were rewritten and the second write **overwrote the first value**.
+
+    That is worse than the outage it sits beside, not better. A rejected dump
+    announces itself: the run ends and no report exists. A collided key writes a
+    complete, well-formed report in which one field silently carries another
+    field's data, and nothing anywhere says so. A key that is credential
+    material is credential material ONCE; two coincidences of spelling are two
+    coincidences.
+    """
+    clear_secrets()
+    for candidate in ("test", "_end", "find", "ings"):
+        register_secret(candidate)
+
+    out = redact_structure(
+        {
+            "test_start": "2026-09-12T18:20:11Z",
+            "test_end": "2026-09-12T19:22:26Z",
+            "findings": [{"title": "Reflected parameter"}],
+        }
+    )
+
+    assert len(out) == 3, (
+        f"three fields went in and {len(out)} came out — two keys tiled to the same "
+        "redacted spelling and one field's value was silently discarded"
+    )
+    assert out["test_end"] == "2026-09-12T19:22:26Z", (
+        "test_end carries findings' value: the report is complete, well-formed, and "
+        "wrong, which is the failure with no symptom"
+    )
+    assert out["findings"] == [{"title": "Reflected parameter"}]

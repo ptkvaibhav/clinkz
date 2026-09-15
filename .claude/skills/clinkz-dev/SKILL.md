@@ -349,10 +349,16 @@ Two rules follow.
 - On Windows, multi-line commit/PR bodies go **via a file**: `git commit -F <file>` / `gh pr create --body-file <file>` — a `-m "$var"` with embedded `"` breaks PowerShell's arg parser.
 - Maintain **one open PR** for the branch against `main`; update its description (the aggregate narrative) on every push. A **structural change** (adds/removes/renames a file, agent, tool, model, config option, or alters architecture) → update **ALL** affected docs (`README.md`, `CLAUDE.md`, `CLINKZ_V2_IMPLEMENTATION.md`, `docs/`, `CONTRIBUTING.md`) in the **same push**. Stale docs = task not done.
 
-**The three pre-push gates (never bypass; fix the root cause — no blanket `# noqa`/`# type: ignore`, no skip/xfail to stay green):**
+**The four pre-push gates (never bypass; fix the root cause — no blanket `# noqa`/`# type: ignore`, no skip/xfail to stay green):**
 1. **Lint** — `ruff check src/ tests/` + `ruff format --check src/ tests/`; also clean up every file the diff touches (dead code, naming, stale comments, `None` guards, no hardcoded secrets).
-2. **Keyless test gate** — `pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration`. **Capture the exit code directly** — `pytest … > out.txt 2>&1; echo "EXIT=$?"` — **NEVER pipe through `tail`/`&&`** (that reports the *pipe's* exit — a false green). Container gate (separately, serially, when containers are up and the change touches scan/exploit/orchestrator): `pytest tests/test_integration/`, `pytest tests/test_skills_dvwa/ -m dvwa_smoke`, `pytest tests/test_skills_juiceshop/ -m juiceshop_smoke`, `pytest -m pipeline_smoke tests/test_pipeline_smoke/`.
-3. **Security review** — `/security-review` on the diff when it touches `tools/`, scope, credentials, LLM I/O, HTTP/network/subprocess, deserialization, user-path file I/O, MCP, or report rendering. Resolve every finding. (Doc/config-only may skip 1–2; gate 3 still applies if runtime behavior can change.)
+2. **Keyless test gate** — **clear the provider keys first** (`config.py` calls `load_dotenv()` at import, so a present `.env` makes the exploit suite issue LIVE calls): `ANTHROPIC_API_KEY="" GEMINI_API_KEY="" GOOGLE_API_KEY="" OPENAI_API_KEY="" pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration`. **Capture the exit code directly** — `pytest … > out.txt 2>&1; echo "EXIT=$?"` — **NEVER pipe through `tail`/`&&`** (that reports the *pipe's* exit — a false green). Container gate (separately, serially, when containers are up and the change touches scan/exploit/orchestrator): `pytest tests/test_integration/`, `pytest tests/test_skills_dvwa/ -m dvwa_smoke`, `pytest tests/test_skills_juiceshop/ -m juiceshop_smoke`, `pytest -m pipeline_smoke tests/test_pipeline_smoke/`.
+3. **Security review** — `/security-review` on the diff when it touches `tools/`, scope, credentials, LLM I/O, HTTP/network/subprocess, deserialization, user-path file I/O, MCP, or report rendering. Resolve every finding.
+4. **Context budget** — `python .claude/hooks/context_budget.py`. Every always-loaded instruction file under its character budget, over a **computed** domain (every `CLAUDE.md` in the tree plus `.claude/LESSONS.md`), because the failure it prevents is silent truncation — rules simply not in effect. Doc/config-only changes may skip 1–2; **gate 4 never skips**, since a doc-only change is exactly the change it guards. Gate 3 still applies if runtime behavior can change.
+
+**Two rules about how a gate is READ, both paid for in one round:**
+
+- **A gate result is read from the gate's own output, or it is not a result.** The exit-code rule above is the first face of this; the second is a gate that outlives its foreground window. A long run moved to the background reports the exit code of whatever the shell ran LAST, so a `pytest …; cp backup src/file.py` line comes back `EXIT=0` on the copy while the suite underneath it was red. Same false green as the pipe, one layer out. Write the gate's own status into its own file (`pytest … > out.txt 2>&1; echo "EXIT=$?" >> out.txt`), run NOTHING else on that line, and read the verdict out of `out.txt` — never out of the task's reported exit code, and never out of a summary line that may have been written by a different command.
+- **The tree is frozen for the duration of a gate run.** `pytest` imports modules once and then resolves `inspect.getsource`, AST walks and line numbers against the file ON DISK, so an edit landing mid-run is read against a module image that no longer matches it. The keyless gate takes ~17–18 minutes on this machine, which is a long time to sit still and exactly why the temptation exists. It cost two invalidated runs and one phantom failure from a stale `getsource` line number in a single session — the phantom being the worse of the two, because an invalidated run announces itself and a phantom sends you debugging code that is already correct. If there is work to do while a gate runs, do the work that cannot move the tree the gate is reading: measurements in the scratchpad, `docs/` prose, reading. Start the run, then stop editing `src/` and `tests/` until it reports.
 
 **Report results raw.** Give the **real** artifact paths — `outputs/<id>/report_<id>.json` / `.md`, `outputs/<id>/trace.jsonl` — with **no self-grading, no inflated coverage**. The raw artifacts are the evidence; let them speak. A live-pipeline "confirmed" is **not** proof: read the finding's own evidence (payload + where the indicator surfaced + status) and replay it against the live target before trusting the label.
 
@@ -554,13 +560,66 @@ Built that way, it found two further defects on its first two runs:
    **collide into one key** and one field's value is silently discarded. The rule
    is now *one span and no residue*.
 2. **The value side is the same outage.** Carried through to `model_validate` the
-   control still fails, on a VALUE: `PentestReport` declares `medium_count`, so
+   control still failed, on a VALUE: `PentestReport` declares `medium_count`, so
    `medi` is registered, `Finding.severity="medium"` becomes `"[REDACTED]um"`,
    and `severity` is one of **four** enum-constrained fields reachable from the
-   report rather than free `str`. Held as a STRICT xfail so the day it is fixed
-   the build says so.
+   report rather than free `str`. Held as a STRICT xfail until it was fixed, so
+   that the build would say so the day it was — which is what a strict xfail is
+   for, and why it is not a place to leave something.
 
 The comment at the write seam had asserted the opposite — *"no field here is more
 constrained than `str`, so a `[REDACTED]` substitution cannot invalidate one"* —
 and it was false in both halves. **An invariant stated in a comment and nowhere
 else is a belief.** Where it is load-bearing, compute it.
+
+### The value half, and why it is not the key rule again
+
+**A closed vocabulary the ENGINE declares is schema wherever it sits — in a key
+or in a value.** An enum-constrained field carries a word from a list this
+codebase wrote, not data the target chose, so rewriting one invalidates the
+document it belongs to. `secrets._redact_leaf` exempts a leaf that is **exactly**
+one of those words (152 of the 167 the models declare are long enough for a
+registration to reach).
+
+The exactness is the whole rule and it points at invariant 55. A containment
+version — "do not redact a leaf that *contains* an engine word" — would hand the
+target a suppression primitive: a response body echoing `medium` beside the
+credential would carry the credential out. **A guard must not accept a
+suppression the target can spell.** So ordinary data keeps substring redaction in
+full, and only a leaf with no room to carry anything else is exempt.
+
+### And a registration has a SCOPE, on two axes
+
+The redaction registry is a global substring rule, so two questions decide its
+blast radius, and they have different answers because they have different
+sources.
+
+**Lifetime — how long is this actually a secret?** A default-credential guess is
+public until it works. Registered for the run, one cal.diy engagement replaced an
+ordinary English word at **711,918** sites, mostly inside the target's own i18n
+bundle, plus 6,227 copies of `/auth/forgot-password` and an LFI oracle's own
+`root:x:0:0:` marker. None of that was written near a credential POST.
+`provisional_secret` arms the guess for its attempt and releases it on failure; a
+guess that WORKS is kept, because at that moment it becomes a live credential for
+the client's system.
+
+> **A fix that releases a registration needs a COUNTED registry, not a set.** Two
+> sources register independently, and with a set a failed guess of a value the
+> operator also supplied removes the OPERATOR's registration — the second layer
+> silently off for the rest of the run. That is the original failure arriving
+> through its own fix, which is the shape worth checking for every time a global
+> gets a release path.
+
+**Spelling — can this value damage the structures we write?** That is knowable at
+intake, from the models, so it is REFUSED there rather than discovered at render
+time after a full engagement has run. The vocabulary is computed
+(`engagement/schema_vocabulary.py`) and the two predicates differ because the two
+mechanisms do: a **field name** collides on *equality* (only a single
+registration consuming a key end to end rewrites one; a proper substring leaves
+residue and the key survives), an **enum value** on *containment* (it is data and
+keeps substring redaction, so any substring is enough).
+
+And the refusal's **boundary is a test, not a footnote**: `admin`, `root` and
+`test` collide with nothing declared here, and they are exactly the words that
+did the 711,918. The intake refusal cannot help them and must not look as though
+it does — pin it, so the two halves are never mistaken for one.
