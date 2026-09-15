@@ -51,6 +51,7 @@ from clinkz.models.scan import (
     Endpoint,
     FTPScanResult,
     HTTPScanResult,
+    MethodEvidence,
     ParamLocation,
     ScanResult,
     ServiceScanResult,
@@ -535,7 +536,9 @@ class ScanAgent(BaseAgent):
                         skipped,
                     )
                 for ep_url in safe_crawl:
-                    endpoints.append(Endpoint(url=ep_url))
+                    endpoints.append(
+                        Endpoint(url=ep_url, method_evidence=MethodEvidence.PLATFORM_DEFAULT)
+                    )
                 # Tools like katana return URL strings only — they don't extract
                 # form fields or query-string parameters. Without that, every
                 # Endpoint downstream has params=[] and the Exploit Agent can't
@@ -551,7 +554,9 @@ class ScanAgent(BaseAgent):
             for ep_url in fallback_urls:
                 if is_state_changing_url(ep_url):
                     continue
-                endpoints.append(Endpoint(url=ep_url))
+                endpoints.append(
+                    Endpoint(url=ep_url, method_evidence=MethodEvidence.PLATFORM_DEFAULT)
+                )
 
         # SPA/API route discovery — recover JS-runtime routes (/api, /rest,
         # path-param and concat-built search routes) that an HTML/JS crawl
@@ -628,7 +633,12 @@ class ScanAgent(BaseAgent):
                     known = {ep.url for ep in endpoints}
                     for path_url in safe_fuzz:
                         if path_url not in known:
-                            endpoints.append(Endpoint(url=path_url))
+                            endpoints.append(
+                                Endpoint(
+                                    url=path_url,
+                                    method_evidence=MethodEvidence.PLATFORM_DEFAULT,
+                                )
+                            )
                             known.add(path_url)
             except ValueError:
                 self._logger.warning("No fuzzing tools available")
@@ -667,6 +677,16 @@ class ScanAgent(BaseAgent):
         # by whether its precondition is actually present rather than by a path
         # substring.
         self._apply_response_feature_annotations(endpoints)
+
+        # How each endpoint's VERB came to be known, recorded for the
+        # deliverable. Seven Tier-1 classes are gated on the verb, and
+        # _applicable_methods_for_endpoint is the only producer of their
+        # deterministic buckets - so an endpoint whose verb was never read is
+        # not a lower-ranked candidate for them, it is absent from them. A GET
+        # the engine read and a GET standing in for a verb it could not read
+        # produce the same empty bucket and the same clean report. This is what
+        # tells them apart, and it is recorded on a clean run too.
+        self._record_method_provenance(endpoints)
 
         return HTTPScanResult(
             endpoints=endpoints,
@@ -1068,9 +1088,36 @@ class ScanAgent(BaseAgent):
                 params=list(fields),
                 content_type=content_type,
                 param_locations=dict.fromkeys(fields, location),
+                # The verb the credential POST actually used, observed.
+                method_evidence=MethodEvidence.NAMED,
             )
         )
         self._logger.info("Login endpoint %s added with its proven body shape", url)
+
+    @staticmethod
+    def _record_method_provenance(endpoints: list[Endpoint]) -> None:
+        """Count the discovered surface by how its verbs came to be known.
+
+        The denominator is MEASURED - it is the endpoint list this scan is about
+        to return - so a zero in ``unread`` means "every verb was read" rather
+        than "nobody counted".
+        """
+        from clinkz.observability.plan_alarms import MethodProvenance, record_method_provenance
+
+        counts = dict.fromkeys(MethodEvidence, 0)
+        unread_examples: list[str] = []
+        for ep in endpoints:
+            counts[ep.method_evidence] += 1
+            if ep.method_evidence is MethodEvidence.UNREAD:
+                unread_examples.append(ep.url)
+        record_method_provenance(
+            MethodProvenance(
+                named=counts[MethodEvidence.NAMED],
+                platform_default=counts[MethodEvidence.PLATFORM_DEFAULT],
+                unread=counts[MethodEvidence.UNREAD],
+                unread_examples=unread_examples,
+            )
+        )
 
     def _apply_session_setter_annotations(self, endpoints: list[Endpoint]) -> None:
         """Stamp recorded session-setter refs onto their trigger endpoints.
@@ -1094,7 +1141,12 @@ class ScanAgent(BaseAgent):
                 ep.session_setters = list(dict.fromkeys([*ep.session_setters, *setters]))
             else:
                 endpoints.append(
-                    Endpoint(url=trigger_url, method="GET", session_setters=list(setters))
+                    Endpoint(
+                        url=trigger_url,
+                        method="GET",
+                        session_setters=list(setters),
+                        method_evidence=MethodEvidence.PLATFORM_DEFAULT,
+                    )
                 )
 
     async def _discovery_http_get(self, url: str) -> FetchResult | None:
@@ -1351,7 +1403,14 @@ class ScanAgent(BaseAgent):
                         continue
                     key = (action_url, method, tuple(param_names))
                     if key not in seen_keys:
-                        enriched.append(Endpoint(url=action_url, method=method, params=param_names))
+                        enriched.append(
+                            Endpoint(
+                                url=action_url,
+                                method=method,
+                                params=param_names,
+                                method_evidence=MethodEvidence.NAMED,
+                            )
+                        )
                         seen_keys.add(key)
 
                 # Extract query-param links — Endpoint per parameterized link.
@@ -1369,7 +1428,14 @@ class ScanAgent(BaseAgent):
                         continue
                     key = (link, "GET", tuple(param_names))
                     if key not in seen_keys:
-                        enriched.append(Endpoint(url=link, method="GET", params=param_names))
+                        enriched.append(
+                            Endpoint(
+                                url=link,
+                                method="GET",
+                                params=param_names,
+                                method_evidence=MethodEvidence.PLATFORM_DEFAULT,
+                            )
+                        )
                         seen_keys.add(key)
             except Exception as exc:
                 self._logger.debug("Endpoint enrichment failed for %s: %s", current_url, exc)
@@ -1467,7 +1533,12 @@ class ScanAgent(BaseAgent):
                     if is_state_changing_url(action_url):
                         continue
                     self._crawl_endpoints.append(
-                        Endpoint(url=action_url, method=method, params=param_names)
+                        Endpoint(
+                            url=action_url,
+                            method=method,
+                            params=param_names,
+                            method_evidence=MethodEvidence.NAMED,
+                        )
                     )
 
                 # Extract query parameters from links
@@ -1482,7 +1553,12 @@ class ScanAgent(BaseAgent):
                         ]
                         if param_names:
                             self._crawl_endpoints.append(
-                                Endpoint(url=link, method="GET", params=param_names)
+                                Endpoint(
+                                    url=link,
+                                    method="GET",
+                                    params=param_names,
+                                    method_evidence=MethodEvidence.PLATFORM_DEFAULT,
+                                )
                             )
 
                 # Follow links

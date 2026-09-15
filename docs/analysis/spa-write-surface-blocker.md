@@ -225,6 +225,10 @@ Not scoped here, deliberately. What the constraint says about it:
    *coverage* (12 of ~31) and method *readability* (the `GET` fallback, plus
    tRPC/server-action shapes the miner has no pattern for). The second is the
    §6 law and is the smaller change.
+
+   > **DONE for readability, 2026-09-15 — and the live measurement says the
+   > prediction was wrong about which defect binds.** See §6.
+
 4. **Do not relax the write gate to admit GET endpoints.** A GET endpoint
    admitted to `_test_write_crossing` is a terminal, mutating class dispatched
    against a route with no evidence it writes — invariant 88 plus a residual
@@ -233,3 +237,97 @@ Not scoped here, deliberately. What the constraint says about it:
 5. **`_test_state_sequence` / `_test_constraint_violation` /
    `_test_repeatability` are a separate ticket.** They are not SPA-blocked; they
    are unqueued everywhere.
+
+
+---
+
+## 6 · Producer 3, the readability half — built, and what it measured
+
+**Tree at `feat/xss-evidence-gate`, 2026-09-15. Live against the local
+`caldiy-calcom-1` and `clinkz-juiceshop` containers, read-only GETs.**
+
+### What was built
+
+`_call_site_from_args`'s `if method is None: method = "GET"` is gone, replaced by
+three states on `ApiCallSite` and on `Endpoint`
+(`models/scan.py::MethodEvidence`):
+
+| value | meaning | example |
+|---|---|---|
+| `NAMED` | the source or the protocol stated the verb | `.post(`, `{method:"PUT"}`, `open("POST",…)`, an `Allow` header, `<form method>`, an OpenAPI operation |
+| `PLATFORM_DEFAULT` | no verb was named and **none could have been** — the idiom's own default IS the verb | a bare `fetch(url)`, an init object read in full with no `method` key, a crawled link |
+| `UNREAD` | a config argument exists that we cannot see into | `fetch(u, cfg)`, `{...spread}`, `{method: z.k}` |
+
+Three consequences, none of which relaxes §5.4's rule:
+
+* **`UNREAD` never admits an endpoint to a write class.** Pinned
+  (`test_an_unread_verb_never_admits_an_endpoint_to_a_write_class`), because the
+  tempting next step after adding the state is to let it into the gate, and a
+  terminal mutating class against a route with no evidence it writes is
+  invariant 88 plus a residual mutation in another principal's data.
+* **The `OPTIONS` sweep asks an unread route first — within its relevance
+  grade.** Across grades it would undo the 32-of-40 ordering fix, because every
+  bundle is unread by construction.
+* **It is disclosed** (`MethodProvenance` → `report.method_provenance`), on a
+  clean run too: *"every one of the N discovered endpoints carries a method the
+  engine READ"* is the claim that makes an all-GET surface a statement about the
+  target rather than about us.
+
+And one capability gain that is not about honesty at all: `{method: m}` where `m`
+is a local binding now RESOLVES. A bundler that hoists the verb into a local was
+producing a `GET` endpoint from a write call site — not an absence, a read the
+miner declined to make.
+
+### What the live measurement says
+
+| | cal.com | Juice Shop |
+|---|---|---|
+| distinct `<script src>` across 3 pages | 44 | 6 |
+| distinct chunk URLs seen | 53 | 26 |
+| bundles read (`_MAX_BUNDLES = 12`) | 12 | 12 |
+| **still queued when the cap bound** | **41** | **14** |
+| call sites mined | 2 | 87 |
+| `named` / `platform_default` / `unread` | 1 / 1 / **0** | 87 / 0 / **0** |
+| write verbs mined | 0 | **40** (23 POST, 12 PUT, 4 DELETE, 1 PATCH) |
+
+**The third state does not fire on either target, and that is the finding.** On
+Juice Shop the Angular idiom is fully readable — all 87 verbs named, 40 of them
+writes — so the disclosure correctly reports a surface whose verbs were all read.
+On cal.com it does not fire for a different and more useful reason: the 7
+call sites whose config the miner cannot see into are dropped **one step
+earlier**, at URL resolution. Measured individually: of the unreadable-init
+sites, **2 of 2 also had an unresolvable URL** (the first argument is a bare
+minified identifier, `fetch(e, n)`), and the other 2 are `.request(cfg)` /
+`.ajax(cfg)`, where the config is argument **0** and the miner looks for a URL
+there.
+
+So §5.3's split was right that there are two defects and wrong about which one
+binds on this target. The readability half is built and correct and it changes
+nothing on cal.com, because:
+
+1. **Bundle coverage is the hard bound**: 12 read, **41 still queued**. Not "8 of
+   31" — seeding from three pages surfaces 53 chunk URLs, and the cap binds by a
+   factor of four.
+2. **URL resolution, not method resolution, is what drops cal.com's write call
+   sites.** `_resolve_url_expression` on a bare identifier returns nothing, so
+   there is no call site for a method to be unread ON.
+3. `.request(cfg)` / `.ajax(cfg)` / `axios(cfg)` put the URL inside the config
+   object, and `_call_site_from_args` treats argument 0 as the URL. Those shapes
+   yield no endpoint at all on any target.
+
+### What the next round should take, in order
+
+1. **The config-object call form** (`axios(cfg)`, `.request(cfg)`, `.ajax(cfg)`
+   and `fetch(cfg)`) — read the URL out of argument 0's `url` key, the way the
+   `axios({url:…})` branch already does for `axios`. Smallest change, and it is
+   the one that makes the other two matter.
+2. **Bundle coverage.** `_MAX_BUNDLES = 12` against 53, taken in queue order —
+   invariant 106's law with no ordering signal available, because
+   `crawl_visit_priority` grades every `.js` chunk **2** and cannot separate
+   them. So this is not "raise the cap": it needs a signal, and the honest
+   interim is the disclosure (a bundle-budget truncation record beside the probe
+   one). Do not raise the cap silently.
+3. **Identifier URL resolution across a module boundary.** `_resolve_binding`
+   searches backwards within `_BINDING_LOOKBACK = 20,000` characters of the call;
+   a webpack chunk defines the base in another module entirely. This is the
+   expensive one and it should be scoped only after 1 and 2.

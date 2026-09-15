@@ -89,6 +89,7 @@ from clinkz.observability.audit import audit_summary, reconcile_run_audit
 from clinkz.observability.ledger import get_active_ledger
 from clinkz.observability.plan_alarms import (
     crawl_budget_summary,
+    method_provenance_summary,
     plan_alarm_summary,
     probe_budget_summary,
 )
@@ -677,6 +678,7 @@ class ReportAgent(BaseAgent):
             plan_coverage=plan_alarm_summary(),
             crawl_coverage=crawl_budget_summary(),
             probe_coverage=probe_budget_summary(),
+            method_provenance=method_provenance_summary(),
             # What this run OBSERVED, with the provenance of every version.
             # Built here from recon's own rows rather than from
             # ``hosts[].services``, which has been empty on every bundle ever
@@ -1258,6 +1260,7 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_plan_coverage(lines, report)
             ReportAgent._render_crawl_coverage(lines, report)
             ReportAgent._render_probe_coverage(lines, report)
+            ReportAgent._render_method_provenance(lines, report)
             ReportAgent._render_research_grounding(lines, report)
             ReportAgent._render_llm_spend(lines, report)
             return "\n".join(lines)
@@ -1304,6 +1307,7 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_plan_coverage(lines, report)
         ReportAgent._render_crawl_coverage(lines, report)
         ReportAgent._render_probe_coverage(lines, report)
+        ReportAgent._render_method_provenance(lines, report)
         ReportAgent._render_research_grounding(lines, report)
         ReportAgent._render_llm_spend(lines, report)
         return "\n".join(lines)
@@ -1938,6 +1942,67 @@ class ReportAgent(BaseAgent):
         else:
             lines.append(f"- Cost: {spend_cost_line(stamp)}")
         lines.append("")
+
+    @staticmethod
+    @staticmethod
+    def _render_method_provenance(lines: list[str], report: PentestReport) -> None:
+        """Render whether the discovered surface's verbs were READ.
+
+        Sits above every other coverage section in the pipeline it describes.
+        The probe budget decides which routes are ASKED what methods they
+        accept; this one says whether the method an endpoint already carries was
+        read at all — and a verb is what decides whether an endpoint has a
+        write-family class to be capped out of in the first place.
+        """
+        provenance = dict(report.method_provenance or {})
+        if not provenance.get("measured"):
+            return
+        total = int(provenance.get("total") or 0)
+        unread = int(provenance.get("unread") or 0)
+        named = int(provenance.get("named") or 0)
+        platform = int(provenance.get("platform_default") or 0)
+        lines.extend(["## HTTP method provenance", ""])
+        if unread:
+            examples = [str(u) for u in (provenance.get("unread_examples") or [])][:5]
+            lines.extend(
+                [
+                    f"**{unread} of {total} discovered endpoint(s) carry an HTTP method "
+                    f"the engine could not read.** Those endpoints were planned as `GET`, "
+                    f"which is the value that removes an endpoint from every write-family "
+                    f"class — so a write surface on them is UNDISCOVERED, not absent. This "
+                    f"is a limit of the test, not a reading of the application.",
+                    "",
+                ]
+            )
+            if examples:
+                lines.extend(
+                    ["Endpoints whose verb went unread (first few):", ""]
+                    + [f"- `{url}`" for url in examples]
+                    + [""]
+                )
+        else:
+            lines.extend(
+                [
+                    f"Every one of the {total} discovered endpoint(s) carries a method the "
+                    f"engine READ — {named} named by the source or the protocol, {platform} "
+                    f"where no verb could have been named and the idiom's own default "
+                    f"applies. An endpoint reported as a read here is a read, not a verb "
+                    f"nobody could see.",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "| Provenance | Endpoints | What it means |",
+                "| --- | --- | --- |",
+                f"| `named` | {named} | the source or the protocol stated the verb |",
+                f"| `platform_default` | {platform} | no verb was named and none could be; "
+                "the idiom's default IS the verb |",
+                f"| `unread` | {unread} | a config the engine cannot see into; `GET` stands "
+                "in for an absence |",
+                "",
+            ]
+        )
 
     @staticmethod
     def _render_probe_coverage(lines: list[str], report: PentestReport) -> None:

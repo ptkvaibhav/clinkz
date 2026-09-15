@@ -815,3 +815,59 @@ the writers that no header-bearing structure is ever flattened to a string befor
 redaction, which is a computed domain over the write sites rather than a
 detector. (b) is closer to this codebase's grain: it removes the producer instead
 of widening the net.
+
+
+---
+
+## R16 · A driver that captures a child run's stderr writes it with an EMPTY registry
+
+**State: OPEN.** Opened 2026-09-15 by the security review of the scoped-
+registration change, which found the disclosure it was about to introduce and,
+underneath it, the reason that disclosure would have persisted.
+
+**The immediate finding is fixed.** The intake collision refusal quoted the
+colliding word, and on the field-name arm the predicate is EQUALITY — so the
+quoted word IS the operator's password. The enum arm is the same axis and not
+weaker: containment narrows the credential to the named word's substrings, and
+for a four-character credential equal to a four-character enum value (`high`,
+`info`, `bash`) it discloses it exactly. Neither arm renders a word now; the
+message names the KIND of collision, WHERE the vocabulary is declared, and WHAT
+registering it would destroy. Guarded by a property stronger than absence — the
+message must be **independent of the credential**, so two different credentials
+colliding on the same entry produce the same bytes
+(`test_the_refusal_does_not_reprint_the_credential_it_refuses`), observed red
+against the pre-fix `describe()`.
+
+**What stays open is the mechanism that would have carried it.**
+`scripts/juiceshop_benchmark_run.py` and `scripts/three_run_envelope.py` run
+`python -m clinkz scan` as a subprocess with `capture_output=True` and write
+`proc.stdout + proc.stderr` into `outputs/_juiceshop_benchmark/` through
+`scripts/_artifact_io.py::write_redacted_text`. That function calls `redact`,
+which is correct — and **the parent process never calls
+`register_credential_set`**, so the parent's registry is empty and `redact` there
+has only the SHAPE rules. A password has no shape. So anything the child prints
+to stderr that quotes a credential lands verbatim in a companion region, and the
+disclosure gate — which detects through the same shape vocabulary — certifies it
+CLEAN.
+
+This is the `scripts/_artifact_io.py` split seen from the other end. That split
+exists because *the engine's redaction reaches only where the engine writes*;
+this is the case where a driver DOES go through the engine's redaction and it is
+still inert, because redaction by VALUE needs the values and a subprocess
+boundary does not carry them.
+
+**Two candidate fixes, neither taken this round:**
+
+* **(a) Register in the parent.** A driver that assembles or reads a credential
+  file before spawning the child calls `register_credential_set` itself. Cheap,
+  and it is the same rule `register_credential_set`'s own docstring states for
+  the in-process case. It covers only credentials the DRIVER knows — not the
+  sweep's catalogue, and not anything the child discovered.
+* **(b) Do not capture the child's stderr into an artifact at all**, or capture
+  it into a region the gate treats as unshareable. The strongest, and it costs a
+  debugging affordance the envelope driver actually uses.
+
+**The domain is computable and is not just these two drivers**: every
+`subprocess.run(..., capture_output=True)` under `scripts/` whose output reaches
+a writer. That is the guard this should land with, rather than two hand-fixed
+call sites — the same law as every other domain here.

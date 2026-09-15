@@ -337,6 +337,20 @@ class PentestReport(BaseModel):
     #: Rendered on a clean run too — a sweep that probed nothing but bundles
     #: returns exactly what a sweep that found no write verb returns.
     probe_coverage: dict[str, object] = Field(default_factory=dict)
+    #: How each discovered endpoint's HTTP METHOD came to be known. Upstream of
+    #: ``probe_coverage``, and the most consequential of the four coverage
+    #: accounts: seven Tier-1 classes are gated on
+    #: ``has_form or method in (POST, PUT, PATCH)``, and
+    #: ``_applicable_methods_for_endpoint`` is the only producer of their
+    #: deterministic buckets. So an endpoint recorded ``GET`` is not a
+    #: lower-ranked candidate for those classes, it is absent from them — and a
+    #: ``GET`` the engine READ and a ``GET`` standing in for a verb it could not
+    #: read produced the same empty bucket and the same clean report.
+    #:
+    #: Rendered on a clean run too: "every endpoint's verb was read" is the
+    #: claim that makes an all-GET surface mean something about the target
+    #: rather than about the engine.
+    method_provenance: dict[str, object] = Field(default_factory=dict)
     #: Every out-of-scope target the engagement reached for and refused. THE
     #: control on an external engagement: a real application links out, the
     #: crawler follows links, and this is the evidence that the ones leaving

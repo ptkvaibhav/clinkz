@@ -68,6 +68,10 @@ src/clinkz/
 │                     #   against the run's OWN record: the testing WINDOW, the
 │                     #   authentication state, the cost, the document's name —
 │                     #   pure, read by all three renderers at BOTH seams),
+│                     #   _js_api_mining (the API contract read out of a target's
+│                     #   own bundles — the one producer that can READ a verb, and
+│                     #   therefore the one that can fail to: three states, never a
+│                     #   GET standing in for an absence),
 │                     #   _archive/ (built, registered, invoked zero times: critic)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),

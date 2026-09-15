@@ -305,6 +305,70 @@ class ProbeBudgetTruncation:
         }
 
 
+@dataclass(frozen=True)
+class MethodProvenance:
+    """How the engine knows each discovered endpoint's HTTP method.
+
+    The fourth layer of the same rule, and the one furthest upstream of all. The
+    plan cap decides which endpoints get a methodology; the crawl budget decides
+    which URLs become endpoints; the probe budget decides which routes are asked
+    what verbs they accept. **This one says whether the verb an endpoint carries
+    was READ at all** — and it sits upstream of the others because a verb is what
+    decides whether an endpoint has a write-family class to be capped out of.
+
+    Why it is a disclosure and not just a field. Seven Tier-1 classes are gated
+    on ``has_form or method in (POST, PUT, PATCH)``, and
+    ``_applicable_methods_for_endpoint`` is the ONLY producer of their
+    deterministic buckets. So an endpoint recorded ``GET`` is not a
+    lower-priority candidate for those classes — it is absent from them
+    entirely, not truncated, not out-ranked, not abstaining. A ``GET`` the engine
+    READ and a ``GET`` standing in for a verb it could not read produce the same
+    empty bucket and the same clean report, and nothing distinguished them.
+
+    Measured live on cal.com: of 12 bundles read, the miner emitted 2 call sites
+    (both ``GET``) while 7 call sites in those same bundles carried a config
+    argument it cannot see into. Every one of the seven was planned as a ``GET``.
+
+    Attributes:
+        named: Endpoints whose verb the source or the protocol stated — a
+            ``.post(`` token, ``{method: "PUT"}``, an OpenAPI operation, an
+            ``Allow`` header, an HTML ``<form method>``.
+        platform_default: Endpoints where no verb was named and none could have
+            been, so the idiom's own default IS the verb: a bare ``fetch(url)``,
+            a crawled link. A reading, not a guess.
+        unread: Endpoints whose verb the engine could not read. ``GET`` is
+            standing in for an absence, and any write surface on them is
+            undiscovered rather than absent.
+        unread_examples: A bounded sample, so a reader can check the claim rather
+            than take the count on trust.
+    """
+
+    named: int = 0
+    platform_default: int = 0
+    unread: int = 0
+    unread_examples: list[str] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        """Endpoints accounted for. The denominator, measured, never assumed."""
+        return self.named + self.platform_default + self.unread
+
+    @property
+    def any_unread(self) -> bool:
+        """Whether any endpoint's verb went unread."""
+        return self.unread > 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Render for ``report.json``."""
+        return {
+            "total": self.total,
+            "named": self.named,
+            "platform_default": self.platform_default,
+            "unread": self.unread,
+            "unread_examples": self.unread_examples[:MAX_RETAINED_PER_CLASS],
+        }
+
+
 @dataclass
 class PlanAlarmRegister:
     """Every planning pass's cap outcome, for the report.
@@ -316,6 +380,7 @@ class PlanAlarmRegister:
     _passes: list[PlanTruncation] = field(default_factory=list)
     _crawl_budgets: list[CrawlBudgetTruncation] = field(default_factory=list)
     _probe_budgets: list[ProbeBudgetTruncation] = field(default_factory=list)
+    _method_provenance: list[MethodProvenance] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record(self, event: PlanTruncation) -> None:
@@ -382,6 +447,47 @@ class PlanAlarmRegister:
         """Every recorded sweep, in the order it happened."""
         with self._lock:
             return list(self._probe_budgets)
+
+    def record_method_provenance(self, event: MethodProvenance) -> None:
+        """Record how the discovered surface's verbs came to be known."""
+        with self._lock:
+            self._method_provenance.append(event)
+        if event.any_unread:
+            logger.info(
+                "METHOD PROVENANCE recorded for the report — %d of %d discovered "
+                "endpoint(s) carry a verb the engine could not read.",
+                event.unread,
+                event.total,
+            )
+
+    def method_provenance(self) -> list[MethodProvenance]:
+        """Every recorded provenance pass, in the order it happened."""
+        with self._lock:
+            return list(self._method_provenance)
+
+    def method_provenance_summary(self) -> dict[str, Any]:
+        """Render verb provenance for ``report.json``.
+
+        Present on a clean run too. "Every endpoint's verb was read" is the claim
+        that makes an all-GET surface meaningful, and a section that appears only
+        when something went unread cannot be told apart from one nobody wrote.
+        """
+        events = self.method_provenance()
+        named = sum(e.named for e in events)
+        platform = sum(e.platform_default for e in events)
+        unread = sum(e.unread for e in events)
+        examples: list[str] = []
+        for event in events:
+            examples.extend(event.unread_examples)
+        return {
+            "measured": bool(events),
+            "total": named + platform + unread,
+            "named": named,
+            "platform_default": platform,
+            "unread": unread,
+            "any_unread": unread > 0,
+            "unread_examples": examples[:MAX_RETAINED_PER_CLASS],
+        }
 
     def probe_summary(self) -> dict[str, Any]:
         """Render the surface-mapping budgets for ``report.json``.
@@ -531,6 +637,21 @@ def record_probe_budget(event: ProbeBudgetTruncation) -> None:
     register.record_probe_budget(event)
 
 
+def record_method_provenance(event: MethodProvenance) -> None:
+    """Record verb provenance on the active register, if one is installed."""
+    register = _active_register
+    if register is not None:
+        register.record_method_provenance(event)
+
+
+def method_provenance_summary() -> dict[str, Any]:
+    """The active register's verb-provenance summary, or the clean shape."""
+    register = _active_register
+    if register is None:
+        return PlanAlarmRegister().method_provenance_summary()
+    return register.method_provenance_summary()
+
+
 def probe_budget_summary() -> dict[str, Any]:
     """The active register's probe summary, or the clean shape when none exists."""
     register = _active_register
@@ -558,14 +679,17 @@ def plan_alarm_summary() -> dict[str, Any]:
 __all__ = [
     "MAX_RETAINED_PER_CLASS",
     "CrawlBudgetTruncation",
+    "MethodProvenance",
     "PlanAlarmRegister",
     "PlanTruncation",
     "ProbeBudgetTruncation",
     "crawl_budget_summary",
+    "method_provenance_summary",
     "get_active_plan_alarms",
     "plan_alarm_summary",
     "probe_budget_summary",
     "record_crawl_budget",
+    "record_method_provenance",
     "record_plan_truncation",
     "record_probe_budget",
     "set_active_plan_alarms",

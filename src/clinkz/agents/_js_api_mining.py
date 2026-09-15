@@ -44,7 +44,9 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+
+from clinkz.models.scan import MethodEvidence
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,14 @@ _MAX_FIELDS = 40  # body field names recorded per call site
 _MAX_EVIDENCE_CHARS = 240  # source excerpt kept per call site
 
 _HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+
+#: How strong each evidence value is, weakest first. Used only to pick the
+#: surviving value when two call sites dedupe to one endpoint.
+_EVIDENCE_RANK = {
+    MethodEvidence.UNREAD: 0,
+    MethodEvidence.PLATFORM_DEFAULT: 1,
+    MethodEvidence.NAMED: 2,
+}
 
 # Method-named invocation: ``.post(``, ``.get(``, … . ``request`` and ``ajax``
 # carry their method in an options object, so they map to None here.
@@ -122,6 +132,14 @@ _NON_BODY_MEMBERS = frozenset(
 
 # Options-object keys that carry the method / body / query of a call.
 _OPT_METHOD_RE = re.compile(r"""(?:^|[,{])\s*["']?method["']?\s*:\s*["'`]([A-Za-z]{3,7})["'`]""")
+# The same key with an UNQUOTED value: ``{method: m}`` after a bundler has
+# hoisted the verb into a local. The verb IS in the source, one binding away -
+# measured on a synthetic bundler output, ``var m="POST";fetch(u,{method:m})``
+# was reported as a GET endpoint, which is not an absence at all but a read the
+# miner declined to make.
+_OPT_METHOD_IDENT_RE = re.compile(
+    r"""(?:^|[,{])\s*["']?method["']?\s*:\s*([A-Za-z_$][\w$.]{0,63})\s*[,}]"""
+)
 _OPT_BODY_RE = re.compile(r"""(?:^|[,{])\s*["']?(?:body|data)["']?\s*:""")
 _OPT_PARAMS_RE = re.compile(r"""(?:^|[,{])\s*["']?(?:params|query|searchParams)["']?\s*:""")
 _OPT_CT_RE = re.compile(
@@ -153,6 +171,10 @@ class ApiCallSite:
     body_fields: tuple[str, ...] = ()
     content_type: str | None = None
     evidence: str = ""
+    #: How ``method`` came to be known. ``UNREAD`` is the default because a
+    #: construction that has not thought about it has not read a verb. See
+    #: :class:`~clinkz.models.scan.MethodEvidence`.
+    method_evidence: MethodEvidence = MethodEvidence.UNREAD
 
     @property
     def path_params(self) -> tuple[str, ...]:
@@ -760,12 +782,88 @@ def _method_for_token(token: str) -> str | None:
     return lowered.upper()
 
 
+def _has_top_level_spread(literal: str) -> bool:
+    """Whether an object literal spreads another value at its OWN top level.
+
+    ``{...n, headers: h}`` may carry a ``method`` we never see; ``{headers:
+    {...h}}`` spreads one level down and its own keys are fully readable. The
+    difference decides whether the call site's verb is PLATFORM_DEFAULT or
+    UNREAD, so it is worth the depth tracking rather than a substring test:
+    treating every nested spread as unreadable would mark most ordinary GETs
+    unread, and a disclosure that fires on the common case is one an operator
+    learns to skim.
+    """
+    depth = 0
+    quote: str | None = None
+    i = 0
+    limit = min(len(literal), _MAX_ARG_CHARS)
+    while i < limit:
+        ch = literal[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "\"'`":
+            quote = ch
+        elif ch in "{[(":
+            depth += 1
+        elif ch in "}])":
+            depth -= 1
+        elif ch == "." and depth == 1 and literal[i : i + 3] == "...":
+            return True
+        i += 1
+    return False
+
+
+def _unnamed_method(
+    args: list[str],
+    options: str,
+    source: str,
+    position: int,
+) -> tuple[str, MethodEvidence]:
+    """The verb of a call site whose invocation token named none, and how we know.
+
+    Reached only for ``fetch`` / ``axios`` / ``.request`` / ``.ajax``, where the
+    verb lives in a config argument rather than in the callee's name. Three
+    outcomes, and the point of the function is that they are three:
+
+    * the config names it in a form we can resolve -> ``NAMED``;
+    * every config argument was read in full and none names a verb, so the
+      idiom's own default is the verb -> ``PLATFORM_DEFAULT``;
+    * a config argument exists that we cannot see into -> ``UNREAD``, and the
+      ``"GET"`` returned beside it is a placeholder, not a reading.
+    """
+    if options:
+        ident = _OPT_METHOD_IDENT_RE.search(options)
+        if ident is not None:
+            resolved = _resolve_binding(ident.group(1), source, position)
+            candidate = (resolved or "").strip().strip("\"'`").upper()
+            if candidate in _HTTP_METHODS:
+                return candidate, MethodEvidence.NAMED
+            # The key is there and the value is not resolvable. This is the
+            # sharpest case for the third state: the source DOES name a verb and
+            # we failed to read it, so calling it GET is not even an absence.
+            return "GET", MethodEvidence.UNREAD
+    for arg in args[1:]:
+        stripped = arg.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("{") or _has_top_level_spread(stripped):
+            return "GET", MethodEvidence.UNREAD
+    return "GET", MethodEvidence.PLATFORM_DEFAULT
+
+
 def _options_object(args: list[str]) -> str:
     """The first argument that looks like an options/config object literal."""
     for arg in args:
         stripped = arg.strip()
         if stripped.startswith("{") and (
             _OPT_METHOD_RE.search(stripped)
+            or _OPT_METHOD_IDENT_RE.search(stripped)
             or _OPT_BODY_RE.search(stripped)
             or _OPT_PARAMS_RE.search(stripped)
             or _OPT_CT_RE.search(stripped)
@@ -791,14 +889,23 @@ def _call_site_from_args(
 
     options = _options_object(args[1:])
     method = default_method
+    # The invocation token named the verb (``.post(``, ``open("PUT",``, a
+    # navigation), or the XHR literal did. Either way it was READ.
+    evidence = MethodEvidence.NAMED if default_method is not None else None
     if options:
         opt_method = _OPT_METHOD_RE.search(options)
         if opt_method is not None:
             candidate = opt_method.group(1).upper()
             if candidate in _HTTP_METHODS:
                 method = candidate
-    if method is None:
-        method = "GET"
+                evidence = MethodEvidence.NAMED
+    if evidence is None:
+        # ``if method is None: method = "GET"`` used to live here, and it spelled
+        # an absence as a measurement: a call site whose verb the miner could not
+        # read became byte-identical to one it read AS GET. ``GET`` is the value
+        # that removes an endpoint from every write-family class, so the absence
+        # was not a degraded endpoint but a silently missing one.
+        method, evidence = _unnamed_method(args, options, source, position)
 
     content_type: str | None = None
     if options:
@@ -848,6 +955,7 @@ def _call_site_from_args(
         body_fields=tuple(body_fields),
         content_type=content_type,
         evidence=excerpt[:_MAX_EVIDENCE_CHARS],
+        method_evidence=evidence,
     )
 
 
@@ -870,6 +978,7 @@ def mine_api_call_sites(source: str) -> list[ApiCallSite]:
 
     found: list[ApiCallSite] = []
     seen: set[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = set()
+    seen_index: dict[tuple[str, str, tuple[str, ...], tuple[str, ...]], int] = {}
     examined = 0
 
     def _record(site: ApiCallSite | None) -> None:
@@ -877,8 +986,20 @@ def mine_api_call_sites(source: str) -> list[ApiCallSite]:
             return
         key = (site.method, site.url_template, site.query_params, site.body_fields)
         if key in seen:
+            # Same route, same verb, same shape - but possibly different
+            # EVIDENCE, and the two directions are not symmetric. A route with
+            # one call site we read as GET and another we could not read at all
+            # is a route where an unknown verb is still in play, so the weaker
+            # claim is the true one and the duplicate must not be dropped
+            # silently in favour of the stronger. Downgrading costs an OPTIONS
+            # probe and a line of disclosure; keeping the stronger costs the
+            # write surface.
+            index = seen_index[key]
+            if _EVIDENCE_RANK[site.method_evidence] < _EVIDENCE_RANK[found[index].method_evidence]:
+                found[index] = replace(found[index], method_evidence=site.method_evidence)
             return
         seen.add(key)
+        seen_index[key] = len(found)
         found.append(site)
 
     for match in _METHOD_CALL_RE.finditer(text):

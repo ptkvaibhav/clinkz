@@ -758,6 +758,17 @@ under the repo root; the header table at the top of this file links them all.
     **Detail → `.claude/skills/clinkz-dev/SKILL.md` §7,
     `docs/analysis/register.md` R14.**
 
+111. **A verb the engine could not READ is its own state, never a GET it
+    measured** (`models/scan.py::MethodEvidence`; `NAMED` / `PLATFORM_DEFAULT` /
+    `UNREAD`). `_applicable_methods_for_endpoint` is the ONLY producer of seven
+    Tier-1 classes' buckets and it gates on the verb, so a `GET` standing in for
+    an absence does not lower an endpoint's rank — it removes it. `UNREAD` never
+    admits an endpoint to a write class; it gets the route ASKED (unread first
+    in the `OPTIONS` sweep, **within its relevance grade**) and the gap
+    DISCLOSED, on a clean run too. Every `Endpoint` producer declares, over an
+    AST-computed domain. **Detail →
+    `docs/analysis/spa-write-surface-blocker.md` §6.**
+
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/

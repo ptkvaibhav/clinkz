@@ -39,7 +39,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from clinkz.models.scan import Endpoint, ParamLocation
+from clinkz.models.scan import Endpoint, MethodEvidence, ParamLocation
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,7 @@ def _select_routes(
     max_probes: int,
     *,
     sweep: str,
+    unread: frozenset[str] = frozenset(),
 ) -> list[str]:
     """The *max_probes* routes most worth probing, and disclose what was dropped.
 
@@ -136,10 +137,21 @@ def _select_routes(
     :func:`~clinkz.agents._url_shape.crawl_visit_priority` and ties break on the
     route string, so a concurrent crawler cannot change which routes fit.
 
+    **An unread verb breaks the tie, and only the tie.** A route whose method
+    the engine could not read is precisely the route this sweep exists to ask,
+    so it sorts ahead of one whose verb is already known — but WITHIN its
+    relevance grade, never across it. Promoting unread routes over the grade
+    would undo the fix above: every ``/_next/static/chunks/…`` bundle is unread
+    by construction (a URL string literal carries no verb), so an unread-first
+    order across grades would hand the budget straight back to the bundles.
+
     Args:
         routes: Eligible routes, in any order.
         max_probes: The budget.
         sweep: Which sweep is selecting, for the disclosure record.
+        unread: Routes whose HTTP method the engine could not read. A function
+            of the endpoint SET, so it cannot make the order depend on the
+            crawl's emission sequence (invariant 53).
 
     Returns:
         The selected routes, best-first.
@@ -147,7 +159,10 @@ def _select_routes(
     from clinkz.agents._url_shape import crawl_visit_priority
     from clinkz.observability.plan_alarms import ProbeBudgetTruncation, record_probe_budget
 
-    graded = sorted((crawl_visit_priority(route), route) for route in routes)
+    graded = sorted(
+        (crawl_visit_priority(route), 0 if route in unread else 1, route) for route in routes
+    )
+    graded = [(grade, route) for grade, _unread_first, route in graded]
     selected = [route for _grade, route in graded[:max_probes]]
     dropped = graded[max_probes:]
 
@@ -239,7 +254,16 @@ async def learn_allowed_methods(
     # Deterministic AND relevance-ordered: a concurrent crawl emits a different
     # sequence each run, and lexicographic order is not neutral either — see
     # :func:`_select_routes` for the 32-of-40 measurement that produced this.
-    routes = _select_routes(list(by_route), max_probes, sweep="options_methods")
+    # The routes worth asking FIRST are the ones whose verb nobody could read.
+    # Keyed on the route rather than the endpoint so a route with several
+    # endpoints counts as unread when ANY of them is - the unknown verb is a
+    # property of the route, and one twin having been read does not answer it.
+    unread = frozenset(
+        route
+        for route, eps in by_route.items()
+        if any(ep.method_evidence is MethodEvidence.UNREAD for ep in eps)
+    )
+    routes = _select_routes(list(by_route), max_probes, sweep="options_methods", unread=unread)
 
     discovered: list[Endpoint] = []
     for route in routes:
@@ -264,6 +288,10 @@ async def learn_allowed_methods(
                     params=list(template.params),
                     content_type=template.content_type,
                     param_locations=dict(template.param_locations),
+                    # The TARGET declared this verb in its own ``Allow`` header,
+                    # which is the strongest provenance the engine has: not a
+                    # frontend's intention, the server's own statement.
+                    method_evidence=MethodEvidence.NAMED,
                 )
             )
             known.add(method)

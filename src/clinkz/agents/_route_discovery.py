@@ -66,7 +66,7 @@ from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from clinkz.agents._js_api_mining import ApiCallSite, mine_api_call_sites
 from clinkz.agents._origin import resolve_same_origin, same_origin
 from clinkz.agents._url_safety import is_state_changing_url
-from clinkz.models.scan import Endpoint, ParamLocation
+from clinkz.models.scan import Endpoint, MethodEvidence, ParamLocation
 from clinkz.observability.ledger import ComponentKind, record_contribution, record_dead_seam
 
 logger = logging.getLogger(__name__)
@@ -490,7 +490,12 @@ def _route_to_endpoint(raw: str, base_url: str) -> Endpoint | None:
             params.append(name)
 
     url = urlunsplit((parsed.scheme, parsed.netloc, norm_path, "", ""))
-    return Endpoint(url=url, method="GET", params=params)
+    # A URL STRING LITERAL carries no method, and this producer reads nothing
+    # else. Its output has always been all-GET by construction, on every target,
+    # and always will be - so the honest declaration is UNREAD. That is not a
+    # defect being papered over: it is what puts these routes at the front of the
+    # OPTIONS sweep, which is the mechanism that can actually learn their verbs.
+    return Endpoint(url=url, method="GET", params=params, method_evidence=MethodEvidence.UNREAD)
 
 
 def _structural_key(ep: Endpoint) -> str:
@@ -927,6 +932,8 @@ class OpenAPIDiscoverer:
             params=params,
             content_type=content_type,
             param_locations=locations,
+            # A served spec NAMES the verb of every operation it declares.
+            method_evidence=MethodEvidence.NAMED,
         )
 
 
@@ -1061,6 +1068,12 @@ class JSCallSiteDiscoverer:
             params=names,
             content_type=content_type,
             param_locations=locations,
+            # The miner's own declaration, carried rather than re-derived. This
+            # is the one discoverer that can READ a verb, so it is also the one
+            # that can fail to - and a call site whose config it could not see
+            # into arrives here as ``GET`` with ``UNREAD`` beside it, never as a
+            # GET it measured.
+            method_evidence=site.method_evidence,
         )
 
 
@@ -1181,6 +1194,10 @@ class GraphQLDiscoverer:
                         params=names,
                         content_type="application/json",
                         param_locations=dict.fromkeys(names, ParamLocation.JSON_BODY),
+                        # Not a default standing in for an absence: GraphQL over
+                        # HTTP carries a mutation as a POST, so the transport
+                        # names the verb as surely as a spec would.
+                        method_evidence=MethodEvidence.NAMED,
                     )
                 )
         return out
