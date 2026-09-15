@@ -71,7 +71,9 @@ src/clinkz/
 │                     #   _js_api_mining (the API contract read out of a target's
 │                     #   own bundles — the one producer that can READ a verb, and
 │                     #   therefore the one that can fail to: three states, never a
-│                     #   GET standing in for an absence),
+│                     #   GET standing in for an absence; and three RESULTS —
+│                     #   calls resolved, calls SEEN and not addressable, and
+│                     #   routes the source DECLARES as {path, method}),
 │                     #   _archive/ (built, registered, invoked zero times: critic)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
@@ -143,7 +145,9 @@ src/clinkz/
 │                     #   degradation gate), component_registry.py (what the engine HAS,
 │                     #   declared at start + a COMPUTED reachability predicate settled
 │                     #   at report time), plan_alarms.py (what the task cap
-│                     #   DROPPED, and separately whether the ORDERING held)
+│                     #   DROPPED, and separately whether the ORDERING held; plus
+│                     #   how each endpoint's VERB was known, and how much of the
+│                     #   frontend's declared call surface we could ADDRESS)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes (+ ControlArm: which of a class's OWN channels
                       #   dispatch their own control; + MultiPrincipalRequirement:

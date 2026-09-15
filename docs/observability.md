@@ -470,6 +470,42 @@ the out-of-scope surface rather than the surface. The *Crawl coverage* section
 says so explicitly rather than leaving the refusal tally to imply more than it
 knows.
 
+### Frontend call-site reach — the calls that never became endpoints
+
+Every coverage account above and below this one is about **endpoints**: how many
+were reached, how many were asked what verbs they accept, whether the verb one
+carries was read. None of them can see a call the miner recognised as HTTP and
+could not turn into a route, because such a call emits no endpoint — it has no
+`method_evidence`, lands in no bucket, and is absent from every denominator.
+
+So a bundle of nothing but `fetch(e,n)` and an application that makes no HTTP
+calls produce byte-identical artifacts. `UnreachableCallSites` is the number that
+separates them, rendered as **Frontend call-site reach** on a clean run too.
+
+Measured on the two live targets, 12 chunks each:
+
+| | resolved | unresolvable | naming a write |
+|---|---|---|---|
+| cal.com | 2 | 7 | 1 — `fetch(e.canonicalUrl) method=POST` |
+| Juice Shop | 88 | 1 | 1 — `.request(…) method=POST` (socket.io polling) |
+
+Three reasons are kept apart because they want different fixes:
+`unresolvable_url` (an address was there and did not resolve),
+`unnamed_url` (a config carried the request and named no `url` — the address
+lives on the client it is handed to) and `no_arguments`.
+
+`naming_a_write` is surfaced ahead of the total and logged at WARNING. A call
+site the engine can see declare `POST` and cannot address is directly the write
+surface the seven verb-gated Tier-1 classes never receive, which is a sharper
+statement than "some calls were unreadable".
+
+**The domain is what keeps it worth reading.** Only calls that are HTTP by the
+*callee's own name* (`fetch`, `axios`, XHR) or by a config argument's *shape* are
+counted. `map.get(k)` matched 241 of cal.com's 304 candidate matches, and
+counting those would fire this section on every run of every target — the
+permanent false alarm that teaches an operator to skim the section where a real
+one will eventually appear.
+
 ### One href is one candidate
 
 14 of those 212 candidates (6.6%) were the same links wearing an escape:

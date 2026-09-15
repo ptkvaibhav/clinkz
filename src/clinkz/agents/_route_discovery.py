@@ -63,11 +63,16 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
-from clinkz.agents._js_api_mining import ApiCallSite, mine_api_call_sites
+from clinkz.agents._js_api_mining import ApiCallSite, MiningResult, mine_api_surface
 from clinkz.agents._origin import resolve_same_origin, same_origin
 from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.models.scan import Endpoint, MethodEvidence, ParamLocation
 from clinkz.observability.ledger import ComponentKind, record_contribution, record_dead_seam
+from clinkz.observability.plan_alarms import (
+    MAX_RETAINED_PER_CLASS,
+    UnreachableCallSites,
+    record_unreachable_call_sites,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -956,12 +961,23 @@ class JSCallSiteDiscoverer:
     def __init__(self, pages: Sequence[str] = ()) -> None:
         self.pages = tuple(pages)
         self._report = DiscoveryReport()
+        self._reach: list[MiningResult] = []
 
     def contribution_report(self) -> DiscoveryReport:
         return self._report
 
+    def reach_report(self) -> list[MiningResult]:
+        """Per-bundle mining results, resolved AND unresolvable.
+
+        The caller records the split for the deliverable. Kept as the miner's
+        own result objects rather than pre-summed counters so the consumer reads
+        what the producer declared (invariant 82) instead of re-deriving it.
+        """
+        return list(self._reach)
+
     async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
         self._report = DiscoveryReport()
+        self._reach = []
         queue: list[str] = await _collect_script_seeds(base_url, fetch, self.pages)
         if not queue:
             self._report.detail = "target references no same-origin <script src> bundles"
@@ -981,7 +997,13 @@ class JSCallSiteDiscoverer:
                 continue
             body = res.body[:_MAX_BUNDLE_BYTES]
             bundles_read += 1
-            for site in mine_api_call_sites(body):
+            mined = mine_api_surface(body)
+            self._reach.append(mined)
+            # Calls the frontend MAKES, then routes the source DECLARES. The
+            # second is what a minified SPA states outright when every write it
+            # performs addresses a URL computed at runtime; both arrive as
+            # NAMED-verb endpoints and dedupe against each other below.
+            for site in (*mined.call_sites, *mined.route_declarations):
                 sites_total += 1
                 ep = self._site_to_endpoint(site, base_url)
                 if ep is None:
@@ -1273,6 +1295,54 @@ def _correctly_empty_reason(
     return report.correctly_empty_reason
 
 
+def _record_call_site_reach(discoverer: object, log: logging.Logger) -> None:
+    """Record how many HTTP calls a discoverer read and how many it could not.
+
+    Read off the producer's own ``reach_report()``, never re-derived from the
+    endpoints it emitted — an unresolvable call site emits nothing, so there is
+    nothing downstream to re-derive it FROM. That is the whole reason this
+    disclosure exists.
+
+    A discoverer that declares no reach is not an error and is not disclosed:
+    only the call-site miner can fail this way, because only it reads calls.
+    """
+    report_fn = getattr(discoverer, "reach_report", None)
+    if not callable(report_fn):
+        return
+    try:
+        results = report_fn()
+    except Exception as exc:  # noqa: BLE001 — observability must not abort discovery
+        log.warning("Route discoverer reach_report() raised: %s", exc)
+        return
+    if not results:
+        return
+
+    resolved = sum(len(r.call_sites) for r in results)
+    unresolvable = sum(len(r.unresolvable) for r in results)
+    naming_a_write = 0
+    by_reason: dict[str, int] = {}
+    examples: list[str] = []
+    for result in results:
+        for site in result.unresolvable:
+            if site.names_a_write:
+                naming_a_write += 1
+            by_reason[site.reason.value] = by_reason.get(site.reason.value, 0) + 1
+            if len(examples) < MAX_RETAINED_PER_CLASS:
+                verb = site.method_named or "?"
+                examples.append(f"{site.callee}({site.expression or '…'}) method={verb}")
+
+    record_unreachable_call_sites(
+        UnreachableCallSites(
+            seen=resolved + unresolvable,
+            resolved=resolved,
+            unresolvable=unresolvable,
+            naming_a_write=naming_a_write,
+            by_reason=by_reason,
+            examples=examples,
+        )
+    )
+
+
 async def run_route_discovery(
     base_url: str,
     fetch: FetchFn,
@@ -1328,6 +1398,12 @@ async def run_route_discovery(
             note=f"base={base_url}",
             not_applicable=_correctly_empty_reason(discoverer, name, len(found or []), log),
         )
+        # How much of what this discoverer SAW it could address. Separate from
+        # the contribution above, which counts what it emitted: a call site that
+        # resolved to no route emits nothing, so the endpoint count cannot
+        # distinguish a bundle we could not read from an application that makes
+        # no calls.
+        _record_call_site_reach(discoverer, log)
         if found:
             collected.extend(found)
 

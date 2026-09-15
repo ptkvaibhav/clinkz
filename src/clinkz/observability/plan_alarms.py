@@ -309,7 +309,10 @@ class ProbeBudgetTruncation:
 class MethodProvenance:
     """How the engine knows each discovered endpoint's HTTP method.
 
-    The fourth layer of the same rule, and the one furthest upstream of all. The
+    The fourth layer of the same rule, and the one furthest upstream of every
+    bound. (:class:`UnreachableCallSites` sits further upstream still, but it is
+    not a bound — it is about calls that never became endpoints to be bounded.)
+    The
     plan cap decides which endpoints get a methodology; the crawl budget decides
     which URLs become endpoints; the probe budget decides which routes are asked
     what verbs they accept. **This one says whether the verb an endpoint carries
@@ -369,6 +372,70 @@ class MethodProvenance:
         }
 
 
+@dataclass(frozen=True)
+class UnreachableCallSites:
+    """HTTP calls the bundle declares that the miner could not turn into a route.
+
+    The fifth layer, and the only one that is not about a bound. Every other
+    disclosure here answers "how much of what we found did we get to" —
+    :class:`MethodProvenance` answers "was this endpoint's verb read", the cap
+    classes answer "did the budget reach it". This one answers a question none
+    of them can: **how much surface did we SEE and fail to address at all.**
+
+    An endpoint that never resolved is not an endpoint, so it appears in no
+    count, carries no ``method_evidence``, and lands in no bucket. A bundle of
+    nothing but ``fetch(e,n)`` and one of an application that makes no HTTP
+    calls produce byte-identical output, and the first is a reach failure while
+    the second is a fact about the target.
+
+    Measured live. Juice Shop's Angular idiom resolves 88 of 89 call sites, and
+    the one it does not is socket.io's polling transport — a genuine same-origin
+    ``POST`` whose address is ``this.uri()`` one frame up. cal.com resolves 2 and
+    leaves 7, one of which is the Next.js Server Action dispatcher:
+    ``fetch(e.canonicalUrl, {method:"POST", ...})``. Every cal.com write goes
+    through it, and its URL is the page's own address chosen at runtime, so no
+    amount of reading the bundle recovers a route from it.
+
+    ``naming_a_write`` is the number worth surfacing first: a call site we can
+    see declares a state-changing verb, and cannot address, is directly the
+    write surface the seven Tier-1 classes never receive.
+
+    Attributes:
+        seen: HTTP-certain call sites examined — by the callee's own name
+            (``fetch``, ``axios``, XHR) or by a config argument's shape. A
+            ``Map``'s ``.get(k)`` is not one and is never counted.
+        resolved: Of those, the ones that produced a route.
+        unresolvable: Of those, the ones that did not.
+        naming_a_write: Unresolvable calls that named POST/PUT/PATCH/DELETE.
+        by_reason: ``CallSiteRejection`` value → count.
+        examples: Bounded samples, so the count can be checked rather than
+            trusted. Each is the call as written, never a response body.
+    """
+
+    seen: int = 0
+    resolved: int = 0
+    unresolvable: int = 0
+    naming_a_write: int = 0
+    by_reason: dict[str, int] = field(default_factory=dict)
+    examples: list[str] = field(default_factory=list)
+
+    @property
+    def any_unresolvable(self) -> bool:
+        """Whether any HTTP call site went unaddressed."""
+        return self.unresolvable > 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Render for ``report.json``."""
+        return {
+            "seen": self.seen,
+            "resolved": self.resolved,
+            "unresolvable": self.unresolvable,
+            "naming_a_write": self.naming_a_write,
+            "by_reason": dict(sorted(self.by_reason.items())),
+            "examples": self.examples[:MAX_RETAINED_PER_CLASS],
+        }
+
+
 @dataclass
 class PlanAlarmRegister:
     """Every planning pass's cap outcome, for the report.
@@ -381,6 +448,7 @@ class PlanAlarmRegister:
     _crawl_budgets: list[CrawlBudgetTruncation] = field(default_factory=list)
     _probe_budgets: list[ProbeBudgetTruncation] = field(default_factory=list)
     _method_provenance: list[MethodProvenance] = field(default_factory=list)
+    _unreachable_call_sites: list[UnreachableCallSites] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record(self, event: PlanTruncation) -> None:
@@ -489,6 +557,58 @@ class PlanAlarmRegister:
             "unread_examples": examples[:MAX_RETAINED_PER_CLASS],
         }
 
+    def record_unreachable_call_sites(self, event: UnreachableCallSites) -> None:
+        """Record one bundle walk's resolved/unresolvable split."""
+        with self._lock:
+            self._unreachable_call_sites.append(event)
+        if event.naming_a_write:
+            logger.warning(
+                "UNREACHABLE WRITE SURFACE recorded for the report — %d of %d HTTP call "
+                "site(s) could not be addressed, and %d of those NAMED a state-changing "
+                "verb. Those routes reach no write-family methodology.",
+                event.unresolvable,
+                event.seen,
+                event.naming_a_write,
+            )
+        elif event.any_unresolvable:
+            logger.info(
+                "UNREACHABLE CALL SITES recorded for the report — %d of %d HTTP call "
+                "site(s) resolved to no route.",
+                event.unresolvable,
+                event.seen,
+            )
+
+    def unreachable_call_sites(self) -> list[UnreachableCallSites]:
+        """Every recorded bundle walk, in the order it happened."""
+        with self._lock:
+            return list(self._unreachable_call_sites)
+
+    def unreachable_call_site_summary(self) -> dict[str, Any]:
+        """Render the resolved/unresolvable split for ``report.json``.
+
+        Present on a clean run too. "Every HTTP call the frontend declares was
+        turned into a route we can address" is the claim that makes a small
+        endpoint set a statement about the target, and a section that appears
+        only on failure cannot be told apart from one nobody wrote.
+        """
+        events = self.unreachable_call_sites()
+        by_reason: dict[str, int] = {}
+        examples: list[str] = []
+        for event in events:
+            for reason, count in event.by_reason.items():
+                by_reason[reason] = by_reason.get(reason, 0) + count
+            examples.extend(event.examples)
+        return {
+            "measured": bool(events),
+            "seen": sum(e.seen for e in events),
+            "resolved": sum(e.resolved for e in events),
+            "unresolvable": sum(e.unresolvable for e in events),
+            "naming_a_write": sum(e.naming_a_write for e in events),
+            "any_unresolvable": any(e.any_unresolvable for e in events),
+            "by_reason": dict(sorted(by_reason.items())),
+            "examples": examples[:MAX_RETAINED_PER_CLASS],
+        }
+
     def probe_summary(self) -> dict[str, Any]:
         """Render the surface-mapping budgets for ``report.json``.
 
@@ -577,6 +697,8 @@ class PlanAlarmRegister:
             self._passes.clear()
             self._crawl_budgets.clear()
             self._probe_budgets.clear()
+            self._method_provenance.clear()
+            self._unreachable_call_sites.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +774,21 @@ def method_provenance_summary() -> dict[str, Any]:
     return register.method_provenance_summary()
 
 
+def record_unreachable_call_sites(event: UnreachableCallSites) -> None:
+    """Record a bundle walk's resolved/unresolvable split, if a register exists."""
+    register = _active_register
+    if register is not None:
+        register.record_unreachable_call_sites(event)
+
+
+def unreachable_call_site_summary() -> dict[str, Any]:
+    """The active register's call-site reach summary, or the clean shape."""
+    register = _active_register
+    if register is None:
+        return PlanAlarmRegister().unreachable_call_site_summary()
+    return register.unreachable_call_site_summary()
+
+
 def probe_budget_summary() -> dict[str, Any]:
     """The active register's probe summary, or the clean shape when none exists."""
     register = _active_register
@@ -681,10 +818,13 @@ __all__ = [
     "CrawlBudgetTruncation",
     "MethodProvenance",
     "PlanAlarmRegister",
+    "UnreachableCallSites",
     "PlanTruncation",
     "ProbeBudgetTruncation",
     "crawl_budget_summary",
     "method_provenance_summary",
+    "record_unreachable_call_sites",
+    "unreachable_call_site_summary",
     "get_active_plan_alarms",
     "plan_alarm_summary",
     "probe_budget_summary",

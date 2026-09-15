@@ -769,6 +769,17 @@ under the repo root; the header table at the top of this file links them all.
     AST-computed domain. **Detail →
     `docs/analysis/spa-write-surface-blocker.md` §6.**
 
+112. **A call site we SAW and could not address is a third state, and a route the
+    source DECLARES is a different fact from a call it MAKES.** `MiningResult`
+    carries resolved calls, `UnresolvedCallSite`s (three reasons; `naming_a_write`
+    first) and `route_declarations` separately. The disclosure's domain is calls
+    HTTP by the CALLEE's name or a config argument's SHAPE — `map.get(k)` is not
+    one. **The guard that keeps prose out is a POSITIVE shape test, never a
+    string-literal pre-pass**: quote-counting is unsound on minified JS and hid 30
+    of 88 readable call sites. A `{path, method}` manifest entry is held to the
+    call site's bar and claims NO body. **Detail →
+    `docs/analysis/spa-write-surface-blocker.md` §7.**
+
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/

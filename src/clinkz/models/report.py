@@ -337,9 +337,19 @@ class PentestReport(BaseModel):
     #: Rendered on a clean run too — a sweep that probed nothing but bundles
     #: returns exactly what a sweep that found no write verb returns.
     probe_coverage: dict[str, object] = Field(default_factory=dict)
+    #: How much of the HTTP surface the target's own JavaScript DECLARES the
+    #: engine could turn into an addressable route. Upstream of
+    #: ``method_provenance``, and the only coverage account that can see calls
+    #: which never became endpoints at all: an unresolvable call site emits
+    #: nothing, carries no method evidence, and lands in no bucket, so a bundle
+    #: of ``fetch(e,n)`` and an application that makes no HTTP calls are
+    #: indistinguishable in every other number here.
+    #:
+    #: Rendered on a clean run too, for the same reason as the field below.
+    call_site_reach: dict[str, object] = Field(default_factory=dict)
     #: How each discovered endpoint's HTTP METHOD came to be known. Upstream of
-    #: ``probe_coverage``, and the most consequential of the four coverage
-    #: accounts: seven Tier-1 classes are gated on
+    #: ``probe_coverage``, and the most consequential of the coverage accounts
+    #: that are about endpoints: seven Tier-1 classes are gated on
     #: ``has_form or method in (POST, PUT, PATCH)``, and
     #: ``_applicable_methods_for_endpoint`` is the only producer of their
     #: deterministic buckets. So an endpoint recorded ``GET`` is not a

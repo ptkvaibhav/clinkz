@@ -871,3 +871,49 @@ boundary does not carry them.
 `subprocess.run(..., capture_output=True)` under `scripts/` whose output reaches
 a writer. That is the guard this should land with, rather than two hand-fixed
 call sites — the same law as every other domain here.
+
+---
+
+## R17 · The bundle-fetch cap has no ordering signal, and the measurement says it is not what binds
+
+**State: OPEN, with the options measured and none built.** Opened 2026-09-15 by
+the config-object round (`docs/analysis/spa-write-surface-blocker.md` §7.5).
+
+`JSCallSiteDiscoverer` fetches `_MAX_BUNDLES = 12` of a target's chunk URLs — 53
+on cal.com, 27 on Juice Shop — in **queue order**, because
+`crawl_visit_priority` grades every `.js` chunk `2` and cannot separate them.
+That is invariant 106's shape (a bound that selects by spelling lets the alphabet
+decide coverage) with no grade available to fix it by.
+
+Eight candidate signals were ranked over **all** chunks on both targets, top 12
+taken, against the ceiling of reading everything. Full table in §7.5. The three
+results that decide what to do:
+
+1. **The queue is already at 93–95% of the ceiling** (Juice Shop 88/95 sites,
+   40/42 writes). Re-ordering buys at most 7%.
+2. **The best signal cannot order the fetch.** URL-shaped literal count scores
+   100%/99% and needs the **body** — but the bound is on *fetching*. The only
+   pre-fetch signals are `is_seed` (identical to the queue, no information) and
+   import-graph in-degree, which is **actively harmful** at 38%: high in-degree
+   means a shared utility chunk, which is where routes are not.
+3. **Size is not a proxy** in either direction; Juice Shop's 5th-richest chunk is
+   1,007 bytes.
+
+So the ordering is not the defect here, and "raise the cap" is not the fix
+either — on cal.com the *ceiling* across all 45 chunks is 4 call sites and 1
+write, and the write is already inside the first 12.
+
+**What is actually missing is the disclosure.** There is a `ProbeBudgetTruncation`
+for the `OPTIONS` sweep and a `CrawlBudgetTruncation` for the crawl; there is no
+record anywhere that 41 of 53 chunk URLs were never fetched. A reader cannot
+distinguish "we read this application's bundles" from "we read 23% of them".
+
+**Recommended when this is taken up:** a bundle-budget truncation record beside
+the probe one — option (a) in §7.5 — because finding 1 bounds a re-sort's value
+at ≤7% while the absence of any disclosure is unbounded. Option (b), a two-pass
+walk that `Range`-fetches a prefix of all N to grade them and then fully fetches
+the top 12, is the only way to get the good signal onto the fetch order, and it
+should not be built before someone wants the 7%.
+
+**Related:** R10 (the gray-box ingest selects by path spelling — the same law,
+a different bound), invariant 106, invariant 112.

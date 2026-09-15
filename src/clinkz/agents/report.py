@@ -92,6 +92,7 @@ from clinkz.observability.plan_alarms import (
     method_provenance_summary,
     plan_alarm_summary,
     probe_budget_summary,
+    unreachable_call_site_summary,
 )
 from clinkz.observability.trace import get_active_trace_writer
 from clinkz.safety.action_log import ActionLog, RefusalTally
@@ -678,6 +679,7 @@ class ReportAgent(BaseAgent):
             plan_coverage=plan_alarm_summary(),
             crawl_coverage=crawl_budget_summary(),
             probe_coverage=probe_budget_summary(),
+            call_site_reach=unreachable_call_site_summary(),
             method_provenance=method_provenance_summary(),
             # What this run OBSERVED, with the provenance of every version.
             # Built here from recon's own rows rather than from
@@ -1260,6 +1262,7 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_plan_coverage(lines, report)
             ReportAgent._render_crawl_coverage(lines, report)
             ReportAgent._render_probe_coverage(lines, report)
+            ReportAgent._render_call_site_reach(lines, report)
             ReportAgent._render_method_provenance(lines, report)
             ReportAgent._render_research_grounding(lines, report)
             ReportAgent._render_llm_spend(lines, report)
@@ -1307,6 +1310,7 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_plan_coverage(lines, report)
         ReportAgent._render_crawl_coverage(lines, report)
         ReportAgent._render_probe_coverage(lines, report)
+        ReportAgent._render_call_site_reach(lines, report)
         ReportAgent._render_method_provenance(lines, report)
         ReportAgent._render_research_grounding(lines, report)
         ReportAgent._render_llm_spend(lines, report)
@@ -1944,7 +1948,6 @@ class ReportAgent(BaseAgent):
         lines.append("")
 
     @staticmethod
-    @staticmethod
     def _render_method_provenance(lines: list[str], report: PentestReport) -> None:
         """Render whether the discovered surface's verbs were READ.
 
@@ -2000,6 +2003,80 @@ class ReportAgent(BaseAgent):
                 "the idiom's default IS the verb |",
                 f"| `unread` | {unread} | a config the engine cannot see into; `GET` stands "
                 "in for an absence |",
+                "",
+            ]
+        )
+
+    @staticmethod
+    def _render_call_site_reach(lines: list[str], report: PentestReport) -> None:
+        """Render how much of the frontend's declared HTTP surface we could address.
+
+        Upstream of every other coverage section here, including method
+        provenance. Those account for endpoints; this one accounts for calls
+        that never BECAME endpoints, which no endpoint-shaped count can see. A
+        bundle full of ``fetch(e,n)`` and an application that makes no HTTP
+        calls produce the same empty endpoint list.
+        """
+        reach = dict(report.call_site_reach or {})
+        if not reach.get("measured"):
+            return
+        seen = int(reach.get("seen") or 0)
+        resolved = int(reach.get("resolved") or 0)
+        unresolvable = int(reach.get("unresolvable") or 0)
+        writes = int(reach.get("naming_a_write") or 0)
+        lines.extend(["## Frontend call-site reach", ""])
+        if unresolvable:
+            lines.extend(
+                [
+                    f"**{unresolvable} of {seen} HTTP call site(s) in the target's own "
+                    f"JavaScript could not be turned into an addressable route.** The code "
+                    f"builds those URLs at runtime — from a minified local, a cross-module "
+                    f"import, or a client that holds the address one frame up — so reading "
+                    f"the bundle recovers no route for them. They were never tested, and "
+                    f"their absence from this report is a limit of the test rather than a "
+                    f"reading of the application.",
+                    "",
+                ]
+            )
+            if writes:
+                lines.extend(
+                    [
+                        f"**{writes} of them NAMED a state-changing verb** (POST/PUT/PATCH/"
+                        f"DELETE). That is write surface the engine can see declared and "
+                        f"cannot reach, so no write-family methodology was dispatched "
+                        f"against it.",
+                        "",
+                    ]
+                )
+            examples = [str(e) for e in (reach.get("examples") or [])][:5]
+            if examples:
+                lines.extend(
+                    ["Call sites that resolved to no route (first few):", ""]
+                    + [f"- `{e}`" for e in examples]
+                    + [""]
+                )
+        else:
+            lines.extend(
+                [
+                    f"Every one of the {seen} HTTP call site(s) read out of the target's "
+                    f"JavaScript resolved to an addressable route. Nothing the frontend "
+                    f"declares was seen and left unreachable.",
+                    "",
+                ]
+            )
+        by_reason = dict(reach.get("by_reason") or {})
+        if by_reason:
+            lines.extend(
+                [
+                    "| Why it could not be addressed | Calls |",
+                    "| --- | --- |",
+                ]
+                + [f"| `{name}` | {count} |" for name, count in sorted(by_reason.items())]
+                + [""]
+            )
+        lines.extend(
+            [
+                f"Read: {resolved} of {seen}.",
                 "",
             ]
         )
