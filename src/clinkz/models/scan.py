@@ -56,6 +56,52 @@ class ParamLocation(StrEnum):
     SESSION = "session"
 
 
+class MethodEvidence(StrEnum):
+    """How the engine knows an endpoint's HTTP method.
+
+    **An absence spelled as a measurement is the failure this exists to
+    prevent.** ``JSCallSiteDiscoverer`` reads a frontend's own ``fetch`` /
+    ``axios`` call sites, and the miner's fallback was::
+
+        if method is None:
+            method = "GET"
+
+    so a call site whose verb the miner could not read became a ``GET``
+    endpoint, byte-identical to one it read AS ``GET``. That matters more here
+    than almost anywhere else, because ``GET`` is precisely the value that
+    removes an endpoint from the seven Tier-1 classes gated on
+    ``has_form or method in (POST, PUT, PATCH)``. An unread verb was therefore
+    not a degraded endpoint, it was a silently absent one.
+
+    Measured on the live cal.com target: of 12 bundles read, the miner emitted
+    **2** call sites (both reported ``GET``) while **7** call sites in the same
+    bundles carried a config argument it cannot see into — an identifier or a
+    top-level spread. Every one of those seven was a ``GET`` in the plan.
+
+    Three values, because there are three facts:
+
+    * :attr:`NAMED` — the source or the protocol said so. A ``.post(`` token, a
+      literal ``{method: "PUT"}``, an ``XMLHttpRequest.open("POST", …)``, an
+      ``Allow:`` header, an OpenAPI operation, an HTML ``<form method>``.
+    * :attr:`PLATFORM_DEFAULT` — no verb was named and **none could have been**:
+      a bare ``fetch(url)``, or one whose init object we read in full and which
+      declares no ``method``. The idiom's own default applies, so this is a
+      reading, not a guess.
+    * :attr:`UNREAD` — a config argument exists whose contents we could not
+      read, so the verb may be anything. ``GET`` is standing in for an absence.
+
+    :attr:`UNREAD` never admits an endpoint to a write-family class: a terminal,
+    mutating methodology dispatched against a route with no evidence it writes
+    is invariant 88 plus a residual mutation in another principal's data. What
+    it does instead is get the route ASKED — the ``OPTIONS`` sweep probes an
+    unread route ahead of one whose verb is known — and get the gap DISCLOSED.
+    """
+
+    NAMED = "named"
+    PLATFORM_DEFAULT = "platform_default"
+    UNREAD = "unread"
+
+
 class Endpoint(BaseModel):
     """A single HTTP endpoint discovered during scanning.
 
@@ -104,6 +150,15 @@ class Endpoint(BaseModel):
     sets_cookies: list[str] = Field(default_factory=list)
     has_form: bool = False
     has_dom_source: bool = False
+    #: How this endpoint's :attr:`method` came to be known. See
+    #: :class:`MethodEvidence`. The default is the PESSIMISTIC value, because a
+    #: producer that has not declared is a producer nobody checked, and the two
+    #: things ``UNREAD`` causes - an ``OPTIONS`` probe and a line in the coverage
+    #: disclosure - are both safe to over-apply, while reading an unread verb as
+    #: a measurement is not. Every construction site in ``src/`` declares it
+    #: explicitly, asserted by
+    #: ``tests/test_agents/test_method_evidence_is_declared.py``.
+    method_evidence: MethodEvidence = MethodEvidence.UNREAD
     #: Whether this response served a Content-Security-Policy governing script.
     #: The same kind of observation as the three above, added for the same
     #: reason: "is this policy bypassable" is a question only about a response

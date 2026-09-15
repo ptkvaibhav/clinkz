@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from clinkz.models.recon import DetectedComponent
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.invocations import TRANSPORT_IN_PROCESS, TRANSPORT_SUBPROCESS
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +387,7 @@ class ToolBase(ABC):
         self._emit_trace_records(
             cmd=cmd,
             exec_mode=exec_mode,
+            transport=TRANSPORT_SUBPROCESS,
             stdin=None,
             stdout=stdout,
             stderr=stderr,
@@ -460,6 +462,7 @@ class ToolBase(ABC):
         self._emit_trace_records(
             cmd=recorded_cmd,
             exec_mode=exec_mode,
+            transport=TRANSPORT_SUBPROCESS,
             stdin=stdin_data,
             stdout=stdout,
             stderr=stderr,
@@ -474,31 +477,68 @@ class ToolBase(ABC):
         *,
         cmd: list[str],
         exec_mode: str,
+        transport: str,
         stdin: str | None,
         stdout: str,
         stderr: str,
         returncode: int,
         duration_ms: float,
         via_stdin: bool = False,
+        request: dict[str, Any] | None = None,
     ) -> None:
         """Write the full-fidelity invocation record and the trace summary.
 
-        Centralised here so both ``_run_subprocess`` and ``_run_subprocess_stdin``
-        emit consistent records — and so a future caller (e.g. an MCP-backed
-        execute path) can reuse the same helper.
+        The one place a tool execution becomes evidence, for **every** transport.
+        It used to be reached only from ``_run_subprocess`` /
+        ``_run_subprocess_stdin``, so a ``TOOL_EXEC_MODE=local`` run — where the
+        HTTP tool serves requests in-process and spawns nothing — wrote no record
+        for any request it made. Engagement ``e4814440`` holds 0 invocation
+        records against 46 discovered endpoints and a proven session: every claim
+        in that report rests on the report, because the artifacts that would let
+        a reader re-derive one were never written. An empty
+        ``tool_invocations/`` is indistinguishable from a run that made no calls.
+
+        Args:
+            cmd: For :data:`TRANSPORT_SUBPROCESS`, the argv that was executed.
+                For :data:`TRANSPORT_IN_PROCESS`, a human-readable descriptor of
+                the call — NOT an argv, which is why the transport is declared
+                beside it and why ``tool-invoke --replay`` reads the transport
+                before it execs anything.
+            exec_mode: ``settings.tool_exec_mode`` as it was for this call.
+            transport: Which of :data:`TRANSPORTS` this execution used.
+            stdin: Data piped to the process, or ``None``.
+            stdout: What the tool produced. On the in-process transport this is
+                the tool's own output envelope, which is what its
+                ``parse_output`` consumes — the same bytes the parser sees live.
+            stderr: Error output, or the transport's own failure text.
+            returncode: Process exit code, or an equivalent the in-process
+                caller declares.
+            duration_ms: Wall-clock cost of the call.
+            via_stdin: Whether the subprocess was fed on stdin.
+            request: What an in-process call was handed. ``None`` on the
+                subprocess transport, where the argv IS the request.
         """
+        from clinkz.observability.audit import record_execution
         from clinkz.observability.trace import get_active_trace_writer
 
         writer = get_active_trace_writer()
         if writer is None:
+            # Still an execution, and still counted. A run with a register but
+            # no trace writer is not a run that made no calls, and the audit
+            # verdict is the one place that distinction is legible.
+            record_execution(
+                tool=self.name, exec_mode=exec_mode, transport=transport, recorded=False
+            )
             return
 
         try:
             seq, path = writer.record_tool_invocation(
                 tool_name=self.name,
                 exec_mode=exec_mode,
+                transport=transport,
                 cwd=os.getcwd(),
                 command=cmd,
+                request=request,
                 env_overrides={},
                 stdin=stdin,
                 stdout=stdout,
@@ -511,7 +551,15 @@ class ToolBase(ABC):
             self._logger.warning("Failed to record tool invocation: %s", exc)
             seq, path = -1, None
 
-        extra: dict[str, Any] = {"tool": self.name, "invocation_seq": seq}
+        record_execution(
+            tool=self.name, exec_mode=exec_mode, transport=transport, recorded=seq >= 0
+        )
+
+        extra: dict[str, Any] = {
+            "tool": self.name,
+            "invocation_seq": seq,
+            "transport": transport,
+        }
         if path is not None:
             try:
                 extra["invocation_file"] = str(path.relative_to(writer.outputs_root))
@@ -528,4 +576,51 @@ class ToolBase(ABC):
             exit_code=returncode,
             duration_ms=duration_ms,
             extra=extra,
+        )
+
+    def _emit_inprocess_invocation(
+        self,
+        *,
+        request: dict[str, Any],
+        descriptor: list[str],
+        output: str,
+        error: str = "",
+        failed: bool = False,
+        duration_ms: float,
+    ) -> None:
+        """Record one call this tool served inside the process.
+
+        The in-process counterpart of ``_run_subprocess``, and deliberately a
+        separate entry point rather than a flag on it: the subprocess helper's
+        job is to RUN something and its record is a by-product, while an
+        in-process path has already done the work by the time it gets here and
+        only needs the record. Sharing the argv-shaped signature would have meant
+        every in-process caller inventing a command line that was never executed.
+
+        Args:
+            request: What the tool was handed — the args dict, less anything the
+                caller does not want carried. Goes through the same redaction
+                chokepoint as the argv on the subprocess path.
+            descriptor: A short human-readable summary of the call for the trace
+                timeline (e.g. ``["GET", url]``). Never executed.
+            output: The tool's own output envelope — the bytes its
+                ``parse_output`` consumes.
+            error: Transport-level error text, if any.
+            failed: Whether the call failed at the transport level. Mapped to a
+                non-zero exit code so a reader scanning ``exit_code`` sees the
+                same thing on both transports.
+            duration_ms: Wall-clock cost of the call.
+        """
+        from clinkz.config import settings
+
+        self._emit_trace_records(
+            cmd=descriptor,
+            exec_mode=settings.tool_exec_mode,
+            transport=TRANSPORT_IN_PROCESS,
+            stdin=None,
+            stdout=output,
+            stderr=error,
+            returncode=1 if failed else 0,
+            duration_ms=duration_ms,
+            request=request,
         )

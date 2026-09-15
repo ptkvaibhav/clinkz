@@ -46,6 +46,7 @@ from clinkz.engagement.credential_shapes import (
     reset_fingerprint_salt,
 )
 from clinkz.engagement.secrets import clear_secrets, redact, redact_structure, register_secret
+from clinkz.observability.invocations import TRANSPORT_SUBPROCESS
 
 
 @pytest.fixture(autouse=True)
@@ -510,6 +511,7 @@ def test_no_writer_puts_a_decodable_credential_token_on_disk(tmp_path: Path) -> 
             seq, _ = writer.record_tool_invocation(
                 tool_name="http_client",
                 exec_mode="docker",
+                transport=TRANSPORT_SUBPROCESS,
                 cwd=str(tmp_path),
                 command=["curl", "-H", f"Authorization: Bearer {token}", "http://app.test/api"],
                 stdout=json.dumps({"authentication": {"token": token}}),

@@ -68,6 +68,12 @@ src/clinkz/
 │                     #   against the run's OWN record: the testing WINDOW, the
 │                     #   authentication state, the cost, the document's name —
 │                     #   pure, read by all three renderers at BOTH seams),
+│                     #   _js_api_mining (the API contract read out of a target's
+│                     #   own bundles — the one producer that can READ a verb, and
+│                     #   therefore the one that can fail to: three states, never a
+│                     #   GET standing in for an absence; and three RESULTS —
+│                     #   calls resolved, calls SEEN and not addressable, and
+│                     #   routes the source DECLARES as {path, method}),
 │                     #   _archive/ (built, registered, invoked zero times: critic)
 ├── chaining/         # composition as a capability: vocabulary (what each class YIELDS /
 │                     #   REQUIRES), harvest (finding -> artifact, via the DECLARED yield),
@@ -75,7 +81,13 @@ src/clinkz/
 ├── engagement/       # gate (the refusals), cli_inputs (operator flags -> validated models:
 │                     #   target/scope classification, authorization assembly),
 │                     #   resume (rebuild a stopped run's REPORT, never its testing),
-│                     #   secrets (credentials + redaction chokepoint),
+│                     #   secrets (credentials + redaction chokepoint; a registration
+│                     #   is SCOPED — provisional_secret arms a swept guess for its
+│                     #   attempt only, and the registry is COUNTED so one source's
+│                     #   release cannot disarm another's),
+│                     #   schema_vocabulary (the engine's OWN declared words, computed
+│                     #   from the models: a credential that spells one is refused at
+│                     #   INTAKE, and such a word in a VALUE position is schema),
 │                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
 │                     #   shared by the redactor and the gate), artifact_scan (the
 │                     #   disclosure gate: outputs/<id>/ AND the companion region
@@ -127,11 +139,15 @@ src/clinkz/
 │                     #   runtime choice), _container_runner (the browser-driving half —
 │                     #   ZERO clinkz imports, so it runs in the tools container)
 ├── observability/    # trace.py (JSONL), replay.py, corpus_replay.py (offline gate),
+│                  # audit.py (executions vs invocation records; an unrecorded
+│                  #   run is INDETERMINATE and not baseline-eligible),
 │                     #   ledger.py (what each component CONTRIBUTED — the silent-
 │                     #   degradation gate), component_registry.py (what the engine HAS,
 │                     #   declared at start + a COMPUTED reachability predicate settled
 │                     #   at report time), plan_alarms.py (what the task cap
-│                     #   DROPPED, and separately whether the ORDERING held)
+│                     #   DROPPED, and separately whether the ORDERING held; plus
+│                     #   how each endpoint's VERB was known, and how much of the
+│                     #   frontend's declared call surface we could ADDRESS)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes (+ ControlArm: which of a class's OWN channels
                       #   dispatch their own control; + MultiPrincipalRequirement:

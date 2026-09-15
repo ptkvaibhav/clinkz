@@ -45,6 +45,7 @@ from clinkz.agents._report_integrity import (
     spend_cost_line,
     testing_window,
 )
+from clinkz.engagement.render_safety import fence_for, neutralise_structure
 from clinkz.engagement.secrets import redact, redact_structure
 from clinkz.knowledge.component_cves import (
     BAND_C_VECTORS,
@@ -83,8 +84,17 @@ from clinkz.models.vuln_classes import (
     ConfirmationCapability,
     for_finding,
 )
+from clinkz.observability.audit import INDETERMINATE as AUDIT_INDETERMINATE
+from clinkz.observability.audit import NOTHING_DISPATCHED as AUDIT_NOTHING_DISPATCHED
+from clinkz.observability.audit import audit_summary, reconcile_run_audit
 from clinkz.observability.ledger import get_active_ledger
-from clinkz.observability.plan_alarms import crawl_budget_summary, plan_alarm_summary
+from clinkz.observability.plan_alarms import (
+    crawl_budget_summary,
+    method_provenance_summary,
+    plan_alarm_summary,
+    probe_budget_summary,
+    unreachable_call_site_summary,
+)
 from clinkz.observability.trace import get_active_trace_writer
 from clinkz.safety.action_log import ActionLog, RefusalTally
 from clinkz.safety.scope_refusals import scope_refusal_summary
@@ -347,6 +357,12 @@ _PROMPT_PATH = Path(__file__).parent / "prompts" / "report_system.md"
 _SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
 
 
+#: Endpoints named inside one grouped inconclusive-measurement row. The COUNT
+#: stays exact past this; a truncated record of a truncation is the failure the
+#: disclosure sections exist to prevent.
+_MAX_INCONCLUSIVE_ENDPOINTS_NAMED = 12
+
+
 class ReportAgent(BaseAgent):
     """Simple report agent — zero LLM calls.
 
@@ -522,6 +538,11 @@ class ReportAgent(BaseAgent):
         # incomplete run "0 findings. Risk rating: Informational" states that
         # the target is clean on the strength of testing that did not happen.
         model_stamp = _active_model_stamp()
+        # Read at the same point and for the same reason: it decides what the
+        # document may claim about itself. A run whose calls left no invocation
+        # record cannot support a reader checking any single claim against the
+        # artifacts, so it is INDETERMINATE rather than clean.
+        run_audit = audit_summary()
         run_completed, incomplete_reason = _run_completion(
             phase_outcomes=dict(input_data.get("phase_outcomes") or {}),
             model_stamp=model_stamp,
@@ -643,11 +664,24 @@ class ReportAgent(BaseAgent):
             # ``provider_degraded: false``. Reconciling HERE puts the honest
             # verdict in ``report.json``, so the JSON, Markdown and PDF cannot
             # disagree about it either.
-            provider_degradation=reconcile_with_model_stamp(degradation_summary(), model_stamp),
+            # Two reconciliations, applied in sequence, both one-way. The model
+            # stamp answers "did routing deliver what was asked for"; the audit
+            # summary answers "can a reader check any of this against the
+            # artifacts". A run that fails the second is not a run with a
+            # smaller finding set — it is a run whose findings cannot be
+            # re-derived, which is what baseline eligibility is for.
+            provider_degradation=reconcile_run_audit(
+                reconcile_with_model_stamp(degradation_summary(), model_stamp),
+                run_audit,
+            ),
+            run_audit=run_audit,
             scope_refusals=scope_refusal_summary(),
             llm_spend=spend_summary(),
             plan_coverage=plan_alarm_summary(),
             crawl_coverage=crawl_budget_summary(),
+            probe_coverage=probe_budget_summary(),
+            call_site_reach=unreachable_call_site_summary(),
+            method_provenance=method_provenance_summary(),
             # What this run OBSERVED, with the provenance of every version.
             # Built here from recon's own rows rather than from
             # ``hosts[].services``, which has been empty on every bundle ever
@@ -683,9 +717,30 @@ class ReportAgent(BaseAgent):
         # Deliberately not wrapped in a `try` — if redaction produced something
         # this model rejects, that is a defect in redaction, and a fallback to
         # the old path would silently restore the weaker document under the same
-        # filename. No field here is more constrained than `str`, so a
-        # `[REDACTED]` substitution cannot invalidate one.
-        redacted_report = PentestReport.model_validate(report_dict)
+        # filename.
+        #
+        # This used to add "no field here is more constrained than `str`, so a
+        # `[REDACTED]` substitution cannot invalidate one", and that sentence is
+        # false in both halves. A KEY substitution invalidated it — `test_start`
+        # became `[REDACTED]_start` and two required fields went missing, so no
+        # report was written on any run where the default-credential sweep fired
+        # (fixed: `secrets._redact_key`). And FOUR fields reachable from here are
+        # enum-constrained rather than free `str` — `Finding.severity`,
+        # `Finding.status`, `NotTestedItem.category`, `Service.protocol` — so a
+        # value substitution can invalidate one too: register `medi` and
+        # `severity="medium"` becomes `"[REDACTED]um"`, which the enum refuses.
+        # That half is open, as the value half of R14.
+        #
+        # And a SECOND whole-structure pass, for a different question. Redaction
+        # asks what a value IS; this asks what it RENDERS AS. A response snippet
+        # carrying three backticks on their own line closes the PoC fence, and
+        # the target then writes its own `## Summary` with its own risk rating
+        # and finding count into a document a client reads. Both documents below
+        # render from the neutralised structure; `report_dict` above does NOT,
+        # because JSON encoding is already structural neutralisation and those
+        # bytes are what `regrade_stored_bundles.py` and `corpus-replay` read
+        # back. See `engagement/render_safety.py`.
+        redacted_report = PentestReport.model_validate(neutralise_structure(report_dict))
 
         # Reports live alongside the rest of the engagement artifacts under
         # ``outputs/<engagement_id>/`` (same convention as trace.jsonl and the
@@ -985,23 +1040,41 @@ class ReportAgent(BaseAgent):
         # the defect — "No Brute-Force Protection on /vulnerabilities/brute/" in
         # the document, and the same run's /vulnerabilities/csrf/
         # test_credentials.php login inconclusive and silently absent.
+        # Grouped by (class, reason), because one class can reach this state on
+        # every endpoint it was given: the business-logic intent gate abstained on
+        # 41 of 42 endpoints in one recorded run, and 41 near-identical paragraphs
+        # in a client document is the shape a reader learns to skip. The endpoints
+        # are all named inside the row, so nothing is lost by not repeating the
+        # explanation. Insertion-ordered, so the section stays a function of what
+        # the run recorded rather than of dict iteration.
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for measurement in inconclusive_measurements or []:
             if not isinstance(measurement, dict):
                 continue
-            endpoint = str(measurement.get("endpoint") or "")
             method = str(measurement.get("test_method") or "a methodology")
-            attempts = int(measurement.get("attempts") or 0)
+            reason = str(measurement.get("reason") or "no rationale recorded")
+            grouped.setdefault((method, reason), []).append(measurement)
+        for (method, reason), group in grouped.items():
+            endpoints = [str(m.get("endpoint") or "") for m in group]
+            attempts = sum(int(m.get("attempts") or 0) for m in group)
+            one = len(endpoints) == 1
+            where = endpoints[0] if one else f"{len(endpoints)} endpoint(s)"
+            named = ", ".join(endpoints[:_MAX_INCONCLUSIVE_ENDPOINTS_NAMED])
+            if len(endpoints) > _MAX_INCONCLUSIVE_ENDPOINTS_NAMED:
+                named += f", and {len(endpoints) - _MAX_INCONCLUSIVE_ENDPOINTS_NAMED} more"
             items.append(
                 NotTestedItem(
-                    item=f"{method} at {endpoint}",
+                    item=f"{method} at {where}",
                     category=NotTestedCategory.MEASUREMENT_INCONCLUSIVE,
                     reason=(
-                        f"This class dispatched {attempts} request(s) to {endpoint} and its "
-                        f"own positive control refused the series: "
-                        f"{measurement.get('reason') or 'no rationale recorded'} "
-                        f"No conclusion about this endpoint is drawn from it in either "
-                        f"direction — the absence of a finding here is the absence of a "
-                        f"measurement, not the absence of a flaw."
+                        # The mechanism is the PRODUCER's sentence, never this
+                        # renderer's. Two producers reach this category by
+                        # different routes and only they know which.
+                        f"This class dispatched {attempts} request(s) across {named} and "
+                        f"could support no conclusion: {reason} "
+                        f"No conclusion about {'this endpoint' if one else 'these endpoints'} "
+                        f"is drawn in either direction — the absence of a finding here is the "
+                        f"absence of a measurement, not the absence of a flaw."
                     ),
                 )
             )
@@ -1193,11 +1266,15 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_not_tested(lines, report)
             ReportAgent._render_component_ledger(lines, report)
             ReportAgent._render_provider_degradation(lines, report)
+            ReportAgent._render_run_audit(lines, report)
             ReportAgent._render_scope_refusals(lines, report)
             ReportAgent._render_component_inventory(lines, report)
             ReportAgent._render_version_match_disposition(lines, report)
             ReportAgent._render_plan_coverage(lines, report)
             ReportAgent._render_crawl_coverage(lines, report)
+            ReportAgent._render_probe_coverage(lines, report)
+            ReportAgent._render_call_site_reach(lines, report)
+            ReportAgent._render_method_provenance(lines, report)
             ReportAgent._render_research_grounding(lines, report)
             ReportAgent._render_llm_spend(lines, report)
             return "\n".join(lines)
@@ -1217,13 +1294,18 @@ class ReportAgent(BaseAgent):
                 ]
             )
 
-            # PoC evidence (request + response)
+            # PoC evidence (request + response). The one block position in this
+            # document: these are raw response bytes, so the line breaks are the
+            # artifact and `neutralise_structure` deliberately keeps them. The
+            # fence is what makes that safe, and it ADAPTS — one backtick longer
+            # than the longest run in the content, so no content can close it.
             if f.evidence:
+                fence = fence_for("\n".join(f.evidence))
                 lines.append("**PoC:**")
-                lines.append("```")
+                lines.append(fence)
                 for ev in f.evidence:
                     lines.append(ev)
-                lines.append("```")
+                lines.append(fence)
                 lines.append("")
 
             # One-line remediation
@@ -1237,11 +1319,15 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_not_tested(lines, report)
         ReportAgent._render_component_ledger(lines, report)
         ReportAgent._render_provider_degradation(lines, report)
+        ReportAgent._render_run_audit(lines, report)
         ReportAgent._render_scope_refusals(lines, report)
         ReportAgent._render_component_inventory(lines, report)
         ReportAgent._render_version_match_disposition(lines, report)
         ReportAgent._render_plan_coverage(lines, report)
         ReportAgent._render_crawl_coverage(lines, report)
+        ReportAgent._render_probe_coverage(lines, report)
+        ReportAgent._render_call_site_reach(lines, report)
+        ReportAgent._render_method_provenance(lines, report)
         ReportAgent._render_research_grounding(lines, report)
         ReportAgent._render_llm_spend(lines, report)
         return "\n".join(lines)
@@ -1878,6 +1964,333 @@ class ReportAgent(BaseAgent):
         lines.append("")
 
     @staticmethod
+    def _render_method_provenance(lines: list[str], report: PentestReport) -> None:
+        """Render whether the discovered surface's verbs were READ.
+
+        Sits above every other coverage section in the pipeline it describes.
+        The probe budget decides which routes are ASKED what methods they
+        accept; this one says whether the method an endpoint already carries was
+        read at all — and a verb is what decides whether an endpoint has a
+        write-family class to be capped out of in the first place.
+        """
+        provenance = dict(report.method_provenance or {})
+        if not provenance.get("measured"):
+            return
+        total = int(provenance.get("total") or 0)
+        unread = int(provenance.get("unread") or 0)
+        named = int(provenance.get("named") or 0)
+        platform = int(provenance.get("platform_default") or 0)
+        lines.extend(["## HTTP method provenance", ""])
+        if unread:
+            examples = [str(u) for u in (provenance.get("unread_examples") or [])][:5]
+            lines.extend(
+                [
+                    f"**{unread} of {total} discovered endpoint(s) carry an HTTP method "
+                    f"the engine could not read.** Those endpoints were planned as `GET`, "
+                    f"which is the value that removes an endpoint from every write-family "
+                    f"class — so a write surface on them is UNDISCOVERED, not absent. This "
+                    f"is a limit of the test, not a reading of the application.",
+                    "",
+                ]
+            )
+            if examples:
+                lines.extend(
+                    ["Endpoints whose verb went unread (first few):", ""]
+                    + [f"- `{url}`" for url in examples]
+                    + [""]
+                )
+        else:
+            lines.extend(
+                [
+                    f"Every one of the {total} discovered endpoint(s) carries a method the "
+                    f"engine READ — {named} named by the source or the protocol, {platform} "
+                    f"where no verb could have been named and the idiom's own default "
+                    f"applies. An endpoint reported as a read here is a read, not a verb "
+                    f"nobody could see.",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "| Provenance | Endpoints | What it means |",
+                "| --- | --- | --- |",
+                f"| `named` | {named} | the source or the protocol stated the verb |",
+                f"| `platform_default` | {platform} | no verb was named and none could be; "
+                "the idiom's default IS the verb |",
+                f"| `unread` | {unread} | a config the engine cannot see into; `GET` stands "
+                "in for an absence |",
+                "",
+            ]
+        )
+
+    @staticmethod
+    def _render_call_site_reach(lines: list[str], report: PentestReport) -> None:
+        """Render how much of the frontend's declared HTTP surface we could address.
+
+        Upstream of every other coverage section here, including method
+        provenance. Those account for endpoints; this one accounts for calls
+        that never BECAME endpoints, which no endpoint-shaped count can see. A
+        bundle full of ``fetch(e,n)`` and an application that makes no HTTP
+        calls produce the same empty endpoint list.
+        """
+        reach = dict(report.call_site_reach or {})
+        fetch = dict(reach.get("bundle_fetch") or {})
+        # Either producer is enough to owe the reader this section. A walk that
+        # fetched chunks and mined no call site out of them is precisely the run
+        # whose silence needs explaining, and gating on `measured` alone returns
+        # before saying anything about it.
+        if not reach.get("measured") and not fetch.get("measured"):
+            return
+        seen = int(reach.get("seen") or 0)
+        resolved = int(reach.get("resolved") or 0)
+        unresolvable = int(reach.get("unresolvable") or 0)
+        writes = int(reach.get("naming_a_write") or 0)
+        lines.extend(["## Frontend call-site reach", ""])
+
+        # AHEAD of every count below, and ahead of both benign branches. A reader
+        # who takes the numbers and stops has to hit this first: on a partial read
+        # they are a floor over the chunks that were opened, not a measurement of
+        # the application. Same placement rule as the run-completion banner and
+        # as `indeterminate_reason` in the package-identity coverage note.
+        if reach.get("write_surface_indeterminate"):
+            lines.extend(
+                [
+                    f"> **THIS READ WAS PARTIAL — {fetch.get('unread')} of "
+                    f"{fetch.get('discovered')} JavaScript chunk(s) were never fetched.** "
+                    f"The engine fetches at most {fetch.get('budget')} bundles per shell, "
+                    f"and this target served more. Every count in this section is a FLOOR "
+                    f"over the chunks that WERE read. In particular a write surface of "
+                    f"zero here is **INDETERMINATE**, not a clean zero: an unfetched chunk "
+                    f"contributes no call site, so a target whose writes all live in the "
+                    f"tail is indistinguishable from one that performs no writes.",
+                    "",
+                ]
+            )
+            first_omitted = str(fetch.get("first_omitted") or "")
+            if first_omitted:
+                lines.extend([f"First chunk not fetched: `{first_omitted}`", ""])
+            omitted = [str(u) for u in (fetch.get("omitted_examples") or [])][:5]
+            if omitted:
+                lines.extend(
+                    ["Chunks that went unread (first few):", ""]
+                    + [f"- `{u}`" for u in omitted]
+                    + [""]
+                )
+        elif fetch.get("measured"):
+            lines.extend(
+                [
+                    f"Every one of the {fetch.get('discovered')} JavaScript chunk(s) this "
+                    f"target references was fetched and mined, so the counts below are a "
+                    f"measurement of the application's declared surface rather than of a "
+                    f"sample of it.",
+                    "",
+                ]
+            )
+
+        if unresolvable:
+            lines.extend(
+                [
+                    f"**{unresolvable} of {seen} HTTP call site(s) in the target's own "
+                    f"JavaScript could not be turned into an addressable route.** The code "
+                    f"builds those URLs at runtime — from a minified local, a cross-module "
+                    f"import, or a client that holds the address one frame up — so reading "
+                    f"the bundle recovers no route for them. They were never tested, and "
+                    f"their absence from this report is a limit of the test rather than a "
+                    f"reading of the application.",
+                    "",
+                ]
+            )
+            if writes:
+                lines.extend(
+                    [
+                        f"**{writes} of them NAMED a state-changing verb** (POST/PUT/PATCH/"
+                        f"DELETE). That is write surface the engine can see declared and "
+                        f"cannot reach, so no write-family methodology was dispatched "
+                        f"against it.",
+                        "",
+                    ]
+                )
+            examples = [str(e) for e in (reach.get("examples") or [])][:5]
+            if examples:
+                lines.extend(
+                    ["Call sites that resolved to no route (first few):", ""]
+                    + [f"- `{e}`" for e in examples]
+                    + [""]
+                )
+        else:
+            lines.extend(
+                [
+                    f"Every one of the {seen} HTTP call site(s) read out of the target's "
+                    f"JavaScript resolved to an addressable route. Nothing the frontend "
+                    f"declares was seen and left unreachable.",
+                    "",
+                ]
+            )
+        by_reason = dict(reach.get("by_reason") or {})
+        if by_reason:
+            lines.extend(
+                [
+                    "| Why it could not be addressed | Calls |",
+                    "| --- | --- |",
+                ]
+                + [f"| `{name}` | {count} |" for name, count in sorted(by_reason.items())]
+                + [""]
+            )
+        lines.extend(
+            [
+                f"Read: {resolved} of {seen}.",
+                "",
+            ]
+        )
+
+    @staticmethod
+    def _render_probe_coverage(lines: list[str], report: PentestReport) -> None:
+        """Render what the surface-mapping sweeps were allowed to ask.
+
+        Sits above *Crawl coverage* in the pipeline it describes: the crawl budget
+        decides which URLs become endpoints, this one decides which of those
+        endpoints are asked what methods they accept. A sweep that spent its
+        budget on JS bundles returns "no write verb on this target", which is
+        byte-identical to a target that genuinely has none — so the budget and
+        what it dropped are the only way a reader can tell.
+        """
+        probe = dict(report.probe_coverage or {})
+        if not probe:
+            return
+        lines.extend(["## Surface-mapping probe coverage", ""])
+        sweeps = [s for s in (probe.get("sweeps") or []) if isinstance(s, dict)]
+        if not sweeps:
+            lines.extend(
+                [
+                    "No surface-mapping sweep ran, so no route was asked which methods it "
+                    "accepts. Any write endpoint this application exposes and its own "
+                    "frontend never calls is therefore undiscovered rather than absent.",
+                    "",
+                ]
+            )
+            return
+        if probe.get("ordering_failure"):
+            lines.extend(
+                [
+                    f"**Probe ordering failure.** "
+                    f"{int(probe.get('relevant_dropped_count') or 0)} application or API "
+                    f"route(s) were dropped by a probe budget while lower-relevance routes "
+                    f"(static assets, bundles) were probed. Those routes were never asked "
+                    f"which methods they accept, so a write surface on them is undiscovered, "
+                    f"not absent. A larger budget does not fix an ordering defect.",
+                    "",
+                ]
+            )
+        elif probe.get("probe_truncated"):
+            lines.extend(
+                [
+                    f"{int(probe.get('dropped_total') or 0)} of "
+                    f"{int(probe.get('candidates') or 0)} route(s) exceeded a probe budget "
+                    f"and were not asked which methods they accept. Every route dropped was "
+                    f"a static asset or other non-application surface — the selection is by "
+                    f"relevance, so the application and API routes were probed first.",
+                    "",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"Every one of the {int(probe.get('candidates') or 0)} eligible route(s) "
+                    f"was asked which methods it accepts. No route was dropped by a probe "
+                    f"budget, so a verb absent from this report is a verb the target did not "
+                    f"declare rather than one nobody asked about.",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "| Sweep | Budget | Candidates | Probed | Dropped | First omitted |",
+                "| --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for sweep in sweeps:
+            lines.append(
+                f"| `{sweep.get('sweep', '')}` | {sweep.get('budget', 0)} | "
+                f"{sweep.get('candidates', 0)} | {sweep.get('probed', 0)} | "
+                f"{sweep.get('dropped_total', 0)} | "
+                f"{sweep.get('first_omitted') or '-'} |"
+            )
+        lines.append("")
+
+    @staticmethod
+    def _render_run_audit(lines: list[str], report: PentestReport) -> None:
+        """Render whether every call this run made left evidence on disk.
+
+        The neighbouring question to *Provider routing*: that section says
+        whether the answers came from the model asked for, this one says whether
+        a reader can check any claim in the document against the request and
+        response that produced it.
+
+        Rendered clean or not. A local-mode engagement served 100% of its HTTP
+        requests in-process, wrote 0 invocation records, and produced a bundle
+        whose empty ``tool_invocations/`` is byte-identical to a run that
+        dispatched nothing — so the absence of this section is exactly the state
+        it exists to make visible. Omitted only for a bundle written before the
+        measurement existed, which carries no summary to render and gets no
+        invented one.
+        """
+        audit = dict(report.run_audit or {})
+        if not audit:
+            return
+        lines.extend(["## Run auditability", ""])
+        executions = int(audit.get("tool_executions") or 0)
+        recorded = int(audit.get("invocations_recorded") or 0)
+        unrecorded = int(audit.get("unrecorded_executions") or 0)
+        verdict = str(audit.get("verdict") or "")
+        if verdict == AUDIT_NOTHING_DISPATCHED:
+            lines.extend(
+                [
+                    "No tool execution was dispatched during this engagement, so there "
+                    "is nothing to audit. That is not the same as calls having been made "
+                    "and not recorded — see *What was NOT tested* for why nothing ran.",
+                    "",
+                ]
+            )
+            return
+        if verdict == AUDIT_INDETERMINATE:
+            lines.extend(
+                [
+                    f"**{unrecorded} of {executions} tool execution(s) left no invocation "
+                    f"record.** The findings, the coverage counts and the session claims in "
+                    f"this document cannot be re-derived from the engagement's artifacts for "
+                    f"those calls: `tool_invocations/` holds {recorded}. This makes the run "
+                    f"INDETERMINATE rather than negative — it is not a run that found less, "
+                    f"it is a run whose evidence is incomplete — and ineligible as a "
+                    f"baseline.",
+                    "",
+                ]
+            )
+            by_tool = audit.get("unrecorded_by_tool") or {}
+            if isinstance(by_tool, dict) and by_tool:
+                lines.extend(["| Tool | Unrecorded executions |", "| --- | --- |"])
+                for tool, count in sorted(by_tool.items()):
+                    lines.append(f"| `{tool}` | {count} |")
+                lines.append("")
+        else:
+            lines.extend(
+                [
+                    f"All {executions} tool execution(s) wrote a full-fidelity invocation "
+                    f"record. Every request this engagement sent and every response it read "
+                    f"is in `tool_invocations/`, so any claim in this document can be "
+                    f"checked against the exchange that produced it.",
+                    "",
+                ]
+            )
+        by_transport = audit.get("executions_by_transport") or {}
+        if isinstance(by_transport, dict) and by_transport:
+            lines.append(
+                "Executions by execution mode and transport: "
+                + ", ".join(f"`{key}` {count}" for key, count in sorted(by_transport.items()))
+                + "."
+            )
+            lines.append("")
+
+    @staticmethod
     def _render_provider_degradation(lines: list[str], report: PentestReport) -> None:
         """Render which model actually served each call, when it was not the primary.
 
@@ -1900,16 +2313,31 @@ class ReportAgent(BaseAgent):
         # reproduce the claim its own model stamp contradicts. The rule lives in
         # one function; this is its second call site, not a second copy.
         stamp = reconcile_with_model_stamp(stamp, list(report.model_stamp))
+        # And against the run's audit summary, for the same reason and at the same
+        # two seams. A bundle written before ``run_audit`` existed carries none
+        # and gets no tightening — its empty invocation directory is where that
+        # question belongs, not a verdict invented here.
+        stamp = reconcile_run_audit(stamp, dict(report.run_audit or {}))
         lines.extend(["## Provider routing", ""])
         if not stamp.get("provider_degraded"):
-            lines.extend(
-                [
-                    "Every LLM call was served by the provider this run asked for. "
-                    "No fallback activated, no provider was excluded mid-run, and no "
-                    "chain was exhausted, so the run is eligible for use as a baseline.",
-                    "",
-                ]
+            # Routing was clean. Whether the RUN is usable as a baseline is a
+            # second question, and this section must not answer it in the
+            # affirmative when the audit withdrew it — that is how a document
+            # comes to contradict itself while showing only the reassuring half.
+            sentence = (
+                "Every LLM call was served by the provider this run asked for. "
+                "No fallback activated, no provider was excluded mid-run, and no "
+                "chain was exhausted"
             )
+            if stamp.get("baseline_eligible"):
+                sentence += ", so the run is eligible for use as a baseline."
+            else:
+                sentence += (
+                    ". The run is nonetheless **NOT eligible as a baseline**, for a "
+                    "reason that is not about routing: "
+                    f"{stamp.get('baseline_ineligible_reason') or 'see Run auditability below'}."
+                )
+            lines.extend([sentence, ""])
             return
 
         events = [e for e in (stamp.get("events") or []) if isinstance(e, dict)]
@@ -1928,6 +2356,17 @@ class ReportAgent(BaseAgent):
                 "",
             ]
         )
+        if stamp.get("run_audit_verdict"):
+            # A second, independent reason for the same verdict. Stated rather
+            # than absorbed: a reader who fixes the routing and re-runs would
+            # otherwise expect eligibility back and not get it.
+            lines.extend(
+                [
+                    "It is additionally ineligible because "
+                    f"{stamp.get('baseline_ineligible_reason')} — see *Run auditability*.",
+                    "",
+                ]
+            )
         if starved:
             lines.extend(
                 [

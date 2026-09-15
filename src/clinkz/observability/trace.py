@@ -286,8 +286,10 @@ class TraceWriter:
         *,
         tool_name: str,
         exec_mode: str,
+        transport: str,
         cwd: str,
         command: list[str],
+        request: dict[str, Any] | None = None,
         env_overrides: dict[str, str] | None = None,
         stdin: str | None = None,
         stdout: str = "",
@@ -307,6 +309,11 @@ class TraceWriter:
         step context (if any) is used. The path returned points to
         ``tool_invocations/<seq>_<tool>.json`` and is suitable for embedding
         in the matching ``trace.jsonl`` summary line via ``invocation_file``.
+
+        ``transport`` is required and has no default, for the reason
+        :class:`~clinkz.observability.invocations.InvocationRecord` documents: a
+        default would be right for every record ever written and wrong for the
+        one case the field exists to mark.
         """
         seq = self.invocations.next_seq()
         ctx = self._current_step
@@ -315,8 +322,10 @@ class TraceWriter:
             ts=self.invocations.make_timestamp(),
             tool_name=tool_name,
             exec_mode=exec_mode,
+            transport=transport,
             cwd=cwd,
             command=list(command),
+            request=dict(request) if request is not None else None,
             env_overrides=dict(env_overrides or {}),
             stdin=stdin,
             stdout=stdout,

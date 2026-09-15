@@ -73,7 +73,11 @@ from clinkz.engagement.auth_state import (
     detect_auth_mechanism,
 )
 from clinkz.engagement.gate import EngagementAbortedError, open_engagement
-from clinkz.engagement.secrets import clear_secrets, register_secret
+from clinkz.engagement.secrets import (
+    clear_secrets,
+    provisional_secret,
+    register_credential_set,
+)
 from clinkz.knowledge.persistent_kb import PersistentKnowledgeBase
 from clinkz.knowledge.query import KnowledgeBase
 from clinkz.knowledge.seed_playbook import seed_tier1_tests
@@ -102,6 +106,13 @@ from clinkz.models.recon import (
     WebReconResult,
 )
 from clinkz.models.scope import EngagementScope
+from clinkz.observability.audit import INDETERMINATE as AUDIT_INDETERMINATE
+from clinkz.observability.audit import NOTHING_DISPATCHED as AUDIT_NOTHING_DISPATCHED
+from clinkz.observability.audit import (
+    AuditRegister,
+    audit_summary,
+    set_active_audit_register,
+)
 from clinkz.observability.component_registry import (
     EngagementReachability,
     ReachabilitySource,
@@ -433,6 +444,7 @@ class OrchestratorAgent:
         # covers for a dead one cannot make the run look healthy.
         self._ledger: ContributionLedger | None = None
         self._plan_alarms: PlanAlarmRegister | None = None
+        self._audit_register: AuditRegister | None = None
         self._degradation: DegradationRegister | None = None
         self._provider_preflight: ProviderPreflight | None = None
         #: Set by the CLI before ``run()`` when the operator declared caps.
@@ -543,8 +555,14 @@ class OrchestratorAgent:
         # Register operator-supplied secrets so every artifact writer redacts
         # them. The primary guarantee is that no writer is ever handed a
         # password; this is the second layer, for the route nobody thought of.
-        for secret in self._credentials.secrets():
-            register_secret(secret)
+        #
+        # Through ``register_credential_set`` rather than a loop over
+        # ``secrets()``, because that function is also where a credential that
+        # collides with the engine's own schema vocabulary is REFUSED. The CLI
+        # already passes through it at file load; a driver that builds a
+        # CredentialSet in code and hands it straight to the orchestrator did
+        # not, and a refusal only half the callers reach is not a refusal.
+        register_credential_set(self._credentials)
 
         self._logger.info(
             "OrchestratorAgent starting engagement — scope: %s",
@@ -647,6 +665,19 @@ class OrchestratorAgent:
             plan_alarms = PlanAlarmRegister()
             set_active_plan_alarms(plan_alarms)
             self._plan_alarms = plan_alarms
+
+            # Whether this run left evidence its own claims can be re-derived
+            # from. Engagement e4814440 ran in local mode, proved a session,
+            # discovered 46 endpoints, and wrote 0 invocation records: the
+            # in-process transport emitted none, and an empty
+            # ``tool_invocations/`` is indistinguishable from a run that made no
+            # calls. The per-request fix is in ToolBase; this register is the
+            # second witness, so a regression is legible in the deliverable
+            # instead of being discovered by a reader who goes looking for a
+            # request and finds the directory empty.
+            audit_register = AuditRegister()
+            set_active_audit_register(audit_register)
+            self._audit_register = audit_register
 
             # The scope-refusal log. THE control on an external engagement:
             # a real application links out, the crawler follows links, and the
@@ -1208,6 +1239,36 @@ class OrchestratorAgent:
                     self._logger.info("Plan fit inside its cap — no class was truncated.")
                 set_active_plan_alarms(None)
                 self._plan_alarms = None
+
+                # The audit verdict, rendered on a clean run too: "every call
+                # this run made is on disk" is a claim the deliverable should
+                # make, and a section that appears only on a hole cannot be told
+                # apart from one nobody wrote.
+                run_audit = audit_summary()
+                summary["run_audit"] = run_audit
+                if run_audit["verdict"] == AUDIT_INDETERMINATE:
+                    self._logger.error(
+                        "RUN UNAUDITABLE — %d of %d tool execution(s) left no invocation "
+                        "record (%s). The run's claims cannot be re-derived from its "
+                        "artifacts, so it is INDETERMINATE and ineligible as a baseline.",
+                        run_audit["unrecorded_executions"],
+                        run_audit["tool_executions"],
+                        ", ".join(f"{k}={v}" for k, v in run_audit["unrecorded_by_tool"].items())
+                        or "no tool named",
+                    )
+                elif run_audit["verdict"] == AUDIT_NOTHING_DISPATCHED:
+                    self._logger.info(
+                        "No tool execution was dispatched — nothing to audit, and that is "
+                        "not the same as nothing being recorded."
+                    )
+                else:
+                    self._logger.info(
+                        "Run auditable — all %d tool execution(s) left a full-fidelity "
+                        "invocation record.",
+                        run_audit["tool_executions"],
+                    )
+                set_active_audit_register(None)
+                self._audit_register = None
                 set_active_scope_refusal_log(None)
                 set_active_spend_ledger(None)
                 self._scope_refusals = None
@@ -2298,10 +2359,11 @@ class OrchestratorAgent:
         the moment it stops, what it was going to do next.
 
         The remainder is named by **account and technology, never by password**.
-        :func:`~clinkz.engagement.secrets.register_secret` runs on a guess as it
-        is offered, so a pair that was never offered was never registered for
-        redaction — writing its password into the deliverable would put an
-        unregistered secret past the one gate that exists to catch them.
+        :func:`~clinkz.engagement.secrets.provisional_secret` arms a guess only
+        for the attempt that offers it, so a pair that was never offered was
+        never registered for redaction — writing its password into the
+        deliverable would put an unregistered secret past the one gate that
+        exists to catch them.
 
         Args:
             recon_result: Result dict from the recon phase.
@@ -2997,66 +3059,77 @@ class OrchestratorAgent:
         assert self._engagement_id is not None
 
         # A GUESSED password is registered for redaction too, before it is
-        # offered. Only operator-supplied secrets were registered (run(), above),
-        # and the sweep's catalogue passwords therefore reached the action log's
-        # body excerpt verbatim on the JSON arm. A default password is public
-        # until it WORKS — and the moment it works it is a live credential for
-        # the client's system sitting in plaintext in an artifact, which is
-        # precisely what the disclosure gate exists to prevent. Registering it
-        # before the attempt costs nothing and does not depend on the outcome.
-        register_secret(password)
+        # offered — and released again if the guess is wrong. Only operator-
+        # supplied secrets were registered (run(), above), and the sweep's
+        # catalogue passwords therefore reached the action log's body excerpt
+        # verbatim on the JSON arm.
+        #
+        # The registration is SCOPED to this attempt because that is the whole
+        # of the window in which the value is a secret. A default password is
+        # public until it WORKS; while it is public, registering it globally
+        # means substring-replacing an ordinary English word out of every
+        # artifact the rest of the run writes — measured at 711,918 replacements
+        # on one cal.diy engagement, including 6,227 copies of the URL
+        # ``/auth/forgot-password`` and an LFI oracle's own ``root:x:0:0:``
+        # marker. The moment it works it stops being public and becomes a live
+        # credential for the client's system, so THAT is the registration that
+        # is kept.
+        with provisional_secret(password) as guess:
+            try:
+                from clinkz.tools.auth import LoginVerdict, WebAuthenticator
 
-        try:
-            from clinkz.tools.auth import LoginVerdict, WebAuthenticator
-
-            authenticator = WebAuthenticator(
-                scope=self._scope,
-                engagement_id=self._engagement_id,
-            )
-
-            result = await authenticator.authenticate(url, username, password)
-
-            # A GUESS is marked valid only on PROOF. The declared-credential
-            # path may proceed on an INDETERMINATE verdict because
-            # ``assert_authenticated`` runs on the next line and settles it;
-            # here there is no such line, and "this default password worked" is
-            # a claim that reaches the report. So an indeterminate guess is put
-            # to the same oracle before it is believed — an application that
-            # promotes its session in place answers every guess that way, good
-            # or bad, and the deferral would otherwise mark all of them valid.
-            if result.verdict is LoginVerdict.INDETERMINATE:
-                proven = await self._prove_swept_session(url, username, result)
-                if not proven:
-                    self._logger.info(
-                        "Default credential for %r at %s was INDETERMINATE and the "
-                        "assertion did not prove a session — not marking it valid.",
-                        username,
-                        url,
-                    )
-                    return False
-
-            if result.success:
-                await self._cred_store.mark_valid(
-                    credential_id,
-                    session_cookies=result.session_cookies,
-                    # Container-internal path; see _cookie_jar_path() in tools/http_client.py
-                    cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",  # nosec B108
+                authenticator = WebAuthenticator(
+                    scope=self._scope,
                     engagement_id=self._engagement_id,
-                    agent="orchestrator",
-                    bearer_token=result.bearer_token,
                 )
-                return True
 
-        except Exception as exc:
-            self._logger.debug(
-                "Login attempt failed for %s:%s @ %s: %s",
-                username,
-                "***",
-                url,
-                exc,
-            )
+                result = await authenticator.authenticate(url, username, password)
 
-        return False
+                # A GUESS is marked valid only on PROOF. The declared-credential
+                # path may proceed on an INDETERMINATE verdict because
+                # ``assert_authenticated`` runs on the next line and settles it;
+                # here there is no such line, and "this default password worked"
+                # is a claim that reaches the report. So an indeterminate guess
+                # is put to the same oracle before it is believed — an
+                # application that promotes its session in place answers every
+                # guess that way, good or bad, and the deferral would otherwise
+                # mark all of them valid.
+                if result.verdict is LoginVerdict.INDETERMINATE:
+                    proven = await self._prove_swept_session(url, username, result)
+                    if not proven:
+                        self._logger.info(
+                            "Default credential for %r at %s was INDETERMINATE and the "
+                            "assertion did not prove a session — not marking it valid.",
+                            username,
+                            url,
+                        )
+                        return False
+
+                if result.success:
+                    # It WORKS. From here it is a live credential, not a public
+                    # default, and the registration outlives the attempt.
+                    guess.keep()
+                    await self._cred_store.mark_valid(
+                        credential_id,
+                        session_cookies=result.session_cookies,
+                        # Container-internal path; see _cookie_jar_path() in tools/http_client.py
+                        cookie_jar_path=f"/tmp/clinkz_{self._engagement_id}_cookies.txt",  # nosec B108
+                        engagement_id=self._engagement_id,
+                        agent="orchestrator",
+                        bearer_token=result.bearer_token,
+                    )
+                    return True
+
+            except Exception as exc:
+                self._logger.debug(
+                    "Login attempt failed for %s:%s @ %s: %s",
+                    username,
+                    "***",
+                    url,
+                    exc,
+                )
+
+            return False
 
     async def _prove_swept_session(self, login_url: str, username: str, result: Any) -> bool:
         """Settle an INDETERMINATE guess against an anonymous control.

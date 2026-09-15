@@ -185,9 +185,19 @@ DECLARED: dict[str, tuple[str, str]] = {
         _Control.NOT_A_TARGET_BODY,
         "brace matching in the same parser, for the same reason",
     ),
-    "agents/_js_api_mining.py::mine_api_call_sites": (
+    "agents/_js_api_mining.py::mine_api_surface": (
         _Control.NOT_A_TARGET_BODY,
-        "paren matching while locating call sites in a bundle; syntax, not a verdict",
+        "paren matching while locating call sites in a bundle; syntax, not a verdict. "
+        "Was mine_api_call_sites until the miner grew a second and third result "
+        "(unresolvable calls, declared routes) and the body moved here; the thin "
+        "back-compat wrapper that kept the old name reads no marker of its own",
+    ),
+    "agents/_js_api_mining.py::_is_addressable_expression": (
+        _Control.NOT_A_TARGET_BODY,
+        "quote and paren matching to decide whether an argument is a JS expression "
+        "that could denote a URL; the markers are syntax, and the decision only "
+        "governs whether an UNREACHABLE call site is DISCLOSED - it can never emit "
+        "a finding, confirm one, or suppress one",
     ),
     "discovery/js_source_ingest.py::_build_handler_registry": (
         _Control.NOT_A_TARGET_BODY,

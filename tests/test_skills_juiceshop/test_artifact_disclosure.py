@@ -28,6 +28,7 @@ import pytest
 from clinkz.engagement.artifact_scan import scan_artifact_tree
 from clinkz.engagement.credential_shapes import find_shapes, jwt_payload_claim_names
 from clinkz.engagement.secrets import clear_secrets
+from clinkz.observability.invocations import TRANSPORT_SUBPROCESS
 from clinkz.observability.trace import TraceWriter
 
 pytestmark = pytest.mark.juiceshop_smoke
@@ -101,6 +102,7 @@ def test_no_artifact_carries_a_decodable_credential_token(
             seq, _ = writer.record_tool_invocation(
                 tool_name="http_client",
                 exec_mode="docker",
+                transport=TRANSPORT_SUBPROCESS,
                 cwd=str(tmp_path),
                 command=[
                     "curl",

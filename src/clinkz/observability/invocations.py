@@ -53,12 +53,34 @@ class StepContext:
     step_name: str
 
 
+#: The tool ran as a child process and ``command`` is the argv that was executed.
+TRANSPORT_SUBPROCESS = "subprocess"
+
+#: The tool served the call inside this process — ``request`` is what it was
+#: handed, ``command`` is a human-readable descriptor, and there is no argv.
+TRANSPORT_IN_PROCESS = "in_process"
+
+#: Every transport a record may declare. A reader that branches on the transport
+#: is asserted against this set, so a third one cannot be added and then silently
+#: fall into whichever branch happened to be the ``else``.
+TRANSPORTS: frozenset[str] = frozenset({TRANSPORT_SUBPROCESS, TRANSPORT_IN_PROCESS})
+
+
 @dataclass
 class InvocationRecord:
     """The structured payload written per tool invocation.
 
     Mirrors the schema documented in ``docs/observability.md`` — keep them
     in sync if you add or rename fields.
+
+    ``transport`` is keyword-only and has **no default**, which is the point of
+    it. Every record written before it existed came from a subprocess, so a
+    default of ``"subprocess"`` would have been correct for the whole corpus and
+    wrong for the exact case the field exists to mark: a producer that starts
+    serving calls in-process and forgets to say so would inherit the reassuring
+    value. A reader of a stored bundle still coalesces an absent transport to
+    ``subprocess`` — that absence is datable and provable — but a WRITER has to
+    declare it.
     """
 
     seq: int
@@ -67,6 +89,10 @@ class InvocationRecord:
     exec_mode: str
     cwd: str
     command: list[str]
+    transport: str = field(kw_only=True)
+    #: What an in-process call was handed, when ``command`` is not an argv.
+    #: ``None`` on the subprocess transport, where the argv IS the request.
+    request: dict[str, Any] | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
     stdin: str | None = None
     stdout: str = ""
@@ -80,6 +106,21 @@ class InvocationRecord:
     parsed_output: dict[str, Any] | None = None
     parse_succeeded: bool = False
 
+    def __post_init__(self) -> None:
+        """Refuse a transport outside the declared vocabulary.
+
+        Raising here is safe: :meth:`ToolInvocationRecorder.record` is the only
+        thing that writes one, and every construction site is engine code with a
+        literal. A record that declared a transport no reader branches on would
+        be read by whichever branch is the fallback, which is the failure the
+        field exists to prevent.
+        """
+        if self.transport not in TRANSPORTS:
+            raise ValueError(
+                f"InvocationRecord.transport must be one of {sorted(TRANSPORTS)}, "
+                f"got {self.transport!r}"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         """Return a plain dict suitable for ``json.dumps``."""
         return {
@@ -89,6 +130,8 @@ class InvocationRecord:
             "exec_mode": self.exec_mode,
             "cwd": self.cwd,
             "command": self.command,
+            "transport": self.transport,
+            "request": self.request,
             "env_overrides": self.env_overrides,
             "stdin": self.stdin,
             "stdout": self.stdout,
