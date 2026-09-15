@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -373,6 +373,76 @@ class MethodProvenance:
 
 
 @dataclass(frozen=True)
+class BundleFetchTruncation:
+    """Chunk URLs the bundle walk discovered and never fetched.
+
+    The sixth layer, and the one furthest upstream: every other disclosure here
+    is about surface the engine had already READ. This one is about bytes it
+    never opened, so it bounds all five of them at once — a call site in an
+    unfetched chunk is not unresolvable, not unprobed and not unranked. It is
+    absent, and absent looks exactly like a target that has no write surface.
+
+    On cal.com both were true at once, which is why nothing surfaced it. The
+    walk queued **53** chunk URLs, ``_MAX_BUNDLES`` fetched **12**, and the
+    twelve it read named one write — so the run reported a write surface of one
+    route, and a reader had no way to tell that from "this application declares
+    one write". The 41 it never opened were not mentioned anywhere: not in the
+    report, not in the trace.
+
+    ``crawl_visit_priority`` grades every ``.js`` chunk ``2`` and cannot separate
+    them, so this bound has no ordering signal to fix — measured in
+    ``docs/analysis/register.md`` R17, where eight candidate signals were ranked
+    over every chunk on two targets. The queue order is already at 93–95% of the
+    read-everything ceiling and the best signal needs the body the bound exists
+    to avoid fetching. So the fix is not a re-sort and not a larger cap: it is
+    saying what was not read.
+
+    Attributes:
+        budget: The fetch bound in force (``_MAX_BUNDLES``).
+        discovered: Distinct same-origin chunk URLs the walk queued.
+        fetched: How many were actually retrieved and mined.
+        first_omitted: The first queued URL the bound did not reach, so a reader
+            can check the ordering rather than take it on trust.
+        omitted_examples: Bounded samples of what went unread. Chunk URLs, which
+            the target authored — they render through the same neutralisation as
+            every other target string.
+    """
+
+    budget: int
+    discovered: int
+    fetched: int
+    first_omitted: str = ""
+    omitted_examples: list[str] = field(default_factory=list)
+
+    @property
+    def unread(self) -> int:
+        """How many discovered chunks the bound never opened."""
+        return max(0, self.discovered - self.fetched)
+
+    @property
+    def truncated(self) -> bool:
+        """Whether the bound left anything unread."""
+        return self.unread > 0
+
+    @property
+    def coverage(self) -> float:
+        """Fraction of discovered chunks actually read, 0.0 when none were."""
+        return (self.fetched / self.discovered) if self.discovered else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Render for ``report.json``."""
+        return {
+            "budget": self.budget,
+            "discovered": self.discovered,
+            "fetched": self.fetched,
+            "unread": self.unread,
+            "truncated": self.truncated,
+            "first_omitted": self.first_omitted,
+            "omitted_examples": self.omitted_examples[:MAX_RETAINED_PER_CLASS],
+        }
+
+
+@dataclass(frozen=True)
 class UnreachableCallSites:
     """HTTP calls the bundle declares that the miner could not turn into a route.
 
@@ -449,6 +519,7 @@ class PlanAlarmRegister:
     _probe_budgets: list[ProbeBudgetTruncation] = field(default_factory=list)
     _method_provenance: list[MethodProvenance] = field(default_factory=list)
     _unreachable_call_sites: list[UnreachableCallSites] = field(default_factory=list)
+    _bundle_fetches: list[BundleFetchTruncation] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record(self, event: PlanTruncation) -> None:
@@ -583,6 +654,25 @@ class PlanAlarmRegister:
         with self._lock:
             return list(self._unreachable_call_sites)
 
+    def record_bundle_fetch(self, event: BundleFetchTruncation) -> None:
+        """Record one bundle walk's fetch budget outcome."""
+        with self._lock:
+            self._bundle_fetches.append(event)
+        if event.truncated:
+            logger.info(
+                "BUNDLE FETCH BUDGET recorded for the report — %d of %d discovered chunk "
+                "URL(s) were never fetched (budget=%d). Any call site inside them is "
+                "absent from every downstream count.",
+                event.unread,
+                event.discovered,
+                event.budget,
+            )
+
+    def bundle_fetches(self) -> list[BundleFetchTruncation]:
+        """Every recorded bundle walk, in the order it happened."""
+        with self._lock:
+            return list(self._bundle_fetches)
+
     def unreachable_call_site_summary(self) -> dict[str, Any]:
         """Render the resolved/unresolvable split for ``report.json``.
 
@@ -590,6 +680,14 @@ class PlanAlarmRegister:
         turned into a route we can address" is the claim that makes a small
         endpoint set a statement about the target, and a section that appears
         only on failure cannot be told apart from one nobody wrote.
+
+        Carries the fetch bound beside the split, because the two answer halves
+        of one question and only together do they bound it. ``unresolvable`` is
+        about surface we READ and could not address; ``bundle_fetch`` is about
+        surface we never opened. A write surface of zero is a statement about the
+        target only when BOTH are zero — hence
+        :attr:`write_surface_indeterminate`, computed here rather than left to a
+        renderer, so every consumer reads the same verdict.
         """
         events = self.unreachable_call_sites()
         by_reason: dict[str, int] = {}
@@ -598,6 +696,9 @@ class PlanAlarmRegister:
             for reason, count in event.by_reason.items():
                 by_reason[reason] = by_reason.get(reason, 0) + count
             examples.extend(event.examples)
+        fetches = self.bundle_fetches()
+        unread = sum(e.unread for e in fetches)
+        discovered = sum(e.discovered for e in fetches)
         return {
             "measured": bool(events),
             "seen": sum(e.seen for e in events),
@@ -607,6 +708,31 @@ class PlanAlarmRegister:
             "any_unresolvable": any(e.any_unresolvable for e in events),
             "by_reason": dict(sorted(by_reason.items())),
             "examples": examples[:MAX_RETAINED_PER_CLASS],
+            "bundle_fetch": {
+                "measured": bool(fetches),
+                "budget": next((e.budget for e in fetches), 0),
+                "discovered": discovered,
+                "fetched": sum(e.fetched for e in fetches),
+                "unread": unread,
+                "truncated": any(e.truncated for e in fetches),
+                "first_omitted": next((e.first_omitted for e in fetches if e.first_omitted), ""),
+                "omitted_examples": [url for e in fetches for url in e.omitted_examples][
+                    :MAX_RETAINED_PER_CLASS
+                ],
+                "walks": [e.to_dict() for e in fetches],
+            },
+            # Law 5 at the input layer: a zero measured over PART of the input is
+            # INDETERMINATE, never a clean zero. The write surface a run reports
+            # is a floor over the chunks it opened, and a run that opened 12 of 53
+            # has not measured the application — it has measured 23% of it.
+            "write_surface_indeterminate": bool(unread) if fetches else False,
+            "indeterminate_reason": (
+                f"{unread} of {discovered} discovered JS chunk(s) were never fetched "
+                f"(bound: {next((e.budget for e in fetches), 0)}), so any HTTP call site "
+                "inside them is absent from every count in this section"
+                if fetches and unread
+                else ""
+            ),
         }
 
     def probe_summary(self) -> dict[str, Any]:
@@ -692,13 +818,31 @@ class PlanAlarmRegister:
         }
 
     def reset(self) -> None:
-        """Forget every pass. For process teardown and tests."""
+        """Forget every pass. For process teardown and tests.
+
+        The domain is COMPUTED from this dataclass's own fields rather than
+        written out one ``.clear()`` per list, because a hand-maintained reset is
+        the guard-domain law one level down: the question is not "does a new
+        member get classified" but "does a new member get CLEARED", and a
+        forgotten line is silent in exactly the direction that matters.
+
+        What leaks is not abstract. Every accumulator here retains target-chosen
+        strings — ``first_omitted`` is a URL off the client's application,
+        ``omitted_examples`` and ``unread_examples`` are more of them — and they
+        render in the next engagement's client-facing coverage section, under a
+        different client's engagement id. A per-process register with five
+        hand-written clears and no guard was one added field away from that; this
+        landed as the sixth field was being added, which is how it was noticed.
+        """
         with self._lock:
-            self._passes.clear()
-            self._crawl_budgets.clear()
-            self._probe_budgets.clear()
-            self._method_provenance.clear()
-            self._unreachable_call_sites.clear()
+            for spec in fields(self):
+                if spec.name == "_lock":
+                    continue
+                accumulator = getattr(self, spec.name)
+                # Every field here is a list accumulator. `clear()` rather than
+                # rebinding, because a frozen-ish shared register may be held by
+                # reference in more than one place.
+                accumulator.clear()
 
 
 # ---------------------------------------------------------------------------

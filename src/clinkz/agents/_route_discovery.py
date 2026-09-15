@@ -70,7 +70,9 @@ from clinkz.models.scan import Endpoint, MethodEvidence, ParamLocation
 from clinkz.observability.ledger import ComponentKind, record_contribution, record_dead_seam
 from clinkz.observability.plan_alarms import (
     MAX_RETAINED_PER_CLASS,
+    BundleFetchTruncation,
     UnreachableCallSites,
+    get_active_plan_alarms,
     record_unreachable_call_sites,
 )
 
@@ -987,6 +989,13 @@ class JSCallSiteDiscoverer:
         seen: set[str] = set()
         sites_total = 0
         bundles_read = 0
+        # Every chunk URL this walk ever queued, so the bound can be reported
+        # against a DENOMINATOR. Counted separately from `visited` because the
+        # queue keeps growing as each fetched bundle names more chunks: the walk
+        # discovers 53 on cal.com while `_MAX_BUNDLES` opens 12, and without this
+        # set the 41 it never opened are not merely unreported — they are not
+        # measured, so no renderer could report them.
+        discovered: set[str] = set(queue)
         while queue and len(visited) < _MAX_BUNDLES:
             bundle_url = queue.pop(0)
             if bundle_url in visited:
@@ -1014,9 +1023,11 @@ class JSCallSiteDiscoverer:
                 seen.add(key)
                 endpoints.append(ep)
                 if len(endpoints) >= _MAX_ROUTES:
+                    self._record_fetch_budget(discovered, visited, queue)
                     self._finish(bundles_read, sites_total, len(endpoints))
                     return endpoints
             for chunk in StaticBundleDiscoverer._chunk_urls(body, base_url):
+                discovered.add(chunk)
                 if chunk not in visited:
                     queue.append(chunk)
 
@@ -1026,8 +1037,38 @@ class JSCallSiteDiscoverer:
             sites_total,
             len(visited),
         )
+        self._record_fetch_budget(discovered, visited, queue)
         self._finish(bundles_read, sites_total, len(endpoints))
         return endpoints
+
+    @staticmethod
+    def _record_fetch_budget(discovered: set[str], visited: set[str], queue: list[str]) -> None:
+        """Publish what the fetch bound never opened.
+
+        Recorded whether or not anything was dropped, for the reason every other
+        disclosure in this family is: a run that fit inside its budget and a run
+        whose truncation nobody measured produce identical artifacts otherwise.
+
+        ``first_omitted`` is taken from the QUEUE rather than from
+        ``discovered - visited``, because the queue preserves the order the bound
+        actually applied in and a set does not. A reader checking the ordering
+        needs the URL the walk would have fetched next, not an arbitrary member
+        of the remainder.
+        """
+        register = get_active_plan_alarms()
+        if register is None:
+            return
+        unread_ordered = [url for url in queue if url not in visited]
+        remainder = sorted(discovered - visited)
+        register.record_bundle_fetch(
+            BundleFetchTruncation(
+                budget=_MAX_BUNDLES,
+                discovered=len(discovered),
+                fetched=len(visited),
+                first_omitted=(unread_ordered or remainder or [""])[0],
+                omitted_examples=(unread_ordered or remainder)[:MAX_RETAINED_PER_CLASS],
+            )
+        )
 
     def _finish(self, bundles: int, sites: int, emitted: int) -> None:
         """Publish what this run of the walk actually examined."""
