@@ -915,5 +915,302 @@ walk that `Range`-fetches a prefix of all N to grade them and then fully fetches
 the top 12, is the only way to get the good signal onto the fetch order, and it
 should not be built before someone wants the 7%.
 
+### RESOLVED — the disclosure, not the re-sort
+
+Option (a), built. `BundleFetchTruncation` records the bound, the denominator and
+what went unread; `JSCallSiteDiscoverer` counts every chunk URL it ever queued
+(`discovered`) rather than only the ones it opened, because the 41 were not
+merely unreported — they were never measured, so no renderer could have reported
+them however carefully it was written.
+
+**And the verdict, which is the half that matters.** A write surface of zero
+measured over 23% of the input is `write_surface_indeterminate`, not a clean
+zero — law 5 at the input layer, the same shape as `MAX_BUNDLES` and as
+invariant 101's package-identity denominator. It renders in the client-facing
+*Frontend call-site reach* section of BOTH documents, ahead of every count, so a
+reader who takes a number and stops hits the bound first. Rendered on a clean run
+too: "every chunk this target references was fetched" is a claim, and an absent
+section is not.
+
+Verified through the real walk on a cal.com-shaped fixture (53 chunks, one write
+inside chunk 45): 53 discovered / 12 fetched / 41 unread, `endpoints emitted: 0`,
+and the run now says INDETERMINATE where it previously said nothing at all. The
+PDF had no call-site reach section whatsoever before this — the disclosure
+existed only in the Markdown, which is backwards, since the PDF is the document
+that reaches a client.
+
+Not done, deliberately: the re-sort. Finding 1 still bounds its value at ≤7%,
+and option (b) should not be built before somebody wants that 7%.
+
 **Related:** R10 (the gray-box ingest selects by path spelling — the same law,
-a different bound), invariant 106, invariant 112.
+a different bound), invariant 106, invariant 112, invariant 113.
+
+## R18 · Target-authored bytes reach a rendered artifact unneutralised
+
+**State: RESOLVED for the two broken sinks; the PDF's convention is named and
+kept.** Opened and closed 2026-09-15.
+
+A different class from everything else in this register. Every other entry here
+is about the engine measuring wrongly, or measuring part of something and
+reporting it as the whole. This one is about the **target writing our
+conclusions**: the bytes of a response, rendered into the deliverable, carrying
+the document's own structure.
+
+### The failure
+
+`Finding.evidence` is raw response bytes and `_render_markdown` put them inside a
+fence with no treatment:
+
+    **PoC:**
+    ```
+    Response: 200
+    ```
+
+    ## Summary
+
+    - **Risk rating:** None
+    - **Confirmed findings:** 0
+
+    No issues found.
+    ```
+
+Three backticks on their own line close our fence. The target then writes its own
+`## Summary` section — its own risk rating, its own finding count, the sentence
+*No issues found.* — and reopens, leaving the fence count odd so that *What was
+NOT tested*, the component ledger and the run audit are swallowed into a code
+block and never render. The engine's findings are unchanged throughout. It is the
+document that is wrong, and a reader has no way to see it, because a section that
+did not render looks exactly like a section nobody wrote.
+
+### The domain, measured before anything was fixed
+
+| artifact | writer | target-reachable interpolation sites | neutralisation | verdict |
+|---|---|---|---|---|
+| `report_<id>.md` | `report.py::_render_markdown` + 22 `_render_*` | **180** | **none — not one call** | BROKEN |
+| `report_<id>.pdf` | `_report_pdf.py` | 105 | `_text` / `_mono_text`, **at the sink** | held |
+| `report_<id>.json` | `json.dumps` | — | JSON encoding, structural | held |
+| `clinkz actions <id>` | `cli.py::actions` | 4 | **none** | BROKEN (ANSI) |
+| `trace.jsonl`, `tool_invocations/` | JSONL | — | structural | held |
+
+Plus 83 target-reachable `typer.echo` sites across 14 CLI commands.
+
+Two things worth keeping from that table. **The PDF held, and it held by
+convention**: `_heading` escapes internally, but `_para`, `_bullets` and `_grid`
+take raw markup and trust ~170 call sites to have called `_text` first. That is a
+guard whose domain is every future sink, which is why the fix went to the
+producer and the PDF's escaping stays only as a floor. **And the action log is a
+second device**: `clinkz actions` prints a target-chosen URL straight to a
+terminal, so `\x1b[2K\x1b[1A` scrolls the `REFUSED` rows above it off the
+operator's screen — the log whose entire purpose is that *no destructive request
+was sent* be provable by reading it.
+
+### Distance to the failure, in stored bundles
+
+4,169 stored Markdown reports: **0** unbalanced, **0** headings swallowed. Not
+observed, and no stored deliverable is corrupted. But **129 of them (3.1%)
+already carry a target-authored backtick inside a PoC block** — the material is
+arriving, it has simply never arrived three-in-a-row on its own line.
+
+### The fix
+
+`engagement/render_safety.py`, one whole-structure pass at the report seam, after
+redaction and before either document renderer. Keys untouched (a key is schema —
+the rule redaction paid for when `test_start` became `[REDACTED]_start`), engine
+vocabulary untouched, **and the JSON artifact deliberately not passed through
+it**, because `regrade_stored_bundles.py` and `corpus-replay` read those bytes
+back and a guard that damages the artifact it protects protects nothing.
+
+Inline values lose their line breaks; one declared block field keeps them.
+`Finding.evidence` is that field, and the exemption is safe because the fence
+ADAPTS — `fence_for` opens with one backtick more than the longest run in the
+content, which no content can then close. Measured over 400 stored bundles:
+**29** of **24,281** string leaves contain a newline at all, at exactly two paths,
+and the second (`unproven_leads[].raw_observation`) renders after a label prefix,
+so collapsing it is a correction rather than a cost.
+
+`ActionRecord` neutralises at construction rather than at the `typer.echo`, for
+the same reason: the echo is a sink.
+
+### What the control cost, which is the part worth reading
+
+The control went wrong three times, each time in a way this register has a name
+for.
+
+1. **It called `_render_markdown` directly** and passed against the broken
+   engine. The neutralisation is at the producer; a renderer handed its input
+   cannot test how that input was produced. Fourth face of the guard-domain law.
+2. **It asserted fence PARITY.** The payload carries two fence lines, so it
+   closes the block, writes a section, reopens — and the count stays even. A
+   pattern guard failing toward less output, which is item 3 of this same round
+   arriving inside its own control.
+3. **It asserted a VOCABULARY** — no unfenced line equal to `## Summary` — and
+   failed against the *correct* engine, because `## Summary` is the document's
+   own heading and a byte comparison cannot tell who wrote it.
+
+What works is a **baseline differential**: render the same report twice, once
+with the payload and once with an inert string of the same shape, and compare the
+count of unfenced lines BY STRUCTURAL KIND. Any extra heading, bullet or table
+row in the poisoned document was authored by the target. No vocabulary, and it
+needs nothing guessed. Green with the producer, red without it, for all three
+Markdown assertions.
+
+### What the security review found, one cycle later
+
+The exemption was keyed on the bare NAME `evidence`, checked for uniqueness
+across the MODELS — where it is unique. It is not unique across the STRUCTURE:
+`PentestReport.authentication` is a `dict[str, object]` carrying an
+`assertion.evidence` list that no model declares, and `_render_adaptive_auth`
+renders it INLINE, one bullet per entry. So a name-keyed exemption made those
+strings block-exempt and a line break in one would have escaped its bullet — the
+defect reintroduced through the exemption written to bound it.
+
+Now keyed on a PATH (`findings[].evidence`), which is invariant 20's rule
+verbatim: **a field is a PATH, not a name.** The lesson is not about this field.
+It is that *"I checked the name is unique"* answers a question about the model
+declarations while the walk runs over the DUMPED STRUCTURE, and a
+`dict[str, object]` field is exactly where those two disagree.
+
+**Related:** invariant 108 (a key is schema — the same seam, the other
+transformation), invariant 110, invariant 20 (a field is a path), R14.
+
+
+## R19 · `PlanAlarmRegister.reset()` had a hand-maintained domain
+
+**State: RESOLVED.** Opened and closed 2026-09-15, while the sixth accumulator
+was being added for R17 — which is the only reason it was noticed.
+
+`reset()` was five `.clear()` calls against five fields, with **no guard
+asserting the two matched**. The guard-domain law one level down: the question is
+not "does a new member get classified" but "does a new member get CLEARED", and a
+forgotten line is silent.
+
+What leaks is not abstract. Every accumulator here retains strings the TARGET
+chose — `PlanTruncation.dropped_by_class` holds endpoint URLs,
+`ProbeBudgetTruncation.first_omitted` and `relevant_dropped` hold routes,
+`MethodProvenance.unread_examples` and `UnreachableCallSites.examples` hold more,
+and R17's `BundleFetchTruncation.omitted_examples` holds chunk URLs. A field
+added without a matching clear renders **one client's application URLs in the
+next client's coverage section**, under a different engagement id — and the
+register is a process-global, so nothing about the per-engagement boundary
+prevents it.
+
+`reset()` now computes its domain from `dataclasses.fields(self)`, with a second
+guard asserting every field is a list so that `.clear()` remains sound — because
+a computed domain is only as good as the assumption that replaced the hand-
+written one.
+
+**How reachable it is, stated precisely**, because the first draft of this entry
+overstated it. The security review checked and the cross-engagement leak is NOT
+live today: `orchestrator.py` installs a **fresh** `PlanAlarmRegister()` per
+engagement and detaches it afterwards, so no production path depends on `reset()`
+to separate one client's data from the next. What the fix removes is the LATENT
+version — the register is a process global, `reset()` is what tests and any future
+in-process reuse rely on, and a hand-maintained clear list is one forgotten line
+from making the leak real. Worth fixing on the structure, not worth claiming as a
+live exposure.
+
+**Related:** R18 (the same target-authored strings, a different route out),
+the guard-domain law in `.claude/skills/clinkz-dev/SKILL.md` §4.
+
+
+## R20 · A pattern-based exclusion with no control that would notice under-reporting
+
+**State: OPEN, measured, nothing built.** Opened 2026-09-15.
+
+`/(['"])/` marked 60% of a bundle as string-literal and hid **30 of 88** readable
+call sites. Only the control caught it, and the reason it needed catching at all
+is that its failure direction is invisible: fewer findings reads as a cleaner
+target.
+
+AST-computed domain (a pattern test whose result feeds a `continue`/`return`/
+`pass`, or a comprehension filter): **94 exclusion sites across 29 modules**. Most
+are classification, where under-reporting is visible. The ones on an enumeration
+path, where dropping a candidate silently lowers a reported count:
+
+| module | sites | control |
+|---|---|---|
+| `agents/_js_api_mining.py` | 20 | shape only — see below |
+| `discovery/source_ingest.py` | 3 | none |
+| `discovery/relations.py` | 3 | none |
+| `agents/_route_discovery.py` | 2 | none |
+| `discovery/js_source_ingest.py` | 2 | none |
+| `discovery/versions.py`, `chaining/harvest.py`, `discovery/reachability.py` | 1 each | none |
+
+**The sharpest finding is that the fix for the original incident has a SHAPE
+control, not a DENOMINATOR control.**
+`test_a_regex_character_class_does_not_hide_the_rest_of_the_bundle` pins the
+right behaviour on a two-line synthetic snippet. The incident was found by
+comparing 88 against 58 on the live Juice Shop bundle, and that comparison is
+pinned nowhere: `tests/fixtures/juiceshop_main.js` is **1,606 bytes**, a trimmed
+excerpt of a ~1.6 MB bundle, and every assertion against it is membership
+(`"/rest/products/search" in by_path`) or exclusion (`"restaurant" not in
+joined`). **Not one is a count.** The miner reads 7 call sites from it today;
+nothing asserts 7, so 3 would pass too.
+
+The rule, for §2 of the dev skill: **a shape control proves the pattern handles
+the case you thought of. Only a denominator control proves it has not quietly
+stopped handling the rest** — and the denominator has to come from somewhere
+other than the code under test.
+
+Highest-leverage single line found: `discovery/js_source_ingest.py::_read_files`
+excludes `*.min.js`, which on a production SPA is the only bundle there is.
+
+`models/scope.py` has 4 exclusion sites that need no control: dropping a scope
+entry fails SAFE.
+
+**Related:** invariant 112, R10, the guard-pattern law in
+`.claude/skills/clinkz-dev/SKILL.md` §4.
+
+
+## R21 · `PRIVATE_KEY_RE` hands the target an evidence-suppression primitive
+
+**State: OPEN, confirmed, NOT introduced by this round.** Opened 2026-09-15 by the
+security review of R18's diff, which correctly scoped it out of that diff and into
+its own entry.
+
+`engagement/credential_shapes.py`:
+
+    PRIVATE_KEY_RE = re.compile(
+        r"<BEGIN-banner>.*?"
+        r"(?:<END-banner>|\Z)",
+        re.DOTALL,
+    )
+
+(``<BEGIN-banner>`` and ``<END-banner>`` stand for the literal PEM delimiters.
+They are placeholders because this repository's own leak guard refuses a commit
+that spells them — and it is right to. The prose about a rule is what gives way,
+never the rule; the same call was made when the metadata guard refused its own
+write-up.)
+
+`re.DOTALL` plus the `|\Z` alternation means that a PEM *BEGIN* banner
+with **no matching END anywhere after it** matches to end-of-string. The
+post-render `redact()` pass over the Markdown then replaces the entire remainder
+of the document with `[REDACTED]`.
+
+The banner is 29 characters of ASCII in a response body, and a response body is
+quoted verbatim into the PoC block. So **a target can delete every section of the
+report that renders after its own finding** — *What was NOT tested*, the component
+ledger, the run audit, the coverage account — by serving a single line.
+
+That is invariant 55 exactly: *a guard never parses text the target controls, and
+a suppression primitive handed to the target is worse than the phantom the guard
+prevents.* It is the same class as R18 and the opposite direction: R18 was the
+target ADDING structure to the document, this is the target REMOVING it.
+
+**Why it is not fixed here.** It is pre-existing, reachable today, and untouched
+by R18's diff — fixing it belongs with its own control over the redaction path,
+which has an extensive guard suite that a rushed change would be the wrong way to
+meet. The honest framing of the tradeoff is that `\Z` exists so that **half a key
+in an artifact is still a leaked key**, which is a real requirement: an unbounded
+greedy fallback is the safe direction for SECRECY and the unsafe one for
+COMPLETENESS, and those are the two properties the deliverable has to hold at
+once.
+
+**Recommended shape when taken up:** bound the fallback rather than removing it —
+match to end-of-string but cap the span at a PEM block's plausible length, and
+record a disclosure when the cap fires, so a truncating redaction announces itself
+instead of silently eating the document. A redaction that removed content must be
+as loud as a truncation that dropped a candidate; that is the same rule as every
+bound in `plan_alarms.py`.
+
+**Related:** invariant 55, R18 (the same seam, the opposite direction), R14.

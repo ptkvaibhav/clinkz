@@ -780,6 +780,25 @@ under the repo root; the header table at the top of this file links them all.
     call site's bar and claims NO body. **Detail →
     `docs/analysis/spa-write-surface-blocker.md` §7.**
 
+113. **The target may not author the structure of the document that judges it**
+    (`engagement/render_safety.py`). Neutralised at the PRODUCER — one pass at the
+    report seam, so all **180** Markdown sites and every future sink inherit it;
+    `_report_pdf`'s sink-side escaping stays a floor, because a sink-side fix is a
+    guard whose domain is every future sink. **Keys untouched, and the JSON
+    artifact untouched** — JSON encoding is already the guard and those bytes are
+    what the replay drivers read. An inline value loses its line breaks; the one
+    declared BLOCK field keeps them and its fence ADAPTS, so no content can close
+    it. `ActionRecord` neutralises at construction: `clinkz actions` prints a
+    target-chosen URL to a terminal, where an erase-line sequence scrolls the
+    REFUSED rows off it. **Detail → `docs/analysis/register.md` R18.**
+
+114. **A pattern-based exclusion fails toward LESS output, so it needs a
+    DENOMINATOR control, not a shape control.** A quote-counting pre-pass hid 30 of
+    88 call sites and read as a cleaner target. A shape control proves the pattern
+    handles the case you thought of; only a count against an independently-known
+    total proves it has not stopped handling the rest. **Detail →
+    `docs/analysis/register.md` R20.**
+
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/

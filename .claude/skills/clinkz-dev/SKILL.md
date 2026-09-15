@@ -50,6 +50,31 @@ A finding is a claim that we exploited something. **Emit only when your own evid
 - **Impossible-level = the honesty control.** Any finding at DVWA `impossible` (or any hardened control) is a **loophole in your oracle, not a catch**. A finding that confirms *identically at every security level* means the oracle is matching the app's benign response — treat **uniform-confirm-across-a-graded-control as a prime phantom signal**.
 - **Suppress a true positive before you emit a false positive.** Zero-FP is the product. If a guard's only choice is "risk a phantom" vs "drop a real one," **drop the real one.** Verification-honest emission is the primary guard; the post-run FP-marking pass is advisory on top, never the safety net.
 - **Never hardcode a target/benchmark value.** No DVWA string, no Juice Shop challenge constant baked into a methodology. Discover the app's own tokens at runtime (allowlist strings, form-field names, cookie setters). A hardcoded witness value is exactly how a "general" capability silently degrades into a target detector.
+- **A pattern-based exclusion needs a control that would notice UNDER-reporting.**
+  A guard that fails toward *more* output announces itself: a phantom finding gets
+  investigated. A guard that fails toward *less* does not, because fewer findings
+  reads as a cleaner target, and nobody opens an investigation into good news.
+  `/(['"])/` marked 60% of a bundle as string-literal — a regex character class
+  opens a quote the scanner closes 39 KB later — and hid **30 of 88** readable
+  call sites. Every test stayed green; only the control caught it.
+
+  So for every pattern that REMOVES a candidate from consideration, ask the
+  §4 question in its under-reporting direction: *if this pattern stopped matching
+  things it should match, what goes red?* And note that the obvious answer is
+  usually the wrong one:
+
+  > **A shape control proves the pattern handles the case you thought of. Only a
+  > DENOMINATOR control proves it has not quietly stopped handling the rest** — a
+  > count over a corpus whose total comes from somewhere other than the code under
+  > test.
+
+  Measured 2026-09-15 (R20): **94** exclusion sites across 29 modules, of which
+  the enumeration-path ones have **no denominator control at all**. Including the
+  fix for the incident above: it is pinned on a two-line synthetic snippet, while
+  `tests/fixtures/juiceshop_main.js` is a **1,606-byte** trim of the ~1.6 MB
+  bundle the 88-vs-58 number came from, and every assertion against it is
+  membership or exclusion — not one is a count. An exclusion that fails SAFE
+  (dropping a scope entry) needs no such control; say which kind it is.
 
 ---
 

@@ -499,6 +499,69 @@ site the engine can see declare `POST` and cannot address is directly the write
 surface the seven verb-gated Tier-1 classes never receive, which is a sharper
 statement than "some calls were unreadable".
 
+### The bundle-fetch bound — the bytes that were never opened
+
+`UnreachableCallSites` accounts for surface the engine **read** and could not
+address. It cannot see surface the engine never fetched, and that is a bound one
+layer further up: `JSCallSiteDiscoverer` queues every same-origin chunk URL a
+shell references and opens `_MAX_BUNDLES = 12` of them. cal.com serves **53**.
+
+A call site inside an unopened chunk is not unresolvable, not unprobed and not
+unranked. It is **absent**, so it lowers no count and raises no alarm — and
+absent is exactly what a target with no write surface looks like. On cal.com both
+were true simultaneously, which is why nothing surfaced it: the twelve chunks
+that were read named one write, the report said one write, and no artifact
+anywhere recorded that 41 chunks had gone unopened.
+
+`BundleFetchTruncation` records the bound, the denominator, `first_omitted` and a
+bounded sample of what went unread, and it renders inside **Frontend call-site
+reach** in *both* documents. That section previously existed only in the
+Markdown; the PDF is the document that reaches a client, so it was the wrong one
+to be missing.
+
+**The verdict is the half that matters.** A write surface of zero measured over
+23% of the input is `write_surface_indeterminate` — law 5 at the input layer, the
+same shape as invariant 101's package-identity denominator. It is rendered
+**ahead of every count in the section**, so a reader who takes a number and stops
+hits the bound first, and the clean case renders too: "every chunk this target
+references was fetched" is a claim, and an absent section is not.
+
+Deliberately **not** fixed by re-ordering the fetch. Eight candidate ordering
+signals were ranked over every chunk on two targets (`docs/analysis/register.md`
+R17): the queue order already reaches 93–95% of the read-everything ceiling, the
+one signal that scores ~100% needs the body the bound exists to avoid fetching,
+and import-graph in-degree is *actively harmful* at 38% because a high in-degree
+chunk is a shared utility, which is where routes are not.
+
+### The register is a process global, and `reset()` is computed
+
+Every accumulator on `PlanAlarmRegister` retains strings the **target** chose —
+`dropped_by_class` holds endpoint URLs, `first_omitted` and `relevant_dropped`
+hold routes, `unread_examples`, `examples` and `omitted_examples` hold more. The
+register is per-process, so a field that `reset()` forgets to clear renders one
+client's application URLs in the next client's coverage section, under a
+different engagement id.
+
+`reset()` was five hand-written `.clear()` calls against five fields with nothing
+asserting they matched — the guard-domain law one level down, where the question
+is not *does a new member get classified* but *does a new member get cleared*. It
+now computes its domain from `dataclasses.fields(self)`, with a second guard
+asserting every field is a list so `.clear()` stays sound. Recorded as R19; it
+was found only because R17 was adding the sixth field.
+
+### What the target may not write
+
+A disclosure is only worth having if the target cannot author it. Every string in
+these sections — a `first_omitted` route, an `omitted_examples` chunk URL, a
+call-site excerpt — was chosen by the application under test, and they render into
+Markdown and a PDF that a client reads.
+
+`engagement/render_safety.py` neutralises them in one pass at the report seam,
+after redaction and before either document renderer, so no renderer written later
+has to remember. Keys are untouched (a key is schema — invariant 108) and the
+JSON artifact is untouched (JSON encoding is already the guard, and those bytes
+are what the replay drivers read). Detail: invariant 113 and R18.
+
 **The domain is what keeps it worth reading.** Only calls that are HTTP by the
 *callee's own name* (`fetch`, `axios`, XHR) or by a config argument's *shape* are
 counted. `map.get(k)` matched 241 of cal.com's 304 candidate matches, and
