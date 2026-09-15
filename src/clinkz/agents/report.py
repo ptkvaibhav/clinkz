@@ -45,6 +45,7 @@ from clinkz.agents._report_integrity import (
     spend_cost_line,
     testing_window,
 )
+from clinkz.engagement.render_safety import fence_for, neutralise_structure
 from clinkz.engagement.secrets import redact, redact_structure
 from clinkz.knowledge.component_cves import (
     BAND_C_VECTORS,
@@ -729,7 +730,17 @@ class ReportAgent(BaseAgent):
         # value substitution can invalidate one too: register `medi` and
         # `severity="medium"` becomes `"[REDACTED]um"`, which the enum refuses.
         # That half is open, as the value half of R14.
-        redacted_report = PentestReport.model_validate(report_dict)
+        #
+        # And a SECOND whole-structure pass, for a different question. Redaction
+        # asks what a value IS; this asks what it RENDERS AS. A response snippet
+        # carrying three backticks on their own line closes the PoC fence, and
+        # the target then writes its own `## Summary` with its own risk rating
+        # and finding count into a document a client reads. Both documents below
+        # render from the neutralised structure; `report_dict` above does NOT,
+        # because JSON encoding is already structural neutralisation and those
+        # bytes are what `regrade_stored_bundles.py` and `corpus-replay` read
+        # back. See `engagement/render_safety.py`.
+        redacted_report = PentestReport.model_validate(neutralise_structure(report_dict))
 
         # Reports live alongside the rest of the engagement artifacts under
         # ``outputs/<engagement_id>/`` (same convention as trace.jsonl and the
@@ -1283,13 +1294,18 @@ class ReportAgent(BaseAgent):
                 ]
             )
 
-            # PoC evidence (request + response)
+            # PoC evidence (request + response). The one block position in this
+            # document: these are raw response bytes, so the line breaks are the
+            # artifact and `neutralise_structure` deliberately keeps them. The
+            # fence is what makes that safe, and it ADAPTS — one backtick longer
+            # than the longest run in the content, so no content can close it.
             if f.evidence:
+                fence = fence_for("\n".join(f.evidence))
                 lines.append("**PoC:**")
-                lines.append("```")
+                lines.append(fence)
                 for ev in f.evidence:
                     lines.append(ev)
-                lines.append("```")
+                lines.append(fence)
                 lines.append("")
 
             # One-line remediation
@@ -2018,13 +2034,59 @@ class ReportAgent(BaseAgent):
         calls produce the same empty endpoint list.
         """
         reach = dict(report.call_site_reach or {})
-        if not reach.get("measured"):
+        fetch = dict(reach.get("bundle_fetch") or {})
+        # Either producer is enough to owe the reader this section. A walk that
+        # fetched chunks and mined no call site out of them is precisely the run
+        # whose silence needs explaining, and gating on `measured` alone returns
+        # before saying anything about it.
+        if not reach.get("measured") and not fetch.get("measured"):
             return
         seen = int(reach.get("seen") or 0)
         resolved = int(reach.get("resolved") or 0)
         unresolvable = int(reach.get("unresolvable") or 0)
         writes = int(reach.get("naming_a_write") or 0)
         lines.extend(["## Frontend call-site reach", ""])
+
+        # AHEAD of every count below, and ahead of both benign branches. A reader
+        # who takes the numbers and stops has to hit this first: on a partial read
+        # they are a floor over the chunks that were opened, not a measurement of
+        # the application. Same placement rule as the run-completion banner and
+        # as `indeterminate_reason` in the package-identity coverage note.
+        if reach.get("write_surface_indeterminate"):
+            lines.extend(
+                [
+                    f"> **THIS READ WAS PARTIAL — {fetch.get('unread')} of "
+                    f"{fetch.get('discovered')} JavaScript chunk(s) were never fetched.** "
+                    f"The engine fetches at most {fetch.get('budget')} bundles per shell, "
+                    f"and this target served more. Every count in this section is a FLOOR "
+                    f"over the chunks that WERE read. In particular a write surface of "
+                    f"zero here is **INDETERMINATE**, not a clean zero: an unfetched chunk "
+                    f"contributes no call site, so a target whose writes all live in the "
+                    f"tail is indistinguishable from one that performs no writes.",
+                    "",
+                ]
+            )
+            first_omitted = str(fetch.get("first_omitted") or "")
+            if first_omitted:
+                lines.extend([f"First chunk not fetched: `{first_omitted}`", ""])
+            omitted = [str(u) for u in (fetch.get("omitted_examples") or [])][:5]
+            if omitted:
+                lines.extend(
+                    ["Chunks that went unread (first few):", ""]
+                    + [f"- `{u}`" for u in omitted]
+                    + [""]
+                )
+        elif fetch.get("measured"):
+            lines.extend(
+                [
+                    f"Every one of the {fetch.get('discovered')} JavaScript chunk(s) this "
+                    f"target references was fetched and mined, so the counts below are a "
+                    f"measurement of the application's declared surface rather than of a "
+                    f"sample of it.",
+                    "",
+                ]
+            )
+
         if unresolvable:
             lines.extend(
                 [

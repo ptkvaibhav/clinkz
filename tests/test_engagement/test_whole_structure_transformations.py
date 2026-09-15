@@ -195,6 +195,15 @@ DECLARED: dict[str, tuple[str, str]] = {
         "carries a caller's header and parameter dicts down to the probe sender without "
         "inspecting or rewriting either set of keys",
     ),
+    "engagement/render_safety.py::neutralise_structure": (
+        _Keys.READ,
+        "the second whole-structure pass at the report seam: it asks what a value RENDERS "
+        "as, where redaction asks what a value IS. A key is READ — tested against "
+        "BLOCK_FIELDS to decide whether the strings beneath it keep their line breaks — "
+        "and carried into the output verbatim, because this walk's output is fed straight "
+        "back to PentestReport.model_validate and rewriting a key there is the exact "
+        "outage redaction already paid for",
+    ),
     "observability/corpus_replay.py::_canonical": (
         _Keys.DISCARDED,
         "canonicalises a stored structure for comparison; it reads values out of a bundle "

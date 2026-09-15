@@ -1139,8 +1139,76 @@ class _PDFReport:
         self._plan_coverage()
         self._crawl_coverage()
         self._probe_coverage()
+        self._call_site_reach()
         self._scope_refusals()
         self._spend()
+
+    def _call_site_reach(self) -> None:
+        """How much of the frontend's declared HTTP surface this run could address.
+
+        Upstream of every other coverage section, and the only one that accounts
+        for surface that never BECAME an endpoint. It rendered in the Markdown
+        and not here, which is backwards: the PDF is the document that actually
+        reaches a client.
+
+        Two bounds, reported apart because they have different fixes and
+        different meanings. **Unresolvable** is surface we READ and could not
+        address — a URL the code composes at runtime. **Unread** is surface we
+        never opened, because the walk fetches a bounded number of chunks. Only
+        the second can make a zero write surface a statement about this engine
+        rather than about the application, so it goes first.
+        """
+        reach = self.report.call_site_reach or {}
+        fetch = reach.get("bundle_fetch") or {}
+        if not reach.get("measured") and not fetch.get("measured"):
+            return
+        self._heading("Frontend call-site reach", self.h3)
+
+        if reach.get("write_surface_indeterminate"):
+            self._para(
+                f"<b>This read was partial - {self._text(fetch.get('unread', 0))} of "
+                f"{self._text(fetch.get('discovered', 0))} JavaScript chunk(s) were never "
+                f"fetched.</b> The walk opens at most "
+                f"{self._text(fetch.get('budget', 0))} bundles per shell and this target "
+                f"served more, so every count below is a FLOOR over the chunks that were "
+                f"read. A write surface of zero here is INDETERMINATE rather than a clean "
+                f"zero: an unfetched chunk contributes no call site, so an application "
+                f"whose writes live in the tail reads exactly like one that performs none."
+            )
+            first_omitted = str(fetch.get("first_omitted") or "")
+            if first_omitted:
+                self._para(
+                    f"First chunk not fetched: <font face='Courier'>"
+                    f"{self._text(first_omitted)}</font>",
+                    self.note,
+                )
+        elif fetch.get("measured"):
+            self._para(
+                f"Every one of the {self._text(fetch.get('discovered', 0))} JavaScript "
+                f"chunk(s) this target references was fetched and mined, so the counts "
+                f"below measure the application's declared surface rather than a sample."
+            )
+
+        seen = int(reach.get("seen") or 0)
+        unresolvable = int(reach.get("unresolvable") or 0)
+        writes = int(reach.get("naming_a_write") or 0)
+        if unresolvable:
+            self._para(
+                f"{self._text(unresolvable)} of {self._text(seen)} HTTP call site(s) read "
+                f"out of the target's JavaScript could not be turned into an addressable "
+                f"route, so they were never tested."
+            )
+            if writes:
+                self._para(
+                    f"<b>{self._text(writes)} of those NAMED a state-changing verb.</b> "
+                    f"That is write surface this engine can see declared and cannot reach, "
+                    f"and no write-family methodology was dispatched against it."
+                )
+        elif seen:
+            self._para(
+                f"Every one of the {self._text(seen)} HTTP call site(s) read out of the "
+                f"target's JavaScript resolved to an addressable route."
+            )
 
     def _run_auditability(self) -> None:
         """Whether every call this run made left evidence a reader can check.
