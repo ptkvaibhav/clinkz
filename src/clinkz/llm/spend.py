@@ -42,6 +42,7 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,6 +50,19 @@ logger = logging.getLogger(__name__)
 
 #: Governor halt reason recorded when the cap trips.
 HALT_SPEND_CAP = "spend_cap"
+
+#: The three states a run's cost-completion can be in, mirroring the verdict in
+#: :mod:`clinkz.observability.audit`: a run the cap STOPPED is not a run that
+#: finished within budget, and neither is the same as a run that had no cost cap
+#: to exceed. Collapsing the three is exactly the shape audit.py exists to
+#: prevent — an absence (no cap) read as a clean result, or a truncation (halted)
+#: read as a complete one.
+SPEND_NO_CAP = "no_cap"
+SPEND_WITHIN_BUDGET = "within_budget"
+SPEND_HALT_INDETERMINATE = "indeterminate"
+
+#: Tokens per unit of a declared rate. Rate cards are quoted per million.
+_TOKENS_PER_RATE_UNIT = 1_000_000
 
 #: Tokens per unit of a declared rate. Rate cards are quoted per million.
 _TOKENS_PER_RATE_UNIT = 1_000_000
@@ -380,15 +394,65 @@ def spend_summary() -> dict[str, Any]:
     return ledger.summary()
 
 
+# ---------------------------------------------------------------------------
+# Cost-completion verdict — the third bound's answer to "did the run finish?"
+# ---------------------------------------------------------------------------
+
+
+def is_spend_halt(safety: Mapping[str, Any] | None) -> bool:
+    """Whether the run was stopped by the spend cap.
+
+    Read from the run's STORED safety block (``governor.stats()`` →
+    ``report.safety_summary``), never from the live ledger, so a re-render of a
+    stored bundle reaches the same verdict its build did — the second-witness
+    discipline of :func:`clinkz.llm.degradation.reconcile_with_model_stamp`. A
+    call the cap refused raises ``LLMUnavailableError`` and the governor records
+    the halt; this reads that record.
+    """
+    if not safety:
+        return False
+    return bool(safety.get("halted")) and safety.get("halt_reason") == HALT_SPEND_CAP
+
+
+def spend_completion_verdict(
+    spend: Mapping[str, Any] | None, safety: Mapping[str, Any] | None
+) -> str:
+    """Which of the three cost-completion states this run is in.
+
+    :data:`SPEND_HALT_INDETERMINATE` when the cap stopped the run — the state
+    that must never be collapsed into either of the others, because a truncated
+    sweep is not a negative result and a run the budget cut short did not
+    measure the classes it never reached. :data:`SPEND_WITHIN_BUDGET` when a cap
+    was set and never reached; :data:`SPEND_NO_CAP` when none was installed and
+    the question does not arise.
+
+    Args:
+        spend: The report's ``llm_spend`` block (a :meth:`SpendLedger.summary`).
+        safety: The report's ``safety_summary`` block (``governor.stats()``).
+
+    Returns:
+        One of the three ``SPEND_*`` constants.
+    """
+    if is_spend_halt(safety):
+        return SPEND_HALT_INDETERMINATE
+    has_cap = bool(spend) and bool(spend.get("token_cap") or spend.get("usd_cap"))
+    return SPEND_WITHIN_BUDGET if has_cap else SPEND_NO_CAP
+
+
 __all__ = [
     "HALT_SPEND_CAP",
+    "SPEND_HALT_INDETERMINATE",
+    "SPEND_NO_CAP",
+    "SPEND_WITHIN_BUDGET",
     "ModelPrice",
     "SpendCapError",
     "SpendLedger",
     "get_active_spend_ledger",
+    "is_spend_halt",
     "load_price_table",
     "record_spend",
     "set_active_spend_ledger",
     "spend_cap_exceeded",
+    "spend_completion_verdict",
     "spend_summary",
 ]
