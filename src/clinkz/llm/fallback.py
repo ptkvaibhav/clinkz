@@ -296,7 +296,19 @@ class ResilientLLMClient(LLMClient):
         messages: list[LLMMessage],
         tools: list[dict[str, Any]] | None = None,
     ) -> AgentAction:
-        return await self._dispatch("reason", messages, tools)
+        """Serve one reasoning step through the chain.
+
+        Stats are collected here for the same reason they are collected in
+        :meth:`generate_text`: this seam is the only one that knows which
+        provider answered. They used to be collected in ``generate_text``
+        ALONE, so every ``reason`` and ``research`` call contributed zero to the
+        run totals and to the spend cap no matter who served it — a hole in the
+        instrument that is independent of the provider one.
+        """
+        self.last_call_stats = None
+        action = await self._dispatch("reason", messages, tools)
+        self._collect_call_stats()
+        return action
 
     async def research(self, query: str) -> str:
         """Serve one research call through the chain.
@@ -305,7 +317,10 @@ class ResilientLLMClient(LLMClient):
         declares, which is only knowable after the chain resolves — see
         :meth:`research_grounding`.
         """
-        return await self._dispatch("research", query)
+        self.last_call_stats = None
+        answer = await self._dispatch("research", query)
+        self._collect_call_stats()
+        return answer
 
     def research_grounding(self) -> ResearchGrounding:
         """What the last research answer was grounded in — read from who SERVED it.
@@ -375,7 +390,11 @@ class ResilientLLMClient(LLMClient):
                     prompt_summary=flat,
                     response_summary=f"<error: {type(exc).__name__}: {exc}>",
                     duration_ms=stopwatch.elapsed_ms,
-                    extra={"profile": self.profile, "chain": self.fallback_chain},
+                    extra={
+                        "profile": self.profile,
+                        "chain": self.fallback_chain,
+                        **self._call_context_fields(),
+                    },
                 )
             raise
         stats = self._collect_call_stats()
@@ -391,6 +410,7 @@ class ResilientLLMClient(LLMClient):
                 extra={
                     "profile": self.profile,
                     "chain": self.fallback_chain,
+                    **self._call_context_fields(),
                     **self._cache_trace_fields(stats),
                 },
             )
@@ -432,6 +452,7 @@ class ResilientLLMClient(LLMClient):
             model=self._resolve_model(provider),
             input_tokens=stats.billed_prompt_tokens,
             output_tokens=stats.output_tokens,
+            usage_reported=stats.usage_reported,
         )
         return stats
 
@@ -473,6 +494,27 @@ class ResilientLLMClient(LLMClient):
         )
 
     @staticmethod
+    def _call_context_fields() -> dict[str, str]:
+        """WHICH declared call site is spending, and on what.
+
+        ``stage`` is the agent ROLE, and the role is not the unit of spend: the
+        exploit agent writes the plan, runs 24 methodology checkpoints and runs
+        the false-positive cross-check through one client, and those are three
+        different costs with three different answers. Recorded so a spend
+        profile can be keyed on :data:`DECLARED_CALL_SITES` — a domain already
+        held to the source in both directions — instead of reconstructed by
+        matching prompt prefixes after the fact.
+
+        Written on the failure path too. A call that raised still consumed the
+        provider's time and may have consumed tokens, and a profile that can
+        only see the calls that succeeded is a profile of the cheap half.
+        """
+        return {
+            "call_site": current_call_site() or "",
+            "call_purpose": str(current_call_purpose()),
+        }
+
+    @staticmethod
     def _cache_trace_fields(stats: CallStats | None) -> dict[str, Any]:
         """Trace fields for one call's cache behaviour.
 
@@ -488,6 +530,12 @@ class ResilientLLMClient(LLMClient):
             "output_tokens": stats.output_tokens,
             "cache_write_tokens": stats.cache_creation_input_tokens,
             "cache_read_tokens": stats.cache_read_input_tokens,
+            # Without this every counter above is ambiguous in the trace: a
+            # provider that reported nothing and a call that consumed nothing
+            # write the same four zeros. The profiler reads this field to
+            # decide which rows it may sum.
+            "usage_reported": stats.usage_reported,
+            "effort": stats.effort or None,
             "stop_reason": stats.stop_reason,
             # The ceiling the call carried, so headroom is derivable from the
             # trace alone. output_tokens without it cannot distinguish a

@@ -1852,9 +1852,16 @@ class ReportAgent(BaseAgent):
 
     @staticmethod
     def _render_llm_spend(lines: list[str], report: PentestReport) -> None:
-        """Render what the run consumed and the caps it ran under."""
+        """Render what the run consumed and the caps it ran under.
+
+        The emptiness test is ``calls``, not ``total_tokens``. A run whose every
+        call was served by a provider reporting no usage has a total of zero,
+        and gating on the total would delete the whole section in exactly the
+        case the section exists to disclose — the run that cannot say what it
+        cost renders as the run that cost nothing.
+        """
         stamp = report.llm_spend
-        if not stamp or not stamp.get("total_tokens"):
+        if not stamp or not (stamp.get("total_tokens") or stamp.get("calls")):
             return
         token_cap = stamp.get("token_cap")
         usd_cap = stamp.get("usd_cap")
@@ -1862,19 +1869,32 @@ class ReportAgent(BaseAgent):
         caps = []
         caps.append(f"token cap {int(token_cap):,}" if token_cap else "no token cap")
         caps.append(f"spend cap ${float(usd_cap):.2f}" if usd_cap else "no spend cap")
+        calls = int(stamp.get("calls") or 0)
+        blind = int(stamp.get("indeterminate_calls") or 0)
+        measured = calls - blind
+        token_qualifier = " (a LOWER BOUND)" if blind else ""
         lines.extend(
             [
                 f"Ran under: {', '.join(caps)}.",
                 "",
                 f"- Input tokens: {int(stamp.get('input_tokens') or 0):,}",
                 f"- Output tokens: {int(stamp.get('output_tokens') or 0):,}",
-                f"- Total tokens: {int(stamp.get('total_tokens') or 0):,}",
+                f"- Total tokens: {int(stamp.get('total_tokens') or 0):,}{token_qualifier}",
             ]
         )
-        if stamp.get("usd_is_complete"):
-            lines.append(f"- Cost: {spend_cost_line(stamp)}")
-        else:
-            lines.append(f"- Cost: {spend_cost_line(stamp)}")
+        if blind:
+            # Rendered on a clean run too — as "every call reported" — because
+            # the absence of this line is what a reader would have to notice in
+            # order to distinguish a measured total from a floor.
+            lines.append(
+                f"- Token accounting: {measured} of {calls} call(s) reported usage; "
+                f"{blind} did not, so the totals above are a LOWER BOUND. A call whose "
+                "provider reports no usage consumes an unknown, non-negative number of "
+                "tokens; it is counted here rather than summed as zero."
+            )
+        elif calls:
+            lines.append(f"- Token accounting: all {calls} call(s) reported usage.")
+        lines.append(f"- Cost: {spend_cost_line(stamp)}")
         lines.append("")
 
     @staticmethod

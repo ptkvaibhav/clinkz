@@ -183,6 +183,9 @@ class CallStats(BaseModel):
     Cache fields are zero on providers that expose no cache accounting; that is
     a genuine "not reported", not a measured zero, and the trace records the
     provider alongside so the two are never confused.
+
+    The same distinction applies to the token counts themselves, and it is
+    :attr:`usage_reported` that carries it — see that field.
     """
 
     provider: str = ""
@@ -192,6 +195,25 @@ class CallStats(BaseModel):
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
     stop_reason: str | None = None
+    #: Whether the provider actually reported a usage object for this call.
+    #:
+    #: A call that reported nothing leaves every counter above at its
+    #: constructed ``0``, which is byte-identical to a call that genuinely
+    #: consumed nothing — the absence-as-measurement shape, one layer from the
+    #: billing ledger. At the billing layer that failure is not symmetric: an
+    #: unreported call sums as free, so the measured total is a LOWER BOUND and
+    #: a cap derived from it fires late or never.
+    #:
+    #: So this is the fourth state (invariant 80): a consumer that sums
+    #: ``input_tokens`` must consult this first and report what it could not
+    #: measure, rather than presenting a total that looks complete.
+    usage_reported: bool = False
+    #: The ``output_config.effort`` this request actually carried, or ``""``
+    #: when it carried none. Recorded per call rather than read back from
+    #: configuration, for the same reason ``model_stamp`` is read from the calls
+    #: that were MADE: a sweep compares runs, and configuration says what was
+    #: requested rather than what ran.
+    effort: str = ""
     #: The ``max_tokens`` this request actually carried. Recorded because
     #: ``output_tokens`` alone cannot say whether a call finished or was cut
     #: off: 16000 is a complete answer under a 64000 ceiling and a truncation
@@ -226,6 +248,18 @@ class CallStats(BaseModel):
         return self.input_tokens + self.cache_creation_input_tokens + self.cache_read_input_tokens
 
 
+#: The engine's own value for "the provider's output ceiling ended this call".
+#:
+#: ``CallStats.stop_reason`` is declared by the base class, so its vocabulary is
+#: the engine's and each client translates INTO it. The spelling is Anthropic's
+#: because Anthropic is priority 1 for every call and its client passes the
+#: provider string through unchanged; what matters is that one consumer
+#: (``auth_agent._STOP_REASON_TRUNCATED``) can ask "was this cut off?" without
+#: knowing who served the call. A client that passed its own spelling through
+#: would answer "no" for every provider but one, silently.
+STOP_REASON_TRUNCATED = "max_tokens"
+
+
 #: Documented cache-pricing multipliers, relative to the base input rate.
 #: Model-independent, so realised savings are reported as a ratio of base-rate
 #: input tokens rather than in dollars — a currency figure would bake in a
@@ -246,14 +280,27 @@ class LLMUsageTotals(BaseModel):
     output_tokens: int = 0
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    #: Calls folded in that reported no usage at all. Their tokens are not in
+    #: the sums above and are not knowable from them, so every derived figure
+    #: on this object is a lower bound while this is non-zero.
+    calls_without_usage: int = 0
 
     def add(self, stats: CallStats) -> None:
         """Fold one call's accounting into the totals."""
         self.calls += 1
+        if not stats.usage_reported:
+            # Counted, never estimated. Folding its zeros in silently is what
+            # made a Gemini-served call read as free.
+            self.calls_without_usage += 1
         self.input_tokens += stats.input_tokens
         self.output_tokens += stats.output_tokens
         self.cache_creation_input_tokens += stats.cache_creation_input_tokens
         self.cache_read_input_tokens += stats.cache_read_input_tokens
+
+    @property
+    def usage_is_complete(self) -> bool:
+        """Whether every folded call reported its usage."""
+        return self.calls_without_usage == 0
 
     @property
     def prompt_tokens(self) -> int:
@@ -261,10 +308,19 @@ class LLMUsageTotals(BaseModel):
         return self.input_tokens + self.cache_creation_input_tokens + self.cache_read_input_tokens
 
     @property
-    def cache_hit_rate(self) -> float:
-        """Share of prompt tokens served from cache. 0.0 when nothing cached."""
+    def cache_hit_rate(self) -> float | None:
+        """Share of prompt tokens served from cache.
+
+        ``0.0`` is a measured miss rate of 100%. ``None`` is the fourth state:
+        no call folded in here reported a usage object at all, so there is no
+        denominator and the rate is NOT DETERMINED. Returning ``0.0`` for that
+        case would report a perfectly-working cache and a completely blind
+        instrument with the same number.
+        """
         total = self.prompt_tokens
-        return (self.cache_read_input_tokens / total) if total else 0.0
+        if total:
+            return self.cache_read_input_tokens / total
+        return None if self.calls and not self.usage_is_complete else 0.0
 
     def realised_savings(self, ttl: str = "5m") -> float:
         """Share of base-rate input cost avoided by caching, in [0, 1).
