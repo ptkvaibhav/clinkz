@@ -57,7 +57,13 @@ from clinkz.llm.degradation import (
     exhausted_stages,
     reconcile_with_model_stamp,
 )
-from clinkz.llm.spend import spend_summary
+from clinkz.llm.spend import (
+    SPEND_HALT_INDETERMINATE,
+    SPEND_WITHIN_BUDGET,
+    is_spend_halt,
+    spend_completion_verdict,
+    spend_summary,
+)
 from clinkz.models.engagement import AuthorizationRecord, EngagementWindow
 from clinkz.models.finding import (
     ChainResearchLead,
@@ -158,6 +164,7 @@ def _run_completion(
     *,
     phase_outcomes: dict[str, Any],
     model_stamp: list[dict[str, Any]],
+    safety: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     """Whether this run completed, and the sentence that says why not.
 
@@ -187,6 +194,10 @@ def _run_completion(
     Args:
         phase_outcomes: ``{phase_name: result_dict}`` from the orchestrator.
         model_stamp: The run's own ``model_stamp`` rows.
+        safety: The run's ``governor.stats()`` block. A spend-cap halt recorded
+            here means the run stopped at a budget line rather than finishing —
+            a third incompleteness cause the phase outcomes cannot show, because
+            the phases wound down cooperatively and each reported success.
 
     Returns:
         ``(run_completed, incomplete_reason)``. The reason is empty when the run
@@ -209,7 +220,15 @@ def _run_completion(
         and not result.get("result")
     )
     starved = exhausted_stages(model_stamp)
-    if not failed and not timed_out_empty and not starved:
+    # A spend-cap halt is the third way a run stops without a phase reporting
+    # failure. The governor winds the phases down COOPERATIVELY, so each one
+    # reports "completed" and neither the failed set nor the timed-out set nor
+    # the model stamp records anything wrong — the run reads as N findings over
+    # a finished engagement. It is not: testing stopped at a budget line, the
+    # classes past it were never dispatched, and the count is a floor. This is
+    # the cost twin of the audit/degradation INDETERMINATE state.
+    spend_halted = is_spend_halt(safety)
+    if not failed and not timed_out_empty and not starved and not spend_halted:
         return True, ""
     parts: list[str] = []
     if failed:
@@ -229,6 +248,14 @@ def _run_completion(
             f"No LLM provider served the {', '.join(starved)} "
             f"stage{'s' if len(starved) > 1 else ''}: the whole chain was exhausted, so "
             f"that reasoning step produced nothing and the phase continued without it."
+        )
+    if spend_halted:
+        detail = (safety or {}).get("halt_detail") or "the spend cap was reached"
+        parts.append(
+            f"The engagement halted on its spend cap ({detail}) before testing "
+            f"completed, so the classes and endpoints not reached before the halt were "
+            f"not tested; the findings below are a floor on what is present, not an "
+            f"assessment of the target, and this run is not a baseline."
         )
     return False, " ".join(parts)
 
@@ -522,9 +549,14 @@ class ReportAgent(BaseAgent):
         # incomplete run "0 findings. Risk rating: Informational" states that
         # the target is clean on the strength of testing that did not happen.
         model_stamp = _active_model_stamp()
+        # Read here, before the summary is built: a spend-cap halt recorded in
+        # the safety block is one of the reasons the run is incomplete, and the
+        # completion verdict changes what the summary is allowed to claim.
+        safety = dict(input_data.get("safety") or {})
         run_completed, incomplete_reason = _run_completion(
             phase_outcomes=dict(input_data.get("phase_outcomes") or {}),
             model_stamp=model_stamp,
+            safety=safety,
         )
         if not run_completed:
             self._logger.warning(
@@ -577,7 +609,8 @@ class ReportAgent(BaseAgent):
         window = _parse_window(input_data.get("engagement_window"))
         scope_in = list(input_data.get("scope_in") or []) or scope_values
         scope_out = list(input_data.get("scope_out") or [])
-        safety = dict(input_data.get("safety") or {})
+        # ``safety`` is assembled earlier, before the completion verdict, because
+        # a spend-cap halt in it is one of the reasons the run is incomplete.
         authentication = dict(input_data.get("authentication") or {})
 
         report = PentestReport(
@@ -1895,6 +1928,29 @@ class ReportAgent(BaseAgent):
         elif calls:
             lines.append(f"- Token accounting: all {calls} call(s) reported usage.")
         lines.append(f"- Cost: {spend_cost_line(stamp)}")
+        # The cost-completion verdict, rendered on a clean run too — the three
+        # states must be told apart, and a disclosure that appears only on the
+        # halt cannot be distinguished from one nobody wrote. Derived from the
+        # STORED spend and safety blocks, so a re-render (clinkz report-pdf)
+        # reaches the same verdict this build did.
+        verdict = spend_completion_verdict(stamp, report.safety_summary)
+        if verdict == SPEND_HALT_INDETERMINATE:
+            detail = (report.safety_summary or {}).get("halt_detail") or "the cap was reached"
+            lines.extend(
+                [
+                    "",
+                    f"- **Cost-cap verdict: INDETERMINATE.** The engagement HALTED on its "
+                    f"spend cap ({detail}). Testing stopped at that budget line: the classes "
+                    f"and endpoints not yet reached were NOT tested, so the findings above "
+                    f"are a floor on what is present, not an assessment of the target. This "
+                    f"run is not a baseline.",
+                ]
+            )
+        elif verdict == SPEND_WITHIN_BUDGET:
+            lines.append(
+                "- Cost-cap verdict: the run finished within its budget; the cap did "
+                "not stop testing."
+            )
         lines.append("")
 
     @staticmethod
