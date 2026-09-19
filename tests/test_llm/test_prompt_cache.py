@@ -84,6 +84,7 @@ async def _call(client: Any, prompt: Any, **setting_overrides: Any) -> dict[str,
         "llm_context_margin_tokens": 8000,
         "llm_stream_above_output_tokens": 16000,
         "llm_output_headroom_alarm_ratio": 0.8,
+        "llm_effort": "",
     }
     defaults.update(setting_overrides)
     with patch("clinkz.llm.anthropic_client.settings", SimpleNamespace(**defaults)):
@@ -397,6 +398,7 @@ class TestUsageAccounting:
                 llm_context_margin_tokens=8000,
                 llm_stream_above_output_tokens=16000,
                 llm_output_headroom_alarm_ratio=0.8,
+                llm_effort="",
             ),
         ):
             with patch.object(

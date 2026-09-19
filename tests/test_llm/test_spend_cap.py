@@ -39,21 +39,21 @@ def ledger():
 def test_a_token_cap_needs_no_rate_card() -> None:
     led = SpendLedger(token_cap=1000)
     assert led.exceeded() == ""
-    led.record(model="anything", input_tokens=600, output_tokens=500)
+    led.record(model="anything", input_tokens=600, output_tokens=500, usage_reported=True)
     assert "token cap reached" in led.exceeded()
 
 
 def test_the_cap_is_checked_before_a_call_not_after() -> None:
     """Stops AT the cap rather than one unbounded call past it."""
     led = SpendLedger(token_cap=100)
-    led.record(model="m", input_tokens=100, output_tokens=0)
+    led.record(model="m", input_tokens=100, output_tokens=0, usage_reported=True)
     assert led.exceeded(), "at the cap counts as reached"
 
 
 def test_usage_is_tallied_per_model() -> None:
     led = SpendLedger(prices=PRICES)
-    led.record(model="claude-sonnet-5", input_tokens=1000, output_tokens=200)
-    led.record(model="gemini-3.7-flash", input_tokens=50, output_tokens=10)
+    led.record(model="claude-sonnet-5", input_tokens=1000, output_tokens=200, usage_reported=True)
+    led.record(model="gemini-3.7-flash", input_tokens=50, output_tokens=10, usage_reported=True)
     by_model = led.summary()["by_model"]
     assert by_model["claude-sonnet-5"]["calls"] == 1
     assert by_model["claude-sonnet-5"]["input_tokens"] == 1000
@@ -68,7 +68,12 @@ def test_usage_is_tallied_per_model() -> None:
 
 def test_cost_is_computed_from_the_declared_rate() -> None:
     led = SpendLedger(prices=PRICES)
-    led.record(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000)
+    led.record(
+        model="claude-sonnet-5",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        usage_reported=True,
+    )
     assert led.usd_spent == pytest.approx(18.0)
     assert led.usd_is_complete
 
@@ -76,8 +81,12 @@ def test_cost_is_computed_from_the_declared_rate() -> None:
 def test_an_unpriced_model_makes_the_total_a_lower_bound() -> None:
     """Recorded, never estimated — the report has to be able to say so."""
     led = SpendLedger(prices=PRICES)
-    led.record(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=0)
-    led.record(model="mystery-model", input_tokens=5_000_000, output_tokens=5_000_000)
+    led.record(
+        model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=0, usage_reported=True
+    )
+    led.record(
+        model="mystery-model", input_tokens=5_000_000, output_tokens=5_000_000, usage_reported=True
+    )
     assert led.usd_spent == pytest.approx(3.0)
     assert not led.usd_is_complete
     assert led.summary()["unpriced_models"] == ["mystery-model"]
@@ -109,7 +118,9 @@ def test_no_usd_cap_means_no_rate_card_is_required() -> None:
 def test_the_usd_cap_fires_on_the_declared_rate() -> None:
     led = SpendLedger(usd_cap=1.0, prices=PRICES)
     assert led.exceeded() == ""
-    led.record(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=0)
+    led.record(
+        model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=0, usage_reported=True
+    )
     assert "spend cap reached" in led.exceeded()
 
 
@@ -147,13 +158,13 @@ def test_a_malformed_rate_card_is_refused_rather_than_half_read(raw: str) -> Non
 
 def test_no_ledger_installed_means_no_cap_and_no_accounting() -> None:
     set_active_spend_ledger(None)
-    record_spend(model="m", input_tokens=10, output_tokens=10)
+    record_spend(model="m", input_tokens=10, output_tokens=10, usage_reported=True)
     assert spend_cap_exceeded() == ""
     assert spend_summary()["total_tokens"] == 0
 
 
 def test_the_module_level_recorder_reaches_the_active_ledger(ledger) -> None:
-    record_spend(model="m", input_tokens=10, output_tokens=5)
+    record_spend(model="m", input_tokens=10, output_tokens=5, usage_reported=True)
     assert ledger.total_tokens == 15
     assert spend_summary()["total_tokens"] == 15
 

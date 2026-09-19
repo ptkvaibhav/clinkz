@@ -411,6 +411,13 @@ def spend_cost_line(spend: dict[str, Any] | None) -> str:
     of a model with no declared rate. When nothing was priced there is no dollar
     figure to render and the document says so.
 
+    There are two ways to be short and the line names whichever applied. A model
+    with no declared rate contributes tokens with no price; a call whose
+    provider reported no usage contributes a price with no tokens. The second
+    one is newer and was invisible for longer: until every client published
+    ``last_call_stats``, a call served by the fallback tail reached this block
+    as nothing at all.
+
     Args:
         spend: The report's ``llm_spend`` block.
 
@@ -421,13 +428,19 @@ def spend_cost_line(spend: dict[str, Any] | None) -> str:
     usd = spend.get("usd_spent")
     complete = bool(spend.get("usd_is_complete"))
     unpriced = [str(m) for m in (spend.get("unpriced_models") or [])]
+    blind = int(spend.get("indeterminate_calls") or 0)
+    reasons = []
+    if unpriced:
+        reasons.append(f"no declared rate for: {', '.join(unpriced)}")
+    if blind:
+        reasons.append(f"{blind} call(s) reported no token usage")
     priced = isinstance(usd, int | float) and usd > 0
     if complete and isinstance(usd, int | float):
         return f"${usd:.2f}"
     if not priced:
-        detail = f" (no declared rate for: {', '.join(unpriced)})" if unpriced else ""
+        detail = f" ({'; '.join(reasons)})" if reasons else ""
         return f"not priced{detail}"
-    detail = f"; no declared rate for: {', '.join(unpriced)}" if unpriced else ""
+    detail = f"; {'; '.join(reasons)}" if reasons else ""
     return f"at least ${usd:.2f} (a LOWER BOUND{detail})"
 
 
