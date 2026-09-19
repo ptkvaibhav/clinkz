@@ -183,7 +183,7 @@ wrote down is a red build, not a default.
 | `exploit._llm_analyze_results` | **`SUPPRESS`** — the false-positive cross-check |
 | `exploit._load_analysis_json` | **`SUPPRESS`** — the same suspect list by a second route |
 | `exploit._llm_analyze` | **`EMIT`** — the funnel for all 24 methodology checkpoints |
-| `recon.*`, `scan.*`, `research.*`, `runtime_research.*`, `orchestrator._handle_query`, `base._react_loop` | `PLANNING` |
+| `recon.*`, `scan.*`, `research.*`, `runtime_research.*`, `orchestrator._handle_query` | `PLANNING` |
 
 `exploit._llm_analyze` is additionally pinned at the chain level:
 `_build_methodology_llm` uses `override_chain=["anthropic"]`, so the chain has no

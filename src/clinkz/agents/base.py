@@ -1,27 +1,23 @@
-"""Base agent class implementing the ReAct (Reasoning + Acting) loop.
+"""Base class for the phase agents — shared infrastructure, not a control loop.
 
 Every phase agent inherits from BaseAgent and overrides:
 - name       — identifier used in logs and state store
 - system_prompt — loaded from agents/prompts/<name>.txt
 - run()      — entry point called by the Orchestrator
 
-The core loop is _react_loop():
-    1. Observe  — receive initial context
-    2. Reason   — call LLM with conversation history + tool schemas
-    3. Act      — execute the chosen tool
-    4. Reflect  — add tool result to history, repeat from Reason
-    5. Done     — LLM returns a final_answer (no tool call)
-
-Between ReAct iterations the agent drains its inbox queue.  The lifecycle
-manager (or tests) can inject AgentMessage objects via receive_message()
-at any time; QUERY messages are folded into the LLM conversation so the
-agent can incorporate them without stopping its current task.
+**What runs is not a ReAct loop.** The v2 phase agents (recon, scan, exploit,
+research, report) implement ``run()`` as a fixed sequence of tool calls and
+deterministic code, invoking the LLM only at named reasoning checkpoints —
+never free-form Observe → Reason → Act → Reflect (CLAUDE.md invariant 1). The
+generic ``_react_loop`` that used to live here ran in no v2 agent and was
+removed; BaseAgent now provides only the shared services those deterministic
+``run()`` methods draw on — tool execution (``_execute_tool``), the skills
+loader, state access and step tracing.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager, nullcontext
@@ -30,10 +26,9 @@ from typing import TYPE_CHECKING, Any
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
 from clinkz.knowledge.skills_loader import SkillsLoader
-from clinkz.llm.base import AgentAction, LLMClient, LLMMessage, ToolCall
-from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
+from clinkz.llm.base import LLMClient, LLMMessage, ToolCall
 from clinkz.models.scope import EngagementScope
-from clinkz.observability.trace import Stopwatch, get_active_trace_writer
+from clinkz.observability.trace import get_active_trace_writer
 from clinkz.state import StateStore
 from clinkz.tools.base import ToolBase
 
@@ -61,7 +56,10 @@ _FALLBACK_MAX_ITERATIONS = 20
 class BaseAgent(ABC):
     """Abstract base for all Clinkz phase agents.
 
-    Provides the ReAct loop, tool dispatch, and state logging.
+    Provides shared services — tool dispatch, the skills loader, state logging
+    and step tracing — that each agent's deterministic ``run()`` draws on. It is
+    not a control loop: the v2 agents sequence their own steps and invoke the LLM
+    at named checkpoints (see the module docstring).
     Concrete agents only need to define their name, prompt, and run() logic.
 
     Args:
@@ -540,280 +538,8 @@ class BaseAgent(ABC):
             return f"tool_installation failed: {exc}"
 
     # ------------------------------------------------------------------
-    # ReAct loop
-    # ------------------------------------------------------------------
-
-    def _build_system_prompt_with_skills(self) -> str:
-        """Append available skill names and reasoning discipline to the system prompt.
-
-        Returns:
-            The agent's system prompt with skills summary and reasoning
-            discipline instructions appended.
-        """
-        skills_summary = self._skills_loader.get_skill_names_summary()
-        reasoning_block = (
-            "\n\n## Reasoning Discipline\n\n"
-            "Before executing ANY tool call, you MUST include a structured reasoning "
-            "block in your thought. This is mandatory — never skip it.\n\n"
-            "```\n"
-            "OBSERVATION: What I just learned from the last result\n"
-            "HYPOTHESIS: What I think is happening and why\n"
-            "NEXT_ACTION: What I will do next and what I expect to see\n"
-            "STOP_CONDITION: When I will stop this approach and try something else\n"
-            "```\n\n"
-            "Follow this structure for every single reasoning step. If you find "
-            "yourself acting without stating your hypothesis first, STOP and reason."
-        )
-        return f"{self.system_prompt}\n\n## Skills\n\n{skills_summary}{reasoning_block}"
-
-    async def _react_loop(self, initial_observation: str) -> str:
-        """Run the Observe → Reason → Act → Reflect loop.
-
-        Includes:
-        - Reasoning discipline: skills summary and structured reasoning
-          instructions are injected into the system prompt.
-        - Failure tracking: if the same tool fails 3 consecutive times
-          with the same error, a skip message is injected.
-        - Repetition detection: if the same tool is called with the same
-          arguments 3 times (regardless of success/failure), a nudge is
-          injected to try a different approach.
-
-        Args:
-            initial_observation: The task description / starting context.
-
-        Returns:
-            Final answer text from the LLM.
-        """
-        self.messages = [
-            LLMMessage(role="system", content=self._build_system_prompt_with_skills()),
-            LLMMessage(role="user", content=initial_observation),
-        ]
-        tool_schemas = self._get_tool_schemas()
-        limit = self.max_iterations
-
-        # Failure tracking: (tool_name, error_message) → consecutive count
-        _last_failure_key: tuple[str, str] | None = None
-        _consecutive_failures: int = 0
-        _max_consecutive_failures = 3
-
-        # Repetition tracking: (tool_name, args_json) → consecutive count
-        _last_call_key: tuple[str, str] | None = None
-        _consecutive_same_calls: int = 0
-        _max_same_calls = 3
-
-        # URL-level repetition tracking: catches same-URL GETs across
-        # different tool names (e.g. http_request GET /login vs
-        # execute_capability web_crawling /login)
-        _url_visit_counts: dict[str, int] = {}
-        _max_same_url_visits = 3
-
-        for iteration in range(limit):
-            self._logger.debug("ReAct iteration %d/%d", iteration + 1, limit)
-            iteration_sw = Stopwatch()
-
-            # Warn the LLM when it's about to hit the iteration limit
-            if iteration == limit - 2:
-                self._logger.info(
-                    "Agent '%s' approaching max iterations — injecting wrap-up prompt",
-                    self.name,
-                )
-                self.messages.append(
-                    LLMMessage(
-                        role="system",
-                        content=(
-                            "You have 2 iterations remaining before the hard limit. "
-                            "Summarize your findings and return final_answer now. "
-                            "Do not start new tool calls."
-                        ),
-                    )
-                )
-
-            # Reason
-            with llm_call_purpose(LLMCallPurpose.PLANNING, site="base._react_loop"):
-                action: AgentAction = await self.llm.reason(self.messages, tools=tool_schemas)
-
-            # Done?
-            if action.final_answer is not None:
-                self._logger.info("Agent '%s' done after %d iteration(s)", self.name, iteration + 1)
-                self._trace_step(
-                    f"react_iteration_{iteration + 1}_final",
-                    input_summary=action.thought,
-                    output_summary=action.final_answer,
-                    duration_ms=iteration_sw.elapsed_ms,
-                    extra={"iteration": iteration + 1, "outcome": "final_answer"},
-                )
-                return action.final_answer
-
-            # Act
-            if action.tool_call:
-                self.messages.append(
-                    LLMMessage(
-                        role="assistant",
-                        content=action.thought,
-                        tool_calls=[action.tool_call],
-                    )
-                )
-
-                # --- Repetition detection (same tool + same args) ---
-                call_key = (
-                    action.tool_call.name,
-                    json.dumps(action.tool_call.arguments, sort_keys=True),
-                )
-                if call_key == _last_call_key:
-                    _consecutive_same_calls += 1
-                else:
-                    _last_call_key = call_key
-                    _consecutive_same_calls = 1
-
-                if _consecutive_same_calls >= _max_same_calls:
-                    self._logger.warning(
-                        "Agent '%s' repeated '%s' with same args %d times — injecting redirect",
-                        self.name,
-                        action.tool_call.name,
-                        _consecutive_same_calls,
-                    )
-                    self.messages.append(
-                        LLMMessage(
-                            role="system",
-                            content=(
-                                "You are repeating yourself. You have called "
-                                f"'{action.tool_call.name}' with the same arguments "
-                                f"{_consecutive_same_calls} times. State what you learned "
-                                "from previous attempts and try a DIFFERENT approach. "
-                                "Use your reasoning discipline:\n"
-                                "OBSERVATION: What did the repeated calls tell you?\n"
-                                "HYPOTHESIS: Why isn't this working?\n"
-                                "NEXT_ACTION: What DIFFERENT action will you try?\n"
-                                "STOP_CONDITION: When will you move on entirely?"
-                            ),
-                        )
-                    )
-                    _last_call_key = None
-                    _consecutive_same_calls = 0
-
-                # --- URL-level repetition detection ---
-                # Catches the same URL being hit across different tools/methods
-                _target_url = self._extract_url_from_tool_call(action.tool_call)
-                if _target_url:
-                    _url_visit_counts[_target_url] = _url_visit_counts.get(_target_url, 0) + 1
-                    if _url_visit_counts[_target_url] >= _max_same_url_visits:
-                        self._logger.warning(
-                            "Agent '%s' visited URL '%s' %d times — injecting redirect",
-                            self.name,
-                            _target_url,
-                            _url_visit_counts[_target_url],
-                        )
-                        self.messages.append(
-                            LLMMessage(
-                                role="system",
-                                content=(
-                                    f"You have visited the URL '{_target_url}' "
-                                    f"{_url_visit_counts[_target_url]} times across "
-                                    "different tool calls. STOP requesting this URL. "
-                                    "Move on to other targets or return your findings."
-                                ),
-                            )
-                        )
-                        _url_visit_counts[_target_url] = 0
-
-                tool_result = await self._execute_tool(action.tool_call)
-
-                # Track consecutive failures for the same tool+error
-                is_failure = (
-                    tool_result.startswith(("Error:", "Tool '")) and "failed" in tool_result
-                )
-                if is_failure:
-                    failure_key = (action.tool_call.name, tool_result)
-                    if failure_key == _last_failure_key:
-                        _consecutive_failures += 1
-                    else:
-                        _last_failure_key = failure_key
-                        _consecutive_failures = 1
-
-                    if _consecutive_failures >= _max_consecutive_failures:
-                        self._logger.warning(
-                            "Tool '%s' failed %d times with same error — injecting skip directive",
-                            action.tool_call.name,
-                            _consecutive_failures,
-                        )
-                        tool_result += (
-                            f"\n\n[SYSTEM] Tool '{action.tool_call.name}' has failed "
-                            f"{_consecutive_failures} consecutive times with the same error. "
-                            "Stop retrying this tool and move on to the next item in your "
-                            "checklist. Mark this attempt as failed and proceed."
-                        )
-                        # Reset so we can detect a new loop on a different tool
-                        _last_failure_key = None
-                        _consecutive_failures = 0
-                else:
-                    # Success — reset failure tracking
-                    _last_failure_key = None
-                    _consecutive_failures = 0
-
-                self.messages.append(
-                    LLMMessage(
-                        role="tool",
-                        content=tool_result,
-                        tool_call_id=action.tool_call.id,
-                    )
-                )
-                tc_args_summary = json.dumps(action.tool_call.arguments, default=str)[:200]
-                self._trace_step(
-                    f"react_iteration_{iteration + 1}_tool",
-                    input_summary=f"{action.tool_call.name}({tc_args_summary})",
-                    output_summary=tool_result,
-                    duration_ms=iteration_sw.elapsed_ms,
-                    extra={
-                        "iteration": iteration + 1,
-                        "tool": action.tool_call.name,
-                        "outcome": "tool_call",
-                    },
-                )
-                # Check for incoming messages between ReAct iterations
-                await self._process_inbox()
-            else:
-                # LLM returned a thought with no tool call and no final answer
-                self._logger.warning("LLM returned bare thought — treating as final answer")
-                return action.thought
-
-        self._logger.warning("Max iterations (%d) reached for agent '%s'", limit, self.name)
-        return "Max iterations reached without a final answer."
-
-    # ------------------------------------------------------------------
     # Tool execution
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_url_from_tool_call(tool_call: ToolCall) -> str | None:
-        """Extract a normalised URL from a tool call for repetition detection.
-
-        Checks common argument keys (url, target) and nested arguments dicts
-        used by capability meta-tools.  Returns None if no URL is found.
-
-        Args:
-            tool_call: The ToolCall to inspect.
-
-        Returns:
-            Normalised URL string (scheme://host/path, no query/trailing slash),
-            or None.
-        """
-        from urllib.parse import urlparse
-
-        args = tool_call.arguments
-        # Direct url arg (http_request, crawl tools)
-        url = args.get("url") or args.get("target") or ""
-        # Nested inside execute_capability arguments
-        if not url and "arguments" in args and isinstance(args["arguments"], dict):
-            url = args["arguments"].get("url") or args["arguments"].get("target") or ""
-        if not url or not isinstance(url, str):
-            return None
-        try:
-            parsed = urlparse(url)
-            if parsed.scheme and parsed.netloc:
-                return f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
-        except Exception:
-            pass
-        return None
 
     async def _execute_tool(self, tool_call: ToolCall) -> str:
         """Dispatch a tool call and return the result as a JSON string.
