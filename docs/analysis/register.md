@@ -54,6 +54,14 @@ that cannot be graded as correctly-empty.
 
 ## R3 · `ResilientLLMClient.last_call_stats` is `None` for any non-Anthropic call
 
+**RESOLVED** — `feat(llm): a run states what each call consumed and ran under`.
+`GeminiClient._track_usage` and `OpenAIClient._track_usage` now build and publish
+a `CallStats`; `reason`/`research` collect it too; `usage_reported` carries the
+"provider reported nothing" case so the cut-off signal (invariant 103) is no
+longer absent for a fallback-served call, and the forbidden `getattr(..., None)`
+over a declaring model is gone. The finding record is kept below; the domain is
+now guarded in both directions by `test_usage_absence_is_indeterminate.py`.
+
 **Verified, and the reported symptom is narrower than "permanently None".**
 
 * `llm/base.py:475` declares `last_call_stats: CallStats | None = None` as the
@@ -278,3 +286,32 @@ hit while measuring this: ledger components are keyed `methodology:_test_x`, not
 registry `title_tokens`. A naive exact-key scan returns a confident `NONE` for
 every class in the engine. Invariant 41's shape, in the measurement rather than
 in the engine.
+
+---
+
+## R10 · The report stage makes zero LLM calls; the v2 spec still lists an LLM remediation pass
+
+**Verified — a documentation-reality gap, not a defect.** `CLINKZ_V2_IMPLEMENTATION.md`
+lists an `LLM-driven narrative + remediation pass [PENDING — W3]` (line 169) and
+the report pipeline as `assemble → narrative → remediation → quality review`
+(line 324). What runs makes **zero LLM calls**: `report.py:598-606` attaches a
+finding's remediation from `for_finding(...).remediation` — the per-class
+`VulnClass.remediation` in the registry — and CVSS/severity/narrative are
+computed deterministically. `report_llm_provider` exists for interface symmetry
+and nothing reads it at runtime (CLAUDE.md already documents "Report — zero LLM
+calls").
+
+**Why the deterministic form is the right one, not a shortfall.** Remediation is
+advice per vulnerability CLASS, not per finding — it does not vary with the
+target — so it belongs once in the registry where it stays reviewable, rather
+than being regenerated (and drifting) per finding by a model. An LLM remediation
+pass placed after the deterministic gates could only rephrase or contradict them,
+and the invariants forbid a model overruling a deterministic verdict on the
+emit/suppress path. So the gap is that the spec still frames the LLM pass as
+*pending* rather than *superseded*: the third documentation-reality gap of this
+round, beside the ReAct-loop architecture claim (item 1, corrected) and the
+unprimed methodology checkpoints (item 2, `docs/analysis/cost-cap-and-system-prefix.md`).
+
+**Disclosure, not a build.** The fix is a one-line spec correction — mark W3
+superseded by the registry-remediation design — not wiring an LLM call into a
+stage whose zero-LLM property is a deliberate speed and honesty guarantee.
