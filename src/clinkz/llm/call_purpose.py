@@ -250,12 +250,6 @@ DECLARED_CALL_SITES: dict[str, tuple[LLMCallPurpose, str]] = {
         "it cannot send a credential anywhere the gate refuses and it cannot claim a "
         "session.",
     ),
-    "base._react_loop": (
-        LLMCallPurpose.PLANNING,
-        "The BaseAgent ReAct step. No v2 phase agent runs free-form ReAct; the v2 "
-        "agents are deterministic steps with named LLM checkpoints, each classified "
-        "above.",
-    ),
 }
 
 

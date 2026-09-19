@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from clinkz.agents.base import BaseAgent
@@ -34,11 +33,12 @@ from clinkz.models.finding import FindingStatus, Severity
 
 logger = logging.getLogger(__name__)
 
-# The prompt still lives with the live agents' prompts. Kept there rather than
-# moved: prompts/ is one directory by design, and an archived module reaching
-# for it is the honest shape — nothing loads this, so nothing loads that.
-_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic_system.md"
-_SYSTEM_PROMPT: str = _PROMPT_PATH.read_text(encoding="utf-8")
+# The critic's system prompt (prompts/critic_system.md) was retired with the
+# ReAct-era dead path: the deterministic gates on the emitting path do what its
+# LLM judgment used to, and it ran 0 of 2,774 recorded steps. The archive stays
+# self-contained and parseable rather than reading a prompt file it will never
+# send; the retired prompt is recoverable from git history.
+_SYSTEM_PROMPT: str = "(archived: critic LLM path retired; prompt in git history)"
 
 # Severities that require a CVSS score — if missing, we assign one
 _CVSS_REQUIRED = {Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM}
