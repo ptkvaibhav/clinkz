@@ -74,10 +74,15 @@ the behaviour of requests the class never made, and no request puts it back.**
 
 Three consequences:
 
-* **It is dispatched last.** The rotation in `_step_execute_exploits` only
-  reaches a terminal class once no transient task is left, because every
-  observation after it — including every other class's control arm — would
-  otherwise be a measurement of a target this run had already altered.
+* **It is dispatched last, and it drains rather than rotates.** The dispatcher
+  in `_step_execute_exploits` reaches a terminal class only once no transient
+  task is left, because every observation after it — including every other
+  class's control arm — would otherwise be a measurement of a target this run
+  had already altered. Within the terminal tail the eligible set narrows to ONE
+  class (`terminal_drain_order`) until its queue is empty: rotating over two
+  terminal classes interleaves them by definition, and the second dispatch of the
+  earlier-declared class is then a terminal class after a later-declared one,
+  which stops the run.
 * **The partition is asserted at dispatch, on every dispatch**
   (`assert_terminal_dispatch_order`). It holds by construction today, which is
   exactly why the check is there: a scheduler change that interleaved

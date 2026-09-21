@@ -80,6 +80,7 @@ from clinkz.agents._report_integrity import (
 )
 from clinkz.engagement.secrets import redact
 from clinkz.llm.degradation import reconcile_with_model_stamp
+from clinkz.llm.spend import SPEND_HALT_INDETERMINATE, spend_completion_verdict
 from clinkz.models.finding import Finding, Severity
 from clinkz.models.report import NotTestedCategory, NotTestedItem, PentestReport
 from clinkz.models.vuln_classes import for_finding
@@ -1510,6 +1511,18 @@ class _PDFReport:
             ],
             [130, 350],
         )
+        # The cost-completion verdict, consistent with the JSON and Markdown: a
+        # run the spend cap stopped is INDETERMINATE, not a run with N findings.
+        if spend_completion_verdict(spend, self.report.safety_summary) == SPEND_HALT_INDETERMINATE:
+            detail = self._text((self.report.safety_summary or {}).get("halt_detail")) or (
+                "the cap was reached"
+            )
+            self._para(
+                f"<b>Cost-cap verdict: INDETERMINATE.</b> The engagement halted on its spend "
+                f"cap ({detail}); the classes and endpoints not reached were not tested, so the "
+                f"findings are a floor, not an assessment, and this run is not a baseline.",
+                self.note,
+            )
 
 
 def _describe_chain_step(step: Any) -> str:

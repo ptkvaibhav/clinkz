@@ -584,9 +584,11 @@ under the repo root; the header table at the top of this file links them all.
     transient task after one is a stop-the-run condition**
     (`TERMINAL_DISPATCH_CLASSES` / `TRANSIENT_DISPATCH_CLASSES`;
     `assert_terminal_dispatch_order`). A wildcard authorization does not cover a
-    terminal class; among them the order is the table's DECLARATION order. **Being
-    last is what starves them, so they RESERVE plan slots in pass 0** — a floor,
-    never a ceiling.
+    terminal class; among them the order is the table's DECLARATION order.
+    **Terminals DRAIN, they do not rotate** — rotation interleaves them by
+    construction, so the tail narrows to ONE class until its queue is empty
+    (`terminal_drain_order`). **Being last is what starves them, so they RESERVE
+    plan slots in pass 0** — a floor, never a ceiling.
 89. **A change TESTING made that the target cannot undo is stated in the
     client-facing document, naming the key** (`ResidualMutation`) — recorded on the
     WITNESSED effect, on every landed write whichever arm made it. **Detail →

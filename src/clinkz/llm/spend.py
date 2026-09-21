@@ -42,6 +42,7 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,6 +50,16 @@ logger = logging.getLogger(__name__)
 
 #: Governor halt reason recorded when the cap trips.
 HALT_SPEND_CAP = "spend_cap"
+
+#: The three states a run's cost-completion can be in, mirroring the verdict in
+#: :mod:`clinkz.observability.audit`: a run the cap STOPPED is not a run that
+#: finished within budget, and neither is the same as a run that had no cost cap
+#: to exceed. Collapsing the three is exactly the shape audit.py exists to
+#: prevent — an absence (no cap) read as a clean result, or a truncation (halted)
+#: read as a complete one.
+SPEND_NO_CAP = "no_cap"
+SPEND_WITHIN_BUDGET = "within_budget"
+SPEND_HALT_INDETERMINATE = "indeterminate"
 
 #: Tokens per unit of a declared rate. Rate cards are quoted per million.
 _TOKENS_PER_RATE_UNIT = 1_000_000
@@ -133,22 +144,52 @@ class SpendLedger:
     _usd: float = 0.0
     _unpriced_models: set[str] = field(default_factory=set)
     _by_model: dict[str, dict[str, float]] = field(default_factory=dict)
+    _calls: int = 0
+    _calls_without_usage: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     # -- accounting ---------------------------------------------------------
 
-    def record(self, *, model: str, input_tokens: int, output_tokens: int) -> None:
-        """Fold one served call into the totals."""
+    def record(
+        self, *, model: str, input_tokens: int, output_tokens: int, usage_reported: bool
+    ) -> None:
+        """Fold one served call into the totals.
+
+        Args:
+            model: Which model actually served the call, resolved after the
+                fallback chain settled.
+            input_tokens: Every prompt token presented, cached or not.
+            output_tokens: Tokens generated.
+            usage_reported: Whether the provider reported a usage object at
+                all. Required, with no default, because the two absences fail
+                in opposite directions and the permissive one is the one that
+                reads as free: a call that reported nothing arrives here as
+                ``0``/``0``, identical to a call that consumed nothing. A
+                caller that does not know must say so rather than inherit a
+                measurement it never made.
+        """
         price = self.prices.get(model)
         with self._lock:
+            self._calls += 1
+            if not usage_reported:
+                self._calls_without_usage += 1
             self._input_tokens += max(0, input_tokens)
             self._output_tokens += max(0, output_tokens)
             row = self._by_model.setdefault(
-                model, {"input_tokens": 0, "output_tokens": 0, "usd": 0.0, "calls": 0}
+                model,
+                {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "usd": 0.0,
+                    "calls": 0,
+                    "calls_without_usage": 0,
+                },
             )
             row["input_tokens"] += max(0, input_tokens)
             row["output_tokens"] += max(0, output_tokens)
             row["calls"] += 1
+            if not usage_reported:
+                row["calls_without_usage"] += 1
             if price is None:
                 # Recorded, never estimated. An unpriced model makes the USD
                 # total a LOWER BOUND, and the report has to say so rather than
@@ -161,8 +202,21 @@ class SpendLedger:
 
     @property
     def total_tokens(self) -> int:
+        """Tokens MEASURED. A **lower bound** when any call reported no usage."""
         with self._lock:
             return self._input_tokens + self._output_tokens
+
+    @property
+    def tokens_are_complete(self) -> bool:
+        """Whether every call folded in actually reported its token usage."""
+        with self._lock:
+            return self._calls_without_usage == 0
+
+    @property
+    def indeterminate_calls(self) -> int:
+        """Calls that consumed an unknown, non-negative number of tokens."""
+        with self._lock:
+            return self._calls_without_usage
 
     @property
     def usd_spent(self) -> float:
@@ -172,9 +226,15 @@ class SpendLedger:
 
     @property
     def usd_is_complete(self) -> bool:
-        """Whether every model that ran had a declared price."""
+        """Whether every model that ran had a declared price AND reported usage.
+
+        Two separate ways for the figure to be short, and a consumer only ever
+        needs the conjunction: an unpriced model contributes tokens with no
+        rate, an unreported call contributes a rate with no tokens, and either
+        one makes ``usd_spent`` a floor rather than a total.
+        """
         with self._lock:
-            return not self._unpriced_models
+            return not self._unpriced_models and self._calls_without_usage == 0
 
     # -- enforcement --------------------------------------------------------
 
@@ -229,6 +289,7 @@ class SpendLedger:
                     "input_tokens": int(row["input_tokens"]),
                     "output_tokens": int(row["output_tokens"]),
                     "usd": round(row["usd"], 6) if model in self.prices else None,
+                    "calls_without_usage": int(row.get("calls_without_usage", 0)),
                 }
                 for model, row in sorted(self._by_model.items())
             }
@@ -237,14 +298,22 @@ class SpendLedger:
             tokens = self._input_tokens + self._output_tokens
             input_tokens = self._input_tokens
             output_tokens = self._output_tokens
+            calls = self._calls
+            blind = self._calls_without_usage
         return {
             "token_cap": self.token_cap or None,
             "usd_cap": self.usd_cap or None,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": tokens,
+            "calls": calls,
+            # The fourth state, rendered rather than absorbed: these calls
+            # consumed an unknown, non-negative number of tokens, so every
+            # figure above is a floor while this is non-zero.
+            "indeterminate_calls": blind,
+            "tokens_are_complete": blind == 0,
             "usd_spent": round(usd, 6),
-            "usd_is_complete": not unpriced,
+            "usd_is_complete": not unpriced and blind == 0,
             "unpriced_models": unpriced,
             "by_model": by_model,
         }
@@ -254,9 +323,17 @@ class SpendLedger:
         caps = []
         caps.append(f"{self.token_cap:,} tokens" if self.token_cap else "no token cap")
         caps.append(f"${self.usd_cap:.2f}" if self.usd_cap else "no USD cap")
+        blind = self.indeterminate_calls
         spent = f"{self.total_tokens:,} tokens"
+        if blind:
+            spent += f" (LOWER BOUND — {blind} call(s) reported no usage)"
         if self.usd_cap or self.prices:
-            qualifier = "" if self.usd_is_complete else " (lower bound — unpriced models ran)"
+            reasons = []
+            if self._unpriced_models:
+                reasons.append("unpriced models ran")
+            if blind:
+                reasons.append(f"{blind} call(s) reported no usage")
+            qualifier = f" (lower bound — {'; '.join(reasons)})" if reasons else ""
             spent += f", ${self.usd_spent:.4f}{qualifier}"
         return f"caps: {' / '.join(caps)}; consumed: {spent}"
 
@@ -279,12 +356,23 @@ def get_active_spend_ledger() -> SpendLedger | None:
     return _active_ledger
 
 
-def record_spend(*, model: str, input_tokens: int, output_tokens: int) -> None:
-    """Fold one call into the active ledger, if there is one."""
+def record_spend(
+    *, model: str, input_tokens: int, output_tokens: int, usage_reported: bool
+) -> None:
+    """Fold one call into the active ledger, if there is one.
+
+    ``usage_reported`` has no default on purpose — see
+    :meth:`SpendLedger.record`.
+    """
     ledger = _active_ledger
     if ledger is None:
         return
-    ledger.record(model=model, input_tokens=input_tokens, output_tokens=output_tokens)
+    ledger.record(
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        usage_reported=usage_reported,
+    )
 
 
 def spend_cap_exceeded() -> str:
@@ -303,15 +391,65 @@ def spend_summary() -> dict[str, Any]:
     return ledger.summary()
 
 
+# ---------------------------------------------------------------------------
+# Cost-completion verdict — the third bound's answer to "did the run finish?"
+# ---------------------------------------------------------------------------
+
+
+def is_spend_halt(safety: Mapping[str, Any] | None) -> bool:
+    """Whether the run was stopped by the spend cap.
+
+    Read from the run's STORED safety block (``governor.stats()`` →
+    ``report.safety_summary``), never from the live ledger, so a re-render of a
+    stored bundle reaches the same verdict its build did — the second-witness
+    discipline of :func:`clinkz.llm.degradation.reconcile_with_model_stamp`. A
+    call the cap refused raises ``LLMUnavailableError`` and the governor records
+    the halt; this reads that record.
+    """
+    if not safety:
+        return False
+    return bool(safety.get("halted")) and safety.get("halt_reason") == HALT_SPEND_CAP
+
+
+def spend_completion_verdict(
+    spend: Mapping[str, Any] | None, safety: Mapping[str, Any] | None
+) -> str:
+    """Which of the three cost-completion states this run is in.
+
+    :data:`SPEND_HALT_INDETERMINATE` when the cap stopped the run — the state
+    that must never be collapsed into either of the others, because a truncated
+    sweep is not a negative result and a run the budget cut short did not
+    measure the classes it never reached. :data:`SPEND_WITHIN_BUDGET` when a cap
+    was set and never reached; :data:`SPEND_NO_CAP` when none was installed and
+    the question does not arise.
+
+    Args:
+        spend: The report's ``llm_spend`` block (a :meth:`SpendLedger.summary`).
+        safety: The report's ``safety_summary`` block (``governor.stats()``).
+
+    Returns:
+        One of the three ``SPEND_*`` constants.
+    """
+    if is_spend_halt(safety):
+        return SPEND_HALT_INDETERMINATE
+    has_cap = bool(spend) and bool(spend.get("token_cap") or spend.get("usd_cap"))
+    return SPEND_WITHIN_BUDGET if has_cap else SPEND_NO_CAP
+
+
 __all__ = [
     "HALT_SPEND_CAP",
+    "SPEND_HALT_INDETERMINATE",
+    "SPEND_NO_CAP",
+    "SPEND_WITHIN_BUDGET",
     "ModelPrice",
     "SpendCapError",
     "SpendLedger",
     "get_active_spend_ledger",
+    "is_spend_halt",
     "load_price_table",
     "record_spend",
     "set_active_spend_ledger",
     "spend_cap_exceeded",
+    "spend_completion_verdict",
     "spend_summary",
 ]
