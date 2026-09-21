@@ -358,3 +358,34 @@ against a recorded floor. The grid reads the ledger; whether the field is worth
 adding is a question for the round after it, with the grid's own experience of
 grading as the evidence.
 
+---
+
+## R13 · A batch driver wrote its result row after a step that could raise
+
+**Verified, and the cost was paid before it was found.** The effort-grid driver
+built each cell's log filename from the cell's own coordinates, and Juice Shop's
+level is `n/a` — so the name carried a path separator, `write_text` raised, and
+the exception propagated out of the per-cell function. That write sits **after**
+`subprocess.run` returns, so three Juice Shop engagements ran to completion, cost
+real money and ~1h52m of wall clock, and recorded **nothing**: the driver logged
+`CELL FAILED` and moved on.
+
+The rows were recoverable — the bundles were on disk, and each run's effort level
+was confirmed from its own `trace.jsonl` `effort` stamps (113 / 85 / 84 calls)
+rather than inferred from the clock, so the recovered labels rest on the run's own
+evidence. Nothing was re-run.
+
+**The rule, which is the engine's own and was not applied to the harness.** A
+batch is unattended (invariant 74), so the expensive, irreversible step —
+the engagement — must be *recorded* before any step that can fail. The ordering
+was: run, then name a file, then read spend, then append. Two of those three
+post-steps can raise, and both sit between the spend and the record. Ordering is
+the fix; `try/except` around the log write is not, because it would still leave
+the record downstream of something that can throw.
+
+Fixed by sanitising the tag rather than special-casing `n/a` — a driver whose
+correctness depends on no future target having a `/` in a coordinate is the same
+defect waiting. The recovered rows were written to a separate file rather than
+appended to the live results, because the driver was still running and
+interleaving two writers on one file is a second way to lose a row.
+
