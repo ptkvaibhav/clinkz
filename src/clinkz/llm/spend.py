@@ -64,9 +64,6 @@ SPEND_HALT_INDETERMINATE = "indeterminate"
 #: Tokens per unit of a declared rate. Rate cards are quoted per million.
 _TOKENS_PER_RATE_UNIT = 1_000_000
 
-#: Tokens per unit of a declared rate. Rate cards are quoted per million.
-_TOKENS_PER_RATE_UNIT = 1_000_000
-
 
 class SpendCapError(RuntimeError):
     """A USD cap was requested that cannot be enforced honestly."""
