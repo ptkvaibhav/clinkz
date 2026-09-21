@@ -290,14 +290,24 @@ Two things follow mechanically:
   that serves us.
 
 The honest cost: two terminal classes cannot both run last. They partition — the
-rotation already yields terminal classes only when transient work is exhausted,
-and among terminal classes the order is arbitrary but must be *fixed* and
-asserted, because a write crossing dispatched after a prototype pollution is
-graded against a polluted process. Cheapest correct rule: **within
+dispatcher yields terminal classes only when transient work is exhausted, and
+among terminal classes the order is arbitrary but must be *fixed* and asserted,
+because a write crossing dispatched after a prototype pollution is graded against
+a polluted process. Cheapest correct rule: **within
 `TERMINAL_DISPATCH_CLASSES`, dispatch in declaration order**, and assert it —
 write crossing declared **before** prototype pollution, since a write crossing
 does not change how the *process* answers, while pollution changes how every
 later write is parsed.
+
+That rule needed a scheduler to match it. Round-robin — one task per class per
+pass, which is what buys breadth for the other twenty-nine classes — interleaves
+the terminal tail by construction, so a plan holding two write-crossing tasks
+dispatches crossing, pollution, crossing and the guard stops the run on the
+third. Correct refusal, wrong dispatcher. **Terminals drain**: the eligible set
+narrows to the single earliest-declared terminal class with work left
+(`terminal_drain_order`) and stays there until its queue is empty. At the default
+cap this surface plans eight tasks per terminal class, so the shape is ordinary
+rather than exotic.
 
 ---
 

@@ -1580,7 +1580,7 @@ A prototype write changes how the application answers requests *the class never
 made*. Every observation after it — every probe, and specifically every other
 class's control arm — is a measurement of a target this run has already altered.
 So the class is dispatched last, after every other class has finished, and the
-rotation in `_step_execute_exploits` only reaches it once no transient task is
+dispatcher in `_step_execute_exploits` only reaches it once no transient task is
 left.
 
 The predicate is narrower than "writes to the target", and drawing it carelessly
@@ -1618,8 +1618,8 @@ Two consequences worth stating rather than discovering:
   reservation is about whether a terminal class is in the PLAN; the deadline is
   about whether the dispatcher reaches it. They are different bounds with
   different fixes, and the exclusion still holds under an early deadline: the
-  rotation yields a terminal class only once no transient task is left, so a stop
-  before that point costs it whatever the plan holds. What the reservation
+  dispatcher yields a terminal class only once no transient task is left, so a
+  stop before that point costs it whatever the plan holds. What the reservation
   changes is that the loss is now always a *dispatch* loss — before it, a small
   cap could cost the class silently one stage earlier, and the two were
   indistinguishable in the artifacts.
@@ -1648,11 +1648,36 @@ pollution goes last, write crossing is declared first, and
 `assert_terminal_dispatch_order` **requires** that order instead of permitting
 any terminal sequence.
 
-The rotation and the guard read the same table and read it *differently on
-purpose*: the rotation sorts by `terminal_dispatch_rank`, the guard indexes
+The dispatcher and the guard read the same table and read it *differently on
+purpose*: the dispatcher draws through `terminal_dispatch_rank`, the guard indexes
 `TERMINAL_DISPATCH_CLASSES` itself. A guard that consulted the same derived value
 the thing it guards sorts by would agree with it by construction and could never
 catch it being wrong — the guard-domain law, applied to an ordering.
+
+**And it caught it.** The fixed order was declared and asserted; the scheduler
+under it was still a rotation, and a rotation over N terminal classes interleaves
+them by definition — A, B, A — so the third dispatch is a terminal class after a
+later-declared one and the guard stops the run. Round-robin and a fixed terminal
+order are **incompatible by construction**, and the conflict is not a bug in
+either of them: rotation exists to buy breadth under a cap, which is right for
+twenty-nine independent classes, and the order exists because these two are not
+independent — one of them changes how the process parses every write after it.
+Order wins, and it wins by narrowing ELIGIBILITY rather than by sorting: the
+terminal tail is one class at a time (`terminal_drain_order`) and stays that class
+until its queue is empty. The soft-cap reordering is inert over a one-element
+tail, which is the correct reading and not an accident — deprioritising a terminal
+class means letting a later-declared one overtake it, the exact inversion the
+order exists to prevent.
+
+What it cost to find was the plan that shows it. With one task per terminal class
+a rotation and a drain produce the same sequence, so the defect is invisible: it
+needs **two** tasks for the earlier-declared class and one for the later. That is
+not an exotic plan — at the default cap of 150 a JSON-write surface gives eight
+tasks to each terminal class — and the tests pin both shapes, one with the guard
+live (asserting the order) and one with the guard switched off (asserting the
+drain: one class's queue empty before the next is drawn). A test that can only
+observe the exception is measuring the guard, and the guard is not the half that
+changed.
 
 **Being last is what starves them.** The deterministic plan's per-class floor
 walks `_DETERMINISTIC_CATEGORY_ORDER` and stops at the cap, and the terminal

@@ -39,6 +39,7 @@ from clinkz.agents.exploit import (
     TerminalDispatchOrderError,
     assert_terminal_dispatch_order,
     terminal_dispatch_rank,
+    terminal_drain_order,
 )
 from clinkz.models.finding import ExploitPlan, ExploitTask
 
@@ -230,9 +231,9 @@ class TestAWrongRotationStopsTheRun:
     that consulted the same derived value would agree with the rotation by
     construction and could never catch it being wrong.
 
-    So the failure is forced the only way a real one could happen: the rotation's
-    ordering helper is replaced, standing in for the scheduler change the guard
-    exists to survive. A guard not seen refusing is not a guard.
+    So the failure is forced the only way a real one could happen: the
+    dispatcher's ordering helper is replaced, standing in for the scheduler
+    change the guard exists to survive. A guard not seen refusing is not a guard.
     """
 
     @pytest.mark.skipif(
@@ -265,8 +266,8 @@ class TestAWrongRotationStopsTheRun:
         # A scheduler that orders the terminal tail the other way round.
         monkeypatch.setattr(
             exploit_module,
-            "terminal_rotation_order",
-            lambda methods: sorted(methods, key=terminal_dispatch_rank, reverse=True),
+            "terminal_drain_order",
+            lambda methods: sorted(methods, key=terminal_dispatch_rank, reverse=True)[:1],
         )
 
         plan = ExploitPlan(
@@ -284,3 +285,153 @@ class TestAWrongRotationStopsTheRun:
         )
         assert earlier in str(raised.value)
         assert later in str(raised.value)
+
+
+class TestTerminalsDrainSequentially:
+    """Rotation and a fixed terminal order are incompatible by construction.
+
+    Rotation buys breadth: one task per class per pass. Over the terminal tail
+    that interleaves by definition — A, B, A — and the third dispatch is a
+    terminal class after a later-declared one, which the guard stops the run
+    over. So the shape that exposed it is a plan holding TWO tasks for the
+    earlier-declared class and one for the later: with one task each, a rotation
+    and a drain are the same sequence and the defect is invisible.
+
+    The guard has been correct since it landed. The dispatcher was
+    legal-and-wrong, and the run it killed was a legitimate one.
+
+    Two tests, measuring two different things. The first runs the real
+    dispatcher with the real guard and asserts the ORDER. The second turns the
+    guard off and asserts the DRAIN — that one class's queue is empty before the
+    next class is drawn — because a test that only ever sees the guard raise is
+    measuring the guard, and the guard is not the half that changed.
+    """
+
+    @staticmethod
+    def _agent() -> ExploitAgent:
+        agent = ExploitAgent.__new__(ExploitAgent)
+        agent._logger = logging.getLogger("test.exploit.drain")
+        agent._tests_run = 0
+        agent._stopped_early = False
+        agent._category_max_findings = 5
+        agent._category_time_budget = 90.0
+        return agent
+
+    def test_the_drain_helper_yields_at_most_one_class(self) -> None:
+        """The narrowing itself: eligibility, not a sort order.
+
+        A helper that returned the declaration-ordered LIST would be obeyed by a
+        per-pass loop as a rotation over it, which is what happened.
+        """
+        declared = sorted(TERMINAL_DISPATCH_CLASSES, key=terminal_dispatch_rank)
+        assert terminal_drain_order(declared) == declared[:1]
+        assert terminal_drain_order(list(reversed(declared))) == declared[:1]
+        assert terminal_drain_order([]) == []
+        for method in declared:
+            assert terminal_drain_order([method]) == [method]
+
+    @pytest.mark.skipif(
+        len(TERMINAL_DISPATCH_CLASSES) < 2,
+        reason="the ordering among terminal classes only exists once there are two",
+    )
+    @pytest.mark.asyncio
+    async def test_two_for_the_earlier_class_then_one_for_the_later(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The observed failing shape, with the guard live and expected silent.
+
+        Two write-crossing tasks and one pollution task. The rotation dispatched
+        W, P, W and the guard stopped the run on the third — a correct refusal of
+        an order the dispatcher should never have proposed.
+        """
+        declared = sorted(TERMINAL_DISPATCH_CLASSES, key=terminal_dispatch_rank)
+        earlier, later = declared[0], declared[1]
+        agent = self._agent()
+        dispatched: list[str] = []
+
+        async def _execute(task: ExploitTask, cache: dict) -> list:
+            dispatched.append(task.test_method)
+            return []
+
+        monkeypatch.setattr(agent, "_execute_task", _execute)
+        monkeypatch.setattr(agent, "_should_stop_dispatching", lambda: False)
+        monkeypatch.setattr(agent, "_trace_dispatch_ordinal", lambda task, ordinal: None)
+
+        plan = ExploitPlan(
+            tasks=[
+                ExploitTask(test_method=earlier, endpoint_url="http://t/api/a", tier=1),
+                ExploitTask(test_method=earlier, endpoint_url="http://t/api/b", tier=1),
+                ExploitTask(test_method=later, endpoint_url="http://t/api/c", tier=1),
+            ]
+        )
+        await agent._step_execute_exploits(plan, None)
+
+        assert dispatched == [earlier, earlier, later], dispatched
+
+    @pytest.mark.skipif(
+        len(TERMINAL_DISPATCH_CLASSES) < 2,
+        reason="the ordering among terminal classes only exists once there are two",
+    )
+    @pytest.mark.asyncio
+    async def test_a_class_queue_is_empty_before_the_next_is_drawn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The drain asserted DIRECTLY, with the guard neutralised.
+
+        The guard is switched off here on purpose. With it live, a re-introduced
+        rotation fails this file by raising, and a test that can only observe the
+        exception cannot tell a dispatcher that drains from one that interleaves
+        and gets caught. So the assertion is made on the sequence itself: at the
+        moment a terminal class is first drawn, every terminal class declared
+        before it must already have dispatched every task the plan gave it.
+        """
+        monkeypatch.setattr(
+            exploit_module, "assert_terminal_dispatch_order", lambda method, seen: None
+        )
+        declared = sorted(TERMINAL_DISPATCH_CLASSES, key=terminal_dispatch_rank)
+        earlier, later = declared[0], declared[1]
+        agent = self._agent()
+
+        plan = ExploitPlan(
+            tasks=[
+                ExploitTask(test_method="_test_sqli", endpoint_url="http://t/p?id=1", tier=1),
+                ExploitTask(test_method=later, endpoint_url="http://t/api/p1", tier=1),
+                ExploitTask(test_method=earlier, endpoint_url="http://t/api/w1", tier=1),
+                ExploitTask(test_method=later, endpoint_url="http://t/api/p2", tier=1),
+                ExploitTask(test_method=earlier, endpoint_url="http://t/api/w2", tier=1),
+                ExploitTask(test_method=earlier, endpoint_url="http://t/api/w3", tier=1),
+            ]
+        )
+        planned: dict[str, int] = {}
+        for task in plan.tasks:
+            planned[task.test_method] = planned.get(task.test_method, 0) + 1
+
+        dispatched: list[str] = []
+        done: dict[str, int] = dict.fromkeys(planned, 0)
+        violations: list[str] = []
+
+        async def _execute(task: ExploitTask, cache: dict) -> list:
+            method = task.test_method
+            if method in TERMINAL_DISPATCH_CLASSES and method not in dispatched:
+                rank = terminal_dispatch_rank(method)
+                for other in TERMINAL_DISPATCH_CLASSES:
+                    if terminal_dispatch_rank(other) >= rank or other not in planned:
+                        continue
+                    if done[other] != planned[other]:
+                        violations.append(
+                            f"{method} was drawn with {planned[other] - done[other]} "
+                            f"task(s) still queued for {other}"
+                        )
+            dispatched.append(method)
+            done[method] += 1
+            return []
+
+        monkeypatch.setattr(agent, "_execute_task", _execute)
+        monkeypatch.setattr(agent, "_should_stop_dispatching", lambda: False)
+        monkeypatch.setattr(agent, "_trace_dispatch_ordinal", lambda task, ordinal: None)
+        await agent._step_execute_exploits(plan, None)
+
+        assert not violations, violations
+        # And the whole sequence, so the drain is visible rather than inferred.
+        assert dispatched == ["_test_sqli", earlier, earlier, earlier, later, later], dispatched
+        assert len(dispatched) == len(plan.tasks), "the drain dropped a planned task"

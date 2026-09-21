@@ -315,3 +315,46 @@ unprimed methodology checkpoints (item 2, `docs/analysis/cost-cap-and-system-pre
 **Disclosure, not a build.** The fix is a one-line spec correction — mark W3
 superseded by the registry-remediation design — not wiring an LLM call into a
 stage whose zero-LLM property is a deliberate speed and honesty guarantee.
+
+---
+
+## R11 · `spend.py` declared `_TOKENS_PER_RATE_UNIT` twice — RESOLVED in this push
+
+**Verified, and fixed rather than deferred.** `llm/spend.py:65` and `:68` each
+declared `_TOKENS_PER_RATE_UNIT = 1_000_000` under an identical comment. The
+second binding shadowed the first with the same value, so the behaviour was
+correct and the duplication was invisible to every test — a rate card is quoted
+per million either way.
+
+Registered anyway, because the failure mode it was one edit away from is the one
+this codebase keeps re-learning: a later change to the rate unit made at the
+first site is silently reverted by the second, and the symptom is a cost figure
+that is wrong by a factor nobody can find in a diff. `ModelPrice.cost` reads one
+name; there is one thing to read. Deleted the second.
+
+---
+
+## R12 · A `Finding` carries no vuln-class field, so per-class grading comes off the ledger
+
+**Verified, and it binds the effort grid.** A `Finding` carries `title`,
+`description`, `severity`, `target` and evidence — fourteen fields, and **none of
+them names the class that emitted it**. Nothing in `report_<id>.json` says "this row came from
+`_test_sqli`". R9's method note recorded this while measuring the business-logic
+classes; it is promoted to its own entry because the effort grid needs per-class
+numbers across six runs, and a naive exact-key scan returns a confident `NONE`
+for every class in the engine.
+
+**How to grade per class, and how not to.** The component ledger is the one
+population keyed by class: components are `methodology:_test_x`, not `_test_x`,
+and their `items` count **dispatches, not findings** (invariant 78). So the
+ledger answers *what ran*, and it answers it honestly. For *what emitted*, match
+a class's registry `title_tokens` against finding titles — the same indirection
+the report itself uses — and never infer a class from an endpoint or a severity.
+
+**Why not simply add the field.** It is a one-line model change and a schema
+change to every stored bundle, which is exactly the kind of edit that should not
+be made in the middle of a measurement whose whole purpose is comparing runs
+against a recorded floor. The grid reads the ledger; whether the field is worth
+adding is a question for the round after it, with the grid's own experience of
+grading as the evidence.
+
