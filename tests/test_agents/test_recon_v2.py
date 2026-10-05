@@ -720,6 +720,32 @@ class TestReconModels:
         unknown_9999 = ReconService(port=9999, service_name="")
         assert unknown_9999.is_http is False
 
+        # Protocol evidence beats the port guess: an HTTP REST API on a
+        # non-canonical port that nmap labels from /etc/services (Flink's
+        # JobManager on 8081 → "blackice-icecap") is HTTP-capable because its
+        # -sV fingerprint carries an HTTP response status line. This is the
+        # CVE-2020-17519 rediscovery blocker — 8081 is not on the web-port
+        # allow-list and never will enumerate every alt-HTTP port.
+        flink_8081 = ReconService(
+            port=8081,
+            service_name="blackice-icecap",
+            scripts_output=(
+                "fingerprint-strings:\n  FourOhFourRequest:\n"
+                "    HTTP/1.1 404 Not Found\n    Content-Type: application/json"
+            ),
+        )
+        assert flink_8081.is_http is True
+
+        # Precision: an incidental "HTTP/" substring that is NOT a response
+        # status line (no version + status code) must not flip a genuinely
+        # non-web service. A non-web port with no real HTTP response stays False.
+        incidental = ReconService(
+            port=9100,
+            service_name="jetdirect",
+            scripts_output="banner: see HTTP/docs at http://example/help",
+        )
+        assert incidental.is_http is False
+
     def test_recon_service_roundtrip(self) -> None:
         svc = ReconService(
             port=8080,
