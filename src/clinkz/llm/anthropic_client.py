@@ -34,6 +34,7 @@ from clinkz.llm.base import (
     ToolCall,
     as_prompt_segments,
 )
+from clinkz.llm.call_purpose import current_call_purpose, effort_for_purpose
 
 logger = logging.getLogger(__name__)
 
@@ -571,18 +572,38 @@ class AnthropicClient(LLMClient):
             )
 
     @staticmethod
-    def _apply_effort(kwargs: dict[str, Any]) -> None:
-        """Carry ``output_config.effort`` when the operator declared one.
+    def _resolved_effort() -> str:
+        """The effort this call runs under, resolved by its declared PURPOSE.
 
-        Omitted entirely when unset, so a deployment that declares nothing sends
-        the byte-identical request it always sent and inherits whatever the
-        provider's default is. That is deliberately NOT spelled ``"high"`` here:
-        writing the provider's current default into our request would turn a
-        value we did not choose into a value we did, and the day it changes the
-        engine would be pinning the old one silently.
+        PLANNING and SUPPRESS take ``settings.llm_effort`` (default ``"low"`` by
+        the effort grid); EMIT takes ``settings.llm_effort_emit``, the carve-out
+        left at the provider default because lowering the finding-shaping path
+        was never isolated in measurement. Read from the per-task purpose
+        context var, so the concurrent phase runners each resolve their own.
+        Both the request builder and the usage stamp call this, so the level
+        disclosed is the level sent.
         """
-        if settings.llm_effort:
-            kwargs["output_config"] = {"effort": settings.llm_effort}
+        return effort_for_purpose(
+            current_call_purpose(),
+            default=settings.llm_effort,
+            emit=settings.llm_effort_emit,
+        )
+
+    @classmethod
+    def _apply_effort(cls, kwargs: dict[str, Any]) -> None:
+        """Carry ``output_config.effort`` for this call's purpose.
+
+        Omitted entirely when the resolved level is empty, so a deployment whose
+        purpose resolves to ``""`` (the EMIT default) sends the byte-identical
+        request it always sent and inherits whatever the provider's default is.
+        That is deliberately NOT spelled ``"high"`` here: writing the provider's
+        current default into our request would turn a value we did not choose
+        into a value we did, and the day it changes the engine would be pinning
+        the old one silently.
+        """
+        effort = cls._resolved_effort()
+        if effort:
+            kwargs["output_config"] = {"effort": effort}
 
     def _track_usage(self, response: Any, *, requested_max_tokens: int = 0) -> CallStats:
         """Accumulate token counts and publish stats for the call just served.
@@ -612,8 +633,11 @@ class AnthropicClient(LLMClient):
             max_output_tokens=requested_max_tokens,
             # Recorded on the call, not read from configuration at report time:
             # an effort sweep is graded by comparing runs, and a run that cannot
-            # say which level it ran under is not a data point.
-            effort=settings.llm_effort,
+            # say which level it ran under is not a data point. Resolved by the
+            # same purpose-aware rule the request builder used, so the stamp is
+            # the level that was actually sent — a PLANNING call and an EMIT call
+            # in the same run can carry different levels and each says which.
+            effort=self._resolved_effort(),
         )
         usage = getattr(response, "usage", None)
         if usage is not None:

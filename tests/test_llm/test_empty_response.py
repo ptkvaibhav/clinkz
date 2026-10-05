@@ -35,6 +35,7 @@ _SETTINGS = SimpleNamespace(
     llm_stream_above_output_tokens=16000,
     llm_output_headroom_alarm_ratio=0.8,
     llm_effort="",
+    llm_effort_emit="",
 )
 
 
