@@ -177,7 +177,17 @@ its terminal tail at all.
 * **It does not rank the levels.** Findings are flat, so on this evidence effort
   buys nothing measurable on the emit path. Pointing the lever at PLANNING and
   SUPPRESS before EMIT — the doc's own ordering — is still untested, and this
-  grid does not test it: `LLM_EFFORT` is global, so every call site moved together.
+  grid does not test it: at the time of the grid `LLM_EFFORT` was global, so
+  every call site moved together.
+
+  > **Acted on since (not a measurement, a mechanism).** `LLM_EFFORT` is now
+  > resolved per call PURPOSE (`feat(llm): effort is resolved per call PURPOSE`):
+  > `llm_effort` governs PLANNING and SUPPRESS and defaults to `low` on the
+  > strength of §2–§3; EMIT reads its own `llm_effort_emit`, left at the provider
+  > default because lowering the finding-shaping path is the one thing this grid
+  > could not isolate. The split is what lets the NEXT grid move EMIT alone — it
+  > is the mechanism the ordering above needs, not evidence that the ordering is
+  > right, which still wants an emit-isolated run.
 * **It does not measure the prefix variable.** `prefix ∈ {off, on+cached}` was
   the candidate second variable and is untouched here.
 * **Two single-run down-moves are not a trend.** The LFI 2→1 and the Juice Shop
