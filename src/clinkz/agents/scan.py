@@ -2099,6 +2099,11 @@ class ScanAgent(BaseAgent):
                                 "has_form": ep.has_form,
                                 "has_dom_source": ep.has_dom_source,
                                 "content_type": ep.content_type or "",
+                                # The verb's provenance (#143). Omitted here, a
+                                # store reload defaults it to UNREAD and the
+                                # observed-write routing then excludes the
+                                # endpoint from every write-family class.
+                                "method_evidence": ep.method_evidence.value,
                             },
                         )
                     except Exception as exc:

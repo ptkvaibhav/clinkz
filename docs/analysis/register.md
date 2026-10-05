@@ -1328,3 +1328,35 @@ defect waiting. The recovered rows were written to a separate file rather than
 appended to the live results, because the driver was still running and
 interleaving two writers on one file is a second way to lose a row.
 
+
+---
+
+## R25 · The state store dropped `method_evidence`, and observed-write routing made it bite — RESOLVED
+
+**Verified and fixed in this round.** `_is_observed_write_surface` (Part 1) routes
+the seven write-family classes on `method_evidence`, not on the method string: a
+verb the engine could not read (`UNREAD`) is no evidence the route writes, so it
+is excluded. But `state.py` never persisted `method_evidence` — no column in the
+`endpoints` table, no handling in `add_endpoint`/`get_endpoints` — a gap open since
+#143 introduced the field. Any store reload therefore rehydrated every endpoint at
+the model's pessimistic default, `UNREAD`, and Part 1 would then exclude ALL of
+them from write-family, whatever their real verb.
+
+**Why a normal run was never wrong.** The exploit phase does not read endpoints
+from the store; it takes the in-memory `ScanResult` (`_collect_endpoints` →
+`_parse_scan_result` → `ScanResult(**raw)`), which carries `method_evidence`
+intact. The five store-reading branches in the auth path were dead code, removed
+earlier. So the gap was latent — but it is exactly the **seam-vs-pipeline** shape
+the dev contract names: a consumer reading a producer's default, invisible while
+the happy path routes around it, and one refactor (an offline driver, a resumed
+run's provenance, a future store-backed planner) away from silently excluding
+every write surface.
+
+**The fix.** A migration column (`method_evidence TEXT NOT NULL DEFAULT 'unread'`
+— the pessimistic default, so an old row reads as "nobody checked", never a
+measured GET), `add_endpoint` persisting it with an OR-merge that never downgrades
+a read verb to `unread`, `get_endpoints` deserialising it, and the scan-phase
+producer passing it in `features`. Pinned by a round-trip test that reloads a
+`NAMED` POST from the store and asserts `_is_observed_write_surface` admits it
+while a verb-less row stays excluded — the reload tied directly to the routing it
+feeds, not asserted at the store seam alone.
