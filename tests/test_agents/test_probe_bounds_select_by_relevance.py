@@ -79,6 +79,14 @@ DECLARED: dict[str, tuple[str, str]] = {
         "truncates a field-name list inside an evidence SENTENCE, after the assertion has "
         "already been decided; which twelve names are quoted changes no verdict",
     ),
+    "agents/exploit.py::terminal_drain_order": (
+        _Selection.DECLARED_KEY,
+        "orders the live terminal classes by terminal_dispatch_rank — their index in the "
+        "TERMINAL_DISPATCH_CLASSES declaration — and takes the single earliest-declared with "
+        "work left, so the survivor is chosen by the interference order invariant 88 declares "
+        "(a prototype write changes how the process parses every write after it), never by the "
+        "method name's spelling; the slice is [:1] because terminals DRAIN one at a time",
+    ),
     "agents/_report_pdf.py::_scope_refusals": (
         _Selection.DECLARED_KEY,
         "orders refused hosts by refusal COUNT descending, so the fifteen rendered are the "
