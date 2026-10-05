@@ -46,6 +46,8 @@ from typing import Annotated, Any
 
 import typer
 
+from clinkz.observability.invocations import TRANSPORT_SUBPROCESS
+
 #: The exit-code contract. Stated once, rendered into ``clinkz scan --help``, and
 #: asserted by the test suite so it cannot drift from what the code returns.
 EXIT_OK = 0
@@ -1384,6 +1386,21 @@ def tool_invoke(
     import subprocess as _subprocess
     import time as _time
 
+    # A record's transport decides whether it CAN be replayed, and the answer is
+    # read off the record rather than inferred from the shape of ``command``. An
+    # in-process record's command is a descriptor ("GET", url) — readable, and
+    # not an argv. Exec'ing it would either fail confusingly or, worse, find a
+    # binary of that name, so the refusal is explicit and names the transport.
+    transport = str(record.get("transport") or TRANSPORT_SUBPROCESS)
+    if transport != TRANSPORT_SUBPROCESS:
+        typer.echo(
+            f"Invocation seq={seq} was served in-process (transport={transport!r}), not as a "
+            "subprocess - there is no command to re-execute. Inspect it without --replay; "
+            "the full request is in the record's `request` field.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     command: list[str] = record.get("command") or []
     if not command:
         typer.echo("Recorded record has no command - cannot replay.", err=True)
@@ -1444,9 +1461,14 @@ def _format_invocation_record(record: dict) -> str:
     agent = record.get("agent") or "?"
     step = record.get("step") or "?"
     parsed_type = record.get("parsed_output_type") or "-"
+    # Named on the line, because "cmd:" on an in-process record reads as an argv
+    # and an operator who copies it into a shell has been misled by the artifact.
+    transport = str(record.get("transport") or TRANSPORT_SUBPROCESS)
+    label = "cmd" if transport == TRANSPORT_SUBPROCESS else "call"
     return (
-        f"seq={seq} tool={tool} agent={agent} step={step} rc={rc} dur={dur_str}\n"
-        f"  cmd: {cmd[:200]}\n"
+        f"seq={seq} tool={tool} agent={agent} step={step} rc={rc} dur={dur_str} "
+        f"transport={transport}\n"
+        f"  {label}: {cmd[:200]}\n"
         f"  parsed: {parsed_type} (succeeded={record.get('parse_succeeded')})"
     )
 

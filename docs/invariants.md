@@ -2667,3 +2667,60 @@ This was found by the default-control audit
 (`docs/analysis/default-control-audit.md` F1) — a sweep by call-site
 DISAGREEMENT rather than by name, which is what surfaced a parameter that two
 callers supplied and one did not.
+
+
+## 112. A call site we SAW and could not address is a third state, and a route the source DECLARES is a different fact from a call it MAKES
+
+`mine_api_call_sites` returned the calls it resolved and nothing else, so a call
+site recognised as HTTP and not turned into a route left no trace anywhere: no
+endpoint, no `method_evidence`, no bucket. A bundle of nothing but `fetch(e,n)`
+and an application that makes no HTTP calls produced byte-identical output. That
+is invariant 111's law one layer further upstream — 111 says a verb the miner
+could not read is not a `GET` it measured; this says a *call* the miner could not
+address is not an application that makes no calls.
+
+Measured on the two live targets, 12 chunks each. Juice Shop resolves **88 of
+89**; the one it does not is socket.io's polling transport,
+`this.request({method:"POST",data:a})`, whose address is `this.uri()` one frame
+up. cal.com resolves **2 of 9**, and one of the seven it does not is the Next.js
+Server Action dispatcher `fetch(e.canonicalUrl,{method:"POST",…})` — every write
+cal.com performs goes through it.
+
+Three reasons, because they want different fixes: `unresolvable_url` (an address
+was there and did not resolve), `unnamed_url` (a config carried the request and
+named no `url` — the address lives on the client it is handed to), and
+`no_arguments`. `naming_a_write` is surfaced first, because a call site we can
+see declare POST and cannot address is directly the write surface the seven
+Tier-1 classes never receive.
+
+**The domain is what makes it readable rather than noise.** Only calls that are
+HTTP by the *callee's own name* (`fetch`, `axios`, XHR) or by a config argument's
+*shape* are counted. `map.get(k)` is most of what these regexes match on a real
+bundle — 241 of cal.com's 304 matches — and counting those would fire the
+disclosure on every run of every target, which is invariant 77's permanent false
+alarm.
+
+**And the guard that keeps prose out of it must not be the obvious one.** The
+first cut skipped matches falling inside a string literal, so that Next.js's own
+error text — "uncached external data (\`fetch(...)\`, etc...)" — did not count. A
+quote-counting pre-pass is unsound on minified JS: a regex character class such
+as `/(['"])/` opens a quote the scanner closes 39 KB later. It marked **60% of
+Juice Shop's main bundle as literal and hid 30 of its 88 readable call sites**,
+caught only because the control was re-run. The replacement is a *positive* shape
+test on the argument that was supposed to denote the URL, which the prose fails
+because the argument there is the literal text `...`.
+
+**The second half is a different fact.** A `{path, method}` pair — route guards,
+API-gateway rules, RBAC tables, service-worker route lists, bot-protection
+manifests — says the application HAS a route and states its verb outright. That
+is exactly what a minified SPA never says at a call site it builds at runtime: on
+cal.com it recovers the only same-origin write route named anywhere in the
+bundle, `POST /api/book/event`, which is what met the round's acceptance
+criterion. It is kept in its own field of `MiningResult` rather than folded into
+`call_sites`, because "the application has this route" and "the frontend calls
+this route" are different claims and folding them would put non-calls into the
+reach disclosure's own denominator. A declaration is held to the call site's bar
+— URL-shaped path, literal HTTP verb ⇒ `NAMED` — and claims **no body**, because
+a manifest names the route and says nothing about what it accepts.
+
+**Detail → `docs/analysis/spa-write-surface-blocker.md` §7.**

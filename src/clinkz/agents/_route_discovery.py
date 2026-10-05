@@ -63,11 +63,18 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
-from clinkz.agents._js_api_mining import ApiCallSite, mine_api_call_sites
+from clinkz.agents._js_api_mining import ApiCallSite, MiningResult, mine_api_surface
 from clinkz.agents._origin import resolve_same_origin, same_origin
 from clinkz.agents._url_safety import is_state_changing_url
-from clinkz.models.scan import Endpoint, ParamLocation
+from clinkz.models.scan import Endpoint, MethodEvidence, ParamLocation
 from clinkz.observability.ledger import ComponentKind, record_contribution, record_dead_seam
+from clinkz.observability.plan_alarms import (
+    MAX_RETAINED_PER_CLASS,
+    BundleFetchTruncation,
+    UnreachableCallSites,
+    get_active_plan_alarms,
+    record_unreachable_call_sites,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -490,7 +497,12 @@ def _route_to_endpoint(raw: str, base_url: str) -> Endpoint | None:
             params.append(name)
 
     url = urlunsplit((parsed.scheme, parsed.netloc, norm_path, "", ""))
-    return Endpoint(url=url, method="GET", params=params)
+    # A URL STRING LITERAL carries no method, and this producer reads nothing
+    # else. Its output has always been all-GET by construction, on every target,
+    # and always will be - so the honest declaration is UNREAD. That is not a
+    # defect being papered over: it is what puts these routes at the front of the
+    # OPTIONS sweep, which is the mechanism that can actually learn their verbs.
+    return Endpoint(url=url, method="GET", params=params, method_evidence=MethodEvidence.UNREAD)
 
 
 def _structural_key(ep: Endpoint) -> str:
@@ -927,6 +939,8 @@ class OpenAPIDiscoverer:
             params=params,
             content_type=content_type,
             param_locations=locations,
+            # A served spec NAMES the verb of every operation it declares.
+            method_evidence=MethodEvidence.NAMED,
         )
 
 
@@ -949,12 +963,23 @@ class JSCallSiteDiscoverer:
     def __init__(self, pages: Sequence[str] = ()) -> None:
         self.pages = tuple(pages)
         self._report = DiscoveryReport()
+        self._reach: list[MiningResult] = []
 
     def contribution_report(self) -> DiscoveryReport:
         return self._report
 
+    def reach_report(self) -> list[MiningResult]:
+        """Per-bundle mining results, resolved AND unresolvable.
+
+        The caller records the split for the deliverable. Kept as the miner's
+        own result objects rather than pre-summed counters so the consumer reads
+        what the producer declared (invariant 82) instead of re-deriving it.
+        """
+        return list(self._reach)
+
     async def discover(self, base_url: str, fetch: FetchFn) -> list[Endpoint]:
         self._report = DiscoveryReport()
+        self._reach = []
         queue: list[str] = await _collect_script_seeds(base_url, fetch, self.pages)
         if not queue:
             self._report.detail = "target references no same-origin <script src> bundles"
@@ -964,6 +989,13 @@ class JSCallSiteDiscoverer:
         seen: set[str] = set()
         sites_total = 0
         bundles_read = 0
+        # Every chunk URL this walk ever queued, so the bound can be reported
+        # against a DENOMINATOR. Counted separately from `visited` because the
+        # queue keeps growing as each fetched bundle names more chunks: the walk
+        # discovers 53 on cal.com while `_MAX_BUNDLES` opens 12, and without this
+        # set the 41 it never opened are not merely unreported — they are not
+        # measured, so no renderer could report them.
+        discovered: set[str] = set(queue)
         while queue and len(visited) < _MAX_BUNDLES:
             bundle_url = queue.pop(0)
             if bundle_url in visited:
@@ -974,7 +1006,13 @@ class JSCallSiteDiscoverer:
                 continue
             body = res.body[:_MAX_BUNDLE_BYTES]
             bundles_read += 1
-            for site in mine_api_call_sites(body):
+            mined = mine_api_surface(body)
+            self._reach.append(mined)
+            # Calls the frontend MAKES, then routes the source DECLARES. The
+            # second is what a minified SPA states outright when every write it
+            # performs addresses a URL computed at runtime; both arrive as
+            # NAMED-verb endpoints and dedupe against each other below.
+            for site in (*mined.call_sites, *mined.route_declarations):
                 sites_total += 1
                 ep = self._site_to_endpoint(site, base_url)
                 if ep is None:
@@ -985,9 +1023,11 @@ class JSCallSiteDiscoverer:
                 seen.add(key)
                 endpoints.append(ep)
                 if len(endpoints) >= _MAX_ROUTES:
+                    self._record_fetch_budget(discovered, visited, queue)
                     self._finish(bundles_read, sites_total, len(endpoints))
                     return endpoints
             for chunk in StaticBundleDiscoverer._chunk_urls(body, base_url):
+                discovered.add(chunk)
                 if chunk not in visited:
                     queue.append(chunk)
 
@@ -997,8 +1037,38 @@ class JSCallSiteDiscoverer:
             sites_total,
             len(visited),
         )
+        self._record_fetch_budget(discovered, visited, queue)
         self._finish(bundles_read, sites_total, len(endpoints))
         return endpoints
+
+    @staticmethod
+    def _record_fetch_budget(discovered: set[str], visited: set[str], queue: list[str]) -> None:
+        """Publish what the fetch bound never opened.
+
+        Recorded whether or not anything was dropped, for the reason every other
+        disclosure in this family is: a run that fit inside its budget and a run
+        whose truncation nobody measured produce identical artifacts otherwise.
+
+        ``first_omitted`` is taken from the QUEUE rather than from
+        ``discovered - visited``, because the queue preserves the order the bound
+        actually applied in and a set does not. A reader checking the ordering
+        needs the URL the walk would have fetched next, not an arbitrary member
+        of the remainder.
+        """
+        register = get_active_plan_alarms()
+        if register is None:
+            return
+        unread_ordered = [url for url in queue if url not in visited]
+        remainder = sorted(discovered - visited)
+        register.record_bundle_fetch(
+            BundleFetchTruncation(
+                budget=_MAX_BUNDLES,
+                discovered=len(discovered),
+                fetched=len(visited),
+                first_omitted=(unread_ordered or remainder or [""])[0],
+                omitted_examples=(unread_ordered or remainder)[:MAX_RETAINED_PER_CLASS],
+            )
+        )
 
     def _finish(self, bundles: int, sites: int, emitted: int) -> None:
         """Publish what this run of the walk actually examined."""
@@ -1061,6 +1131,12 @@ class JSCallSiteDiscoverer:
             params=names,
             content_type=content_type,
             param_locations=locations,
+            # The miner's own declaration, carried rather than re-derived. This
+            # is the one discoverer that can READ a verb, so it is also the one
+            # that can fail to - and a call site whose config it could not see
+            # into arrives here as ``GET`` with ``UNREAD`` beside it, never as a
+            # GET it measured.
+            method_evidence=site.method_evidence,
         )
 
 
@@ -1181,6 +1257,10 @@ class GraphQLDiscoverer:
                         params=names,
                         content_type="application/json",
                         param_locations=dict.fromkeys(names, ParamLocation.JSON_BODY),
+                        # Not a default standing in for an absence: GraphQL over
+                        # HTTP carries a mutation as a POST, so the transport
+                        # names the verb as surely as a spec would.
+                        method_evidence=MethodEvidence.NAMED,
                     )
                 )
         return out
@@ -1256,6 +1336,54 @@ def _correctly_empty_reason(
     return report.correctly_empty_reason
 
 
+def _record_call_site_reach(discoverer: object, log: logging.Logger) -> None:
+    """Record how many HTTP calls a discoverer read and how many it could not.
+
+    Read off the producer's own ``reach_report()``, never re-derived from the
+    endpoints it emitted — an unresolvable call site emits nothing, so there is
+    nothing downstream to re-derive it FROM. That is the whole reason this
+    disclosure exists.
+
+    A discoverer that declares no reach is not an error and is not disclosed:
+    only the call-site miner can fail this way, because only it reads calls.
+    """
+    report_fn = getattr(discoverer, "reach_report", None)
+    if not callable(report_fn):
+        return
+    try:
+        results = report_fn()
+    except Exception as exc:  # noqa: BLE001 — observability must not abort discovery
+        log.warning("Route discoverer reach_report() raised: %s", exc)
+        return
+    if not results:
+        return
+
+    resolved = sum(len(r.call_sites) for r in results)
+    unresolvable = sum(len(r.unresolvable) for r in results)
+    naming_a_write = 0
+    by_reason: dict[str, int] = {}
+    examples: list[str] = []
+    for result in results:
+        for site in result.unresolvable:
+            if site.names_a_write:
+                naming_a_write += 1
+            by_reason[site.reason.value] = by_reason.get(site.reason.value, 0) + 1
+            if len(examples) < MAX_RETAINED_PER_CLASS:
+                verb = site.method_named or "?"
+                examples.append(f"{site.callee}({site.expression or '…'}) method={verb}")
+
+    record_unreachable_call_sites(
+        UnreachableCallSites(
+            seen=resolved + unresolvable,
+            resolved=resolved,
+            unresolvable=unresolvable,
+            naming_a_write=naming_a_write,
+            by_reason=by_reason,
+            examples=examples,
+        )
+    )
+
+
 async def run_route_discovery(
     base_url: str,
     fetch: FetchFn,
@@ -1311,6 +1439,12 @@ async def run_route_discovery(
             note=f"base={base_url}",
             not_applicable=_correctly_empty_reason(discoverer, name, len(found or []), log),
         )
+        # How much of what this discoverer SAW it could address. Separate from
+        # the contribution above, which counts what it emitted: a call site that
+        # resolved to no route emits nothing, so the endpoint count cannot
+        # distinguish a bundle we could not read from an application that makes
+        # no calls.
+        _record_call_site_reach(discoverer, log)
         if found:
             collected.extend(found)
 

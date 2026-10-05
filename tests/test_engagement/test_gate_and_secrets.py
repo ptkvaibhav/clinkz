@@ -38,6 +38,7 @@ from clinkz.models.engagement import (
     SafetyPolicy,
 )
 from clinkz.models.scope import EngagementScope, ScopeEntry, ScopeType
+from clinkz.observability.invocations import TRANSPORT_SUBPROCESS
 from clinkz.safety.action_log import ActionLog
 from tests.authorization_fixtures import TEST_AUTHORIZATION
 
@@ -349,6 +350,7 @@ def test_the_trace_writer_and_invocation_store_redact(tmp_path: Path) -> None:
             seq, inv_path = writer.record_tool_invocation(
                 tool_name="web_authenticator",
                 exec_mode="docker",
+                transport=TRANSPORT_SUBPROCESS,
                 cwd=str(tmp_path),
                 command=["curl", "-d", f"email=a@b.test&password={password}", "http://t/login"],
                 stdin=f'{{"password": "{password}"}}',

@@ -39,7 +39,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from clinkz.models.scan import Endpoint, ParamLocation
+from clinkz.models.scan import Endpoint, MethodEvidence, ParamLocation
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,102 @@ def is_server_managed(name: str) -> bool:
     return bool(_SERVER_MANAGED_RE.match((name or "").strip()))
 
 
+#: Relevance grades a surface-mapping sweep exists to reach. A route graded here
+#: is an application or API surface — something that can plausibly answer the
+#: question the sweep asks. Anything above is a static asset, a doc file, a
+#: source viewer or a crawl artifact: dropping one costs the sweep nothing, and
+#: dropping a route in this band is an ORDERING failure rather than a budget one.
+RELEVANT_PROBE_GRADES: frozenset[int] = frozenset({0, 1, 2})
+
+
+def _select_routes(
+    routes: list[str],
+    max_probes: int,
+    *,
+    sweep: str,
+    unread: frozenset[str] = frozenset(),
+) -> list[str]:
+    """The *max_probes* routes most worth probing, and disclose what was dropped.
+
+    **Relevance, not spelling.** This was ``sorted(routes)[:max_probes]``, and on
+    a Next.js target that is not a neutral tie-break: ``_`` (0x5F) sorts before
+    ``a`` (0x61), so every ``/_next/static/chunks/…`` bundle sorted ahead of every
+    ``/api/…`` route. On cal.diy 32 of 40 ``OPTIONS`` probes went to JS and CSS
+    chunks — which can never declare a write verb — and the three application
+    routes survived by six slots. The login page alone references 31 chunks, so a
+    slightly larger bundle set would have spent the whole budget on static assets
+    and returned a clean "no write verb on this target" having asked nothing that
+    could have said otherwise.
+
+    The order is a function of the route SET, never of the crawl's emission order
+    (invariant 53): the grade comes from
+    :func:`~clinkz.agents._url_shape.crawl_visit_priority` and ties break on the
+    route string, so a concurrent crawler cannot change which routes fit.
+
+    **An unread verb breaks the tie, and only the tie.** A route whose method
+    the engine could not read is precisely the route this sweep exists to ask,
+    so it sorts ahead of one whose verb is already known — but WITHIN its
+    relevance grade, never across it. Promoting unread routes over the grade
+    would undo the fix above: every ``/_next/static/chunks/…`` bundle is unread
+    by construction (a URL string literal carries no verb), so an unread-first
+    order across grades would hand the budget straight back to the bundles.
+
+    Args:
+        routes: Eligible routes, in any order.
+        max_probes: The budget.
+        sweep: Which sweep is selecting, for the disclosure record.
+        unread: Routes whose HTTP method the engine could not read. A function
+            of the endpoint SET, so it cannot make the order depend on the
+            crawl's emission sequence (invariant 53).
+
+    Returns:
+        The selected routes, best-first.
+    """
+    from clinkz.agents._url_shape import crawl_visit_priority
+    from clinkz.observability.plan_alarms import ProbeBudgetTruncation, record_probe_budget
+
+    graded = sorted(
+        (crawl_visit_priority(route), 0 if route in unread else 1, route) for route in routes
+    )
+    graded = [(grade, route) for grade, _unread_first, route in graded]
+    selected = [route for _grade, route in graded[:max_probes]]
+    dropped = graded[max_probes:]
+
+    probed_by_grade: dict[int, int] = {}
+    for grade, _route in graded[:max_probes]:
+        probed_by_grade[grade] = probed_by_grade.get(grade, 0) + 1
+    dropped_by_grade: dict[int, int] = {}
+    for grade, _route in dropped:
+        dropped_by_grade[grade] = dropped_by_grade.get(grade, 0) + 1
+
+    # A bound that decides coverage is reported in the DELIVERABLE, not just the
+    # log. Recorded on a clean run too, so "every route was asked" is a claim the
+    # report makes rather than a section nobody wrote.
+    record_probe_budget(
+        ProbeBudgetTruncation(
+            sweep=sweep,
+            budget=max_probes,
+            candidates=len(graded),
+            probed=len(selected),
+            first_omitted=dropped[0][1] if dropped else "",
+            probed_by_grade=probed_by_grade,
+            dropped_by_grade=dropped_by_grade,
+            relevant_dropped=[route for grade, route in dropped if grade in RELEVANT_PROBE_GRADES],
+        )
+    )
+    if dropped:
+        logger.info(
+            "%s sweep: %d of %d route(s) exceed the %d-probe budget and were not probed "
+            "(lowest-relevance dropped first) — first omitted: %s",
+            sweep,
+            len(dropped),
+            len(graded),
+            max_probes,
+            dropped[0][1],
+        )
+    return selected
+
+
 # ---------------------------------------------------------------------------
 # OPTIONS — the target's own statement of which methods a route accepts
 # ---------------------------------------------------------------------------
@@ -155,16 +251,19 @@ async def learn_allowed_methods(
     for ep in endpoints:
         by_route.setdefault(_route_key(ep.url), []).append(ep)
 
-    # Deterministic order: a concurrent crawl emits a different sequence each
-    # run, and which routes fit inside the probe budget must not depend on it.
-    routes = sorted(by_route)[:max_probes]
-    if len(by_route) > max_probes:
-        logger.info(
-            "OPTIONS sweep: %d of %d route(s) exceed the %d-probe budget and were not probed",
-            len(by_route) - max_probes,
-            len(by_route),
-            max_probes,
-        )
+    # Deterministic AND relevance-ordered: a concurrent crawl emits a different
+    # sequence each run, and lexicographic order is not neutral either — see
+    # :func:`_select_routes` for the 32-of-40 measurement that produced this.
+    # The routes worth asking FIRST are the ones whose verb nobody could read.
+    # Keyed on the route rather than the endpoint so a route with several
+    # endpoints counts as unread when ANY of them is - the unknown verb is a
+    # property of the route, and one twin having been read does not answer it.
+    unread = frozenset(
+        route
+        for route, eps in by_route.items()
+        if any(ep.method_evidence is MethodEvidence.UNREAD for ep in eps)
+    )
+    routes = _select_routes(list(by_route), max_probes, sweep="options_methods", unread=unread)
 
     discovered: list[Endpoint] = []
     for route in routes:
@@ -189,6 +288,10 @@ async def learn_allowed_methods(
                     params=list(template.params),
                     content_type=template.content_type,
                     param_locations=dict(template.param_locations),
+                    # The TARGET declared this verb in its own ``Allow`` header,
+                    # which is the strongest provenance the engine has: not a
+                    # frontend's intention, the server's own statement.
+                    method_evidence=MethodEvidence.NAMED,
                 )
             )
             known.add(method)
@@ -283,22 +386,19 @@ async def learn_body_schema_from_representation(
     for ep in endpoints:
         by_route.setdefault(_route_key(ep.url), []).append(ep)
 
-    needy: list[str] = sorted(
+    needy: list[str] = [
         route
         for route, eps in by_route.items()
         if any(
             (ep.method or "GET").upper() in _WRITE_METHODS and not _has_body_params(ep)
             for ep in eps
         )
-    )
-    probed = needy[:max_probes]
-    if len(needy) > max_probes:
-        logger.info(
-            "Representation sweep: %d of %d route(s) exceed the %d-probe budget",
-            len(needy) - max_probes,
-            len(needy),
-            max_probes,
-        )
+    ]
+    # Same treatment, same reason. This sweep is already filtered to write routes
+    # with no known body, so its candidate set is far smaller — but the bound is
+    # the same shape, and a bound that selects by spelling is one measurement away
+    # from the same failure.
+    probed = _select_routes(needy, max_probes, sweep="representation_schema")
 
     filled = 0
     for route in probed:

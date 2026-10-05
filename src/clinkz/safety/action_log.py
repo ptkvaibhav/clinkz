@@ -32,9 +32,10 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from clinkz.config import outputs_root as configured_outputs_root
+from clinkz.engagement.render_safety import neutralise
 from clinkz.engagement.secrets import redact, redact_structure
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,39 @@ class ActionRecord(BaseModel):
     status_code: int = 0
     body_excerpt: str = ""
     body_sha256: str = ""
+
+    @field_validator(
+        "ts",
+        "outcome",
+        "method",
+        "url",
+        "stage",
+        "category",
+        "reason",
+        "signal",
+        "body_excerpt",
+        "body_sha256",
+        mode="after",
+    )
+    @classmethod
+    def _renderable(cls, value: str) -> str:
+        """Neutralised at CONSTRUCTION, because the record has two renderers.
+
+        ``clinkz actions <id>`` prints ``url`` and ``body_excerpt`` straight to a
+        terminal, and both are strings the target chose — a URL the crawl found,
+        a body the app echoed. ``\\x1b[2K\\x1b[1A`` clears the current line and
+        moves the cursor up, so a target-chosen URL can scroll the ``REFUSED``
+        rows above it off the operator's screen: the log whose whole purpose is
+        that "no destructive request was sent" be *provable by reading it*.
+
+        At the model rather than at the ``typer.echo``, because the echo is a
+        sink and a fix there is a guard whose domain is every future sink. The
+        JSONL keeps its fidelity — a raw ESC byte is invisible in an audit
+        record, and ``\\x1b`` is the more faithful rendering of what was sent.
+
+        Every field is inline: none of them renders inside a fence.
+        """
+        return neutralise(value)
 
 
 def request_window_from_log(path: Path | str) -> tuple[str, str] | None:

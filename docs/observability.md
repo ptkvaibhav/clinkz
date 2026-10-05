@@ -12,15 +12,34 @@ For every engagement Clinkz writes under `outputs/<engagement_id>/`:
 | Path                                              | One per                  | Contents |
 | ------------------------------------------------- | ------------------------ | -------- |
 | `trace.jsonl`                                     | engagement               | append-only JSONL — one event per tool call, LLM call, agent step, message handoff, methodology phase. Summary-grade. |
-| `tool_invocations/<seq>_<tool>.json`              | subprocess               | full-fidelity record: exact argv (post-docker-wrap), env overrides, stdin, complete stdout, complete stderr, exit code, duration, parsed Pydantic output. |
+| `tool_invocations/<seq>_<tool>.json`              | tool execution           | full-fidelity record: the argv (post-docker-wrap) or the in-process request, env overrides, stdin, complete stdout, complete stderr, exit code, duration, parsed Pydantic output — and the `transport` that says which of the two it is. |
 | `step_inputs/<step_id>.json`                      | wrapped agent step       | the entire input payload (not a summary), the agent class, the step method name, and replay metadata. |
 
 Two invariants:
 
-1. **Every subprocess produces an invocation file.** `ToolBase._run_subprocess`
-   and `ToolBase._run_subprocess_stdin` are the only paths to a tool
-   subprocess; both call `TraceWriter.record_tool_invocation`. If a tool
-   wrapper bypasses these helpers it bypasses the recorder — don't.
+1. **Every tool EXECUTION produces an invocation file, on every transport.**
+   `ToolBase._run_subprocess` / `_run_subprocess_stdin` cover the subprocess
+   transport and `ToolBase._emit_inprocess_invocation` covers the in-process one;
+   all three go through `_emit_trace_records` → `TraceWriter.record_tool_invocation`.
+   If a tool wrapper bypasses them it bypasses the recorder — don't.
+
+   This invariant used to read "every *subprocess*", and the gap was not
+   theoretical: under `TOOL_EXEC_MODE=local` the HTTP tool serves every request
+   in-process through aiohttp and spawns nothing, so engagement `e4814440` — 46
+   endpoints, a proven authenticated session, a full set of methodology
+   dispatches — wrote **0 invocation records and 0 `tool_call` trace rows**. An
+   empty `tool_invocations/` is byte-identical to a run that made no calls.
+   `tests/test_observability/test_every_exec_mode_records.py` holds the property
+   over a domain computed from `config.TOOL_EXEC_MODES`: a new execution mode that
+   emits nothing fails the build rather than producing an unauditable run.
+
+1a. **A run whose executions left no record is INDETERMINATE, not clean.**
+   `observability/audit.py` counts executions against records and renders the
+   verdict into `report.run_audit` — three states, because "nothing was
+   dispatched" and "things were dispatched and not recorded" have different fixes.
+   An `indeterminate` verdict withdraws `baseline_eligible`, reconciled at the
+   build and both render seams exactly as `reconcile_with_model_stamp` is, and
+   only ever tightening.
 2. **Every wrapped agent step produces a step inputs file.** Agent steps
    that opt into `BaseAgent._record_step("name", inputs=..., replay_info=...)`
    write the input payload at entry and emit an `agent_step` trace event
@@ -35,8 +54,10 @@ Two invariants:
   "ts": "2026-05-18T17:34:21.123456+00:00",
   "tool_name": "nmap",
   "exec_mode": "docker",
+  "transport": "subprocess",
   "cwd": "/work",
   "command": ["docker", "exec", "clinkz-tools", "nmap", "-sV", "..."],
+  "request": null,
   "env_overrides": {},
   "stdin": null,
   "stdout": "Nmap scan report for ...",
@@ -56,6 +77,33 @@ Two invariants:
 active step context (set by `TraceWriter.step` / `BaseAgent._record_step`)
 — so as long as the invocation happens inside a wrapped step, you can
 trace the call back to its owner without a separate join.
+
+### `transport` — and why every reader must branch on it
+
+`transport` is `"subprocess"` or `"in_process"`, it is **required** on the writer
+with no default, and it decides how the rest of the record reads:
+
+| field | `subprocess` | `in_process` |
+| --- | --- | --- |
+| `command` | the argv that was executed | a readable descriptor (`["GET", url]`); **never executed** |
+| `request` | `null` — the argv IS the request | what the tool was handed (method, url, headers, cookies, body) |
+| `stdout` | the process's raw output (a curl dump for `http_client`) | the tool's own output envelope — what its `parse_output` consumes |
+
+The writer has no default deliberately. Every record ever written before the field
+existed came from a subprocess, so `"subprocess"` would have been correct for the
+whole corpus and wrong for the one case the field exists to mark. A *reader* of a
+stored bundle does coalesce an absent transport to `subprocess`, which is provable
+rather than hopeful: the in-process transport did not exist until the field did.
+
+Two readers branch on it, and both would otherwise fail quietly:
+
+* `clinkz tool-invoke … --replay` **refuses** an in-process record. Exec'ing a
+  descriptor either fails confusingly or finds a binary of that name.
+* `observability/corpus_replay.py` runs `_parse_curl_output` only on the
+  subprocess transport. Handing it an in-process envelope is not a loud failure —
+  it finds no header block, reports status 0 and an empty body, and the baseline
+  records that as the parse result. Invariant 83 at the replay seam: the same tool
+  writes two stdout formats, so the parse reads the producer's declaration.
 
 ## CLI
 
@@ -81,6 +129,10 @@ Re-runs the *exact* argv with the recorded `cwd` and `env_overrides`,
 then prints a unified diff of stdout/stderr against the original record.
 The harness does not re-wrap the command in a docker exec — it replays
 what was recorded, so docker-mode invocations replay through docker too.
+
+**Subprocess records only.** An `in_process` record is refused with exit 2 and a
+message naming the transport: there is no command to re-execute, and the full
+request is in the record's `request` field for inspection without `--replay`.
 
 This is how you confirm whether a flaky tool produced different output
 the second time, or whether the original output was deterministic and
@@ -417,6 +469,105 @@ become requests, so "75 refusals across 3 hosts" describes the opened slice of
 the out-of-scope surface rather than the surface. The *Crawl coverage* section
 says so explicitly rather than leaving the refusal tally to imply more than it
 knows.
+
+### Frontend call-site reach — the calls that never became endpoints
+
+Every coverage account above and below this one is about **endpoints**: how many
+were reached, how many were asked what verbs they accept, whether the verb one
+carries was read. None of them can see a call the miner recognised as HTTP and
+could not turn into a route, because such a call emits no endpoint — it has no
+`method_evidence`, lands in no bucket, and is absent from every denominator.
+
+So a bundle of nothing but `fetch(e,n)` and an application that makes no HTTP
+calls produce byte-identical artifacts. `UnreachableCallSites` is the number that
+separates them, rendered as **Frontend call-site reach** on a clean run too.
+
+Measured on the two live targets, 12 chunks each:
+
+| | resolved | unresolvable | naming a write |
+|---|---|---|---|
+| cal.com | 2 | 7 | 1 — `fetch(e.canonicalUrl) method=POST` |
+| Juice Shop | 88 | 1 | 1 — `.request(…) method=POST` (socket.io polling) |
+
+Three reasons are kept apart because they want different fixes:
+`unresolvable_url` (an address was there and did not resolve),
+`unnamed_url` (a config carried the request and named no `url` — the address
+lives on the client it is handed to) and `no_arguments`.
+
+`naming_a_write` is surfaced ahead of the total and logged at WARNING. A call
+site the engine can see declare `POST` and cannot address is directly the write
+surface the seven verb-gated Tier-1 classes never receive, which is a sharper
+statement than "some calls were unreadable".
+
+### The bundle-fetch bound — the bytes that were never opened
+
+`UnreachableCallSites` accounts for surface the engine **read** and could not
+address. It cannot see surface the engine never fetched, and that is a bound one
+layer further up: `JSCallSiteDiscoverer` queues every same-origin chunk URL a
+shell references and opens `_MAX_BUNDLES = 12` of them. cal.com serves **53**.
+
+A call site inside an unopened chunk is not unresolvable, not unprobed and not
+unranked. It is **absent**, so it lowers no count and raises no alarm — and
+absent is exactly what a target with no write surface looks like. On cal.com both
+were true simultaneously, which is why nothing surfaced it: the twelve chunks
+that were read named one write, the report said one write, and no artifact
+anywhere recorded that 41 chunks had gone unopened.
+
+`BundleFetchTruncation` records the bound, the denominator, `first_omitted` and a
+bounded sample of what went unread, and it renders inside **Frontend call-site
+reach** in *both* documents. That section previously existed only in the
+Markdown; the PDF is the document that reaches a client, so it was the wrong one
+to be missing.
+
+**The verdict is the half that matters.** A write surface of zero measured over
+23% of the input is `write_surface_indeterminate` — law 5 at the input layer, the
+same shape as invariant 101's package-identity denominator. It is rendered
+**ahead of every count in the section**, so a reader who takes a number and stops
+hits the bound first, and the clean case renders too: "every chunk this target
+references was fetched" is a claim, and an absent section is not.
+
+Deliberately **not** fixed by re-ordering the fetch. Eight candidate ordering
+signals were ranked over every chunk on two targets (`docs/analysis/register.md`
+R17): the queue order already reaches 93–95% of the read-everything ceiling, the
+one signal that scores ~100% needs the body the bound exists to avoid fetching,
+and import-graph in-degree is *actively harmful* at 38% because a high in-degree
+chunk is a shared utility, which is where routes are not.
+
+### The register is a process global, and `reset()` is computed
+
+Every accumulator on `PlanAlarmRegister` retains strings the **target** chose —
+`dropped_by_class` holds endpoint URLs, `first_omitted` and `relevant_dropped`
+hold routes, `unread_examples`, `examples` and `omitted_examples` hold more. The
+register is per-process, so a field that `reset()` forgets to clear renders one
+client's application URLs in the next client's coverage section, under a
+different engagement id.
+
+`reset()` was five hand-written `.clear()` calls against five fields with nothing
+asserting they matched — the guard-domain law one level down, where the question
+is not *does a new member get classified* but *does a new member get cleared*. It
+now computes its domain from `dataclasses.fields(self)`, with a second guard
+asserting every field is a list so `.clear()` stays sound. Recorded as R19; it
+was found only because R17 was adding the sixth field.
+
+### What the target may not write
+
+A disclosure is only worth having if the target cannot author it. Every string in
+these sections — a `first_omitted` route, an `omitted_examples` chunk URL, a
+call-site excerpt — was chosen by the application under test, and they render into
+Markdown and a PDF that a client reads.
+
+`engagement/render_safety.py` neutralises them in one pass at the report seam,
+after redaction and before either document renderer, so no renderer written later
+has to remember. Keys are untouched (a key is schema — invariant 108) and the
+JSON artifact is untouched (JSON encoding is already the guard, and those bytes
+are what the replay drivers read). Detail: invariant 113 and R18.
+
+**The domain is what keeps it worth reading.** Only calls that are HTTP by the
+*callee's own name* (`fetch`, `axios`, XHR) or by a config argument's *shape* are
+counted. `map.get(k)` matched 241 of cal.com's 304 candidate matches, and
+counting those would fire this section on every run of every target — the
+permanent false alarm that teaches an operator to skim the section where a real
+one will eventually appear.
 
 ### One href is one candidate
 

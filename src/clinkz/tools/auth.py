@@ -69,6 +69,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from enum import StrEnum
@@ -2038,6 +2039,54 @@ class WebAuthenticator(ToolBase):
     # aiohttp implementation (host mode)
     # ------------------------------------------------------------------
 
+    def _record_inprocess_hop(
+        self,
+        *,
+        method: str,
+        url: str,
+        response: HopResponse,
+        duration_ms: float,
+        body_sent: Any = None,
+        account: str = "",
+    ) -> None:
+        """Record one in-process HTTP exchange of the login flow.
+
+        Parity with the curl arm, hop for hop. That arm records three
+        invocations per login attempt — the login-page GET, the credential POST
+        and the session check — because each is a separate ``_run_subprocess``.
+        The aiohttp arm made the same three requests and recorded none, so a
+        ``TOOL_EXEC_MODE=local`` engagement's authentication claim rested on
+        ``AuthResult`` alone, with nothing on disk showing what was sent or what
+        came back.
+
+        ``stdout`` is the hop's raw HTTP text — status line, headers, body — which
+        is what the curl arm's stdout is, so a record from either transport reads
+        and diffs the same way.
+
+        ``body_sent`` is carried on the request side and goes through the same
+        redaction chokepoint as the curl argv that carried it as ``--data``. It is
+        the engagement's own credential, and that chokepoint is the only reason
+        recording it is safe on either transport.
+        """
+        raw = f"HTTP/1.1 {response.status}\n"
+        for key, value in (response.headers or {}).items():
+            raw += f"{key}: {value}\n"
+        for cookie in response.set_cookies or ():
+            raw += f"Set-Cookie: {cookie}\n"
+        raw += f"\n{response.payload or ''}"
+        request: dict[str, Any] = {"method": method, "url": url}
+        if body_sent is not None:
+            request["body"] = body_sent
+        if account:
+            request["account"] = account
+        self._emit_inprocess_invocation(
+            request=request,
+            descriptor=[method, url],
+            output=raw,
+            failed=response.status <= 0,
+            duration_ms=duration_ms,
+        )
+
     async def _execute_aiohttp(self, args: dict[str, Any]) -> str:
         """Full login flow via aiohttp with retry on failure."""
         import aiohttp
@@ -2076,16 +2125,24 @@ class WebAuthenticator(ToolBase):
                     # it lands on is where the field names and the form
                     # ``action`` come from.
                     async def _get_login_page(hop_url: str, _carries: bool) -> HopResponse:
+                        hop_started = time.monotonic()
                         async with (
                             self._governed_request("GET", hop_url),
                             session.get(hop_url, ssl=False, allow_redirects=False) as get_resp,
                         ):
-                            return HopResponse(
+                            hop = HopResponse(
                                 status=get_resp.status,
                                 headers=dict(get_resp.headers),
                                 landed_url=str(get_resp.url),
                                 payload=await get_resp.text(errors="replace"),
                             )
+                        self._record_inprocess_hop(
+                            method="GET",
+                            url=hop_url,
+                            response=hop,
+                            duration_ms=(time.monotonic() - hop_started) * 1000,
+                        )
+                        return hop
 
                     get_walk = await walk_redirects(
                         start_url=login_url,
@@ -2235,6 +2292,7 @@ class WebAuthenticator(ToolBase):
                         set_cookies: list[str] = []
 
                         async def _dispatch(hop_url: str, carries_credentials: bool) -> HopResponse:
+                            hop_started = time.monotonic()
                             # The slot is per HOP, and a hop that carries the
                             # credential names the account. A 307 re-POSTs the
                             # password; it is another attempt and it counts as
@@ -2275,13 +2333,22 @@ class WebAuthenticator(ToolBase):
                                         hop_body,
                                         control_body=login_html,
                                     )
-                                return HopResponse(
+                                hop = HopResponse(
                                     status=resp.status,
                                     headers=hop_headers,
                                     landed_url=str(resp.url),
                                     payload=hop_body,
                                     set_cookies=hop_cookies,
                                 )
+                                self._record_inprocess_hop(
+                                    method="POST" if carries_credentials else "GET",
+                                    url=hop_url,
+                                    response=hop,
+                                    duration_ms=(time.monotonic() - hop_started) * 1000,
+                                    body_sent=body if carries_credentials else None,
+                                    account=username if carries_credentials else "",
+                                )
+                                return hop
 
                         walk = await walk_redirects(
                             start_url=post_url,
@@ -2496,16 +2563,24 @@ class WebAuthenticator(ToolBase):
         ) as session:
 
             async def _dispatch(hop_url: str, _carries: bool) -> HopResponse:
+                hop_started = time.monotonic()
                 async with session.get(
                     hop_url, ssl=False, allow_redirects=False, cookies=cookies
                 ) as resp:
-                    return HopResponse(
+                    hop = HopResponse(
                         status=resp.status,
                         headers=dict(resp.headers),
                         landed_url=str(resp.url),
                         payload=await resp.text(errors="replace"),
                         set_cookies=tuple(resp.headers.getall("Set-Cookie", [])),
                     )
+                self._record_inprocess_hop(
+                    method="GET",
+                    url=hop_url,
+                    response=hop,
+                    duration_ms=(time.monotonic() - hop_started) * 1000,
+                )
+                return hop
 
             return await walk_redirects(
                 start_url=url,

@@ -68,7 +68,10 @@ CLAUDE.md keeps a one-line index of the same set.
   report, 1 when the renderer is absent or the document could not be built.
 - `python -m clinkz trace inspect <engagement_id>` — render an execution trace.
 - `python -m clinkz tool-invoke <engagement_id> <seq> [--replay]` — inspect/replay
-  one tool invocation.
+  one tool invocation. Every tool execution writes one record, on both transports;
+  `--replay` re-executes only a `transport: "subprocess"` record and **refuses an
+  `in_process` one with exit 2** — its `command` is a readable descriptor, not an
+  argv, and the full request is in the record's `request` field.
 - `python -m clinkz step-replay <engagement_id> <step_id>` — re-run one agent step.
 - `python scripts/regrade_stored_bundles.py` — **offline** re-grade of every
   stored bundle's confirmed findings against the never-sent control and the

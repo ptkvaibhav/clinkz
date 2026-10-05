@@ -868,6 +868,19 @@ detail → `docs/productization-engagement-safety.md`.**
   correlates within a bundle and replays nowhere. Cookie NAMES survive, cookie
   VALUES do not. `redact_structure` is **key-aware**, because a `Set-Cookie`
   value has no intrinsic shape and only the key identifies it.
+- **A KEY is schema; a value is data** (`secrets.py::_redact_key`, invariant
+  108). Key-awareness reaches *into* a key as well as through it: a key is
+  rewritten only when a SINGLE redaction consumed it end to end. It used to go
+  through the same substring replacement as a value, and because the default-
+  credential sweep registers `test`, `root`, `admin` and `password` before
+  offering them, `test_start` became `[REDACTED]_start` and
+  `PentestReport.model_validate` rejected the report's own dump — **no
+  report.json, no Markdown and no PDF on any run where the sweep fired.** Two
+  registrations that TILE one key are two coincidences and not credential
+  material, so they collide two fields into one and are refused as well. The
+  VALUE half of the same registration is still lossy and can still cost the
+  deliverable through an enum-constrained field: tracked, measured and weighed as
+  R14 in [`analysis/register.md`](analysis/register.md).
 - **`engagement/artifact_scan.py` is the disclosure gate**, run automatically
   after every writer has flushed: it re-reads `outputs/<id>/` off disk and
   refuses to certify the bundle on the strength of the logic that wrote it. **A
