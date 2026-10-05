@@ -34,7 +34,7 @@ from clinkz.models.methodology import (
     SQLDialect,
     SQLiMethodologyResult,
 )
-from clinkz.models.scan import Endpoint
+from clinkz.models.scan import Endpoint, MethodEvidence
 
 
 def _agent(max_plan_tasks: int = 150) -> ExploitAgent:
@@ -182,7 +182,12 @@ class TestG4CsrfOnGetForms:
 
     def _methods(self, url: str, method: str = "GET") -> list[str]:
         agent = _agent()
-        return agent._applicable_methods_for_endpoint(Endpoint(url=url, method=method, params=[]))
+        # The crawl OBSERVED this method (a form's declared verb, a mined call
+        # site), so the evidence is NAMED — which is what lets the POST case
+        # reach the write-family classes Part 1 routes on the observed verb.
+        return agent._applicable_methods_for_endpoint(
+            Endpoint(url=url, method=method, params=[], method_evidence=MethodEvidence.NAMED)
+        )
 
     def test_get_method_csrf_surface_is_queued(self) -> None:
         assert "_test_csrf" in self._methods("http://t/vulnerabilities/csrf/")

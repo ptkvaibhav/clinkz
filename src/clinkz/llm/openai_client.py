@@ -16,7 +16,9 @@ from openai.types.chat import ChatCompletion
 
 from clinkz.config import settings
 from clinkz.llm.base import (
+    STOP_REASON_TRUNCATED,
     AgentAction,
+    CallStats,
     LLMClient,
     LLMMessage,
     OutputBudget,
@@ -29,6 +31,20 @@ from clinkz.llm.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: OpenAI's spelling of "the output ceiling ended this call".
+_OPENAI_TRUNCATED_FINISH_REASON = "length"
+
+
+def _openai_stop_reason(response: ChatCompletion) -> str | None:
+    """Why OpenAI stopped, in the engine's vocabulary. ``None`` = not reported."""
+    choices = response.choices or []
+    if not choices:
+        return None
+    reason = choices[0].finish_reason
+    if not reason:
+        return None
+    return STOP_REASON_TRUNCATED if reason == _OPENAI_TRUNCATED_FINISH_REASON else reason
 
 
 def _translate_openai_error(exc: Exception) -> Exception:
@@ -100,14 +116,42 @@ class OpenAIClient(LLMClient):
         """Wrap tool schemas in OpenAI's function-calling envelope."""
         return [{"type": "function", "function": t} for t in tools]
 
-    def _track_usage(self, response: ChatCompletion) -> None:
-        if response.usage:
-            self._total_tokens += response.usage.total_tokens
+    def _track_usage(self, response: ChatCompletion, *, model: str) -> CallStats:
+        """Accumulate token counts and PUBLISH them on ``last_call_stats``.
+
+        See ``GeminiClient._track_usage``: the field is the base class's
+        contract for "what the provider reported about the call that just
+        returned", and a client that never assigns it is invisible to every
+        cost and cache measurement the run makes.
+
+        ``model`` is passed rather than read off ``self`` because this client
+        serves reasoning and text generation from two different configured
+        models, and spend attributed to the wrong one is spend the cap cannot
+        enforce.
+        """
+        stats = CallStats(provider="openai", model=model)
+        usage = response.usage
+        if usage is not None:
+            stats.usage_reported = True
+            stats.input_tokens = usage.prompt_tokens or 0
+            stats.output_tokens = usage.completion_tokens or 0
+            cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+            if cached:
+                # OpenAI reports prompt_tokens INCLUSIVE of the cached prefix,
+                # so the cached part is moved out of input_tokens to match the
+                # Anthropic convention CallStats documents: input_tokens is the
+                # uncached remainder and billed_prompt_tokens is the sum.
+                stats.cache_read_input_tokens = min(cached, stats.input_tokens)
+                stats.input_tokens -= stats.cache_read_input_tokens
+            self._total_tokens += usage.total_tokens
             logger.debug(
                 "Token usage — request: %d, total session: %d",
-                response.usage.total_tokens,
+                usage.total_tokens,
                 self._total_tokens,
             )
+        stats.stop_reason = _openai_stop_reason(response)
+        self.last_call_stats = stats
+        return stats
 
     # ------------------------------------------------------------------
     # Core API call with a hard per-call timeout
@@ -156,7 +200,7 @@ class OpenAIClient(LLMClient):
             response: ChatCompletion = await self._create(**kwargs)
         except Exception as exc:
             raise _translate_openai_error(exc) from exc
-        self._track_usage(response)
+        self._track_usage(response, model=self._agent_model)
 
         choice = response.choices[0]
         message = choice.message
@@ -217,7 +261,7 @@ class OpenAIClient(LLMClient):
             )
         except Exception as exc:
             raise _translate_openai_error(exc) from exc
-        self._track_usage(response)
+        self._track_usage(response, model=self._agent_model)
         return response.choices[0].message.content or ""
 
     # ------------------------------------------------------------------

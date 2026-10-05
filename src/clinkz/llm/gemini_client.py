@@ -59,7 +59,9 @@ from google.genai import types
 
 from clinkz.config import GEMINI_THINKING_LEVELS, settings
 from clinkz.llm.base import (
+    STOP_REASON_TRUNCATED,
     AgentAction,
+    CallStats,
     LLMClient,
     LLMMessage,
     LLMTimeoutError,
@@ -73,6 +75,33 @@ from clinkz.llm.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Gemini's finish reasons, mapped into the engine's vocabulary. Only the
+#: truncation case is translated, because it is the only one a consumer
+#: branches on; everything else passes through lowercased so the trace still
+#: records what the provider said.
+_GEMINI_TRUNCATED_FINISH_REASON = "MAX_TOKENS"
+
+
+def _gemini_stop_reason(response: Any) -> str | None:
+    """Why Gemini stopped generating, in the engine's vocabulary.
+
+    Returns ``None`` when the response declares nothing — "not reported", which
+    is what the field's one consumer already distinguishes from a real reason.
+    """
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return None
+    reason = getattr(candidates[0], "finish_reason", None)
+    if reason is None:
+        return None
+    # Enum or string, depending on SDK version.
+    name = getattr(reason, "name", None) or str(reason)
+    name = name.rsplit(".", 1)[-1]
+    if name == _GEMINI_TRUNCATED_FINISH_REASON:
+        return STOP_REASON_TRUNCATED
+    return name.lower()
+
 
 _RATE_LIMIT_PERIOD: float = 60.0
 _REQUEST_TIMEOUT: float = 120.0  # Hard timeout for every Gemini API call
@@ -437,22 +466,46 @@ class GeminiClient(LLMClient):
         # Defensive — should be unreachable because the loop always raises.
         raise RateLimitError(f"Gemini exhausted retries: {last_exc}")
 
-    def _track_usage(self, response: Any) -> None:
-        """Accumulate token counts from a Gemini response and log them."""
+    def _track_usage(self, response: Any) -> CallStats:
+        """Accumulate token counts from a Gemini response and PUBLISH them.
+
+        Publishing on ``last_call_stats`` is what makes a Gemini-served call
+        visible to the layer above. Before this, only the Anthropic client
+        assigned the field, ``ResilientLLMClient._collect_call_stats`` read
+        ``None`` for every other provider and returned early, and a call served
+        by the fallback tail contributed **zero** to the run totals, to the
+        trace's token field and to the spend ledger — in the cheap direction.
+        Trace ``01b8e683`` is one of them: a ``gemini-2.5-flash`` call carrying
+        ``"tokens": null``.
+
+        An absent ``usage_metadata`` leaves ``usage_reported`` False rather than
+        returning early with nothing published: "this call reported no numbers"
+        and "no client served this call" are different facts and the seam above
+        can only tell them apart if the second one is the only one that is
+        silent.
+        """
+        stats = CallStats(provider="gemini", model=self._model_name)
         meta = getattr(response, "usage_metadata", None)
-        if meta is None:
-            return
-        inp = getattr(meta, "prompt_token_count", 0) or 0
-        out = getattr(meta, "candidates_token_count", 0) or 0
-        self._total_input_tokens += inp
-        self._total_output_tokens += out
+        if meta is not None:
+            stats.usage_reported = True
+            stats.input_tokens = getattr(meta, "prompt_token_count", 0) or 0
+            stats.output_tokens = getattr(meta, "candidates_token_count", 0) or 0
+            # Gemini reports cached prompt tokens separately and does not
+            # subtract them from prompt_token_count, so recording it in
+            # cache_read would double-count the prefix in billed_prompt_tokens.
+            # Left at zero — a genuine "not reported on this path".
+        stats.stop_reason = _gemini_stop_reason(response)
+        self._total_input_tokens += stats.input_tokens
+        self._total_output_tokens += stats.output_tokens
+        self.last_call_stats = stats
         logger.debug(
             "Token usage — input: %d, output: %d | session total in/out: %d/%d",
-            inp,
-            out,
+            stats.input_tokens,
+            stats.output_tokens,
             self._total_input_tokens,
             self._total_output_tokens,
         )
+        return stats
 
     # ------------------------------------------------------------------
     # LLMClient interface

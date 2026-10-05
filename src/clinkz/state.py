@@ -156,6 +156,14 @@ _MIGRATIONS = [
     "ALTER TABLE endpoints ADD COLUMN has_form INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE endpoints ADD COLUMN has_dom_source INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE endpoints ADD COLUMN content_type TEXT NOT NULL DEFAULT ''",
+    # How the endpoint's verb came to be known (MethodEvidence). The default is
+    # the PESSIMISTIC 'unread', so a row written before this column existed reads
+    # as "nobody checked" rather than as a measured GET — the same absence-is-
+    # not-a-measurement rule the field was introduced under. Persisting it keeps
+    # a store round-trip faithful to the in-memory Endpoint: without it a reload
+    # defaults every verb to UNREAD, which the observed-write routing then
+    # excludes from every write-family class.
+    "ALTER TABLE endpoints ADD COLUMN method_evidence TEXT NOT NULL DEFAULT 'unread'",
 ]
 
 
@@ -804,14 +812,18 @@ class StateStore:
         has_form = 1 if feat.get("has_form") else 0
         has_dom = 1 if feat.get("has_dom_source") else 0
         content_type = str(feat.get("content_type") or "")
+        # The verb's provenance, carried so a store reload matches the in-memory
+        # Endpoint. Defaults to the pessimistic 'unread' when the producer does
+        # not declare it, never to a measured value.
+        method_evidence = str(feat.get("method_evidence") or "unread")
         try:
             await self._conn.execute(
                 "INSERT INTO endpoints "
                 "(id, engagement_id, url, method, parameters, status, "
                 "discovered_by, service_type, port, notes, created_at, updated_at, "
                 "param_locations, session_setters, sets_cookies, has_form, "
-                "has_dom_source, content_type) "
-                "VALUES (?, ?, ?, ?, ?, 'discovered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "has_dom_source, content_type, method_evidence) "
+                "VALUES (?, ?, ?, ?, ?, 'discovered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     eid,
                     engagement_id,
@@ -830,6 +842,7 @@ class StateStore:
                     has_form,
                     has_dom,
                     content_type,
+                    method_evidence,
                 ),
             )
             await self._conn.commit()
@@ -845,7 +858,12 @@ class StateStore:
                 "session_setters=CASE WHEN ?='[]' THEN session_setters ELSE ? END, "
                 "sets_cookies=CASE WHEN ?='[]' THEN sets_cookies ELSE ? END, "
                 "has_form=MAX(has_form, ?), has_dom_source=MAX(has_dom_source, ?), "
-                "content_type=CASE WHEN ?='' THEN content_type ELSE ? END "
+                "content_type=CASE WHEN ?='' THEN content_type ELSE ? END, "
+                # A later pass that could not read the verb ('unread') must not
+                # erase a NAMED/PLATFORM_DEFAULT one an earlier pass established —
+                # the same OR-merge the observed features use, keyed on 'unread'
+                # being the weakest value.
+                "method_evidence=CASE WHEN ?='unread' THEN method_evidence ELSE ? END "
                 "WHERE engagement_id=? AND url=? AND method=?",
                 (
                     params_json,
@@ -861,6 +879,8 @@ class StateStore:
                     has_dom,
                     content_type,
                     content_type,
+                    method_evidence,
+                    method_evidence,
                     engagement_id,
                     url,
                     method,
@@ -923,6 +943,9 @@ class StateStore:
             d["has_form"] = bool(d.get("has_form"))
             d["has_dom_source"] = bool(d.get("has_dom_source"))
             d["content_type"] = d.get("content_type") or ""
+            # 'unread' for a row written before the column existed — the honest
+            # default, matching the Endpoint model's own pessimistic default.
+            d["method_evidence"] = d.get("method_evidence") or "unread"
             results.append(d)
         return results
 

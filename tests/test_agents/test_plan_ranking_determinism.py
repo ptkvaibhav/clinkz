@@ -43,7 +43,7 @@ from clinkz.agents.exploit import (
     _path_names_class_surface,
 )
 from clinkz.models.finding import ExploitTask
-from clinkz.models.scan import Endpoint
+from clinkz.models.scan import Endpoint, MethodEvidence
 
 
 def _agent(max_plan_tasks: int = 150) -> ExploitAgent:
@@ -86,19 +86,37 @@ def _dvwa_shaped_endpoints() -> list[Endpoint]:
             method="GET",
             session_setters=["http://t/app/records/session-input.php"],
         ),
-        Endpoint(url="http://t/app/exec/", method="POST", params=["ip", "Submit"], has_form=True),
+        # Crawled forms carry their declared verb, so the evidence is NAMED —
+        # which is what admits them to the write-family classes Part 1 routes on
+        # the observed verb (the first gate checks the verb, not ``has_form``).
         Endpoint(
-            url="http://t/app/upload/", method="POST", params=["file", "Upload"], has_form=True
+            url="http://t/app/exec/",
+            method="POST",
+            params=["ip", "Submit"],
+            has_form=True,
+            method_evidence=MethodEvidence.NAMED,
+        ),
+        Endpoint(
+            url="http://t/app/upload/",
+            method="POST",
+            params=["file", "Upload"],
+            has_form=True,
+            method_evidence=MethodEvidence.NAMED,
         ),
         Endpoint(
             url="http://t/app/guestbook/",
             method="POST",
             params=["txtName", "mtxMessage", "btnSign"],
             has_form=True,
+            method_evidence=MethodEvidence.NAMED,
         ),
         Endpoint(url="http://t/app/include/?page=home.php", method="GET", params=["page"]),
         Endpoint(
-            url="http://t/login.php", method="POST", params=["username", "password"], has_form=True
+            url="http://t/login.php",
+            method="POST",
+            params=["username", "password"],
+            has_form=True,
+            method_evidence=MethodEvidence.NAMED,
         ),
     ]
     return eps

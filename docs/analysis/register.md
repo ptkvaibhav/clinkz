@@ -80,6 +80,14 @@ that cannot be graded as correctly-empty.
 
 ## R3 · `ResilientLLMClient.last_call_stats` is `None` for any non-Anthropic call
 
+**RESOLVED** — `feat(llm): a run states what each call consumed and ran under`.
+`GeminiClient._track_usage` and `OpenAIClient._track_usage` now build and publish
+a `CallStats`; `reason`/`research` collect it too; `usage_reported` carries the
+"provider reported nothing" case so the cut-off signal (invariant 103) is no
+longer absent for a fallback-served call, and the forbidden `getattr(..., None)`
+over a declaring model is gone. The finding record is kept below; the domain is
+now guarded in both directions by `test_usage_absence_is_indeterminate.py`.
+
 **Verified, and the reported symptom is narrower than "permanently None".**
 
 * `llm/base.py:475` declares `last_call_stats: CallStats | None = None` as the
@@ -1214,3 +1222,141 @@ as loud as a truncation that dropped a candidate; that is the same rule as every
 bound in `plan_alarms.py`.
 
 **Related:** invariant 55, R18 (the same seam, the opposite direction), R14.
+
+---
+
+## R22 · The report stage makes zero LLM calls; the v2 spec still lists an LLM remediation pass
+
+**Verified — a documentation-reality gap, not a defect.** `CLINKZ_V2_IMPLEMENTATION.md`
+lists an `LLM-driven narrative + remediation pass [PENDING — W3]` (line 169) and
+the report pipeline as `assemble → narrative → remediation → quality review`
+(line 324). What runs makes **zero LLM calls**: `report.py:598-606` attaches a
+finding's remediation from `for_finding(...).remediation` — the per-class
+`VulnClass.remediation` in the registry — and CVSS/severity/narrative are
+computed deterministically. `report_llm_provider` exists for interface symmetry
+and nothing reads it at runtime (CLAUDE.md already documents "Report — zero LLM
+calls").
+
+**Why the deterministic form is the right one, not a shortfall.** Remediation is
+advice per vulnerability CLASS, not per finding — it does not vary with the
+target — so it belongs once in the registry where it stays reviewable, rather
+than being regenerated (and drifting) per finding by a model. An LLM remediation
+pass placed after the deterministic gates could only rephrase or contradict them,
+and the invariants forbid a model overruling a deterministic verdict on the
+emit/suppress path. So the gap is that the spec still frames the LLM pass as
+*pending* rather than *superseded*: the third documentation-reality gap of this
+round, beside the ReAct-loop architecture claim (item 1, corrected) and the
+unprimed methodology checkpoints (item 2, `docs/analysis/cost-cap-and-system-prefix.md`).
+
+**Disclosure, not a build.** The fix is a one-line spec correction — mark W3
+superseded by the registry-remediation design — not wiring an LLM call into a
+stage whose zero-LLM property is a deliberate speed and honesty guarantee.
+
+*(Carried from #144's register as R10; renumbered to R22 because main's register
+reached R21 independently — same item, non-colliding number.)*
+
+---
+
+## R23 · `spend.py` declared `_TOKENS_PER_RATE_UNIT` twice — RESOLVED in this push
+
+**Verified, and fixed rather than deferred.** `llm/spend.py:65` and `:68` each
+declared `_TOKENS_PER_RATE_UNIT = 1_000_000` under an identical comment. The
+second binding shadowed the first with the same value, so the behaviour was
+correct and the duplication was invisible to every test — a rate card is quoted
+per million either way.
+
+Registered anyway, because the failure mode it was one edit away from is the one
+this codebase keeps re-learning: a later change to the rate unit made at the
+first site is silently reverted by the second, and the symptom is a cost figure
+that is wrong by a factor nobody can find in a diff. `ModelPrice.cost` reads one
+name; there is one thing to read. Deleted the second.
+
+---
+
+## R24 · A `Finding` carries no vuln-class field, so per-class grading comes off the ledger
+
+**Verified, and it binds the effort grid.** A `Finding` carries `title`,
+`description`, `severity`, `target` and evidence — fourteen fields, and **none of
+them names the class that emitted it**. Nothing in `report_<id>.json` says "this row came from
+`_test_sqli`". R9's method note recorded this while measuring the business-logic
+classes; it is promoted to its own entry because the effort grid needs per-class
+numbers across six runs, and a naive exact-key scan returns a confident `NONE`
+for every class in the engine.
+
+**How to grade per class, and how not to.** The component ledger is the one
+population keyed by class: components are `methodology:_test_x`, not `_test_x`,
+and their `items` count **dispatches, not findings** (invariant 78). So the
+ledger answers *what ran*, and it answers it honestly. For *what emitted*, match
+a class's registry `title_tokens` against finding titles — the same indirection
+the report itself uses — and never infer a class from an endpoint or a severity.
+
+**Why not simply add the field.** It is a one-line model change and a schema
+change to every stored bundle, which is exactly the kind of edit that should not
+be made in the middle of a measurement whose whole purpose is comparing runs
+against a recorded floor. The grid reads the ledger; whether the field is worth
+adding is a question for the round after it, with the grid's own experience of
+grading as the evidence.
+
+---
+
+## R13 · A batch driver wrote its result row after a step that could raise
+
+**Verified, and the cost was paid before it was found.** The effort-grid driver
+built each cell's log filename from the cell's own coordinates, and Juice Shop's
+level is `n/a` — so the name carried a path separator, `write_text` raised, and
+the exception propagated out of the per-cell function. That write sits **after**
+`subprocess.run` returns, so three Juice Shop engagements ran to completion, cost
+real money and ~1h52m of wall clock, and recorded **nothing**: the driver logged
+`CELL FAILED` and moved on.
+
+The rows were recoverable — the bundles were on disk, and each run's effort level
+was confirmed from its own `trace.jsonl` `effort` stamps (113 / 85 / 84 calls)
+rather than inferred from the clock, so the recovered labels rest on the run's own
+evidence. Nothing was re-run.
+
+**The rule, which is the engine's own and was not applied to the harness.** A
+batch is unattended (invariant 74), so the expensive, irreversible step —
+the engagement — must be *recorded* before any step that can fail. The ordering
+was: run, then name a file, then read spend, then append. Two of those three
+post-steps can raise, and both sit between the spend and the record. Ordering is
+the fix; `try/except` around the log write is not, because it would still leave
+the record downstream of something that can throw.
+
+Fixed by sanitising the tag rather than special-casing `n/a` — a driver whose
+correctness depends on no future target having a `/` in a coordinate is the same
+defect waiting. The recovered rows were written to a separate file rather than
+appended to the live results, because the driver was still running and
+interleaving two writers on one file is a second way to lose a row.
+
+
+---
+
+## R25 · The state store dropped `method_evidence`, and observed-write routing made it bite — RESOLVED
+
+**Verified and fixed in this round.** `_is_observed_write_surface` (Part 1) routes
+the seven write-family classes on `method_evidence`, not on the method string: a
+verb the engine could not read (`UNREAD`) is no evidence the route writes, so it
+is excluded. But `state.py` never persisted `method_evidence` — no column in the
+`endpoints` table, no handling in `add_endpoint`/`get_endpoints` — a gap open since
+#143 introduced the field. Any store reload therefore rehydrated every endpoint at
+the model's pessimistic default, `UNREAD`, and Part 1 would then exclude ALL of
+them from write-family, whatever their real verb.
+
+**Why a normal run was never wrong.** The exploit phase does not read endpoints
+from the store; it takes the in-memory `ScanResult` (`_collect_endpoints` →
+`_parse_scan_result` → `ScanResult(**raw)`), which carries `method_evidence`
+intact. The five store-reading branches in the auth path were dead code, removed
+earlier. So the gap was latent — but it is exactly the **seam-vs-pipeline** shape
+the dev contract names: a consumer reading a producer's default, invisible while
+the happy path routes around it, and one refactor (an offline driver, a resumed
+run's provenance, a future store-backed planner) away from silently excluding
+every write surface.
+
+**The fix.** A migration column (`method_evidence TEXT NOT NULL DEFAULT 'unread'`
+— the pessimistic default, so an old row reads as "nobody checked", never a
+measured GET), `add_endpoint` persisting it with an OR-merge that never downgrades
+a read verb to `unread`, `get_endpoints` deserialising it, and the scan-phase
+producer passing it in `features`. Pinned by a round-trip test that reloads a
+`NAMED` POST from the store and asserts `_is_observed_write_surface` admits it
+while a verb-less row stays excluded — the reload tied directly to the routing it
+feeds, not asserted at the store seam alone.

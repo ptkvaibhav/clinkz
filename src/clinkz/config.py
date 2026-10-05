@@ -12,11 +12,17 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 load_dotenv()
 
 LLMProvider = Literal["openai", "anthropic", "gemini", "ollama"]
+
+#: ``output_config.effort`` levels the Messages API accepts. A closed
+#: vocabulary, so a level that is not one of these is a startup refusal rather
+#: than a 400 on the first call of an unattended run. The empty string is not a
+#: member: it means "send no effort at all", which is a different request.
+LLM_EFFORT_LEVELS: frozenset[str] = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 #: The exact Gemini model every Gemini-backed call runs on. A pinned string,
 #: never a floating alias: the alias moves under a fixed configuration and
@@ -160,6 +166,25 @@ class Settings(BaseModel):
             raise ValueError(f"llm_provider_priority has a repeated provider: {value}")
         return value
 
+    @field_validator("llm_effort", "llm_effort_emit")
+    @classmethod
+    def _effort_is_in_the_closed_vocabulary(cls, value: str, info: ValidationInfo) -> str:
+        """Refuse an effort level the API would reject at call time.
+
+        A typo here would otherwise surface as a 400 on the first call of a
+        long unattended run, which is the most expensive place to discover it.
+        Both effort knobs share this rule because they share the API's one closed
+        vocabulary: ``llm_effort`` is what PLANNING and SUPPRESS run under and
+        ``llm_effort_emit`` is the EMIT carve-out, but a typo in either is the
+        same 400.
+        """
+        if value and value not in LLM_EFFORT_LEVELS:
+            raise ValueError(
+                f"{info.field_name}={value!r} is not one of {sorted(LLM_EFFORT_LEVELS)} "
+                "(or '' to omit the parameter and leave the provider default in force)"
+            )
+        return value
+
     @field_validator("gemini_thinking_level")
     @classmethod
     def _thinking_level_is_valid_on_3x(cls, value: str) -> str:
@@ -276,6 +301,48 @@ class Settings(BaseModel):
     # Per-provider retry budget (used by each LLMClient's backoff loop).
     # With fallback chains we keep each provider's budget low so we move to
     # the next provider quickly instead of burning minutes on a single one.
+    #: How much thinking the model spends per call, on the models that take it —
+    #: for every call EXCEPT the EMIT checkpoints, which read ``llm_effort_emit``.
+    #:
+    #: It is a cost lever, and on this engine it is the ONLY large one: 94% of
+    #: measured spend across 63 recorded engagements is OUTPUT tokens, and on an
+    #: adaptive-thinking model the thinking is billed as output. Input caching
+    #: addresses the other 6%.
+    #:
+    #: Defaulted to ``"low"`` by measurement, not by preference. The effort grid
+    #: (``docs/analysis/effort-grid.md``, 15 live engagements) crossed effort with
+    #: the DVWA ladder and Juice Shop and found output cost climbing 1.6×–2.4×
+    #: from low to high while **findings stayed flat** — the deterministic oracle
+    #: gates emission, so a better-reasoned checkpoint changes what the model SAYS
+    #: and not what the code CONFIRMS. So low is the cheap direction with no
+    #: measured recall cost on the PLANNING and SUPPRESS paths this knob now
+    #: governs. ``""`` still means "omit the parameter, inherit the provider
+    #: default"; the other values are the API's closed vocabulary, refused at
+    #: startup rather than at the first call.
+    llm_effort: str = Field(
+        default="low",
+        description=(
+            "output_config.effort for PLANNING/SUPPRESS calls: "
+            "'' (provider default) | low|medium|high|xhigh|max"
+        ),
+    )
+
+    #: The EMIT carve-out, named explicitly because lowering the finding-shaping
+    #: path is the one thing the grid could NOT measure: ``LLM_EFFORT`` was global,
+    #: so every call site moved together and the emit-vs-planning split was never
+    #: isolated (effort-grid.md §4). EMIT shapes a finding's verdict, evidence and
+    #: severity — the reasoning that reaches the client deliverable — so until an
+    #: emit-isolated grid exists it is left at the provider default (``""``) rather
+    #: than dropped to ``low`` with everything else. A separate knob is also what
+    #: lets that future grid point the lever at EMIT alone.
+    llm_effort_emit: str = Field(
+        default="",
+        description=(
+            "output_config.effort for EMIT calls: '' (provider default, the "
+            "conservative untested-path value) | low|medium|high|xhigh|max"
+        ),
+    )
+
     llm_max_retries: int = Field(default=3, description="Max retries per provider")
     llm_retry_base_delay: float = Field(
         default=2.0, description="Initial exponential backoff delay (seconds)"
@@ -525,6 +592,11 @@ class Settings(BaseModel):
             llm_prompt_cache_enabled=os.getenv("LLM_PROMPT_CACHE_ENABLED", "false").lower()
             in ("1", "true", "yes"),
             llm_prompt_cache_ttl=os.getenv("LLM_PROMPT_CACHE_TTL", "5m"),
+            # Default "low" by measurement (see the field), so an unattended run
+            # that declares nothing gets the grid-justified cheap path. EMIT is
+            # the carve-out and inherits the provider default unless declared.
+            llm_effort=os.getenv("LLM_EFFORT", "low"),
+            llm_effort_emit=os.getenv("LLM_EFFORT_EMIT", ""),
             llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
             llm_retry_base_delay=float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0")),
             llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),

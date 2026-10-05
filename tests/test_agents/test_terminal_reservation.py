@@ -334,7 +334,7 @@ async def test_an_early_deadline_still_costs_the_terminal_classes(
 
     The two bounds are separate and stay separate. The reservation decides
     whether a terminal class is in the PLAN; the cooperative deadline decides
-    whether the dispatcher reaches it. The rotation yields a terminal class only
+    whether the dispatcher reaches it. The dispatcher yields a terminal class only
     once no transient task is left, so a stop before that point costs it whatever
     the plan holds — which is the correct trade, and it is why the reservation
     does not weaken the exclusion the breadth test asserts.
@@ -402,4 +402,117 @@ def test_the_category_order_lists_the_terminal_classes_in_declaration_order() ->
     tail = _DETERMINISTIC_CATEGORY_ORDER[-len(TERMINAL_DISPATCH_CLASSES) :]
     assert list(tail) == sorted(TERMINAL_DISPATCH_CLASSES, key=terminal_dispatch_rank), (
         f"the terminal classes must be the TAIL of the category order — got {tail}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The reservation, dispatched: terminals drain, they do not rotate
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_ready(agent: ExploitAgent) -> None:
+    """The dispatcher's own state, with no deadline and no soft cap in play."""
+    agent._tests_run = 0
+    agent._stopped_early = False
+    agent._stop_margin = 0.0
+    agent._deadline_ts = None
+    agent._category_max_findings = 5
+    agent._category_time_budget = 90.0
+
+
+async def _run_plan(agent: ExploitAgent, plan, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Dispatch *plan* against a no-op executor and return the dispatch order."""
+    dispatched: list[str] = []
+
+    async def _execute(task, cache):  # noqa: ANN001, ANN202 — test double
+        dispatched.append(task.test_method)
+        return []
+
+    monkeypatch.setattr(agent, "_execute_task", _execute)
+    monkeypatch.setattr(agent, "_trace_dispatch_ordinal", lambda task, ordinal: None)
+    await agent._step_execute_exploits(plan, None)
+    return dispatched
+
+
+@pytest.mark.asyncio
+async def test_the_reserved_terminal_slot_still_lands_when_the_class_drains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A floor in the PLAN is worth nothing if the dispatcher cannot reach it.
+
+    The reservation and the drain are separate mechanisms that meet at the tail
+    of a run, and the reservation's whole value is the task it puts there. So the
+    plan is built through the real reservation, dispatched through the real
+    dispatcher, and the assertion is that the reserved task actually went out —
+    in declaration order, after every transient class had finished.
+    """
+    endpoints = _terminal_surface(30)
+    agent = _agent(max_plan_tasks=12)
+    agent._resolve_terminal_class_reservation(_scan(endpoints))
+    assert agent._terminal_reserved == len(TERMINAL_DISPATCH_CLASSES)
+    plan = agent._merge_terminal_class_tasks(agent._build_deterministic_plan(endpoints, [], []))
+    reserved_tasks = {
+        (t.test_method, t.endpoint_url)
+        for t in plan.tasks
+        if t.test_method in TERMINAL_DISPATCH_CLASSES
+    }
+    assert len(reserved_tasks) == len(TERMINAL_DISPATCH_CLASSES), (
+        "this test needs the reservation to have SPENT — without a spend there is no "
+        "reserved task to follow through the dispatcher"
+    )
+
+    _dispatch_ready(agent)
+    dispatched = await _run_plan(agent, plan, monkeypatch)
+
+    assert not agent._stopped_early
+    assert len(dispatched) == len(plan.tasks), "the drain dropped a planned task"
+    declared = sorted(TERMINAL_DISPATCH_CLASSES, key=terminal_dispatch_rank)
+    assert dispatched[-len(declared) :] == declared, (
+        f"the reserved terminal tasks must be the tail, in declaration order: {dispatched}"
+    )
+    assert not set(dispatched[: -len(declared)]) & set(TERMINAL_DISPATCH_CLASSES)
+
+
+@pytest.mark.asyncio
+async def test_a_default_cap_plan_drains_each_terminal_class_before_the_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary full-cap run, which is where the rotation actually broke.
+
+    This is not an exotic plan. At the default cap this surface gives EIGHT tasks
+    to each terminal class, and a rotation over that tail dispatches
+    write-crossing, pollution, write-crossing — and the guard stops the run on
+    the third, correctly, over an order the dispatcher should never have
+    proposed. Any JSON-write surface reaches this shape.
+
+    The assertion is the drain itself, measured from the plan rather than from
+    the sequence: at the moment a terminal class is first drawn, every terminal
+    class declared before it has already dispatched every task the plan gave it.
+    """
+    endpoints = _terminal_surface(30)
+    agent = _agent(max_plan_tasks=150)
+    agent._resolve_terminal_class_reservation(_scan(endpoints))
+    plan = agent._merge_terminal_class_tasks(agent._build_deterministic_plan(endpoints, [], []))
+
+    planned: dict[str, int] = {}
+    for task in plan.tasks:
+        planned[task.test_method] = planned.get(task.test_method, 0) + 1
+    assert min(planned[m] for m in TERMINAL_DISPATCH_CLASSES) >= 2, (
+        "this test is about a terminal class holding more than one task — with one "
+        f"each a rotation and a drain are the same sequence: {planned}"
+    )
+
+    _dispatch_ready(agent)
+    dispatched = await _run_plan(agent, plan, monkeypatch)
+
+    assert len(dispatched) == len(plan.tasks)
+    declared = sorted(TERMINAL_DISPATCH_CLASSES, key=terminal_dispatch_rank)
+    tail = dispatched[-sum(planned[m] for m in declared) :]
+    assert not set(dispatched[: len(dispatched) - len(tail)]) & set(declared), (
+        f"a terminal class ran while a transient one still had work: {dispatched}"
+    )
+    expected_tail = [m for m in declared for _ in range(planned[m])]
+    assert tail == expected_tail, (
+        "the terminal tail interleaved instead of draining — each class must empty "
+        f"its queue before the next is drawn: {tail}"
     )

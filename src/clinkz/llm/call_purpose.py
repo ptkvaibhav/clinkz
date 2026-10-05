@@ -250,12 +250,6 @@ DECLARED_CALL_SITES: dict[str, tuple[LLMCallPurpose, str]] = {
         "it cannot send a credential anywhere the gate refuses and it cannot claim a "
         "session.",
     ),
-    "base._react_loop": (
-        LLMCallPurpose.PLANNING,
-        "The BaseAgent ReAct step. No v2 phase agent runs free-form ReAct; the v2 "
-        "agents are deterministic steps with named LLM checkpoints, each classified "
-        "above.",
-    ),
 }
 
 
@@ -302,10 +296,50 @@ def current_call_site() -> str:
     return _CURRENT_SITE.get()
 
 
+def effort_for_purpose(purpose: LLMCallPurpose, *, default: str, emit: str) -> str:
+    """The ``output_config.effort`` a call of *purpose* runs under.
+
+    Effort is the one large cost lever on this engine (output tokens are 94% of
+    spend and thinking is billed as output), and the effort grid
+    (``docs/analysis/effort-grid.md``) found findings FLAT across levels while
+    cost climbed 1.6×-2.4× — because the deterministic oracle gates emission, so
+    a better-reasoned checkpoint changes what the model SAYS and not what the
+    code CONFIRMS. So the cheap direction is free on the paths whose answer the
+    deliverable can disclose: PLANNING (coverage, stamped) and SUPPRESS (a
+    refused suppression leaves the finding standing). Those take *default*.
+
+    EMIT is the exception and is named here rather than folded into the default,
+    because the grid could not measure lowering it: ``LLM_EFFORT`` was global, so
+    every call site moved together and the emit-vs-planning split was never
+    isolated (effort-grid.md §4). EMIT shapes a finding's verdict, evidence and
+    severity — the reasoning that reaches the client — so it takes its own
+    *emit* level, left at the provider default until an emit-isolated grid says
+    otherwise. The split is deliberately PLANNING/SUPPRESS before EMIT, which is
+    the grid's own recommended ordering.
+
+    A pure function of its three arguments: the caller supplies the two
+    configured levels (``settings.llm_effort`` / ``settings.llm_effort_emit``) so
+    this module stays independent of :mod:`clinkz.config`, and the same resolved
+    value is used both to BUILD the request and to STAMP the call, so the
+    disclosed level is the one that was sent.
+
+    Args:
+        purpose: What the call's answer becomes (from :func:`current_call_purpose`).
+        default: The level for PLANNING and SUPPRESS.
+        emit: The level for EMIT.
+
+    Returns:
+        The effort string to carry, or ``""`` to omit the parameter and inherit
+        the provider default.
+    """
+    return emit if purpose is LLMCallPurpose.EMIT else default
+
+
 __all__ = [
     "DECLARED_CALL_SITES",
     "LLMCallPurpose",
     "current_call_purpose",
     "current_call_site",
+    "effort_for_purpose",
     "llm_call_purpose",
 ]

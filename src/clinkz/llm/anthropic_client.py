@@ -34,6 +34,7 @@ from clinkz.llm.base import (
     ToolCall,
     as_prompt_segments,
 )
+from clinkz.llm.call_purpose import current_call_purpose, effort_for_purpose
 
 logger = logging.getLogger(__name__)
 
@@ -570,6 +571,40 @@ class AnthropicClient(LLMClient):
                 stats.output_headroom,
             )
 
+    @staticmethod
+    def _resolved_effort() -> str:
+        """The effort this call runs under, resolved by its declared PURPOSE.
+
+        PLANNING and SUPPRESS take ``settings.llm_effort`` (default ``"low"`` by
+        the effort grid); EMIT takes ``settings.llm_effort_emit``, the carve-out
+        left at the provider default because lowering the finding-shaping path
+        was never isolated in measurement. Read from the per-task purpose
+        context var, so the concurrent phase runners each resolve their own.
+        Both the request builder and the usage stamp call this, so the level
+        disclosed is the level sent.
+        """
+        return effort_for_purpose(
+            current_call_purpose(),
+            default=settings.llm_effort,
+            emit=settings.llm_effort_emit,
+        )
+
+    @classmethod
+    def _apply_effort(cls, kwargs: dict[str, Any]) -> None:
+        """Carry ``output_config.effort`` for this call's purpose.
+
+        Omitted entirely when the resolved level is empty, so a deployment whose
+        purpose resolves to ``""`` (the EMIT default) sends the byte-identical
+        request it always sent and inherits whatever the provider's default is.
+        That is deliberately NOT spelled ``"high"`` here: writing the provider's
+        current default into our request would turn a value we did not choose
+        into a value we did, and the day it changes the engine would be pinning
+        the old one silently.
+        """
+        effort = cls._resolved_effort()
+        if effort:
+            kwargs["output_config"] = {"effort": effort}
+
     def _track_usage(self, response: Any, *, requested_max_tokens: int = 0) -> CallStats:
         """Accumulate token counts and publish stats for the call just served.
 
@@ -578,35 +613,35 @@ class AnthropicClient(LLMClient):
         folded in — the sum is the real prompt size, and conflating them would
         make a working cache look like a shrinking prompt.
 
-        REGISTERED, DELIBERATELY NOT FIXED — an absent ``usage`` reads as zero
-        spend. When the SDK response carries no ``usage`` object the branch
-        below is skipped and every counter stays at its constructed ``0``, which
-        is indistinguishable from a call that consumed nothing: the same
-        absence-as-measurement shape this module's siblings were just corrected
-        for, one layer from the ledger rather than in it.
+        An absent ``usage`` is the fourth state, not a zero. When the SDK
+        response carries no ``usage`` object every counter stays at its
+        constructed ``0``, which is byte-identical to a call that consumed
+        nothing — so ``usage_reported`` is set only on the branch that actually
+        read numbers off the provider, and the accumulators, the run totals and
+        the spend ledger all carry the count of calls they could not measure.
 
-        It is left alone because the consequence today is bounded and the fix is
-        not local. The only gate reading these numbers is the TOKEN cap
-        (``SpendLedger.token_cap`` against ``total_tokens``), so an absent usage
-        undercounts and the cap fires late — a coverage cost, not a false claim,
-        and it fails in the direction that spends rather than the one that
-        silently stops testing. The USD cap is a SEPARATE gate reading
-        ``usd_spent``, it will read this eventually, and a run that reports
-        ``$0.00`` because nobody told it the token count is the ``$0.00`` beside
-        "a LOWER BOUND" that ``_report_integrity`` already had to reconcile.
-
-        Fixing it means deciding what an unreported usage IS — the honest answer
-        is ``None``/unpriced, not ``0`` — and that is a change to ``CallStats``,
-        to the three accumulators below, and to every consumer that sums them,
-        which is a different piece of work from this one. Whoever wires the USD
-        cap to a live price table does it then, and must not read a coalesced
-        zero as a measurement of spend.
+        This was registered here and deferred on the reasoning that the only
+        gate reading the numbers was the TOKEN cap, where an undercount fires
+        late rather than claiming something false. That argument was sound and
+        it was also the argument for the shape the siblings were corrected for:
+        a total that looks complete is read as complete by whoever wires the USD
+        cap to a live price table next.
         """
         stats = CallStats(
-            provider="anthropic", model=self._model, max_output_tokens=requested_max_tokens
+            provider="anthropic",
+            model=self._model,
+            max_output_tokens=requested_max_tokens,
+            # Recorded on the call, not read from configuration at report time:
+            # an effort sweep is graded by comparing runs, and a run that cannot
+            # say which level it ran under is not a data point. Resolved by the
+            # same purpose-aware rule the request builder used, so the stamp is
+            # the level that was actually sent — a PLANNING call and an EMIT call
+            # in the same run can carry different levels and each says which.
+            effort=self._resolved_effort(),
         )
         usage = getattr(response, "usage", None)
         if usage is not None:
+            stats.usage_reported = True
             stats.input_tokens = getattr(usage, "input_tokens", 0) or 0
             stats.output_tokens = getattr(usage, "output_tokens", 0) or 0
             stats.cache_creation_input_tokens = (
@@ -735,6 +770,7 @@ class AnthropicClient(LLMClient):
             "messages": api_messages,
             "max_tokens": settings.llm_max_output_tokens,
         }
+        self._apply_effort(kwargs)
         if system_prompt:
             # The system prompt is the one span every turn of a ReAct loop
             # repeats verbatim, so it is exactly the prefix worth a breakpoint —
@@ -851,6 +887,7 @@ class AnthropicClient(LLMClient):
             "messages": [{"role": "user", "content": content}],
             "max_tokens": settings.llm_max_output_tokens,
         }
+        self._apply_effort(kwargs)
         if segments.volatile:
             system_blocks = self._system_blocks(segments.invariant, segments.stable)
             if system_blocks is not None:
