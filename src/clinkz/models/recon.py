@@ -7,6 +7,7 @@ technology extraction, web reconnaissance, and the final synthesis.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -18,6 +19,14 @@ from pydantic import BaseModel, Field, computed_field
 # Kept deliberately tight to web-serving defaults so non-web services are not
 # probed as HTTP.
 _KNOWN_WEB_PORTS: frozenset[int] = frozenset({80, 443, 8080, 8443, 8000, 8888, 8008, 5000, 3000})
+
+# An HTTP response status line in a service's ``-sV`` fingerprint
+# (``scripts_output``) is direct protocol evidence that the service speaks
+# HTTP, independent of the port it listens on or the name nmap guessed. The
+# version-plus-status-code shape (``HTTP/1.1 404``) is unambiguous — only a
+# real HTTP response carries it — so it does not match an incidental
+# ``HTTP/`` substring in a URL or header value. See ``ReconService.is_http``.
+_HTTP_RESPONSE_LINE = re.compile(r"HTTP/\d(?:\.\d)?\s+\d{3}\b")
 
 
 class VersionProvenance(StrEnum):
@@ -153,18 +162,32 @@ class ReconService(BaseModel):
     def is_http(self) -> bool:
         """True if this service appears to be HTTP/HTTPS.
 
-        A known web port qualifies as HTTP-capable *regardless* of the name
-        nmap assigned it. nmap labels a port from its ``/etc/services`` default
-        when ``-sV`` cannot fingerprint the protocol (e.g. 3000/tcp → ``ppp``),
-        which previously bypassed the empty-name fallback and silently skipped
-        web recon on a live web app. Since Clinkz is web-focused, attempting
-        HTTP against a known web port is always correct — the probe simply
-        fails fast if the service is genuinely non-HTTP. The set is kept tight
-        (canonical web ports only) so genuinely non-web ports (e.g. 22/ssh)
-        are never probed as HTTP.
+        Three signals, strongest first:
+
+        1. **The name nmap resolved** is a canonical HTTP service name.
+        2. **The protocol it was observed speaking.** ``-sV`` records what the
+           service actually returned to its probes in ``scripts_output`` (the
+           ``fingerprint-strings``), and a genuine HTTP response carries a
+           status line — ``HTTP/1.1 404 Not Found``. That is direct protocol
+           evidence that outranks any port guess: an HTTP REST API on a
+           non-canonical port (Flink's JobManager on 8081, which nmap labels
+           ``blackice-icecap`` from its ``/etc/services`` default) is
+           web-recon-eligible because it *answered in HTTP*, not because its
+           port is on a list. Reading the evidence is what a hardcoded port
+           allow-list structurally cannot do — the list can never enumerate
+           every alt-HTTP port a target might choose.
+        3. **A known web port**, regardless of the name nmap assigned it. nmap
+           labels a port from its ``/etc/services`` default when ``-sV`` cannot
+           fingerprint the protocol (e.g. 3000/tcp → ``ppp``), which previously
+           bypassed the empty-name fallback and silently skipped web recon on a
+           live web app. The set is kept tight (canonical web ports only) so a
+           genuinely non-web port (e.g. 22/ssh) that produced no HTTP evidence
+           is never probed as HTTP.
         """
         http_names = {"http", "https", "http-alt", "http-proxy", "ssl/http", "https-alt"}
         if self.service_name.lower() in http_names:
+            return True
+        if self.scripts_output and _HTTP_RESPONSE_LINE.search(self.scripts_output):
             return True
         return self.port in _KNOWN_WEB_PORTS
 
