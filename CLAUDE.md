@@ -265,7 +265,7 @@ state-changing request; `artifact-scan <id>` re-runs the disclosure gate;
 Offline drivers in `scripts/`: `regrade_stored_bundles.py`, `regrade_idor_arms.py`,
 `plan_variance_corpus.py`, `cve_reservation_corpus.py`,
 `record_protopoll_fixtures.py`, `juiceshop_benchmark_run.py --record-floor`,
-`auth_agent_corpus.py`. **Live:** `three_run_envelope.py`,
+`auth_agent_corpus.py`, `candidate_set_regression.py`. **Live:** `three_run_envelope.py`,
 `live_adaptive_auth_validation.py`.
 `docker compose -f docker/docker-compose.yml up -d` starts the test targets.
 ## Code Style
@@ -800,6 +800,10 @@ under the repo root; the header table at the top of this file links them all.
     handles the case you thought of; only a count against an independently-known
     total proves it has not stopped handling the rest. **Detail →
     `docs/analysis/register.md` R20.**
+
+115. **A regression check compares SETS, not counts** — every pair a baseline
+    CONFIRMED must be PLANNED later, else `truncated`/`absent`; no record ⇒ NOT
+    DETERMINED. **Detail → `docs/analysis/r29-write-crossing-candidate-set.md`.**
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
