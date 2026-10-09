@@ -1180,3 +1180,84 @@ class TestLFIRealPipelineReproduction:
         page = _make_page("http://t/vulnerabilities/fi/?page=include.php", params=["page"])
         findings = await agent._test_lfi(page)
         assert findings == []
+
+
+# ===========================================================================
+# Static-path traversal — FILE_READ by trailing path segment (no parameter)
+# Flink /jobmanager/logs/<file> — CVE-2020-17519
+# ===========================================================================
+
+
+class TestStaticPathTraversal:
+    """A param-less, directory-shaped route read by trailing path segment."""
+
+    @staticmethod
+    def _dir_page() -> PageAnalysis:
+        # No input_params, directory-shaped path (last segment has no extension).
+        return PageAnalysis(
+            url="http://example.com/jobmanager/logs", body="", status=200, input_params=[]
+        )
+
+    @pytest.mark.asyncio
+    async def test_flink_style_trailing_segment_read_confirms(self) -> None:
+        agent = _make_agent()
+
+        async def fake_path_probe(_page: PageAnalysis, _param: str, value: str) -> _HTTPResponse:
+            low = value.lower()
+            if "passwd" in low and ".." in low:
+                return _HTTPResponse(status=200, body="root:x:0:0:root:/root:/bin/bash\n")
+            # benign trailing segment: ordinary log output, no file signature
+            return _HTTPResponse(status=200, body="2026-01-01 INFO jobmanager started")
+
+        agent._path_send_probe = fake_path_probe  # type: ignore[method-assign]
+        findings = await agent._test_lfi_path_traversal(self._dir_page())
+        assert len(findings) == 1
+        assert "path traversal" in findings[0].title.lower()
+
+    @pytest.mark.asyncio
+    async def test_route_that_reads_no_file_emits_nothing(self) -> None:
+        agent = _make_agent()
+
+        async def fake_path_probe(_page: PageAnalysis, _param: str, _value: str) -> _HTTPResponse:
+            return _HTTPResponse(status=200, body="plain route output, no signature")
+
+        agent._path_send_probe = fake_path_probe  # type: ignore[method-assign]
+        findings = await agent._test_lfi_path_traversal(self._dir_page())
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_param_bearing_endpoint_abstains(self) -> None:
+        # A route with parameters is the per-parameter methodology's job; this
+        # probe only handles the param-less trailing-segment shape.
+        agent = _make_agent()
+        page = PageAnalysis(
+            url="http://example.com/x?page=index.php", body="", status=200, input_params=["page"]
+        )
+        findings = await agent._test_lfi_path_traversal(page)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_signature_in_control_too_is_not_a_finding(self) -> None:
+        # The control arm's whole point: if the file signature appears even on a
+        # benign trailing segment, it is route chrome, not a traversal read — the
+        # arm confirms on the control, so it is NOT satisfied and nothing emits.
+        agent = _make_agent()
+
+        async def fake_path_probe(_page: PageAnalysis, _param: str, _value: str) -> _HTTPResponse:
+            return _HTTPResponse(status=200, body="root:x:0:0:root:/root:/bin/bash")
+
+        agent._path_send_probe = fake_path_probe  # type: ignore[method-assign]
+        findings = await agent._test_lfi_path_traversal(self._dir_page())
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_static_asset_route_not_a_candidate(self) -> None:
+        agent = _make_agent()
+        agent._path_send_probe = AsyncMock(  # type: ignore[method-assign]
+            return_value=_HTTPResponse(status=200, body="root:x:0:0:root")
+        )
+        page = PageAnalysis(
+            url="http://example.com/main.1a2b.js", body="", status=200, input_params=[]
+        )
+        findings = await agent._test_lfi_path_traversal(page)
+        assert findings == []

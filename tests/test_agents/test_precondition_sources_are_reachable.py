@@ -143,6 +143,11 @@ DECLARED: dict[str, tuple[str, str]] = {
         _Source.LATCH,
         "a once-per-run latch so the file-server probe is not repeated, written and read in place",
     ),
+    "_lfi_path_traversal_probed": (
+        _Source.LATCH,
+        "a once-per-route latch so the static-path traversal probe is not repeated, written and "
+        "read in place inside _test_lfi_path_traversal",
+    ),
     "_write_crossing_dispatched": (
         _Source.LATCH,
         "a once-per-run latch recording that the write-crossing class already dispatched",
