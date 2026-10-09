@@ -154,6 +154,52 @@ authenticator can actually encode: declaring one it cannot produce would be
 silently ignored, which is the failure the field exists to end. `extra="forbid"`
 already catches a misspelled KEY; this catches a misspelled VALUE.
 
+### Operator-supplied session (`session`)
+
+For an application whose login this engine cannot perform, the operator signs in
+in a browser and supplies what the browser holds. The cases are a
+separate-origin identity provider (the `docker/spa-keycloak` fixture), MFA, a
+CAPTCHA, or WebAuthn.
+
+```json
+{"credentials": [
+  {"role": "user", "privilege": 0, "username": "alice",
+   "session": {"cookies": {"nw_session": "..."}},
+   "assert_url": "https://app.example.com/api/me"},
+  {"role": "admin", "privilege": 10,
+   "session": {"headers": {"Authorization": "Bearer ..."}}}
+]}
+```
+
+**Supplied is not trusted.** The material goes through `assert_authenticated`
+UNCHANGED, the same anonymous-control comparison that proves a session the
+engine seated itself. If it does not pass, the engagement aborts exactly as a
+failed login does (exit 3), and the message names the supplied session rather
+than the credentials. With no `password`, **no credential is ever sent** for
+that role. With a password as well, the ordinary login runs if the supplied
+session is refused.
+
+* **Intake.** Values are `SecretStr` and are registered for redaction like a
+  password, including an `Authorization` value's bare credential part. They go
+  through the same schema-collision refusal (invariant 110). Names must be
+  tokens. `Cookie`, `Host` and the framing headers are refused: cookies go under
+  `cookies`.
+* **Disclosure.** The report's Authentication section (Markdown and PDF) names
+  each supplied role and the cookie/header NAMES it carried, never the values,
+  and says the engine did not perform that login. `seated_by` is `supplied`
+  beside `deterministic` and `adaptive`.
+* **Expiry mid-run.** The session sentinel works as it does for any session.
+  When its flag is raised and the assertion no longer proves the session, a
+  supplied session cannot be re-logged-in. The engagement therefore **halts**
+  (`supplied_session_expired`), and the halt detail says everything after it is
+  UNTESTED, not clean. The report states when it expired.
+* **The sentinel's three outcomes.** A flagged check now ends `ALIVE` (false
+  alarm), `REAUTHENTICATED`, or `UNRESOLVED`. It used to be a boolean, so a
+  session nobody could renew, or a failed re-login, was counted and rendered as
+  "re-proved the session was still authenticated".
+* Supply `username` too if the access-control classes should recognise the
+  role's own records. A cookie-only session asserts no readable identity.
+
 An operator who declares none of them loses nothing — the engine reads the form
 its login page serves, follows the `action`, and renegotiates on a 415. **Detail
 →** [`methodology/authentication-shapes.md`](methodology/authentication-shapes.md).

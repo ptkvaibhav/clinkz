@@ -13,6 +13,7 @@ import pytest
 from clinkz.engagement.auth_state import (
     AuthMechanism,
     ProbeResponse,
+    SessionCheckOutcome,
     SessionSentinel,
     assert_authenticated,
     detect_auth_mechanism,
@@ -302,14 +303,19 @@ def test_only_a_successful_reauthentication_is_counted_as_one() -> None:
     sentinel = _armed(threshold=1)
     sentinel.observe(401, {}, "")
     assert sentinel.reauth_needed
-    sentinel.clear(reauthenticated=True)
+    sentinel.clear(SessionCheckOutcome.REAUTHENTICATED)
     assert not sentinel.reauth_needed
     assert sentinel.reauths_triggered == 1
     assert sentinel.false_alarms == 0
 
     sentinel.observe(401, {}, "")
-    sentinel.clear(reauthenticated=False)
+    sentinel.clear(SessionCheckOutcome.UNRESOLVED)
     assert sentinel.reauths_triggered == 1, "a failed re-auth was counted as a success"
+    assert sentinel.false_alarms == 0, "a session nobody re-proved was called a false alarm"
+    assert sentinel.unresolved == 1
+
+    sentinel.observe(401, {}, "")
+    sentinel.clear(SessionCheckOutcome.ALIVE)
     assert sentinel.false_alarms == 1
 
 

@@ -643,6 +643,25 @@ class _PDFReport:
                         self.note,
                     )
                     self._bullets([self._text(line) for line in verdict.contradictions], self.note)
+            # The same fact the Markdown states: which roles ran on a session the
+            # operator supplied (names only), and whether it expired mid-run.
+            for role, record in sorted((auth.get("supplied_sessions") or {}).items()):
+                names = [
+                    *(f"cookie {n}" for n in record.get("cookie_names") or []),
+                    *(f"header {n}" for n in record.get("header_names") or []),
+                ]
+                state = "PROVEN" if record.get("proven") else "REFUSED"
+                lines = [
+                    f"<b>Session supplied by the operator ({self._text(role)}):</b> "
+                    f"{self._text(', '.join(names) or 'no named material')}. Not obtained "
+                    f"by this engine; {state} by the anonymous-control assertion."
+                ]
+                if record.get("expired_at"):
+                    lines.append(
+                        f"<b>Expired mid-run</b> at {self._text(record['expired_at'])}; the "
+                        "engagement HALTED. Everything not yet tested is UNTESTED, not clean."
+                    )
+                self._bullets(lines)
 
         safety = report.safety_summary
         if safety:

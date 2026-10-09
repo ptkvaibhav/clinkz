@@ -716,6 +716,19 @@ def looks_unauthenticated(status: int, headers: dict[str, str], body: str) -> bo
     return bool(body) and resp.serves_login_form
 
 
+#: ``seated_by`` for a session the operator SUPPLIED rather than one a login
+#: produced. Beside ``deterministic`` and ``adaptive``; rendered in the report.
+SEATED_BY_SUPPLIED = "supplied"
+
+
+class SessionCheckOutcome(StrEnum):
+    """What a flagged session check found. Each value is its own counter."""
+
+    ALIVE = "alive"
+    REAUTHENTICATED = "reauthenticated"
+    UNRESOLVED = "unresolved"
+
+
 class SessionSentinel:
     """Watches responses for session loss and asks for re-authentication.
 
@@ -775,6 +788,12 @@ class SessionSentinel:
             was established. Also reported, for the same reason.
         checks_requested: Times the flag was raised.
         reauths_triggered: Times re-authentication actually SUCCEEDED.
+        unresolved: Times the flag was raised, the session was NOT re-proved,
+            and no re-authentication succeeded — no credential to log in
+            with, a failed re-login, or a supplied session that expired.
+            Kept apart from :attr:`false_alarms`: it used to be counted as
+            one, and the report then told a client a dead session had
+            re-proved itself.
         false_alarms: Times the flag was raised and the assertion found the
             session alive after all.
     """
@@ -792,6 +811,7 @@ class SessionSentinel:
         self.checks_requested = 0
         self.reauths_triggered = 0
         self.false_alarms = 0
+        self.unresolved = 0
 
     @property
     def armed(self) -> bool:
@@ -865,23 +885,26 @@ class SessionSentinel:
             how,
         )
 
-    def clear(self, *, reauthenticated: bool) -> None:
+    def clear(self, outcome: SessionCheckOutcome) -> None:
         """Reset after the Orchestrator has resolved the flag.
 
         Args:
-            reauthenticated: ``True`` when a re-authentication actually
-                succeeded; ``False`` when the assertion found the session alive,
-                or when re-authentication was impossible or failed. Only a
-                genuine success increments :attr:`reauths_triggered` — a counter
-                that logs an event which did not happen is worse than no
-                counter, because the report then asserts a recovery nobody made.
+            outcome: What the check FOUND — never what was attempted. Three
+                values because there are three facts: the session re-proved
+                itself (:attr:`false_alarms`), a re-login succeeded
+                (:attr:`reauths_triggered`), or neither (:attr:`unresolved`).
+                A boolean collapsed the first and third, so a session nobody
+                could renew was reported as one that had been fine all along.
         """
         self._consecutive = 0
         self._since_check = 0
-        if self._reauth_needed and not reauthenticated:
-            self.false_alarms += 1
-        if reauthenticated:
-            self.reauths_triggered += 1
+        if self._reauth_needed:
+            if outcome is SessionCheckOutcome.ALIVE:
+                self.false_alarms += 1
+            elif outcome is SessionCheckOutcome.REAUTHENTICATED:
+                self.reauths_triggered += 1
+            else:
+                self.unresolved += 1
         self._reauth_needed = False
 
 
@@ -904,6 +927,8 @@ __all__ = [
     "AuthStateError",
     "HttpProbe",
     "ProbeResponse",
+    "SEATED_BY_SUPPLIED",
+    "SessionCheckOutcome",
     "SessionSentinel",
     "assert_authenticated",
     "bearer_header",
