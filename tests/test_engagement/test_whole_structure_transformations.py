@@ -506,13 +506,17 @@ def test_the_leaf_exemption_is_exact_and_does_not_protect_ordinary_data() -> Non
     out = redact_structure(
         {
             "severity": "medium",
-            "body": "risk=medium&note=medical",
-            "url": "http://target.example/media/upload",
+            "body": "risk=medium&pw=medi",
+            "echo": "medium medi",
         }
     )
     assert out["severity"] == "medium", "an exact engine word is schema"
-    assert "medi" not in out["body"], "a leaf CONTAINING one is data and keeps redaction"
-    assert "medi" not in out["url"]
+    assert out["body"] == "risk=medium&pw=[REDACTED]", (
+        "a leaf CONTAINING an engine word is data, and the credential beside it is still redacted"
+    )
+    assert out["echo"] == "medium [REDACTED]", (
+        "an engine word next to the credential is not a suppression primitive"
+    )
 
 
 def test_the_leaf_exemption_covers_every_enum_the_models_declare() -> None:
@@ -537,7 +541,7 @@ def test_the_leaf_exemption_covers_every_enum_the_models_declare() -> None:
         )
 
     clear_secrets()
-    register_secret("sett")
+    register_secret("settlement")
     assert redact_structure({"f": "settlement"})["f"] != "settlement", (
         "an undeclared word must keep substring redaction — the exemption is the "
         "engine's vocabulary, not a list of words that look like schema"
@@ -628,11 +632,11 @@ def test_a_key_consumed_by_one_registration_is_still_redacted() -> None:
     ``PentestReport``'s 125 declared field names could be consumed this way, 14
     of them required. It is the value half of R14.
     """
-    register_secret("admin")
-    out = redact_structure({"admin": "counted", "admin_role": "kept"})
-    assert "admin" not in out
+    register_secret("qz7-Lantern")
+    out = redact_structure({"qz7-Lantern": "counted", "qz7-Lantern_role": "kept"})
+    assert "qz7-Lantern" not in out
     assert out["[REDACTED]"] == "counted"
-    assert out["admin_role"] == "kept"
+    assert out["qz7-Lantern_role"] == "kept"
 
 
 def test_a_key_made_only_of_shape_spans_is_still_data() -> None:

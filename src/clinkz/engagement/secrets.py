@@ -80,6 +80,12 @@ from clinkz.engagement.schema_vocabulary import (
     collisions,
     declared_enum_values,
 )
+from clinkz.engagement.secret_provenance import (
+    control_units,
+    is_schema_name,
+    is_secret_occurrence,
+    iter_occurrences,
+)
 from clinkz.models.engagement import CredentialSet, RoleCredential
 
 logger = logging.getLogger(__name__)
@@ -105,6 +111,13 @@ _GIT_TIMEOUT = 5.0
 #: silently off for the rest of the run. A count releases only the registration
 #: its own caller took.
 _SECRETS: dict[str, int] = {}
+
+#: Per registered value, the signatures of its occurrences in responses the
+#: target served WITHOUT the credential — the control that tells the target's
+#: own vocabulary from an echo (register R30;
+#: :mod:`clinkz.engagement.secret_provenance`). Learned only from a response the
+#: caller vouches for, via :func:`observe_control`.
+_CONTROLS: dict[str, set[str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +187,40 @@ def clear_secrets() -> None:
     the engagement that supplied it.
     """
     _SECRETS.clear()
+    _CONTROLS.clear()
+
+
+def observe_control(body: str, *, request_text: str = "") -> int:
+    """Learn the target's own vocabulary from a response served WITHOUT a secret.
+
+    The control half of redaction by provenance (register R30). A registered
+    value the target serves to a request that never carried it — DVWA's
+    anonymous login GET says ``type="password"`` and ``name="password"`` — is
+    the target's vocabulary, and the same unit elsewhere is not an echo.
+
+    The caller vouches that the request carried no session derived from a
+    credential. *request_text* (URL, headers and body, concatenated) is checked
+    here too: a request that carried a registered value cannot be a control for
+    that value, so it teaches nothing about it.
+
+    Args:
+        body: The response body.
+        request_text: Everything the request sent, for the carried-secret check.
+
+    Returns:
+        How many new signatures were learned (never the values).
+    """
+    if not body or not _SECRETS:
+        return 0
+    learned = 0
+    for secret in list(_SECRETS):
+        if secret in request_text or secret not in body:
+            continue
+        units = control_units(body, secret)
+        known = _CONTROLS.setdefault(secret, set())
+        learned += len(units - known)
+        known |= units
+    return learned
 
 
 class ProvisionalSecret:
@@ -267,8 +314,39 @@ def redact(text: str) -> str:
     # shorter one turns it into "[REDACTED]xyz".
     for secret in sorted(_SECRETS, key=len, reverse=True):
         if secret in out:
-            out = out.replace(secret, REDACTION_PLACEHOLDER)
+            out = _redact_occurrences(out, secret)
     return out
+
+
+def _redact_occurrences(text: str, secret: str) -> str:
+    """Replace the occurrences of *secret* that ARE the secret, and only those.
+
+    Register R30: a substring replacement rewrote ``password_new`` into
+    ``[REDACTED]_new`` and ``type="password"`` into ``type="[REDACTED]"``. Each
+    occurrence is now decided by provenance
+    (:func:`~clinkz.engagement.secret_provenance.is_secret_occurrence`), whose
+    default is to redact.
+    """
+    controls = frozenset(_CONTROLS.get(secret, ()))
+    # A shape marker's label is the engine's own text — ``[REDACTED:HEADER
+    # password sha256=…]`` names the header the value arrived under — so an
+    # occurrence inside one is not the secret. Only labelled markers carry text.
+    labels = [
+        m.span() for m in _REDACTION_SPAN_RE.finditer(text) if m.group() != REDACTION_PLACEHOLDER
+    ]
+    pieces: list[str] = []
+    cursor = 0
+    for start in iter_occurrences(text, secret):
+        if any(lo <= start < hi for lo, hi in labels):
+            continue
+        if is_secret_occurrence(text, start, secret, controls):
+            pieces.append(text[cursor:start])
+            pieces.append(REDACTION_PLACEHOLDER)
+            cursor = start + len(secret)
+    if not pieces:
+        return text
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 #: A redaction marker as it appears in already-redacted text — ``[REDACTED]`` and
@@ -346,34 +424,23 @@ def _redact_key(key: Any) -> Any:
     """
     if not isinstance(key, str):
         return key
-    redacted = redact(key)
+    # Shapes only. A registered VALUE is never placed in a key position by any
+    # producer — the engine writes field names there, and so does the target —
+    # so a registry match on a key is a coincidence of spelling by construction.
+    # Measured on ``e7bd146a`` (register R30): with ``password`` registered, a
+    # parsed form's ``{"password": …}`` key was the one thing the whole-key rule
+    # below still rewrote, because the key IS the registered word end to end.
+    # The one registry case left is a key that IS a registered value end to end
+    # and is provably nobody's schema name — a dict keyed BY the credential.
+    if key in _SECRETS and not is_schema_name(key, frozenset(_CONTROLS.get(key, ()))):
+        return REDACTION_PLACEHOLDER
+    redacted = redact_shapes(key)
     if redacted == key:
         return key
-    # Did the redaction consume the whole key, or just a piece of it? What is
-    # left after every marker is removed is the part that was NOT credential
-    # material. Anything left means the key is schema.
+    # Did the shape consume the whole key, or just a piece of it? Anything left
+    # after the markers means the key is schema with a token-shaped fragment.
     residue = _REDACTION_SPAN_RE.sub("", redacted).strip()
-    if residue:
-        return key
-    # Nothing survived the markers — but by HOW MANY redactions? Two or more
-    # REGISTRY spans mean the key was TILED by separate registrations, which is a
-    # coincidence of spellings rather than a key that is credential material. It
-    # is not merely lossy either, it COLLIDES: with ``test``, ``_end``, ``find``
-    # and ``ings`` registered, ``test_end`` and ``findings`` both render
-    # ``[REDACTED][REDACTED]``, so two fields merge into one and one of the two
-    # values is silently discarded.
-    #
-    # Only registry spans can tile by coincidence. A SHAPE span is an intrinsic-
-    # structure claim — a JWT, a PEM block, an `Authorization` value — and no
-    # schema vocabulary in this tree is spelled like one, so any number of them
-    # consuming the whole key still means the key is data. Every shape
-    # replacement carries the labelled marker ``[REDACTED:`` and the value
-    # registry always writes the bare ``[REDACTED]``, so the two are separable by
-    # inspection rather than by provenance tracking.
-    registry_spans = sum(
-        1 for span in _REDACTION_SPAN_RE.findall(redacted) if span == REDACTION_PLACEHOLDER
-    )
-    return key if registry_spans > 1 else redacted
+    return key if residue else redacted
 
 
 @lru_cache(maxsize=1)

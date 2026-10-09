@@ -4641,8 +4641,23 @@ class OrchestratorAgent:
                 outputs_root,
                 root / SCAN_REPORT_FILENAME,
             )
+        if report.clean and report.corrupted:
+            self._logger.error(
+                "DO NOT CERTIFY %s — no credential escaped, but redaction rewrote "
+                "schema or target vocabulary at %d site(s), so the record no longer "
+                "says what happened. See %s.",
+                root,
+                len(report.integrity_findings),
+                root / SCAN_REPORT_FILENAME,
+            )
+        if not report.clean:
+            status = "credential_material_found"
+        elif report.corrupted:
+            status = "corrupted"
+        else:
+            status = "clean"
         return {
-            "status": "clean" if report.clean else "credential_material_found",
+            "status": status,
             "root": str(root),
             "report_file": str(root / SCAN_REPORT_FILENAME),
             "files_scanned": report.files_scanned,
@@ -4652,6 +4667,8 @@ class OrchestratorAgent:
             "credential_findings": len(report.findings),
             "companion_credential_findings": len(companion_findings),
             "advisory_suspicions": len(report.suspicions),
+            "integrity_findings": len(report.integrity_findings),
+            "certifiable": report.certifiable,
             "summary": report.summary_line(),
         }
 

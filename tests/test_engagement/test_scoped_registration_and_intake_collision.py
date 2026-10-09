@@ -401,16 +401,26 @@ def test_the_cal_diy_shape_the_scoping_was_built_for() -> None:
     artifacts = [
         "GET /auth/forgot-password HTTP/1.1",
         "root:x:0:0:root:/root:/bin/bash",
-        "Only the organization's admin or owner can manage SSO settings",
     ]
+    attempt = "POST /login username=root&password=admin"
 
     with provisional_secret("password"), provisional_secret("root"), provisional_secret("admin"):
         during = [redact(a) for a in artifacts]
+        during_attempt = redact(attempt)
     after = [redact(a) for a in artifacts]
 
-    assert all("[REDACTED]" in a for a in during), (
-        "an artifact written DURING the attempt must still be redacted — that is "
+    assert "password=[REDACTED]" in during_attempt, (
+        "the credential the attempt SENT must be redacted while it is armed — that is "
         "the whole of what the registration defends"
+    )
+    assert during[0] == artifacts[0], (
+        "register R30: even while armed, a word inside a URL is part of another "
+        "token, not the credential"
+    )
+    assert during[1].startswith("root:x:0:0:"), (
+        "the LFI oracle's marker keeps its NAME position; the later fields are bare "
+        "values no anonymous response served, so the armed window redacts them — "
+        "fail closed, and only for the length of the attempt"
     )
     assert after == artifacts, (
         "an artifact written after the attempt carries no secret, and rewriting it "

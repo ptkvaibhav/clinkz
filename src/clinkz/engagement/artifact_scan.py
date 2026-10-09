@@ -118,6 +118,47 @@ SEVERITY_CREDENTIAL: Final = "credential"
 #: Severity meaning "this looks like a secret but matched no shape" — advisory.
 SEVERITY_SUSPICIOUS: Final = "suspicious"
 
+#: Severity meaning "redaction rewrote structure here" — the bundle is CORRUPTED
+#: and not certifiable, whatever the leak check says (register R30).
+SEVERITY_INTEGRITY: Final = "integrity"
+
+#: The value registry's bare marker. Shape markers are labelled
+#: (``[REDACTED:JWT …]``) and are never schema damage, so they are not matched.
+_BARE_MARKER: Final = r"\[REDACTED\]"
+
+#: The three shapes of a redaction that rewrote structure rather than removing a
+#: value. Each is a position a secret cannot occupy, read off the bytes on disk
+#: and never off the redactor's own decision — the same rule as the leak check:
+#: a guarantee asserted by the logic that produces it is not checked at all.
+#:
+#: * ``identifier_rewritten`` — the marker glued to identifier characters:
+#:   ``[REDACTED]_new``, ``wrong[REDACTED]0``, ``mysql_native_[REDACTED]``. A
+#:   value was cut out of the middle of a longer token, so the token is gone and
+#:   what replaced it names nothing. An escape sequence before the marker
+#:   (``\n``, ``%22``, ``\u0022``) is a separator, not an identifier character.
+#: * ``protocol_keyword_rewritten`` — ``type="[REDACTED]"``: the HTML
+#:   specification's own vocabulary. The replay corpus reads DVWA's login page
+#:   as having no login form once this happens.
+#: * ``name_rewritten`` — the marker in a NAME position (``"[REDACTED]":`` or
+#:   ``[REDACTED]=``): a field name is schema (invariant 13).
+_INTEGRITY_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
+    (
+        "identifier_rewritten",
+        re.compile(
+            r"(?<=[A-Za-z0-9_])(?<!\\[A-Za-z])(?<!%[0-9a-fA-F]{2})(?<!\\u[0-9a-fA-F]{4})"
+            + _BARE_MARKER
+            + r"|"
+            + _BARE_MARKER
+            + r"(?=[A-Za-z0-9_])"
+        ),
+    ),
+    (
+        "protocol_keyword_rewritten",
+        re.compile(r"\btype\s*=\s*\\*[\"']" + _BARE_MARKER, re.IGNORECASE),
+    ),
+    ("name_rewritten", re.compile(_BARE_MARKER + r"\\*[\"']?[=:]")),
+)
+
 #: Region: inside the engagement's own artifact directory.
 REGION_BUNDLE: Final = "bundle"
 
@@ -195,7 +236,8 @@ class ArtifactFinding(BaseModel):
         detail: Non-secret description — scheme, cookie name, claim NAMES.
         fingerprint: Salted hash prefix; correlates occurrences, reveals nothing.
         length: Length of the matched value.
-        severity: :data:`SEVERITY_CREDENTIAL` or :data:`SEVERITY_SUSPICIOUS`.
+        severity: :data:`SEVERITY_CREDENTIAL`, :data:`SEVERITY_SUSPICIOUS` or
+            :data:`SEVERITY_INTEGRITY`.
         region: :data:`REGION_BUNDLE` or :data:`REGION_COMPANION` — whether this
             landed inside the engagement's own directory or beside it.
     """
@@ -249,6 +291,11 @@ class ArtifactScanReport(BaseModel):
             reason is empty was skipped with no allow reason and FAILS the gate.
         findings: Credential-severity hits. Non-empty means the gate FAILED.
         suspicions: Entropy-severity hits. Advisory; never fails the gate.
+        integrity_findings: Sites where redaction rewrote schema or target
+            vocabulary rather than removing a value. Non-empty means the bundle
+            is CORRUPTED and not certifiable — a separate verdict from the leak
+            check, because "no secret escaped" and "the record is still the
+            record" are two different claims (register R30).
         errors: Files that could not be read, with the reason.
         companion_root: Outputs root whose companion artifacts were also
             scanned, or ``""`` when the verdict covers the bundle alone.
@@ -265,6 +312,7 @@ class ArtifactScanReport(BaseModel):
     files_skipped: list[SkippedFile] = Field(default_factory=list)
     findings: list[ArtifactFinding] = Field(default_factory=list)
     suspicions: list[ArtifactFinding] = Field(default_factory=list)
+    integrity_findings: list[ArtifactFinding] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     companion_root: str = ""
     companion_files_scanned: int = 0
@@ -286,6 +334,23 @@ class ArtifactScanReport(BaseModel):
         """
         return not self.findings and not self.unexplained_skips
 
+    @property
+    def corrupted(self) -> bool:
+        """Whether redaction rewrote structure somewhere in the bundle.
+
+        Independent of :attr:`clean`, and deliberately so. ``CLEAN`` says no
+        credential escaped; it says nothing about whether what remains is still
+        the record of the run. Engagement ``e7bd146a`` was CLEAN with 25 findings
+        while its CSRF evidence cited ``[REDACTED]_new`` and 218 captured pages
+        had lost ``type="password"``.
+        """
+        return bool(self.integrity_findings)
+
+    @property
+    def certifiable(self) -> bool:
+        """Whether the bundle may be handed over: no leak AND an intact record."""
+        return self.clean and not self.corrupted
+
     def region_findings(self, region: str) -> list[ArtifactFinding]:
         """Credential-severity findings from one region."""
         return [f for f in self.findings if f.region == region]
@@ -306,6 +371,7 @@ class ArtifactScanReport(BaseModel):
         self.files_skipped.extend(companions.files_skipped)
         self.findings.extend(companions.findings)
         self.suspicions.extend(companions.suspicions)
+        self.integrity_findings.extend(companions.integrity_findings)
         self.errors.extend(companions.errors)
 
     def _skip_clause(self) -> str:
@@ -351,9 +417,10 @@ class ArtifactScanReport(BaseModel):
         thing that crashes.
         """
         if self.clean:
-            return f"ARTIFACT SCAN CLEAN - {self._coverage()}, 0 credential shapes" + (
+            line = f"ARTIFACT SCAN CLEAN - {self._coverage()}, 0 credential shapes" + (
                 f", {len(self.suspicions)} advisory" if self.suspicions else ""
             )
+            return line + self._integrity_clause()
         if not self.findings:
             # Failing on coverage alone. Saying "0 credential shapes" here would
             # be true and would read as a pass, so the reason leads instead.
@@ -370,6 +437,19 @@ class ArtifactScanReport(BaseModel):
             f"ARTIFACT SCAN FAILED - {len(self.findings)} credential shape(s){where} "
             f"in {len({f.path for f in self.findings})} file(s) "
             f"of {self._coverage()}: {breakdown}"
+        )
+
+    def _integrity_clause(self) -> str:
+        """The second verdict, always stated — intact or CORRUPTED, never silent."""
+        if not self.corrupted:
+            return "; INTEGRITY INTACT - no redaction rewrote schema or target vocabulary"
+        kinds = Counter(f.kind for f in self.integrity_findings)
+        breakdown = ", ".join(f"{n}x {kind}" for kind, n in sorted(kinds.items()))
+        files = len({f.path for f in self.integrity_findings})
+        return (
+            f"; INTEGRITY CORRUPTED - redaction rewrote structure at "
+            f"{len(self.integrity_findings)} site(s) in {files} file(s) ({breakdown}); "
+            "NOT CERTIFIABLE, whatever the leak check says"
         )
 
     def _render_findings(self, findings: list[ArtifactFinding], heading: str) -> list[str]:
@@ -412,6 +492,14 @@ class ArtifactScanReport(BaseModel):
                 self.region_findings(REGION_COMPANION),
                 f"CREDENTIAL MATERIAL BESIDE THE BUNDLE, under {self.companion_root} "
                 "(not written by this engagement, and not shareable either):",
+            )
+        )
+        if not self.clean:
+            lines[0] += self._integrity_clause()
+        lines.extend(
+            self._render_findings(
+                self.integrity_findings,
+                "REDACTION DAMAGE (the record no longer says what happened; not certifiable):",
             )
         )
         if self.suspicions:
@@ -560,6 +648,33 @@ def scan_text(
             )
         )
     return findings, suspicions
+
+
+def scan_integrity(
+    text: str, *, path: str = "<text>", region: str = REGION_BUNDLE
+) -> list[ArtifactFinding]:
+    """Locate every site where redaction rewrote structure (register R30).
+
+    Reads only the bytes, never the redactor: the detector has to be able to
+    disagree with the code it audits.
+    """
+    found: list[ArtifactFinding] = []
+    for kind, pattern in _INTEGRITY_PATTERNS:
+        for match in pattern.finditer(text):
+            line, column = _line_and_column(text, match.start())
+            found.append(
+                ArtifactFinding(
+                    path=path,
+                    line=line,
+                    column=column,
+                    kind=kind,
+                    detail="a redaction marker where a value cannot be",
+                    length=len(match.group()),
+                    severity=SEVERITY_INTEGRITY,
+                    region=region,
+                )
+            )
+    return found
 
 
 def is_engagement_dir(path: Path) -> bool:
@@ -718,6 +833,7 @@ def _scan_one_file(path: Path, relative: str, report: ArtifactScanReport, *, reg
     findings, suspicions = scan_text(text, path=relative, region=region)
     report.findings.extend(findings)
     report.suspicions.extend(suspicions)
+    report.integrity_findings.extend(scan_integrity(text, path=relative, region=region))
 
 
 def skip_reason(path: Path) -> str | None:

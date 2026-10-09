@@ -76,6 +76,7 @@ from urllib.parse import urlencode, urljoin, urlparse
 
 from pydantic import BaseModel
 
+from clinkz.engagement.secrets import observe_control
 from clinkz.safety.governor import (
     REFUSED_CREDENTIAL_BUDGET,
     REFUSED_CREDENTIAL_STOPPED,
@@ -2315,6 +2316,10 @@ class WebAuthenticator(ToolBase):
                             session_cookies={c.key: c.value for c in session.cookie_jar},
                         )
                     login_html = get_walk.response.payload or ""
+                    # The login page, fetched before any credential was offered:
+                    # the control that tells the target's own vocabulary
+                    # (``type="password"``) from an echo of the secret (R30).
+                    observe_control(login_html, request_text=login_url)
                     get_status = get_walk.response.status
                     # The URL that actually SERVED the form. A relative form
                     # ``action`` resolves against this and not against the URL we
@@ -2859,6 +2864,8 @@ class WebAuthenticator(ToolBase):
             # the first blank line would take the 3xx's empty body whenever the
             # login page sat behind a redirect.
             login_html = get_walk.response.payload or ""
+            # The redaction control, as in the aiohttp arm (register R30).
+            observe_control(login_html, request_text=login_url)
 
             # Step 2: Parse form fields
             form = _parse_form_fields(login_html)
