@@ -161,6 +161,34 @@ def _idp_userinfo(access_token: str) -> dict[str, Any] | None:
         return None
 
 
+def _session_userinfo(session: dict[str, Any]) -> dict[str, Any] | None:
+    """The session's identity, refreshing the access token the way a BFF does.
+
+    Keycloak's access token lives 5 minutes; the browser session lives as long
+    as the IdP's SSO session (30 minutes idle by default). A BFF that never
+    refreshed would log every user out after five minutes, which no real one
+    does, and which made a scan-length supplied session impossible to test.
+    """
+    info = _idp_userinfo(session["access_token"])
+    if info is not None or not session.get("refresh_token"):
+        return info
+    status, tokens = _idp_post(
+        f"{_OIDC}/token",
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": session["refresh_token"],
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+        },
+    )
+    if status != 200 or not tokens.get("access_token"):
+        return None
+    with _LOCK:
+        session["access_token"] = tokens["access_token"]
+        session["refresh_token"] = tokens.get("refresh_token", session["refresh_token"])
+    return _idp_userinfo(session["access_token"])
+
+
 class Handler(BaseHTTPRequestHandler):
     """One request. Everything not under ``/api`` or ``/assets`` is the shell."""
 
@@ -227,7 +255,7 @@ class Handler(BaseHTTPRequestHandler):
             session = self._session()
             if session is None:
                 return self._json(401, {"error": "unauthenticated"})
-            info = _idp_userinfo(session["access_token"])
+            info = _session_userinfo(session)
             if info is None:
                 return self._json(401, {"error": "session expired"})
             return self._json(
@@ -333,6 +361,7 @@ class Handler(BaseHTTPRequestHandler):
         with _LOCK:
             _SESSIONS[sid] = {
                 "access_token": access,
+                "refresh_token": tokens.get("refresh_token", ""),
                 "sub": info.get("sub", ""),
                 "username": info.get("preferred_username", ""),
             }
