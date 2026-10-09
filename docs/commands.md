@@ -12,8 +12,9 @@ CLAUDE.md keeps a one-line index of the same set.
   [--exclude <entry>] [--authorization <auth.json> | --auth-* flags |
   --auth-prompt] [--creds <creds.json>] [--source <tree>] [--benchmark-profile
   <bp.json>] [--dry-run] [--rate-limit N] [--max-concurrency N]
-  [--max-credential-attempts N] [--out <dir>]
-  [--resume <id>]` — full pentest (recon → scan/research/exploit → report). The
+  [--max-credential-attempts N] [--out <dir>] [--source-base-url <url>]
+  [--token-cap N] [--spend-cap-usd X] [--run-mode client|baseline]
+  [--provider <name>] [--creds-prompt] [--resume <id>]` — full pentest (recon → scan/research/exploit → report). The
   only end-to-end command. **Refuses to start without an authorization record**
   (`--auth-*` flags refuse with EVERY missing field named — the record has no
   partial shape); `--dry-run` enumerates what it WOULD do, including whether the
@@ -33,7 +34,13 @@ CLAUDE.md keeps a one-line index of the same set.
   `--resume` rebuilds an interrupted engagement's report from its persisted
   findings and sends nothing; it does not resume TESTING (phase coverage is not
   persisted, findings are), and the regenerated report says so in its own
-  *What was NOT tested* section. **The exit-code contract is the interface**
+  *What was NOT tested* section. `--token-cap` (exact, no rate card) and
+  `--spend-cap-usd` (needs `CLINKZ_LLM_PRICES`; none ships) bound LLM spend: the
+  governor winds the phases down cooperatively and the report is still written,
+  but a run the cap stopped is `SPEND_HALT_INDETERMINATE` — `run_completed`
+  false, counts rendered as a floor, a no-findings run rated *Not assessed*.
+  `--run-mode baseline` makes any provider fallback a hard failure.
+  **The exit-code contract is the interface**
   (`cli.py::EXIT_CODES`, rendered into `--help`, asserted by the test suite):
   0 completed · 1 failed · 2 bad input · 3 refused before testing · 4 halted ·
   5 completed but the bundle FAILED the disclosure gate.

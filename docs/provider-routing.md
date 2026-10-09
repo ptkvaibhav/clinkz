@@ -329,6 +329,9 @@ the reinstatement of a cross-provider call. That is not built.
 | `GEMINI_MAX_RPM` | Per-client Gemini rate ceiling | `30` |
 | `LLM_REQUEST_TIMEOUT` | Hard per-call timeout (seconds) | `120` |
 | `LLM_MAX_OUTPUT_TOKENS` | `max_tokens` for one call (covers thinking **and** text) | `16000` |
+| `LLM_EFFORT` | Anthropic `output_config.effort` for PLANNING and SUPPRESS calls (`""` = provider default · `low` · `medium` · `high` · `xhigh` · `max`). Low by measurement: the effort grid found output cost 1.6–2.4× higher at `high` with findings flat | `low` |
+| `LLM_EFFORT_EMIT` | The same, for EMIT calls only — kept separate so the finding-shaping path moves alone; left at the provider default until an emit-isolated grid measures it | `""` |
+| `CLINKZ_LLM_PRICES` | JSON rate card per model, required by `--spend-cap-usd`. None ships | unset |
 | `CLINKZ_VALIDATE_KEYS` | Run the startup key-validation probes | on |
 
 `ANTHROPIC_API_KEY` is required in practice — it is priority 1 for every call.

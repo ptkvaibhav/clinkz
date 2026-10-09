@@ -47,9 +47,9 @@ Agents collaborate through a central Orchestrator on a deterministic phase seque
 4. **Scan** crawls + fuzzes every HTTP service and enumerates non-HTTP services (FTP/SSH/SMB/DB), under its own wall-clock budget (`SCAN_TIME_BUDGET`) so an over-running phase returns a partial attack surface instead of being force-killed and returning none. For single-page apps it adds **API surface discovery** (`agents/_route_discovery.py`, behind a pluggable discoverer seam) — because on an SPA the `/api`+`/rest` routes *are* the surface and an HTML/JS crawl cannot see them. The frontend declares the API contract, so Clinkz reads it: `agents/_js_api_mining.py` mines the served bundles for **HTTP call sites** (fetch/XHR/axios/Angular `HttpClient`/navigation) and recovers each one's method, URL template, query parameters and request **body shape**, resolving minified class-field bindings and scoping a body shape to its enclosing function. OpenAPI and GraphQL introspection are used when served (a *disabled* introspection is reported as such, never guessed around). What the source can't say is learned from the live target using **safe methods only** (`agents/_api_schema.py`): `OPTIONS` for a resource's `Allow` header, and a collection's own `GET` representation for the fields its writes accept. No discoverer carries a hardcoded endpoint, body-field or route-word list for any application. Crawl-safety skips links that mutate the target (WAF/security toggles, logout) so the shared session is never poisoned for later phases
 5. **Research** queries the persistent KB for known techniques and the NVD CVE feed, under a hard wall-clock budget, persisting results back to the KB. Under routing v2 its LLM half is **not web-grounded** — that is stamped on every runbook entry and in the report rather than absorbed
 6. **Exploit** plans tests with an LLM and executes deterministic `_test_*` skills (all are adaptive multi-phase methodologies — the injection family spans SQLi, NoSQL, SSTI, XSS, CMDi, LFI, …)
-7. **Report** emits JSON + Markdown. Findings are gated on the emitting path (`_persist_finding`, `verification_strength`, the deterministic false-positive cross-check), not by a separate review agent — the Critic that used to be described here is archived, having run 0 times in 2,774 recorded steps
+7. **Report** emits JSON + Markdown + PDF, with zero LLM calls. Findings are gated on the emitting path (`_persist_finding`, `verification_strength`, the deterministic false-positive cross-check), not by a separate review agent — the Critic that used to be described here is archived, having run 0 times in 2,774 recorded steps
 
-Phase agents follow **deterministic step sequences with LLM checkpoints** (no free-form ReAct). Confirmed capabilities are recorded to the persistent KB's Layer-2 capability memory so future engagements adapt.
+Phase agents follow **deterministic step sequences with LLM checkpoints** (no free-form ReAct — the generic loop was deleted, and every checkpoint is a bare prompt with no system prompt). Confirmed discovery-originated capabilities are recorded to the persistent KB's Layer-2 capability memory so future engagements adapt.
 
 ## Features
 
@@ -343,6 +343,8 @@ rule, and what the run reports about its own routing:
 | `ORCHESTRATOR_MODEL` | Model for the Orchestrator agent when the provider is OpenAI | `gpt-4o` |
 | `AGENT_MODEL` | Model for phase agents (when provider is OpenAI) | `gpt-4o-mini` |
 | `ANTHROPIC_MODEL` | Claude model for every priority-1 call — i.e. every call | `claude-sonnet-5` |
+| `LLM_EFFORT` | Anthropic effort for PLANNING and SUPPRESS calls (`""` = provider default, `low`…`max`). Low by measurement: findings stayed flat as effort rose | `low` |
+| `LLM_EFFORT_EMIT` | The same, for EMIT calls only, so the finding-shaping path can move alone | `""` (provider default) |
 | `GEMINI_MODEL` | Gemini model for any call that fell back (pinned exactly; never a floating alias) | `gemini-3.7-flash` |
 | `GEMINI_EXPLOIT_MODEL` | Gemini model used when Exploit falls back to Gemini | `gemini-3.7-flash` |
 | `GEMINI_RESEARCH_MODEL` | Gemini model used when Research falls back to Gemini | `gemini-3.7-flash` |
@@ -409,8 +411,8 @@ uses the model *for*, since that is what actually differs.
 | **Recon** | Port analysis, tech-stack extraction, synthesis | Port scan → service/version → web recon → tech stack |
 | **Scan** | Strategy planning, output review, coverage check | Crawl + fuzz HTTP, enumerate FTP/SSH/SMB/DB; coverage checkpoint via fallback chains |
 | **Research** | Query generation + technique synthesis. **Not web-grounded** — see above | Cross-engagement KB lookup + NVD CVE feed; rate-limit-aware with a wall-clock budget; persists techniques back to `clinkz_knowledge.db` |
-| **Exploit** | Plans tests, and named checkpoints inside each methodology | Deterministic `_test_*` skills execute; 26 adaptive multi-phase methodologies (injection family: SQLi, NoSQL, SSTI, XXE, …; plus Tier-2 JWT token forgery and SSRF, and two TERMINAL classes — server-side prototype pollution and cross-principal write — dispatched last, in a declared order, because their effect outlives the run and each would grade the other against a target it had changed) |
-| **Report** | **Zero LLM calls** | Pulls findings from state store, emits JSON + Markdown in <30 s |
+| **Exploit** | Plans tests, and named checkpoints inside each methodology | Deterministic `_test_*` skills execute; 29 adaptive multi-phase per-class methodologies plus Log4Shell (injection family: SQLi, NoSQL, SSTI, XXE, …; plus Tier-2 JWT token forgery and SSRF, and two TERMINAL classes — server-side prototype pollution and cross-principal write — dispatched last, in a declared order, because their effect outlives the run and each would grade the other against a target it had changed) |
+| **Report** | **Zero LLM calls** | Pulls findings from state store, emits JSON + Markdown + PDF in <30 s; remediation per class from the registry |
 
 > **Critic:** archived (`src/clinkz/agents/_archive/critic.py`). It was
 > registered in the lifecycle manager and invoked in **0 of 2,774 recorded agent
@@ -433,6 +435,7 @@ The current report agent emits:
 
 - `report_<engagement_id>.json` — structured findings (title, severity, CVSS, endpoint, request/response evidence, remediation)
 - `report_<engagement_id>.md` — human-readable deliverable
+- `report_<engagement_id>.pdf` — the client deliverable (see below)
 
 The Markdown report is client-ready: an **authorization header** (who authorized
 it, under what reference, over what window, against what scope — in *and* out),
@@ -486,8 +489,9 @@ The full suite is ~750 tests as of W2.1. API-key-gated tests skip cleanly when n
 ```
 clinkz/
 ├── src/clinkz/
-│   ├── agents/          # Phase agents (recon v2, scan v2, exploit v2, research v2, critic, report)
-│   │   └── prompts/     # Agent system prompts (.md per agent)
+│   ├── agents/          # Phase agents (recon v2, scan v2, exploit v2, research v2, report);
+│   │                    #   _archive/ holds the never-invoked critic
+│   │   └── prompts/     # Prompt text (.md per agent; phase agents do not send a system prompt)
 │   ├── comms/           # Message bus + communication protocol
 │   ├── credentials/     # CredentialStore for default-credential chaining
 │   ├── engagement/      # gate (authorization + window refusals), secrets (credential
@@ -504,7 +508,11 @@ clinkz/
 │   │                    # recon, scan, methodology, research, finding, report)
 │   ├── observability/   # Per-engagement JSONL execution trace + component ledger
 │   ├── orchestrator/    # OrchestratorAgent + AgentLifecycleManager
-│   ├── research/        # Runtime web search for CVEs / writeups
+│   ├── research/        # Runtime CVE lookup (NVD feed); not web-grounded
+│   ├── discovery/       # Gray-box discovery engine (source → hypotheses)
+│   ├── chaining/        # Multi-step chains, graded by the weakest link
+│   ├── browser/         # P7 client-side execution oracle (Playwright)
+│   ├── oob/             # P6 out-of-band collaborator
 │   └── tools/           # ToolBase + ToolResolver (capability + fallback chains),
 │                        # binary_identity, docker_preflight, MCP client, individual wrappers
 ├── scripts/             # Demo / live integration helpers

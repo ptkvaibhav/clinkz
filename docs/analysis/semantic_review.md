@@ -1,5 +1,10 @@
 # Clinkz v2 — Semantic Review
 
+> **Historical snapshot (2026-05-06), not the current architecture.** It describes
+> `BaseAgent._react_loop`, which was deleted in `a158ba4`; the v2 agents run fixed
+> steps with named LLM checkpoints. Current state: [`../architecture.md`](../architecture.md),
+> open code-side divergences: [`register.md`](register.md) R27.
+
 Date: 2026-05-06
 Goal: surface ambiguous terms, name collisions, and concept drift across
 the codebase. The architecture leans hard on shared vocabulary between

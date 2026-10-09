@@ -1,5 +1,10 @@
 # Clinkz v2 — Control Flow Analysis
 
+> **Historical snapshot (2026-05-06), not the current architecture.** It describes
+> `BaseAgent._react_loop`, which was deleted in `a158ba4`; the v2 agents run fixed
+> steps with named LLM checkpoints. Current state: [`../architecture.md`](../architecture.md),
+> open code-side divergences: [`register.md`](register.md) R27.
+
 Date: 2026-05-06
 Source: `src/clinkz/orchestrator/orchestrator.py`,
 `src/clinkz/orchestrator/lifecycle.py`, `src/clinkz/agents/base.py`.
