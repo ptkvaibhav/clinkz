@@ -159,6 +159,13 @@ CLAUDE.md keeps a one-line index of the same set.
   keeps, the attempt cost, and how many fingerprints produced more than one
   order. Exits non-zero if the new window loses a confirmation the engine is
   known to have made.
+- `python scripts/candidate_set_regression.py <baseline_id> <later_id> [--outputs DIR]`
+  — **offline** set comparison of two bundles (register R29). Every
+  `(test_method, endpoint)` the baseline CONFIRMED must be in the later run's
+  dispatched plan; a lost pair is named `truncated` (a cap removed it) or
+  `absent` (never a candidate). Exit 0 pass · 1 REGRESSION · 2 NOT DETERMINED (a
+  bundle predates the `plan_sets` trace record — not a pass). Detail →
+  `docs/analysis/r29-write-crossing-candidate-set.md`.
 - `python scripts/cve_reservation_corpus.py [--outputs-root <dir>] [--json]` —
   **offline** replay of what the dependency→CVE slot reservation would have cost
   every stored bundle. Sends nothing. Answers the two questions the reservation

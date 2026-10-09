@@ -543,6 +543,19 @@ def _field_owns(path: str) -> bool:
     return any(token.replace("_", "") in leaf for token in OWNER_FIELD_NAME_TOKENS)
 
 
+def field_names_owner(name: str) -> bool:
+    """Whether a field called *name* is one an application uses to name an owner.
+
+    The public face of the vocabulary :func:`owning_fields` selects with, for a
+    consumer that holds a field NAME rather than a body — the plan ranking, which
+    must agree with the methodology about what an owning field is. Two
+    vocabularies for one question is how the ranking came to reward a CSRF
+    token on a write-crossing candidate while the ``UserId`` the methodology
+    confirmed on scored nothing (register R29).
+    """
+    return _field_owns(name)
+
+
 def owning_fields(
     body: str,
     *,
