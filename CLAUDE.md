@@ -135,11 +135,13 @@ The hard rules:
   into the state store, so this is structural, not disciplinary.
 - **Redaction removes what a secret IS and what it LOOKS LIKE**
   (`engagement/credential_shapes.py`, one vocabulary, always on). Cookie NAMES
-  survive, cookie VALUES do not; `redact_structure` is key-aware.
+  survive, cookie VALUES do not; `redact_structure` is key-aware. A registered
+  value is removed where it was PLACED, decided per occurrence (invariant 119).
 - **`engagement/artifact_scan.py` is the disclosure gate**, re-reading
   `outputs/<id>/` off disk rather than trusting the logic that wrote it. **One
   verdict, two regions**, every skipped file NAMED, an unexplained skip FAILS,
-  and a PDF is read through both its page-text and `/Info` channels.
+  and a PDF is read through both its page-text and `/Info` channels. Integrity
+  (INTACT/CORRUPTED) is a second verdict beside it (invariant 120).
 - **The engine's redaction reaches only where the engine writes** — `scripts/`
   drivers go through `scripts/_artifact_io.py`, and anything that assembles a
   credential set registers it (`register_credential_set`). Both are enforced
@@ -395,15 +397,18 @@ invariant lands here as ONE line and in both docs in full.
 107. **Registered, dispatched, and never able to begin is its own state.** → `docs/analysis/business-logic-verdict-trace.md`
 108. **A transformation applied to a whole structure distinguishes the structure's own vocabulary from the content it carries** — a KEY is schema, a value is data, and a walk that never asked has answered "content" (`engagement/secrets.py::_redact_key`).
 109. **A gate that needs evidence only passing the gate can produce is its own state — UNREACHABLE PRECONDITION, not unexercised and not not-applicable.**
-110. **A registration is scoped to WHERE the secret can appear, and a credential that spells the engine's own schema is refused at INTAKE.**
+110. **A registration is scoped to WHERE the secret can appear** — a swept guess for its attempt only; the registry is COUNTED. (The intake refusal is retired by 119.)
 111. **A verb the engine could not READ is its own state, never a GET it measured** (`models/scan.py::MethodEvidence`; `NAMED` / `PLATFORM_DEFAULT` / `UNREAD`).
 112. **A call site we SAW and could not address is a third state, and a route the source DECLARES is a different fact from a call it MAKES.**
 113. **The target may not author the structure of the document that judges it** (`engagement/render_safety.py`).
 114. **A pattern-based exclusion fails toward LESS output, so it needs a DENOMINATOR control, not a shape control.**
-115. **A regression check compares SETS, not counts** — every pair a baseline CONFIRMED must be PLANNED later, else `truncated`/`absent`; no record ⇒ NOT DETERMINED. → `docs/analysis/r29-write-crossing-candidate-set.md`
+115. **A regression check compares SETS, not counts** — every pair a baseline CONFIRMED must be PLANNED later, else `truncated`/`absent`; no record ⇒ NOT DETERMINED, so a run that never planned records an EMPTY plan with its reason. → `docs/analysis/r29-write-crossing-candidate-set.md`
 116. **A session the operator SUPPLIED is proven by the same assertion and never trusted** (`RoleCredential.session`). → `docs/productization-engagement-safety.md`
 117. **A credential goes only to a destination something OBSERVED to be a login** — a rendered password form's action, an operator declaration, or a route the adaptive layer proved. → `docs/productization-engagement-safety.md`
 118. **"The credentials are wrong" requires a refusal ATTRIBUTABLE to the credential** (`credential_refused`: a 401, or a marker the control lacks), and quotes it.
+119. **Redaction is decided by PROVENANCE, per occurrence, and fails closed** (`engagement/secret_provenance.py`) — a credential-field value always; never a name, identifier fragment, URL host or a unit the target served without the credential. → `docs/analysis/register.md` R30
+120. **The disclosure gate claims only what it checks** — CLEAN is the leak check; INTACT/CORRUPTED is a second verdict read off the bytes, and a CORRUPTED bundle is not certifiable.
+121. **A session token is found by STRUCTURE** (`engagement/token_locator.py`), **and the adaptive model sees a READ's SHAPE, never its text** — an injection boundary, not a gap.
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

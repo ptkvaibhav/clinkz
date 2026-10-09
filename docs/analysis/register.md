@@ -1361,7 +1361,7 @@ producer passing it in `features`. Pinned by a round-trip test that reloads a
 while a verb-less row stays excluded — the reload tied directly to the routing it
 feeds, not asserted at the store seam alone.
 
-## R30 · Redaction rewrites a common-word password out of schema and protocol text — OPEN
+## R30 · Redaction rewrites a common-word password out of schema and protocol text — RESOLVED
 
 **Measured 2026-10-09, before any change** (the item in the brief that says to
 report first). `admin`/`password` is refused at intake because `password` equals
@@ -1396,3 +1396,54 @@ any dictionary password the intake vocabulary does not happen to contain. The
 intake refusal only covers the subset that collides with a declared field
 NAME. **Not changed here;** the refusal stays until the redactor stops
 substituting inside schema/protocol positions.
+
+**Resolved 2026-10-09 — redaction by provenance (invariants 119, 120).** Each
+occurrence of a registered value is now decided by where it sits
+(`engagement/secret_provenance.py`): the value of a credential-named field is
+redacted unconditionally; an identifier fragment, a NAME a declared field or the
+engine's source spells, a URL host label, an HTML `type=` keyword, engine source
+text, and a unit the target served WITHOUT the credential (the login GET and every
+`session_mode='none'` response, via `observe_control`) are not; anything else is
+redacted. The echo case — a unit the anonymous target never served — stays
+redacted, and its positive control goes red with the fail-closed default removed.
+
+**Acceptance, same conditions as `e7bd146a`** (DVWA `low`, `admin`/`password`,
+intake refusal patched off for the process): engagement `857a881c`.
+
+| | `e7bd146a` (substring) | `857a881c` (provenance) |
+|---|---|---|
+| `[REDACTED]_new` | 126 | **0** |
+| invocation records with a password input kept / lost | 0 / 218 | **257 / 0** |
+| brute-force probes intact / rewritten | 0 / 32 | **32 / 0** |
+| secret in a credential position (field value, userinfo, Basic) | 0 | **0** |
+| findings | 25 | 25 (CSRF evidence names `password_new`, `password_conf`) |
+| gate | CLEAN, CORRUPTED (1,134 sites) | **CLEAN, INTACT** |
+| plan-set regression vs `e7bd146a` | — | PASS |
+
+The in-run gate exited 5: three invocation files returned `Errno 22` on read
+while a keyless test run was saturating the disk, and the gate failed closed on
+them as unexplained skips. A re-scan read all 1,540 files: CLEAN and INTACT.
+
+**The intake refusal came out** after the run (`CredentialCollisionError`,
+`schema_vocabulary.collisions` removed); a credential that spells schema now
+registers like any other, and the dump round-trip it protected is pinned in
+`test_whole_structure_transformations.py`.
+
+**`scripts/auth_agent_corpus.py` failed on main because of this defect.** Engagement
+`e5d6901e` (umami, stock password `umami`) had its HOSTNAME substring-redacted out
+of every stored URL — `http://[REDACTED]:3000/login` — and `urlparse` raises on a
+bracketed host that is not an IP. The URL-host rule closes it going forward, the
+integrity check names it (`host_rewritten`), and the driver now sets a corrupted
+exchange aside by name instead of dying (401 replayed, 1 set aside).
+
+**The integrity check over the stored corpus** flagged 31 bundles, every sampled
+one genuine damage: the pre-scoping DVWA ladder runs, cal.diy `918e2b71` (the
+711k-site run), a hash with a secret cut out of it (`094c7312`), and a `password`
+KEY rewritten while the swept value survived (`74dcbe93`). Those bundles are now
+reported NOT CERTIFIABLE.
+
+**Residual, stated.** Target prose on an authenticated page that uses the word
+bare (`Undefined array key "password"`, `id='password'` on the brute-force page)
+is still redacted when no anonymous response served the same unit — fail closed,
+and not structural damage the integrity check can see. A secret the target glues
+to identifier characters is not redacted.
