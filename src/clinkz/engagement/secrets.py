@@ -32,30 +32,27 @@ Order is deliberate: shapes run first, so a registered password that arrives
 inside a session token disappears with the whole token rather than leaving a
 partially-masked one behind.
 
-**A registration is scoped to where the secret can appear, and a colliding one
-is refused before it is taken.** Replacement is unconditional and process-wide,
-so a registration's blast radius is every artifact written while it is armed.
-Two rules keep that radius honest, and they address the two sources separately
-because the sources are different:
+**An occurrence is redacted by PROVENANCE, not because it matches**
+(register R30; :mod:`clinkz.engagement.secret_provenance`). A registered value
+used to be replaced as a substring of every string, which for a password that is
+an ordinary word is not redaction: DVWA as ``admin``/``password`` came back
+CLEAN with ``password_new`` cited as ``[REDACTED]_new`` and 218 captured pages
+reading ``type="[REDACTED]"``. Each occurrence is now decided by where it sits —
+the value of a credential field is redacted unconditionally, a field NAME, an
+identifier fragment, a URL host and a unit the target served WITHOUT the
+credential (:func:`observe_control`) are not — and the default, when no rule
+claims it, is to redact.
 
-* **Lifetime** (:func:`provisional_secret`) — a default-credential guess is
-  public until it works, so it is armed for the attempt and released on failure.
-  Registering one for the whole run substring-replaced an ordinary English word
-  out of 711,918 sites on one cal.diy engagement, including the URL
-  ``/auth/forgot-password`` and an LFI oracle's own ``root:x:0:0:`` marker.
-* **Spelling** (:func:`register_credential_set`) — an operator credential that
-  is a word the engine's own models declare is REFUSED at intake, naming the
-  colliding key. Such a value would rewrite the engine's schema out of its own
-  dumps, and a dump a model rejects is no report at all. The vocabulary is
-  computed in :mod:`clinkz.engagement.schema_vocabulary`, never hand-listed.
+**A registration is also scoped in time** (:func:`provisional_secret`): a
+default-credential guess is public until it works, so it is armed for the
+attempt and released on failure. Registering one for the whole run once
+rewrote an ordinary English word out of 711,918 sites on a cal.diy engagement.
 
-**Honest limitation.** Value redaction is a substring replacement, so it can
-only be applied to values long enough to be distinctive. A secret shorter than
-:data:`_MIN_REDACTABLE_LEN` characters is accepted (we do not get to dictate the
-client's password policy) but is NOT substring-redacted, because replacing every
-occurrence of a two-character string would corrupt every artifact it appears in.
-:func:`register_secret` returns ``False`` in that case and the loader warns, so
-the gap is visible rather than silent.
+**Honest limitation.** A secret shorter than :data:`_MIN_REDACTABLE_LEN`
+characters is accepted (we do not get to dictate the client's password policy)
+but is NOT registered, because matching a two-character string would corrupt
+every artifact it appears in. :func:`register_secret` returns ``False`` in that
+case and the loader warns, so the gap is visible rather than silent.
 """
 
 from __future__ import annotations
@@ -75,11 +72,7 @@ from clinkz.engagement.credential_shapes import (
     redact_header_value,
     redact_shapes,
 )
-from clinkz.engagement.schema_vocabulary import (
-    SchemaCollision,
-    collisions,
-    declared_enum_values,
-)
+from clinkz.engagement.schema_vocabulary import declared_enum_values
 from clinkz.engagement.secret_provenance import (
     control_units,
     is_schema_name,
@@ -573,15 +566,6 @@ class CredentialFileError(Exception):
     """Raised when a credential file is unusable or unsafe to read."""
 
 
-class CredentialCollisionError(CredentialFileError):
-    """Raised when a credential is a word the engine's own schema declares.
-
-    A subclass of :class:`CredentialFileError` so every existing intake caller
-    already surfaces it as a setup error with exit code 2 — this is bad input,
-    caught before the engagement opens, and there is nothing to retry.
-    """
-
-
 def describe_credential_validation_error(exc: Exception) -> str:
     """Render a credential-file validation failure WITHOUT echoing the file.
 
@@ -733,39 +717,6 @@ def prompt_for_credentials(roles: list[str]) -> CredentialSet:
     return cred_set
 
 
-def _collision_refusal(role: str, found: tuple[SchemaCollision, ...]) -> str:
-    """The refusal message, naming the colliding key and the change that fixes it."""
-    lines = [
-        f"Refusing the engagement: the credential for role '{role}' is a word the "
-        "engine's own schema declares.",
-        "",
-        "  It collides with:",
-    ]
-    lines += [f"    - {collision.describe()}" for collision in found]
-    lines += [
-        "",
-        "  Why this is a refusal and not a warning: every registered secret is "
-        "replaced as a SUBSTRING in every artifact the engine writes, and the "
-        "engine's artifacts are dumps of its own models. A redaction that lands on "
-        "schema rather than on data removes part of the structure, and the line "
-        "above says which - a rejected dump means the run ends with no deliverable "
-        "at all, a deleted key means an artifact that writes with a field missing. "
-        "Neither has a symptom before the end of the run, which is why this is "
-        "caught here and not at render time.",
-        "",
-        "  The change that resolves it: give this account a password that is not "
-        "one of the words above. Any value that is not exactly a field name the "
-        "engine declares, and not a substring of one of its enum values, is "
-        "accepted - which is every password that is not an English word this "
-        "codebase happens to spell.",
-        "",
-        "  There is deliberately no flag to skip this. The alternative to changing "
-        "the password is registering it anyway, and that is the run that produces "
-        "no report.",
-    ]
-    return "\n".join(lines)
-
-
 def register_credential_set(cred_set: CredentialSet) -> None:
     """Register every secret in *cred_set* with the redaction chokepoint.
 
@@ -782,30 +733,18 @@ def register_credential_set(cred_set: CredentialSet) -> None:
     ``scripts/_artifact_io.py`` split encodes one layer out: the engine's
     redaction reaches only where the engine was told what to redact.
 
-    **This is also where a colliding credential is refused, and the refusal is at
-    INTAKE rather than at render time.** A credential that is a word the engine's
-    own schema declares will, once registered, rewrite that schema out of the
-    structures the engine dumps — and the two ways it does that both end in
-    ``model_validate`` rejecting the document, which writes no report.json, no
-    Markdown and no PDF. Discovering that at render time means discovering it
-    after a full engagement has run; discovering it here costs the operator one
-    password change before a single packet leaves. The vocabulary is COMPUTED
-    from the models themselves
-    (:mod:`clinkz.engagement.schema_vocabulary`), so it is not a list to keep
-    current.
-
-    Nothing is registered unless every credential passes: a refusal must leave
-    the registry exactly as it found it, or a caller that catches the error is
-    running with half a credential set armed.
-
-    Raises:
-        CredentialCollisionError: A credential collides with the engine's own
-            declared field names or enum vocabularies.
+    **Nothing is refused here any more** (register R30). A credential that
+    spelled one of the engine's own field names used to be refused at intake,
+    because substring redaction would have rewritten that schema out of every
+    dump. Redaction is now decided per occurrence by provenance
+    (:mod:`clinkz.engagement.secret_provenance`), which never rewrites a schema
+    name or an enum leaf, so ``admin``/``password`` is registered like any other
+    credential. Measured on DVWA before the refusal came out — see the register.
     """
 
     # A supplied session's cookie and header values are secrets on exactly the
     # same terms as a password — a session token in an artifact is a login — so
-    # they pass the same collision check and land in the same registry.
+    # they land in the same registry.
     def _role_secrets() -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
         for cred in cred_set.credentials:
@@ -813,16 +752,6 @@ def register_credential_set(cred_set: CredentialSet) -> None:
             if cred.session is not None:
                 pairs.extend((cred.role, value) for value in cred.session.secret_values())
         return pairs
-
-    for role, secret in _role_secrets():
-        if not secret or len(secret) < _MIN_REDACTABLE_LEN:
-            # Too short to be registered at all, so too short to corrupt
-            # anything. The warning for that case is below, on the same branch
-            # that declines to register it.
-            continue
-        found = collisions(secret)
-        if found:
-            raise CredentialCollisionError(_collision_refusal(role, found))
 
     for role, secret in _role_secrets():
         if not secret:
@@ -878,7 +807,6 @@ def _is_inside_repo(path: Path) -> bool:
 
 __all__ = [
     "REDACTION_PLACEHOLDER",
-    "CredentialCollisionError",
     "CredentialFileError",
     "ProvisionalSecret",
     "clear_secrets",

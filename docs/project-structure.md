@@ -85,9 +85,14 @@ src/clinkz/
 │                     #   is SCOPED — provisional_secret arms a swept guess for its
 │                     #   attempt only, and the registry is COUNTED so one source's
 │                     #   release cannot disarm another's),
+│                     #   secret_provenance (R30: is THIS occurrence the secret? decided
+│                     #   by where it sits — credential-field value, name, identifier
+│                     #   fragment, URL host, a unit the target served anonymously —
+│                     #   failing closed; replaced substring redaction),
 │                     #   schema_vocabulary (the engine's OWN declared words, computed
-│                     #   from the models: a credential that spells one is refused at
-│                     #   INTAKE, and such a word in a VALUE position is schema),
+│                     #   from the models; such a word in a VALUE position is schema),
+│                     #   token_locator (a login response's session token found by
+│                     #   STRUCTURE — JWT form or a token-naming key, any depth),
 │                     #   credential_shapes (what a secret LOOKS like — one vocabulary,
 │                     #   shared by the redactor and the gate), artifact_scan (the
 │                     #   disclosure gate: outputs/<id>/ AND the companion region

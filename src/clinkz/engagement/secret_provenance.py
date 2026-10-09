@@ -304,6 +304,34 @@ def in_engine_literal(text: str, start: int, secret: str) -> bool:
     return any(window in lit for lit in candidates)
 
 
+def is_url_host_label(text: str, start: int, end: int, unit_start: int) -> bool:
+    """Whether ``text[start:end]`` is a whole label of a URL's HOST.
+
+    Engagement ``e5d6901e`` (umami, whose stock password is ``umami``) stored
+    ``http://[REDACTED]:3000/login`` in every URL it wrote, and
+    ``scripts/auth_agent_corpus.py`` died parsing the marker as an IPv6 host. A
+    host names the network the operator scoped; no producer places a credential
+    there. USERINFO is different — ``user:secret@host`` is exactly where one is
+    placed — so only a label after the last ``@`` of the authority qualifies.
+    """
+    scheme = text.rfind("://", unit_start, start)
+    if scheme == -1:
+        return False
+    authority_start = scheme + 3
+    authority_end = authority_start
+    while authority_end < len(text) and text[authority_end] not in "/?#\"' \t\r\n<>\\":
+        authority_end += 1
+    if end > authority_end:
+        return False
+    host_start = text.rfind("@", authority_start, authority_end) + 1 or authority_start
+    host_start = max(host_start, authority_start)
+    if start < host_start:
+        return False
+    before_ok = start == host_start or text[start - 1] == "."
+    after_ok = end == authority_end or text[end] in ".:"
+    return before_ok and after_ok
+
+
 def is_secret_occurrence(text: str, start: int, secret: str, controls: frozenset[str]) -> bool:
     """Whether the occurrence of *secret* at *start* is the secret (redact it).
 
@@ -322,6 +350,8 @@ def is_secret_occurrence(text: str, start: int, secret: str, controls: frozenset
         return False
     end = start + len(secret)
     left, right = _unit_bounds(text, start, end)
+    if is_url_host_label(text, start, end, left):
+        return False  # rule 2, network form: a host is the scope's name, not a value
     unit = text[left:right]
     op = _assignment(unit)
     if op >= 0:

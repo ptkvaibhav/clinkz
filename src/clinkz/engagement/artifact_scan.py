@@ -126,7 +126,7 @@ SEVERITY_INTEGRITY: Final = "integrity"
 #: (``[REDACTED:JWT …]``) and are never schema damage, so they are not matched.
 _BARE_MARKER: Final = r"\[REDACTED\]"
 
-#: The three shapes of a redaction that rewrote structure rather than removing a
+#: The four shapes of a redaction that rewrote structure rather than removing a
 #: value. Each is a position a secret cannot occupy, read off the bytes on disk
 #: and never off the redactor's own decision — the same rule as the leak check:
 #: a guarantee asserted by the logic that produces it is not checked at all.
@@ -141,6 +141,9 @@ _BARE_MARKER: Final = r"\[REDACTED\]"
 #:   as having no login form once this happens.
 #: * ``name_rewritten`` — the marker in a NAME position (``"[REDACTED]":`` or
 #:   ``[REDACTED]=``): a field name is schema (invariant 13).
+#: * ``host_rewritten`` — the marker as a URL's HOST (``http://[REDACTED]:3000``):
+#:   engagement ``e5d6901e`` rewrote umami's hostname out of every URL it stored,
+#:   and ``auth_agent_corpus.py`` died parsing the marker as an IPv6 address.
 _INTEGRITY_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     (
         "identifier_rewritten",
@@ -156,7 +159,8 @@ _INTEGRITY_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
         "protocol_keyword_rewritten",
         re.compile(r"\btype\s*=\s*\\*[\"']" + _BARE_MARKER, re.IGNORECASE),
     ),
-    ("name_rewritten", re.compile(_BARE_MARKER + r"\\*[\"']?[=:]")),
+    ("name_rewritten", re.compile(r"(?<!://)" + _BARE_MARKER + r"\\*[\"']?[=:]")),
+    ("host_rewritten", re.compile(r"://(?:[^/@\s\"'\\]*@)?" + _BARE_MARKER)),
 )
 
 #: Region: inside the engagement's own artifact directory.

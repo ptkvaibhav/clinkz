@@ -118,8 +118,13 @@ DECLARED: dict[str, tuple[str, str]] = {
     "engagement/secrets.py::redact_structure": (
         _Keys.TRANSFORMED,
         "the one member that rewrites keys, and the only one that asks the question "
-        "explicitly: _redact_key rewrites a key only when a SINGLE redaction consumed it "
-        "end to end, so a key that merely contains a registered word stays schema",
+        "explicitly: _redact_key rewrites a key only when a shape consumed it end to end, "
+        "or when it IS a registered value nobody's schema spells (register R30)",
+    ),
+    "engagement/token_locator.py::_walk": (
+        _Keys.READ,
+        "collects every string leaf of a login response with its key PATH, which the "
+        "locator then reads to see whether a key names a token; keys are never rewritten",
     ),
     "agents/_api_schema.py::_object_field_names": (
         _Keys.READ,
@@ -659,3 +664,19 @@ def test_a_key_made_only_of_shape_spans_is_still_data() -> None:
         "material; only two REGISTRY spans are a spelling coincidence"
     )
     assert all("eyJhbGci" not in key for key in out)
+
+
+def test_a_credential_equal_to_a_declared_field_name_still_writes_a_report() -> None:
+    """Register R30: the case the intake refusal existed for, now handled by redaction.
+
+    ``password``, ``findings`` and ``test_start`` are declared field names. Under
+    substring redaction each consumed its key end to end and the dump failed to
+    validate, so they were refused at intake. With provenance redaction a key the
+    engine's own source spells is never rewritten.
+    """
+    dumped = _populated_report().model_dump(mode="json")
+    for name in ("password", "findings", "test_start", "severity", "medi"):
+        register_secret(name)
+    revalidated = PentestReport.model_validate(redact_structure(dumped))
+    assert revalidated.findings, "findings survived as a key"
+    assert revalidated.findings[0].severity.value == "medium"

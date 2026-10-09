@@ -49,6 +49,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
+from clinkz.engagement.artifact_scan import scan_integrity  # noqa: E402
 from clinkz.engagement.auth_agent import (  # noqa: E402
     AuthObservation,
     AuthProposal,
@@ -398,6 +399,17 @@ def exercise_gate(exchanges: list[Exchange]) -> Counter[str]:
     return tally
 
 
+def _redaction_corrupted(url: str) -> bool:
+    """Whether redaction rewrote this stored URL's structure (register R30)."""
+    if scan_integrity(url):
+        return True
+    try:
+        urlparse(url)
+    except ValueError:
+        return True
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--outputs-root", default="outputs", type=pathlib.Path)
@@ -417,6 +429,12 @@ def main() -> int:
         return 2
 
     exchanges = read_exchanges(args.outputs_root, args.limit)
+    # A bundle whose redaction rewrote a URL's structure (register R30: umami's
+    # password ``umami`` replaced the HOST in every URL of ``e5d6901e``) cannot
+    # be replayed — the URL no longer parses. Named and set aside, never a crash
+    # and never a silent drop: a replay that dies on one bundle measures nothing.
+    corrupted = [e for e in exchanges if _redaction_corrupted(e.url)]
+    exchanges = [e for e in exchanges if e not in corrupted]
     rows = []
     for exchange in exchanges:
         observation = observe(exchange)
@@ -441,11 +459,13 @@ def main() -> int:
     unfired = sorted(r.value for r in ProposalRefusal if not tally.get(r.value))
     vacuous = [r for r in rows if r["briefing_facts"] <= 2]
 
+    corrupted_rows = [{"bundle": e.bundle, "url": e.url} for e in corrupted]
     if args.as_json:
         print(
             json.dumps(
                 {
                     "exchanges": rows,
+                    "redaction_corrupted": corrupted_rows,
                     "gate_firings": dict(sorted(tally.items())),
                     "unfired_rules": unfired,
                     "vacuous_briefings": len(vacuous),
@@ -455,6 +475,13 @@ def main() -> int:
         )
     else:
         print(f"Login exchanges replayed: {len(rows)}")
+        if corrupted_rows:
+            print(
+                f"Set aside, redaction-CORRUPTED (the stored URL no longer parses): "
+                f"{len(corrupted_rows)}"
+            )
+            for row in corrupted_rows:
+                print(f"  {row['bundle'][:8]} {row['url']}")
         for row in rows[:25]:
             print(
                 f"  {row['bundle'][:8]} {row['url']}\n"

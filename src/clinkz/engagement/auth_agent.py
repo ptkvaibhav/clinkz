@@ -97,6 +97,7 @@ from pydantic import BaseModel, Field
 
 from clinkz.engagement.auth_state import AuthAssertion, bearer_header
 from clinkz.engagement.secrets import redact_structure
+from clinkz.engagement.token_locator import locate_token
 from clinkz.llm.base import EmptyResponseError, LLMClient
 from clinkz.llm.call_purpose import LLMCallPurpose, llm_call_purpose
 
@@ -151,11 +152,6 @@ BODY_EXCERPT = 400
 #: unusable answer are different events, and a literal repeated at two sites is
 #: how one of them quietly stops being checked.
 _STOP_REASON_TRUNCATED = "max_tokens"
-
-#: Body keys that name a session token. Read only as part of the credential
-#: POST's own DELTA — a token in the response to the credentials is produced by
-#: them, which is exactly what a cookie carried in from an earlier turn is not.
-_TOKEN_KEYS: frozenset[str] = frozenset({"token", "access_token", "accesstoken", "jwt", "id_token"})
 
 #: JSON keys whose VALUE this module will carry into a later proposal's body.
 #: Empty by design — there is no such list. A value is carried because a
@@ -538,14 +534,13 @@ class DispatchResponse(BaseModel):
     def bearer_token(self) -> str:
         """A token this response's JSON body carries, or ``""``.
 
-        The same shapes :meth:`json_values` exposes, filtered to the names an
-        API uses for a session. Read from THIS response, so it is part of the
-        delta rather than part of the jar.
+        Located by STRUCTURE, at any depth
+        (:func:`~clinkz.engagement.token_locator.locate_token`): Juice Shop nests
+        its token under ``authentication``, and a top-level read returned "no
+        token" for a response that had just issued one (D4). Read from THIS
+        response, so it is part of the delta rather than part of the jar.
         """
-        for name, value in self.json_values().items():
-            if name.lower() in _TOKEN_KEYS and value.strip():
-                return value.strip()
-        return ""
+        return locate_token(self.body or "")[0]
 
     def session_headers(self) -> dict[str, str]:
         """The headers this response's session material has to be presented in.
@@ -587,9 +582,9 @@ class DispatchResponse(BaseModel):
             The excerpt, token values replaced, truncated to *limit*.
         """
         body = self.body or ""
-        for name, value in self.json_values().items():
-            if name.lower() in _TOKEN_KEYS and value.strip():
-                body = body.replace(value, f"<{name} REDACTED>")
+        token, where = locate_token(body)
+        if token:
+            body = body.replace(token, f"<{where} REDACTED>")
         return body[:limit]
 
     def json_keys(self) -> list[str]:
@@ -1589,6 +1584,13 @@ def _teach(proposal: AuthProposal, response: DispatchResponse) -> str:
     else:
         parts.append("set no cookie")
     if proposal.kind is ProposalKind.READ:
+        # A READ is described to the model by its SHAPE — key names and a byte
+        # count — and never by the target's text. Deliberate (D4): the model's
+        # next answer chooses where a credential is sent, so a body the target
+        # authored, placed in that prompt, would let the target steer the
+        # destination. What the text would add is solved structurally instead:
+        # a token by :func:`~clinkz.engagement.token_locator.locate_token`, a
+        # login route by the deterministic discovery that runs before this loop.
         keys = response.json_keys()
         if keys:
             parts.append("JSON body carrying key(s) " + ", ".join(keys))

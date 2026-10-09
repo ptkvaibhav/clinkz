@@ -37,6 +37,12 @@ from typing import Any
 #: candidate pool as sets. Written by ``ExploitAgent._trace_plan_sets``.
 PLAN_SETS_PHASE = "plan_sets"
 
+#: Key on a :data:`PLAN_SETS_PHASE` record the ORCHESTRATOR wrote because the
+#: exploit agent never planned — never dispatched, raised, or stopped before its
+#: plan existed. The record says the plan was EMPTY and why, which a comparison
+#: can judge; a missing record is NOT DETERMINED, which it cannot.
+UNPLANNED_REASON_KEY = "unplanned_reason"
+
 #: ``phase_name`` of the ``plan_coverage`` record attributing one persisted
 #: confirmed finding to the task that produced it.
 CONFIRMED_FINDING_PHASE = "confirmed_finding"
@@ -65,6 +71,7 @@ class PlanSets:
     planned: frozenset[tuple[str, str]]
     candidates: frozenset[tuple[str, str]]
     confirmed: frozenset[tuple[str, str]]
+    unplanned_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -126,6 +133,7 @@ def load_plan_sets(bundle_dir: Path) -> PlanSets | None:
         planned=_pairs(plan_record.get("planned", [])),
         candidates=_pairs(plan_record.get("candidates", [])),
         confirmed=frozenset(confirmed),
+        unplanned_reason=str(plan_record.get(UNPLANNED_REASON_KEY) or ""),
     )
 
 
@@ -160,10 +168,15 @@ def compare_plan_sets(baseline: PlanSets | None, later: PlanSets | None) -> Cand
         outcomes.append(PairOutcome(test_method=method, endpoint_url=url, state=state))
     lost = [o for o in outcomes if o.state is not PairState.PLANNED]
     if lost:
+        why = (
+            f"; the later run planned nothing: {later.unplanned_reason}"
+            if later.unplanned_reason
+            else ""
+        )
         return CandidateSetComparison(
             verdict=Verdict.REGRESSION,
             outcomes=outcomes,
-            reason=f"{len(lost)} baseline-confirmed pair(s) not planned by the later run",
+            reason=f"{len(lost)} baseline-confirmed pair(s) not planned by the later run{why}",
         )
     return CandidateSetComparison(verdict=Verdict.PASS, outcomes=outcomes)
 
