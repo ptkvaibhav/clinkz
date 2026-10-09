@@ -51,7 +51,7 @@ stored-bundle measurement keeps that measurement and is marked as carried.
 | R24 | OPEN | `Finding.model_fields` — 14 fields, none names a class |
 | R25 | RESOLVED | `endpoints.method_evidence` column, persisted and reloaded |
 | R26 | RESOLVED | was the second "R13"; renumbered in this walk |
-| R27, R28 | OPEN — new in this walk | below |
+| R27, R28, R29 | OPEN — new in this walk | below |
 
 ---
 
