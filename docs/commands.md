@@ -36,7 +36,8 @@ CLAUDE.md keeps a one-line index of the same set.
   *What was NOT tested* section. **The exit-code contract is the interface**
   (`cli.py::EXIT_CODES`, rendered into `--help`, asserted by the test suite):
   0 completed · 1 failed · 2 bad input · 3 refused before testing · 4 halted ·
-  5 completed but the bundle FAILED the disclosure gate.
+  5 completed but the bundle FAILED the disclosure gate — a credential shape
+  escaped, or the integrity check found redaction had CORRUPTED the record.
   `--rate-limit` and `--max-concurrency` override the engagement's pacing rails;
   **`--max-credential-attempts` bounds how many credential-bearing requests any
   ONE account is offered**, across the whole engagement and all three producers
@@ -56,6 +57,11 @@ CLAUDE.md keeps a one-line index of the same set.
   material? Covers the engagement directory AND the companion artifacts beside
   it; `--bundle-only` asks the narrower question. Exits non-zero if so. Runs
   automatically at the end of every engagement.
+  Two verdicts, always both stated: CLEAN / FAILED is the leak check (credential
+  shapes, unexplained skips); INTACT / CORRUPTED is the integrity check (a
+  redaction marker where a value cannot be — glued to an identifier, as an HTML
+  `type=` keyword, in a NAME position, or as a URL host; register R30). Exit 1
+  unless the bundle is both clean and intact.
 - `python -m clinkz report-pdf <engagement_id> [--outputs-root <dir>] [--out <file>]`
   — re-render the client-facing PDF from `report_<id>.json`. **Offline**: it
   reads the stored, already-redacted structure and sends nothing, which is the

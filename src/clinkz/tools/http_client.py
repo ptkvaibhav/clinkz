@@ -528,8 +528,39 @@ class HTTPClientTool(ToolBase):
         from clinkz.config import settings
 
         if settings.tool_exec_mode == "docker":
-            return await self._execute_curl(args)
-        return await self._execute_aiohttp(args)
+            raw = await self._execute_curl(args)
+        else:
+            raw = await self._execute_aiohttp(args)
+        if args.get("session_mode", SESSION_AMBIENT) == SESSION_NONE:
+            self._observe_redaction_control(args, raw)
+        return raw
+
+    @staticmethod
+    def _observe_redaction_control(args: dict[str, Any], raw: str) -> None:
+        """Teach the redactor what this target says to a request with no session.
+
+        A ``none``-mode request is the anonymous control by construction, so its
+        response is the target's own vocabulary for every registered value the
+        request itself did not carry (register R30;
+        :func:`~clinkz.engagement.secrets.observe_control`).
+        """
+        from clinkz.engagement.secrets import observe_control
+
+        try:
+            body = json.loads(raw).get("response_body") or ""
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            return
+        if not isinstance(body, str):
+            return
+        sent = " ".join(
+            [
+                str(args.get("url", "")),
+                str(args.get("body", "") or ""),
+                json.dumps(args.get("headers") or {}, default=str),
+                json.dumps(args.get("cookies") or {}, default=str),
+            ]
+        )
+        observe_control(body, request_text=sent)
 
     @staticmethod
     def _observe(governor: Any, raw: str, *, session_bearing: bool = True) -> None:

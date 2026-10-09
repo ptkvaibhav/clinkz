@@ -1,4 +1,4 @@
-"""A registration is scoped to where the secret can appear, and a colliding one is refused.
+"""A registration is scoped to where the secret can appear; its spelling is no longer refused.
 
 The two halves of R14's value problem, which have different sources and
 therefore different fixes:
@@ -15,18 +15,13 @@ therefore different fixes:
   window in which it is a secret is the attempt — and that is what the
   registration's lifetime now matches.
 
-* **Spelling.** An operator credential that is a word the engine's own models
-  declare corrupts the engine's own structures, and the two ways it does that
-  both end in ``model_validate`` refusing a document. That cannot be fixed by
-  scoping, because an operator credential is a secret for the whole run. It is
-  refused at INTAKE instead, naming the colliding key — before a packet leaves,
-  rather than at render time when a full engagement has already run.
-
-The two are not alternatives. ``admin`` and ``root`` collide with nothing in the
-vocabulary and would corrupt an English-language target anyway; a credential
-spelled ``password`` is armed for the whole engagement and no scoping helps.
-``test_the_catalogue_words_are_not_refused`` pins that boundary so neither half
-is mistaken for the other.
+* **Spelling — retired by register R30.** An operator credential that spelled
+  a word the engine's own models declare used to be REFUSED at intake, because
+  substring redaction rewrote that schema out of every dump. Redaction is now
+  decided per occurrence by provenance, which never rewrites a schema name or an
+  enum leaf, so the refusal guarded nothing and came out. The tests below pin
+  that those credentials are ACCEPTED, and the dump round-trip that the refusal
+  existed to protect is pinned in ``test_whole_structure_transformations.py``.
 """
 
 from __future__ import annotations
@@ -39,13 +34,10 @@ from typing import Any
 import pytest
 
 from clinkz.engagement.schema_vocabulary import (
-    collisions,
     declared_enum_values,
     declared_field_names,
 )
 from clinkz.engagement.secrets import (
-    CredentialCollisionError,
-    CredentialFileError,
     clear_secrets,
     is_registered,
     load_credential_file,
@@ -83,198 +75,47 @@ def _cred_set(password: str, role: str = "admin") -> CredentialSet:
 
 
 # ---------------------------------------------------------------------------
-# The refusal at intake
+# Intake accepts what it used to refuse (register R30)
 # ---------------------------------------------------------------------------
 
 
-def test_the_four_character_case_is_refused_at_intake() -> None:
-    """``medi`` would rewrite the enum VALUE ``medium`` and lose the deliverable.
-
-    The 4-character floor is ``_MIN_REDACTABLE_LEN``, so this is the shortest
-    credential the registry will accept at all — and it is enough. Nothing about
-    it looks dangerous: it is not a field name, not an enum member, and it is
-    exactly as long as the registry demands.
+@pytest.mark.parametrize(
+    "password",
+    [FOUR_CHAR_COLLISION, PASSWORD_AS_VALUE, "findings", "test_start", "admin", "root"],
+)
+def test_a_credential_that_spells_schema_is_accepted_and_registered(password: str) -> None:
+    """``medi`` (inside the enum value ``medium``), ``password`` and ``findings``
+    (declared field names) were refused at intake. Provenance redaction never
+    rewrites a schema name or an enum leaf, so they register like any other.
     """
-    with pytest.raises(CredentialCollisionError) as raised:
-        register_credential_set(_cred_set(FOUR_CHAR_COLLISION))
-
-    message = str(raised.value)
-    assert "SUBSTRING of a declared enum value" in message, (
-        "the refusal must name the collision - but NOT the word, which would narrow "
-        "the credential to that word's substrings"
-    )
-    assert "clinkz.models.finding.Severity" in message, "and where it is declared"
-    assert "no report.json" in message, "and what registering it would cost"
-
-
-def test_the_password_as_value_case_is_refused_at_intake() -> None:
-    """A credential whose value is the word ``password`` deletes that field name.
-
-    ``password`` is a declared field name, so one registration consumes the KEY
-    end to end — which is the one case ``_redact_key`` still rewrites, correctly,
-    because a key that is nothing but credential material is not schema. The
-    consequence is that every recorded ``{"username": …, "password": …}`` body
-    loses the field NAME, and a field name is schema by the same rule the IDOR
-    oracle states about attribution.
-    """
-    with pytest.raises(CredentialCollisionError) as raised:
-        register_credential_set(_cred_set(PASSWORD_AS_VALUE))
-
-    message = str(raised.value)
-    assert "EXACTLY a declared field name" in message, (
-        "the refusal must name the collision - but not the word, which on THIS arm "
-        "is the credential itself"
-    )
-    assert "clinkz.models.engagement.RoleCredential" in message
-
-
-def test_the_refusal_names_the_change_that_resolves_it() -> None:
-    """A refusal an operator cannot act on is an outage with better prose."""
-    with pytest.raises(CredentialCollisionError) as raised:
-        register_credential_set(_cred_set(FOUR_CHAR_COLLISION))
-    message = str(raised.value)
-    assert "The change that resolves it" in message
-    assert "no flag to skip this" in message, (
-        "the absence of an override is part of the contract — an override is the "
-        "run that produces no report"
-    )
-
-
-def test_the_refusal_does_not_reprint_the_credential_it_refuses() -> None:
-    """A refusal that quotes the credential is a plaintext password on stderr.
-
-    Found by the security review of this change. The field-name predicate is
-    EQUALITY, so the "colliding word" on that arm IS the operator's password,
-    and the first version of the message rendered it — reopening by a different
-    function exactly the window ``describe_credential_validation_error`` exists
-    to close by construction.
-
-    And stderr is not only a terminal. ``scripts/juiceshop_benchmark_run.py``
-    and ``scripts/three_run_envelope.py`` capture a child ``clinkz scan``'s
-    stderr into ``outputs/_juiceshop_benchmark/`` through
-    ``write_redacted_text`` — and the PARENT process never calls
-    ``register_credential_set``, so ``redact`` there has only the shape rules
-    and a password has no shape. The disclosure gate detects through the same
-    shape vocabulary, so it would have certified that companion region CLEAN
-    over a file carrying the client's password.
-
-    The property asserted is stronger than "the value is absent", because the
-    value can be an ordinary English word the boilerplate itself contains: the
-    message must be **independent of the credential**, so two different
-    credentials colliding on the same vocabulary entry produce the same bytes.
-    """
-
-    def refusal(password: str) -> str:
-        clear_secrets()
-        with pytest.raises(CredentialCollisionError) as raised:
-            register_credential_set(_cred_set(password))
-        return str(raised.value)
-
-    # Two different four-character credentials, both substrings of `medium`.
-    assert refusal("medi") == refusal("ediu"), (
-        "the refusal message varies with the credential, so it carries information "
-        "about it — a reader of a captured log must learn nothing"
-    )
-    # And a credential that shares no word with the boilerplate is simply absent.
-    assert "findings" not in refusal("findings")
-    assert "hostnames" not in refusal("hostnames")
-
-
-def test_the_enum_arm_does_not_narrow_the_credential_either() -> None:
-    """Naming the enum word is the same disclosure one step weaker — sometimes not weaker.
-
-    The enum predicate is containment, so printing ``'medium'`` narrows the
-    credential to that word's substrings. For a four-character credential equal
-    to a four-character enum value — ``high``, ``info``, ``bash`` — it discloses
-    it exactly. So neither arm renders a word.
-    """
-    clear_secrets()
-    with pytest.raises(CredentialCollisionError) as raised:
-        register_credential_set(_cred_set("high"))
-    message = str(raised.value)
-    assert "'high'" not in message
-    assert "SUBSTRING of a declared enum value" in message, (
-        "what remains must still be actionable: which kind of collision, and where "
-        "the colliding vocabulary is declared"
-    )
-    assert "clinkz.models.finding.Severity" in message
-
-
-def test_a_refused_set_registers_nothing() -> None:
-    """A refusal leaves the registry exactly as it found it.
-
-    Otherwise a caller that catches the error continues with half a credential
-    set armed, which is the redaction layer in a state no code path intends.
-    """
-    cred_set = CredentialSet(
-        credentials=[
-            RoleCredential(role="user", username="u@example.test", password="Sv3n-Passphrase"),
-            RoleCredential(role="admin", username="a@example.test", password=FOUR_CHAR_COLLISION),
-        ]
-    )
-    with pytest.raises(CredentialCollisionError):
-        register_credential_set(cred_set)
-    assert registered_secret_count() == 0, (
-        "the first credential was registered before the second was refused — a "
-        "partially armed registry is a state nothing else in the engine expects"
-    )
-
-
-def test_the_refusal_is_reachable_through_the_credential_file(tmp_path: Path) -> None:
-    """Intake means the file loader, which is what the CLI calls.
-
-    ``CredentialCollisionError`` subclasses ``CredentialFileError`` so the CLI's
-    existing handler surfaces it as a setup error with exit code 2 — bad input,
-    caught before the engagement opens, with nothing to retry.
-    """
-    path = tmp_path / "creds.json"
-    path.write_text(
-        json.dumps(
-            {"credentials": [{"role": "admin", "username": "a@b.test", "password": "medi"}]}
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(CredentialFileError) as raised:
-        load_credential_file(path)
-    assert isinstance(raised.value, CredentialCollisionError)
-    assert registered_secret_count() == 0
+    register_credential_set(_cred_set(password))
+    assert is_registered(password)
 
 
 def test_an_ordinary_credential_is_accepted() -> None:
-    """The refusal is narrow by construction, not a filter on password strength."""
     for password in ("admin123", "ncc-1701", "Sv3n-Passphrase", "P@ssw0rd", "hunter2"):
         clear_secrets()
         register_credential_set(_cred_set(password))
         assert is_registered(password), password
 
 
-def test_a_credential_too_short_to_register_is_not_refused() -> None:
-    """A value the registry declines cannot corrupt anything, so it collides with nothing.
-
-    ``new`` is a declared enum value of ``FindingStatus`` and three characters
-    long. Refusing it would be a refusal about a registration that never
-    happens — a permanent false alarm, which invariant 77 is explicit about.
-    """
+def test_a_credential_too_short_to_register_is_not_registered() -> None:
+    """``new`` is three characters, below ``_MIN_REDACTABLE_LEN``."""
     assert "new" in declared_enum_values()
     register_credential_set(_cred_set("new"))
-    assert registered_secret_count() == 0, "three characters is below _MIN_REDACTABLE_LEN"
+    assert registered_secret_count() == 0
 
 
-def test_the_catalogue_words_are_not_refused() -> None:
-    """The boundary between the two halves, stated as a test.
-
-    ``admin`` and ``root`` collide with no field name and no enum value in this
-    tree — and they are exactly the words that rewrote an English-language
-    target's prose 711,918 times. The intake refusal cannot help them and does
-    not pretend to; ``provisional_secret`` is the half that does. If this test
-    ever goes red because a model declared a field called ``admin``, the fix is
-    the model's name, not this rule.
-    """
-    for word in ("admin", "root", "test"):
-        assert collisions(word) == (), f"{word} now collides — see the docstring"
-        clear_secrets()
-        register_credential_set(_cred_set(word))
-        assert is_registered(word)
+def test_the_credential_file_path_accepts_a_schema_spelled_password(tmp_path: Path) -> None:
+    creds = tmp_path / "creds.json"
+    creds.write_text(
+        json.dumps(
+            {"credentials": [{"role": "admin", "username": "admin", "password": "password"}]}
+        ),
+        encoding="utf-8",
+    )
+    load_credential_file(creds)
+    assert is_registered("password")
 
 
 # ---------------------------------------------------------------------------
@@ -304,27 +145,6 @@ def test_the_vocabulary_is_computed_from_the_package_not_a_list() -> None:
         "clinkz.models.scope",
     ):
         assert expected in modules, f"{expected} declares models and is not in the vocabulary"
-
-
-def test_a_field_name_collides_on_equality_and_an_enum_value_on_containment() -> None:
-    """The two predicates are different because the two mechanisms are.
-
-    A key survives a registration that leaves residue — that is the key rule —
-    so only an exact match consumes one. An enum VALUE is data and keeps
-    substring redaction, so any substring of it is enough.
-    """
-    assert "findings" in declared_field_names()
-    assert collisions("find") == (), (
-        "a proper substring of a field name leaves residue, so the key survives — "
-        "refusing it would be a refusal about a corruption that does not happen"
-    )
-    assert [c.kind for c in collisions("findings")] == ["field_name"]
-    onfirme = collisions("onfirme")
-    assert {c.kind for c in onfirme} == {"enum_value"}
-    assert "confirmed" in {c.token for c in onfirme}, (
-        "a substring of the enum value 'confirmed' rewrites it and the enum refuses "
-        "the rewritten form"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -401,16 +221,26 @@ def test_the_cal_diy_shape_the_scoping_was_built_for() -> None:
     artifacts = [
         "GET /auth/forgot-password HTTP/1.1",
         "root:x:0:0:root:/root:/bin/bash",
-        "Only the organization's admin or owner can manage SSO settings",
     ]
+    attempt = "POST /login username=root&password=admin"
 
     with provisional_secret("password"), provisional_secret("root"), provisional_secret("admin"):
         during = [redact(a) for a in artifacts]
+        during_attempt = redact(attempt)
     after = [redact(a) for a in artifacts]
 
-    assert all("[REDACTED]" in a for a in during), (
-        "an artifact written DURING the attempt must still be redacted — that is "
+    assert "password=[REDACTED]" in during_attempt, (
+        "the credential the attempt SENT must be redacted while it is armed — that is "
         "the whole of what the registration defends"
+    )
+    assert during[0] == artifacts[0], (
+        "register R30: even while armed, a word inside a URL is part of another "
+        "token, not the credential"
+    )
+    assert during[1].startswith("root:x:0:0:"), (
+        "the LFI oracle's marker keeps its NAME position; the later fields are bare "
+        "values no anonymous response served, so the armed window redacts them — "
+        "fail closed, and only for the length of the attempt"
     )
     assert after == artifacts, (
         "an artifact written after the attempt carries no secret, and rewriting it "

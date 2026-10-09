@@ -2790,3 +2790,40 @@ Otherwise it names what was seen: no login surface, a POST that changed
 nothing, an off-scope sign-in, a second factor (`second_factor_fields`, an
 `autocomplete="one-time-code"` input or a one-time-code field name absent from
 the control), or a captcha or lockout from the governor's stop evidence.
+
+## 119. Redaction is decided by provenance, per occurrence, and fails closed
+
+`admin`/`password` was refused at intake because `password` is a declared field
+name. Disabling the refusal for one process and running DVWA (`e7bd146a`)
+produced a CLEAN gate and a damaged bundle: `password_new` cited as
+`[REDACTED]_new` in the client-facing CSRF evidence, 218 captured pages reading
+`type="[REDACTED]"` (so `corpus-replay` saw no login form), and the brute-force
+probe `wrongpassword0` recorded as `wrong[REDACTED]0`. The same defect had
+already rewritten umami's HOSTNAME out of every URL of `e5d6901e` (its stock
+password is `umami`), which is why `scripts/auth_agent_corpus.py` died on main.
+The redactor was answering "does this text contain these characters?" when the
+question is "did the secret get here?". Re-run with the provenance rules and the
+refusal still off (`857a881c`): 0 `[REDACTED]_new`, 257 of 257 password inputs
+kept, 32 of 32 brute-force probes intact, 0 occurrences of the secret in any
+credential position, gate CLEAN and INTACT, 25 findings as before. The intake
+refusal then came out.
+
+## 120. The disclosure gate claims only what it checks
+
+`e7bd146a`'s gate said CLEAN, and it was true: no credential shape escaped. It
+was also read as a certificate for a bundle with 1,134 structural rewrites. The
+integrity check is read off the bytes, independently of the redactor, so it can
+disagree with the code it audits; swept over the stored corpus it flagged 31
+bundles, every sampled one genuine (the pre-scoping DVWA ladder runs, cal.diy's
+711k-site run, a hash with a secret cut out of it).
+
+## 121. A session token is found by structure; the model sees shape
+
+Juice Shop answered the adaptive layer's cold credential POST with
+`{"authentication": {"token": <JWT>}}`, and a reader of top-level keys reported
+"no token" for a response that had just issued one — so after #152 removed the
+canned route list, Juice Shop needed `login_api_url` declared. The deterministic
+arm had the opposite defect: a key-path list whose first entry was commented
+`# Juice Shop`. One structural locator serves both. Cold re-run: seated by the
+adaptive layer with one credential POST, proven at `/api/users` (200 vs 401).
+D4 — reads shown as shape — was reviewed and kept as the injection boundary it is.

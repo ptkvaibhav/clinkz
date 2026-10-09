@@ -32,30 +32,27 @@ Order is deliberate: shapes run first, so a registered password that arrives
 inside a session token disappears with the whole token rather than leaving a
 partially-masked one behind.
 
-**A registration is scoped to where the secret can appear, and a colliding one
-is refused before it is taken.** Replacement is unconditional and process-wide,
-so a registration's blast radius is every artifact written while it is armed.
-Two rules keep that radius honest, and they address the two sources separately
-because the sources are different:
+**An occurrence is redacted by PROVENANCE, not because it matches**
+(register R30; :mod:`clinkz.engagement.secret_provenance`). A registered value
+used to be replaced as a substring of every string, which for a password that is
+an ordinary word is not redaction: DVWA as ``admin``/``password`` came back
+CLEAN with ``password_new`` cited as ``[REDACTED]_new`` and 218 captured pages
+reading ``type="[REDACTED]"``. Each occurrence is now decided by where it sits —
+the value of a credential field is redacted unconditionally, a field NAME, an
+identifier fragment, a URL host and a unit the target served WITHOUT the
+credential (:func:`observe_control`) are not — and the default, when no rule
+claims it, is to redact.
 
-* **Lifetime** (:func:`provisional_secret`) — a default-credential guess is
-  public until it works, so it is armed for the attempt and released on failure.
-  Registering one for the whole run substring-replaced an ordinary English word
-  out of 711,918 sites on one cal.diy engagement, including the URL
-  ``/auth/forgot-password`` and an LFI oracle's own ``root:x:0:0:`` marker.
-* **Spelling** (:func:`register_credential_set`) — an operator credential that
-  is a word the engine's own models declare is REFUSED at intake, naming the
-  colliding key. Such a value would rewrite the engine's schema out of its own
-  dumps, and a dump a model rejects is no report at all. The vocabulary is
-  computed in :mod:`clinkz.engagement.schema_vocabulary`, never hand-listed.
+**A registration is also scoped in time** (:func:`provisional_secret`): a
+default-credential guess is public until it works, so it is armed for the
+attempt and released on failure. Registering one for the whole run once
+rewrote an ordinary English word out of 711,918 sites on a cal.diy engagement.
 
-**Honest limitation.** Value redaction is a substring replacement, so it can
-only be applied to values long enough to be distinctive. A secret shorter than
-:data:`_MIN_REDACTABLE_LEN` characters is accepted (we do not get to dictate the
-client's password policy) but is NOT substring-redacted, because replacing every
-occurrence of a two-character string would corrupt every artifact it appears in.
-:func:`register_secret` returns ``False`` in that case and the loader warns, so
-the gap is visible rather than silent.
+**Honest limitation.** A secret shorter than :data:`_MIN_REDACTABLE_LEN`
+characters is accepted (we do not get to dictate the client's password policy)
+but is NOT registered, because matching a two-character string would corrupt
+every artifact it appears in. :func:`register_secret` returns ``False`` in that
+case and the loader warns, so the gap is visible rather than silent.
 """
 
 from __future__ import annotations
@@ -75,10 +72,12 @@ from clinkz.engagement.credential_shapes import (
     redact_header_value,
     redact_shapes,
 )
-from clinkz.engagement.schema_vocabulary import (
-    SchemaCollision,
-    collisions,
-    declared_enum_values,
+from clinkz.engagement.schema_vocabulary import declared_enum_values
+from clinkz.engagement.secret_provenance import (
+    control_units,
+    is_schema_name,
+    is_secret_occurrence,
+    iter_occurrences,
 )
 from clinkz.models.engagement import CredentialSet, RoleCredential
 
@@ -105,6 +104,13 @@ _GIT_TIMEOUT = 5.0
 #: silently off for the rest of the run. A count releases only the registration
 #: its own caller took.
 _SECRETS: dict[str, int] = {}
+
+#: Per registered value, the signatures of its occurrences in responses the
+#: target served WITHOUT the credential — the control that tells the target's
+#: own vocabulary from an echo (register R30;
+#: :mod:`clinkz.engagement.secret_provenance`). Learned only from a response the
+#: caller vouches for, via :func:`observe_control`.
+_CONTROLS: dict[str, set[str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +180,40 @@ def clear_secrets() -> None:
     the engagement that supplied it.
     """
     _SECRETS.clear()
+    _CONTROLS.clear()
+
+
+def observe_control(body: str, *, request_text: str = "") -> int:
+    """Learn the target's own vocabulary from a response served WITHOUT a secret.
+
+    The control half of redaction by provenance (register R30). A registered
+    value the target serves to a request that never carried it — DVWA's
+    anonymous login GET says ``type="password"`` and ``name="password"`` — is
+    the target's vocabulary, and the same unit elsewhere is not an echo.
+
+    The caller vouches that the request carried no session derived from a
+    credential. *request_text* (URL, headers and body, concatenated) is checked
+    here too: a request that carried a registered value cannot be a control for
+    that value, so it teaches nothing about it.
+
+    Args:
+        body: The response body.
+        request_text: Everything the request sent, for the carried-secret check.
+
+    Returns:
+        How many new signatures were learned (never the values).
+    """
+    if not body or not _SECRETS:
+        return 0
+    learned = 0
+    for secret in list(_SECRETS):
+        if secret in request_text or secret not in body:
+            continue
+        units = control_units(body, secret)
+        known = _CONTROLS.setdefault(secret, set())
+        learned += len(units - known)
+        known |= units
+    return learned
 
 
 class ProvisionalSecret:
@@ -267,8 +307,39 @@ def redact(text: str) -> str:
     # shorter one turns it into "[REDACTED]xyz".
     for secret in sorted(_SECRETS, key=len, reverse=True):
         if secret in out:
-            out = out.replace(secret, REDACTION_PLACEHOLDER)
+            out = _redact_occurrences(out, secret)
     return out
+
+
+def _redact_occurrences(text: str, secret: str) -> str:
+    """Replace the occurrences of *secret* that ARE the secret, and only those.
+
+    Register R30: a substring replacement rewrote ``password_new`` into
+    ``[REDACTED]_new`` and ``type="password"`` into ``type="[REDACTED]"``. Each
+    occurrence is now decided by provenance
+    (:func:`~clinkz.engagement.secret_provenance.is_secret_occurrence`), whose
+    default is to redact.
+    """
+    controls = frozenset(_CONTROLS.get(secret, ()))
+    # A shape marker's label is the engine's own text — ``[REDACTED:HEADER
+    # password sha256=…]`` names the header the value arrived under — so an
+    # occurrence inside one is not the secret. Only labelled markers carry text.
+    labels = [
+        m.span() for m in _REDACTION_SPAN_RE.finditer(text) if m.group() != REDACTION_PLACEHOLDER
+    ]
+    pieces: list[str] = []
+    cursor = 0
+    for start in iter_occurrences(text, secret):
+        if any(lo <= start < hi for lo, hi in labels):
+            continue
+        if is_secret_occurrence(text, start, secret, controls):
+            pieces.append(text[cursor:start])
+            pieces.append(REDACTION_PLACEHOLDER)
+            cursor = start + len(secret)
+    if not pieces:
+        return text
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 #: A redaction marker as it appears in already-redacted text — ``[REDACTED]`` and
@@ -346,34 +417,23 @@ def _redact_key(key: Any) -> Any:
     """
     if not isinstance(key, str):
         return key
-    redacted = redact(key)
+    # Shapes only. A registered VALUE is never placed in a key position by any
+    # producer — the engine writes field names there, and so does the target —
+    # so a registry match on a key is a coincidence of spelling by construction.
+    # Measured on ``e7bd146a`` (register R30): with ``password`` registered, a
+    # parsed form's ``{"password": …}`` key was the one thing the whole-key rule
+    # below still rewrote, because the key IS the registered word end to end.
+    # The one registry case left is a key that IS a registered value end to end
+    # and is provably nobody's schema name — a dict keyed BY the credential.
+    if key in _SECRETS and not is_schema_name(key, frozenset(_CONTROLS.get(key, ()))):
+        return REDACTION_PLACEHOLDER
+    redacted = redact_shapes(key)
     if redacted == key:
         return key
-    # Did the redaction consume the whole key, or just a piece of it? What is
-    # left after every marker is removed is the part that was NOT credential
-    # material. Anything left means the key is schema.
+    # Did the shape consume the whole key, or just a piece of it? Anything left
+    # after the markers means the key is schema with a token-shaped fragment.
     residue = _REDACTION_SPAN_RE.sub("", redacted).strip()
-    if residue:
-        return key
-    # Nothing survived the markers — but by HOW MANY redactions? Two or more
-    # REGISTRY spans mean the key was TILED by separate registrations, which is a
-    # coincidence of spellings rather than a key that is credential material. It
-    # is not merely lossy either, it COLLIDES: with ``test``, ``_end``, ``find``
-    # and ``ings`` registered, ``test_end`` and ``findings`` both render
-    # ``[REDACTED][REDACTED]``, so two fields merge into one and one of the two
-    # values is silently discarded.
-    #
-    # Only registry spans can tile by coincidence. A SHAPE span is an intrinsic-
-    # structure claim — a JWT, a PEM block, an `Authorization` value — and no
-    # schema vocabulary in this tree is spelled like one, so any number of them
-    # consuming the whole key still means the key is data. Every shape
-    # replacement carries the labelled marker ``[REDACTED:`` and the value
-    # registry always writes the bare ``[REDACTED]``, so the two are separable by
-    # inspection rather than by provenance tracking.
-    registry_spans = sum(
-        1 for span in _REDACTION_SPAN_RE.findall(redacted) if span == REDACTION_PLACEHOLDER
-    )
-    return key if registry_spans > 1 else redacted
+    return key if residue else redacted
 
 
 @lru_cache(maxsize=1)
@@ -504,15 +564,6 @@ def redact_structure(obj: Any) -> Any:
 
 class CredentialFileError(Exception):
     """Raised when a credential file is unusable or unsafe to read."""
-
-
-class CredentialCollisionError(CredentialFileError):
-    """Raised when a credential is a word the engine's own schema declares.
-
-    A subclass of :class:`CredentialFileError` so every existing intake caller
-    already surfaces it as a setup error with exit code 2 — this is bad input,
-    caught before the engagement opens, and there is nothing to retry.
-    """
 
 
 def describe_credential_validation_error(exc: Exception) -> str:
@@ -666,39 +717,6 @@ def prompt_for_credentials(roles: list[str]) -> CredentialSet:
     return cred_set
 
 
-def _collision_refusal(role: str, found: tuple[SchemaCollision, ...]) -> str:
-    """The refusal message, naming the colliding key and the change that fixes it."""
-    lines = [
-        f"Refusing the engagement: the credential for role '{role}' is a word the "
-        "engine's own schema declares.",
-        "",
-        "  It collides with:",
-    ]
-    lines += [f"    - {collision.describe()}" for collision in found]
-    lines += [
-        "",
-        "  Why this is a refusal and not a warning: every registered secret is "
-        "replaced as a SUBSTRING in every artifact the engine writes, and the "
-        "engine's artifacts are dumps of its own models. A redaction that lands on "
-        "schema rather than on data removes part of the structure, and the line "
-        "above says which - a rejected dump means the run ends with no deliverable "
-        "at all, a deleted key means an artifact that writes with a field missing. "
-        "Neither has a symptom before the end of the run, which is why this is "
-        "caught here and not at render time.",
-        "",
-        "  The change that resolves it: give this account a password that is not "
-        "one of the words above. Any value that is not exactly a field name the "
-        "engine declares, and not a substring of one of its enum values, is "
-        "accepted - which is every password that is not an English word this "
-        "codebase happens to spell.",
-        "",
-        "  There is deliberately no flag to skip this. The alternative to changing "
-        "the password is registering it anyway, and that is the run that produces "
-        "no report.",
-    ]
-    return "\n".join(lines)
-
-
 def register_credential_set(cred_set: CredentialSet) -> None:
     """Register every secret in *cred_set* with the redaction chokepoint.
 
@@ -715,30 +733,18 @@ def register_credential_set(cred_set: CredentialSet) -> None:
     ``scripts/_artifact_io.py`` split encodes one layer out: the engine's
     redaction reaches only where the engine was told what to redact.
 
-    **This is also where a colliding credential is refused, and the refusal is at
-    INTAKE rather than at render time.** A credential that is a word the engine's
-    own schema declares will, once registered, rewrite that schema out of the
-    structures the engine dumps — and the two ways it does that both end in
-    ``model_validate`` rejecting the document, which writes no report.json, no
-    Markdown and no PDF. Discovering that at render time means discovering it
-    after a full engagement has run; discovering it here costs the operator one
-    password change before a single packet leaves. The vocabulary is COMPUTED
-    from the models themselves
-    (:mod:`clinkz.engagement.schema_vocabulary`), so it is not a list to keep
-    current.
-
-    Nothing is registered unless every credential passes: a refusal must leave
-    the registry exactly as it found it, or a caller that catches the error is
-    running with half a credential set armed.
-
-    Raises:
-        CredentialCollisionError: A credential collides with the engine's own
-            declared field names or enum vocabularies.
+    **Nothing is refused here any more** (register R30). A credential that
+    spelled one of the engine's own field names used to be refused at intake,
+    because substring redaction would have rewritten that schema out of every
+    dump. Redaction is now decided per occurrence by provenance
+    (:mod:`clinkz.engagement.secret_provenance`), which never rewrites a schema
+    name or an enum leaf, so ``admin``/``password`` is registered like any other
+    credential. Measured on DVWA before the refusal came out — see the register.
     """
 
     # A supplied session's cookie and header values are secrets on exactly the
     # same terms as a password — a session token in an artifact is a login — so
-    # they pass the same collision check and land in the same registry.
+    # they land in the same registry.
     def _role_secrets() -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
         for cred in cred_set.credentials:
@@ -746,16 +752,6 @@ def register_credential_set(cred_set: CredentialSet) -> None:
             if cred.session is not None:
                 pairs.extend((cred.role, value) for value in cred.session.secret_values())
         return pairs
-
-    for role, secret in _role_secrets():
-        if not secret or len(secret) < _MIN_REDACTABLE_LEN:
-            # Too short to be registered at all, so too short to corrupt
-            # anything. The warning for that case is below, on the same branch
-            # that declines to register it.
-            continue
-        found = collisions(secret)
-        if found:
-            raise CredentialCollisionError(_collision_refusal(role, found))
 
     for role, secret in _role_secrets():
         if not secret:
@@ -811,7 +807,6 @@ def _is_inside_repo(path: Path) -> bool:
 
 __all__ = [
     "REDACTION_PLACEHOLDER",
-    "CredentialCollisionError",
     "CredentialFileError",
     "ProvisionalSecret",
     "clear_secrets",

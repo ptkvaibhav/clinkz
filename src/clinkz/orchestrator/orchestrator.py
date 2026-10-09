@@ -117,6 +117,7 @@ from clinkz.observability.audit import (
     audit_summary,
     set_active_audit_register,
 )
+from clinkz.observability.candidate_regression import PLAN_SETS_PHASE, UNPLANNED_REASON_KEY
 from clinkz.observability.component_registry import (
     EngagementReachability,
     ReachabilitySource,
@@ -1298,6 +1299,12 @@ class OrchestratorAgent:
                 set_active_scope_refusal_log(None)
                 set_active_spend_ledger(None)
                 self._scope_refusals = None
+
+                # Every run carries a plan-set record, so a later regression
+                # check can JUDGE it rather than answer NOT DETERMINED. The
+                # exploit agent writes the real one; when it never planned, the
+                # record says the plan was empty and why.
+                self._ensure_plan_sets_recorded(trace_writer, summary)
 
                 # Always close + unset the trace writer so module-level state
                 # cannot leak between back-to-back engagements (relevant in
@@ -4600,6 +4607,38 @@ class OrchestratorAgent:
                 agent._principals = parse_role_sessions(principals)
         return pushed
 
+    def _ensure_plan_sets_recorded(self, writer: TraceWriter, summary: dict[str, Any]) -> None:
+        """Write an EMPTY plan-set record, with its reason, when exploit never planned.
+
+        ``candidate_set_regression.py`` answers NOT DETERMINED for a bundle with
+        no plan-set record, and that is correct for a bundle written before the
+        record existed. For a run of this engine it must stay rare, so the
+        orchestrator — the one component that knows whether the exploit phase
+        ran — states the plan it ended with when the agent did not: nothing,
+        because the phase never dispatched, raised, or stopped before planning.
+        An empty plan is a fact a comparison can grade; a missing one is not.
+        """
+        if writer.has_methodology_phase("plan_coverage", PLAN_SETS_PHASE):
+            return
+        exploit = (summary.get("phases") or {}).get("exploit")
+        if not isinstance(exploit, dict) or not exploit:
+            reason = "the exploit phase was never dispatched"
+        elif exploit.get("status") in {"error", "failed"}:
+            reason = f"the exploit phase failed before planning: {exploit.get('error', '')}"
+        else:
+            reason = (
+                f"the exploit phase returned (status {exploit.get('status', 'unknown')!r}) "
+                "without recording a plan"
+            )
+        writer.methodology_phase(
+            stage="exploit",
+            skill="plan_coverage",
+            phase_number=0,
+            phase_name=PLAN_SETS_PHASE,
+            payload_summary=f"planned=0 candidates=0 — {reason}",
+            extra={"planned": [], "candidates": [], UNPLANNED_REASON_KEY: reason},
+        )
+
     def _run_disclosure_gate(self, engagement_id: str) -> dict[str, Any]:
         """Scan the finished bundle for credential material and report it.
 
@@ -4641,8 +4680,23 @@ class OrchestratorAgent:
                 outputs_root,
                 root / SCAN_REPORT_FILENAME,
             )
+        if report.clean and report.corrupted:
+            self._logger.error(
+                "DO NOT CERTIFY %s — no credential escaped, but redaction rewrote "
+                "schema or target vocabulary at %d site(s), so the record no longer "
+                "says what happened. See %s.",
+                root,
+                len(report.integrity_findings),
+                root / SCAN_REPORT_FILENAME,
+            )
+        if not report.clean:
+            status = "credential_material_found"
+        elif report.corrupted:
+            status = "corrupted"
+        else:
+            status = "clean"
         return {
-            "status": "clean" if report.clean else "credential_material_found",
+            "status": status,
             "root": str(root),
             "report_file": str(root / SCAN_REPORT_FILENAME),
             "files_scanned": report.files_scanned,
@@ -4652,6 +4706,8 @@ class OrchestratorAgent:
             "credential_findings": len(report.findings),
             "companion_credential_findings": len(companion_findings),
             "advisory_suspicions": len(report.suspicions),
+            "integrity_findings": len(report.integrity_findings),
+            "certifiable": report.certifiable,
             "summary": report.summary_line(),
         }
 

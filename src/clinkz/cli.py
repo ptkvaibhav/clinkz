@@ -73,7 +73,8 @@ EXIT_CODES: tuple[tuple[int, str], ...] = (
     (
         EXIT_UNSHAREABLE,
         "the engagement completed but its artifact bundle FAILED the disclosure gate - "
-        "do not share it until `clinkz artifact-scan` is clean",
+        "credential material escaped, or redaction CORRUPTED the record; do not share "
+        "it until `clinkz artifact-scan` is clean and intact",
     ),
 )
 
@@ -711,6 +712,14 @@ def _report_outcome(result: dict[str, Any]) -> int:
             err=True,
         )
         return EXIT_UNSHAREABLE
+    if disclosure.get("status") == "corrupted":
+        typer.echo(
+            f"\nDO NOT CERTIFY {disclosure.get('root')} — no credential escaped, but "
+            f"redaction rewrote schema or target vocabulary, so the bundle is no longer "
+            f"the record of the run. See {disclosure.get('report_file')}.",
+            err=True,
+        )
+        return EXIT_UNSHAREABLE
 
     if status == "halted":
         typer.echo(
@@ -942,11 +951,9 @@ def _run_resume(engagement_id: str, *, db_path: Path) -> None:
     # asserted by the logic that produced it is not checked at all.
     root = _default_outputs_root() / cleaned
     report = run_disclosure_gate(root, engagement_id=cleaned)
-    if not report.clean:
+    if not report.certifiable:
         typer.echo(
-            f"\nDO NOT SHARE {root} — the artifact disclosure gate found "
-            f"{len(report.findings)} credential shape(s). See "
-            f"{root / SCAN_REPORT_FILENAME}.",
+            f"\nDO NOT SHARE {root} — {report.summary_line()} See {root / SCAN_REPORT_FILENAME}.",
             err=True,
         )
         raise typer.Exit(code=EXIT_UNSHAREABLE)
@@ -1144,7 +1151,7 @@ def artifact_scan(
                 f"\n{beside} of these are companion artifacts, not written by "
                 f"{cleaned}. They are still in the directory an operator would share."
             )
-    if not report.clean:
+    if not report.certifiable:
         raise typer.Exit(code=1)
 
 

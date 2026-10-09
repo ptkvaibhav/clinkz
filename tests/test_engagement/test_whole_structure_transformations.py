@@ -118,8 +118,13 @@ DECLARED: dict[str, tuple[str, str]] = {
     "engagement/secrets.py::redact_structure": (
         _Keys.TRANSFORMED,
         "the one member that rewrites keys, and the only one that asks the question "
-        "explicitly: _redact_key rewrites a key only when a SINGLE redaction consumed it "
-        "end to end, so a key that merely contains a registered word stays schema",
+        "explicitly: _redact_key rewrites a key only when a shape consumed it end to end, "
+        "or when it IS a registered value nobody's schema spells (register R30)",
+    ),
+    "engagement/token_locator.py::_walk": (
+        _Keys.READ,
+        "collects every string leaf of a login response with its key PATH, which the "
+        "locator then reads to see whether a key names a token; keys are never rewritten",
     ),
     "agents/_api_schema.py::_object_field_names": (
         _Keys.READ,
@@ -506,13 +511,17 @@ def test_the_leaf_exemption_is_exact_and_does_not_protect_ordinary_data() -> Non
     out = redact_structure(
         {
             "severity": "medium",
-            "body": "risk=medium&note=medical",
-            "url": "http://target.example/media/upload",
+            "body": "risk=medium&pw=medi",
+            "echo": "medium medi",
         }
     )
     assert out["severity"] == "medium", "an exact engine word is schema"
-    assert "medi" not in out["body"], "a leaf CONTAINING one is data and keeps redaction"
-    assert "medi" not in out["url"]
+    assert out["body"] == "risk=medium&pw=[REDACTED]", (
+        "a leaf CONTAINING an engine word is data, and the credential beside it is still redacted"
+    )
+    assert out["echo"] == "medium [REDACTED]", (
+        "an engine word next to the credential is not a suppression primitive"
+    )
 
 
 def test_the_leaf_exemption_covers_every_enum_the_models_declare() -> None:
@@ -537,7 +546,7 @@ def test_the_leaf_exemption_covers_every_enum_the_models_declare() -> None:
         )
 
     clear_secrets()
-    register_secret("sett")
+    register_secret("settlement")
     assert redact_structure({"f": "settlement"})["f"] != "settlement", (
         "an undeclared word must keep substring redaction — the exemption is the "
         "engine's vocabulary, not a list of words that look like schema"
@@ -628,11 +637,11 @@ def test_a_key_consumed_by_one_registration_is_still_redacted() -> None:
     ``PentestReport``'s 125 declared field names could be consumed this way, 14
     of them required. It is the value half of R14.
     """
-    register_secret("admin")
-    out = redact_structure({"admin": "counted", "admin_role": "kept"})
-    assert "admin" not in out
+    register_secret("qz7-Lantern")
+    out = redact_structure({"qz7-Lantern": "counted", "qz7-Lantern_role": "kept"})
+    assert "qz7-Lantern" not in out
     assert out["[REDACTED]"] == "counted"
-    assert out["admin_role"] == "kept"
+    assert out["qz7-Lantern_role"] == "kept"
 
 
 def test_a_key_made_only_of_shape_spans_is_still_data() -> None:
@@ -655,3 +664,19 @@ def test_a_key_made_only_of_shape_spans_is_still_data() -> None:
         "material; only two REGISTRY spans are a spelling coincidence"
     )
     assert all("eyJhbGci" not in key for key in out)
+
+
+def test_a_credential_equal_to_a_declared_field_name_still_writes_a_report() -> None:
+    """Register R30: the case the intake refusal existed for, now handled by redaction.
+
+    ``password``, ``findings`` and ``test_start`` are declared field names. Under
+    substring redaction each consumed its key end to end and the dump failed to
+    validate, so they were refused at intake. With provenance redaction a key the
+    engine's own source spells is never rewritten.
+    """
+    dumped = _populated_report().model_dump(mode="json")
+    for name in ("password", "findings", "test_start", "severity", "medi"):
+        register_secret(name)
+    revalidated = PentestReport.model_validate(redact_structure(dumped))
+    assert revalidated.findings, "findings survived as a key"
+    assert revalidated.findings[0].severity.value == "medium"
