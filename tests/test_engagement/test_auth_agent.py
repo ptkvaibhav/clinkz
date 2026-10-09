@@ -151,9 +151,50 @@ def gate(proposal: AuthProposal, **overrides):  # noqa: ANN201
         "credential_budget_remaining": 4,
         "reads_remaining": 4,
         "already_refused": frozenset(),
+        "off_scope_sign_in": "",
     }
     kwargs.update(overrides)
     return validate_proposal(proposal, **kwargs)
+
+
+class TestTheOffScopeSignIn:
+    """Invariant 117 on the adaptive path: an observed off-scope sign-in closes it."""
+
+    _SEEN = "GET http://t.test/api/auth/login -> 302 http://idp.test/realms/r/auth"
+
+    def test_a_credential_post_is_refused_once_sign_in_was_seen_off_scope(self) -> None:
+        verdict = gate(
+            AuthProposal(url="http://t.test/api/login", identity_field="email"),
+            off_scope_sign_in=self._SEEN,
+        )
+        assert not verdict.allowed
+        assert verdict.refusal is ProposalRefusal.SIGN_IN_OFF_SCOPE
+        assert "idp.test" in verdict.reason
+
+    def test_reads_stay_permitted(self) -> None:
+        """Reading costs no credential; the model may still look around."""
+        verdict = gate(
+            AuthProposal(kind=ProposalKind.READ, method="GET", url="http://t.test/app.js"),
+            off_scope_sign_in=self._SEEN,
+        )
+        assert verdict.allowed
+
+    def test_absent_the_observation_the_rule_is_silent(self) -> None:
+        verdict = gate(AuthProposal(url="http://t.test/session", identity_field="email"))
+        assert verdict.allowed
+
+    def test_the_briefing_states_it(self) -> None:
+        briefing = OBSERVATION.model_copy(update={"off_scope_sign_ins": [self._SEEN]}).as_briefing()
+        assert "OUTSIDE the engagement scope" in briefing
+        assert "idp.test" in briefing
+
+
+def test_a_page_with_no_inputs_is_not_described_as_loose_inputs() -> None:
+    """D5: "read from inputs outside any form" fired on a shell with no inputs."""
+    bare = OBSERVATION.model_copy(update={"page_declared_a_form": False, "form_field_names": []})
+    briefing = bare.as_briefing()
+    assert "outside any form" not in briefing
+    assert "NO <form> element and NO input at all" in briefing
 
 
 class TestTheGate:
@@ -665,7 +706,7 @@ class TestTheObservation:
             verdict_evidence="nothing was set",
         )
         observation = observation_from_auth_result(
-            result, base_url="http://t.test", components=["next@15.0.0"]
+            result, base_url="http://t.test", components=["next@15.0.0"], off_scope_sign_ins=[]
         )
         assert observation.form_field_names == ["csrfToken", "email", "password"]
         assert observation.framework_fingerprint == "X-Powered-By: SomeFramework"

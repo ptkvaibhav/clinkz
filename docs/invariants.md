@@ -2361,12 +2361,12 @@ referenceable NAMES, the loop stores the values, and the model sees only the
 names — which is what makes an application needing a fetched token reachable
 without the model ever authoring the token.
 
-**"Could it send something we would not have sent?"** No. Ten deterministic
+**"Could it send something we would not have sent?"** No. Eleven deterministic
 refusals, each named, each with its own fix, and every one of them a rule this
 engine would apply to a request from any source — a gate whose rules only make
 sense because a model wrote the input is a gate nobody can reason about. The
 `destructive` refusal is `safety/destructive.py` unchanged: a login shape is not
-a licence to POST anywhere.
+a licence to POST anywhere. The eleventh, `sign_in_off_scope`, refuses every credential POST once login discovery has seen the application send its sign-in to an origin outside scope (invariant 117).
 
 **Deterministic first is a property of the call graph**, not a comment.
 `_adaptive_auth` has exactly two call sites, both in `_authenticate_role`, each
@@ -2749,3 +2749,44 @@ reach disclosure's own denominator. A declaration is held to the call site's bar
 a manifest names the route and says nothing about what it accepts.
 
 **Detail → `docs/analysis/spa-write-surface-blocker.md` §7.**
+
+## 117. A credential goes only to a destination something OBSERVED to be a login
+
+"Nothing proven ⇒ `None`, never the root URL" already held in detection, and
+it was undone at the call site. `_establish_authenticated_state` called
+`_authenticate_role(cred, detection.login_url or discovered_login or base_url)`.
+Behind that sat two copies of a six-entry route list led by `/rest/user/login`,
+which is Juice Shop's route: a benchmark constant in production code. Detection
+POSTed empty credentials at the list and accepted any 4xx as "a login that
+exists", and the JSON arm then offered the real credential to every entry.
+On the separate-origin IdP fixture that came to five credential POSTs per
+account, three to the site root and two to Juice Shop's route. None of the
+destinations had been shown to be a login.
+
+There are now three sources, and only three: a form the target rendered with a
+password input, a declaration, and a proposal the adaptive layer's gate
+admitted. An undeclared page that renders no password input is READ and never
+posted to (`no_login_surface`). When login discovery sees the application send
+its sign-in off scope, it records the redirect instead of following it, names
+it in the abort, and closes the adaptive path with an eleventh refusal
+(`sign_in_off_scope`). The domain is computed over every call into a
+credential sender that takes a URL, and every holder of a login-shaped path
+literal is classified (`tests/test_safety/test_credential_destination_domain.py`).
+
+**Detail → `docs/productization-engagement-safety.md`,
+`docs/analysis/spa-separate-origin-idp.md`.**
+
+## 118. "The credentials are wrong" requires a refusal attributable to the credential
+
+This was the third time the sentence was false. The first was after a POST
+whose response was the login page byte for byte (invariant 99). The second was
+after a 405 from a route the engine had guessed. The third was on a
+separate-origin IdP, where no destination that could judge the credential ever
+saw it. `LoginJudgement.credential_refused` is set on exactly two observations:
+a 401, and a refusal marker the login page served without credentials does not
+carry (only when a control was held). A 403 does not count, because it is also
+every CSRF rejection a framework issues. The abort quotes the observation.
+Otherwise it names what was seen: no login surface, a POST that changed
+nothing, an off-scope sign-in, a second factor (`second_factor_fields`, an
+`autocomplete="one-time-code"` input or a one-time-code field name absent from
+the control), or a captcha or lockout from the governor's stop evidence.

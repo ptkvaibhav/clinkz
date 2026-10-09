@@ -36,6 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from clinkz.agents._url_safety import is_state_changing_url
 from clinkz.comms.bus import MessageBus
 from clinkz.comms.message import AgentMessage, MessageType
 from clinkz.comms.protocol import ORCHESTRATOR
@@ -196,6 +197,16 @@ MAX_CROSS_PHASE_RESPINS = 3
 #: reported, not logged and forgotten), and an operator whose login page falls
 #: outside it declares ``login_url`` on the role.
 LOGIN_SHAPE_PROBE_BUDGET = 40
+
+#: How many of the landing page's scripts login discovery reads for path
+#: literals. Each is one GET; the shape-probe budget above still bounds what is
+#: tested.
+LOGIN_SCRIPT_READ_BUDGET = 8
+
+#: A quoted absolute path in a script: ``"/api/auth/login"``, ``'/signin'``. The
+#: query string and fragment are not part of the match; ``//`` (a
+#: protocol-relative URL) is excluded because it names another host.
+_SCRIPT_PATH_LITERAL_RE = re.compile(r"""["'`](/(?!/)[A-Za-z0-9_\-./~]{1,120})(?=["'`?#])""")
 
 #: Role name a session established by the DEFAULT-CREDENTIAL sweep is filed
 #: under. Distinct from any supplied role on purpose: "a credential the client
@@ -439,6 +450,12 @@ class OrchestratorAgent:
         # Cache for _probe_url results to avoid repeated slow HTTP HEAD requests
         self._probe_cache: dict[str, int | None] = {}
         self._login_shape_cache: dict[str, bool] = {}
+        #: Login-discovery GETs answered with a redirect to a host OUTSIDE scope —
+        #: ``(requested, destination, status)``. Not followed: the destination is
+        #: the target's choice and the operator never authorised it. Recorded,
+        #: because on a separate-origin IdP it is the one observation that
+        #: explains why no login was found on this origin.
+        self._off_scope_login_redirects: list[tuple[str, str, int]] = []
         self.LOGIN_SHAPE_PROBE_BUDGET = LOGIN_SHAPE_PROBE_BUDGET
 
         # ---- Productization P1 --------------------------------------------
@@ -2824,8 +2841,16 @@ class OrchestratorAgent:
         candidates: list[str] = []
 
         def offer(url: str) -> None:
-            """Collect a candidate URL. No name filter — that is the whole point."""
-            if url.startswith(("http://", "https://")) and url not in candidates:
+            """Collect a candidate URL. No name filter — that is the whole point.
+
+            A state-changing URL (``/logout``, ``/delete``) is never a candidate:
+            the shape test is a GET, and crawl-safety guards every visit.
+            """
+            if (
+                url.startswith(("http://", "https://"))
+                and url not in candidates
+                and not is_state_changing_url(url)
+            ):
                 candidates.append(url)
 
         # --- Free-text URLs in recon's own summary ---
@@ -2861,6 +2886,16 @@ class OrchestratorAgent:
         for base in probe_bases:
             for href in await self._linked_urls(base):
                 offer(href)
+
+        # --- Same-origin paths the landing page's SCRIPTS name ---
+        # An SPA shell links nothing: its login entry is a string literal in
+        # the bundle (``window.location.assign("/api/auth/login")``). Reading it
+        # is the same kind of observation as reading an anchor, and the shape
+        # test below still decides; only ``offer`` order and the probe budget
+        # bound how many are asked.
+        for base in probe_bases:
+            for path_url in await self._script_path_literals(base):
+                offer(path_url)
 
         # --- Conventional paths on each scope base ---
         # Stack-neutral paths first; the two extension-bearing ones are a
@@ -3002,11 +3037,86 @@ class OrchestratorAgent:
             parsed = http.parse_output(raw)
             if parsed.status_code and parsed.status_code < 400:
                 result = self._login_shape_of(parsed.response_body or "")
+            self._note_off_scope_redirect(url, parsed.status_code, parsed.response_headers)
         except Exception:
             result = False
 
         self._login_shape_cache[url] = result
         return result
+
+    def _note_off_scope_redirect(
+        self, url: str, status: int | None, headers: dict[str, str] | None
+    ) -> None:
+        """Record a 3xx from *url* whose ``Location`` leaves the engagement scope."""
+        if not status or not 300 <= status < 400:
+            return
+        location = next(
+            (v for k, v in (headers or {}).items() if k.lower() == "location" and v), ""
+        )
+        if not location:
+            return
+        from urllib.parse import urljoin
+
+        destination = urljoin(url, location)
+        try:
+            in_scope = self._scope.contains(destination) if self._scope else True
+        except Exception:  # noqa: BLE001 — unparseable is not in scope
+            in_scope = False
+        if in_scope:
+            return
+        entry = (url, destination, status)
+        if entry not in self._off_scope_login_redirects:
+            self._off_scope_login_redirects.append(entry)
+            self._logger.warning(
+                "GET %s answered %d redirecting to %s, OUTSIDE the engagement scope — "
+                "not followed. If this is where the application signs users in, the "
+                "login lives on an origin the operator did not authorise.",
+                url,
+                status,
+                destination,
+            )
+
+    async def _script_path_literals(self, base: str) -> list[str]:
+        """Same-origin absolute paths quoted in the scripts *base* references.
+
+        One GET for the page and one per script, capped at
+        :data:`LOGIN_SCRIPT_READ_BUDGET`. Only literals that begin with ``/``
+        are taken — a path the bundle itself spells, resolved against *base*'s
+        origin — and query strings are dropped. Nothing here decides that a
+        path is a login; the shape test does.
+        """
+        from urllib.parse import urlparse
+
+        from clinkz.tools.auth import _referenced_scripts
+        from clinkz.tools.http_client import HTTPClientTool
+
+        async def _read(url: str) -> str:
+            try:
+                http = HTTPClientTool(
+                    scope=self._scope, timeout=10, engagement_id=self._engagement_id or ""
+                )
+                validated = http.validate_input({"url": url, "method": "GET"})
+                parsed = http.parse_output(
+                    await asyncio.wait_for(http.execute(validated), timeout=10)
+                )
+            except Exception as exc:  # noqa: BLE001 — a read that fails offers nothing
+                self._logger.debug("Could not read %s for login candidates: %s", url, exc)
+                return ""
+            if not parsed.status_code or parsed.status_code >= 400:
+                return ""
+            return parsed.response_body or ""
+
+        page = await _read(base)
+        if not page:
+            return []
+        origin = urlparse(base)
+        found: list[str] = []
+        for script in _referenced_scripts(page, base)[:LOGIN_SCRIPT_READ_BUDGET]:
+            for path in _SCRIPT_PATH_LITERAL_RE.findall(await _read(script)):
+                absolute = f"{origin.scheme}://{origin.netloc}{path}"
+                if absolute not in found:
+                    found.append(absolute)
+        return found
 
     @staticmethod
     def _login_shape_of(body: str) -> bool:
@@ -3241,7 +3351,7 @@ class OrchestratorAgent:
         # Use the login URL base to check a protected page
         from urllib.parse import urlparse
 
-        parsed = urlparse(login_url)
+        parsed = urlparse(login_url or self._primary_target_url())
         check_url = f"{parsed.scheme}://{parsed.netloc}/"
 
         session_valid = await authenticator.verify_session(check_url, cookies)
@@ -3253,7 +3363,9 @@ class OrchestratorAgent:
         # Session expired — re-authenticate if we have credentials
         self._logger.warning("Session expired — attempting re-authentication")
 
-        if matched_cred:
+        # Only to a login something observed. With none, a swept session that
+        # expired stays expired rather than offering its password to a guess.
+        if matched_cred and login_url:
             result = await authenticator.authenticate(
                 login_url, matched_cred.username, matched_cred.password
             )
@@ -3353,13 +3465,23 @@ class OrchestratorAgent:
                 "No operator credentials supplied — proceeding on the default "
                 "credentials the recon phase validated."
             )
-            login_url = discovered_login or detection.login_url or f"{base_url}/login"
+            # No fallback. A conventional path nobody observed is not a login,
+            # and a re-authentication would POST the swept credential to it.
+            login_url = discovered_login or self._observed_login_url(detection) or ""
             return await self._verify_and_refresh_session(login_url, sessions, valid_creds)
 
         # Authenticate each role. Every role gets its own session so the
         # access-control classes have two principals to compare.
+        #
+        # The default is what was OBSERVED to be a login, or nothing. It used to
+        # end ``or base_url``: "nothing proven ⇒ None, never the root URL" held in
+        # detection and was undone here, and the root then received the
+        # credential. With nothing observed, the role's page read is the root —
+        # READ, never posted to unless it renders a password form — and the
+        # adaptive layer takes over.
+        observed_login = self._observed_login_url(detection) or discovered_login or ""
         for cred in self._credentials.authenticating:
-            await self._authenticate_role(cred, detection.login_url or discovered_login or base_url)
+            await self._authenticate_role(cred, observed_login)
 
         primary = self._credentials.primary()
         primary_session = self._role_sessions.get(primary.role if primary else "", {})
@@ -3455,11 +3577,33 @@ class OrchestratorAgent:
             )
         return handoff
 
+    def _observed_login_url(self, detection: Any) -> str:
+        """Detection's login URL when it is in scope, else ``""``.
+
+        Detection names a URL only for a rendered password form, or the
+        ``Location`` of a root that redirects to a login. The second is the
+        target's choice of host, so it is held to scope before anything reads it.
+        """
+        url = getattr(detection, "login_url", "") or ""
+        if not url or self._scope is None:
+            return url
+        try:
+            return url if self._scope.contains(url) else ""
+        except Exception:  # noqa: BLE001 — an unparseable URL is not a login URL
+            return ""
+
     async def _authenticate_role(self, cred: RoleCredential, default_login_url: str) -> None:
-        """Log in as one role and assert the resulting session, recording both."""
+        """Log in as one role and assert the resulting session, recording both.
+
+        ``default_login_url`` is what discovery OBSERVED to be a login, or ``""``.
+        With neither it nor a declaration, the page read is the site root — and
+        the authenticator POSTs there only if it renders a password form, so the
+        root is never a credential destination on a caller's say-so.
+        """
         from clinkz.tools.auth import WebAuthenticator
 
         login_url = cred.login_url or default_login_url
+        page_url = login_url or self._primary_target_url()
         if cred.session is not None:
             if await self._seat_supplied_session(cred, login_url) or not cred.secret():
                 # Proven, or unprovable with nothing else to try. Either way no
@@ -3478,12 +3622,13 @@ class OrchestratorAgent:
         # no probe can find out, and the previous code took the login URL,
         # discarded it, and iterated six canned routes instead.
         result = await authenticator.authenticate(
-            login_url,
+            page_url,
             cred.username,
             cred.secret(),
             api_login_url=cred.login_api_url,
             identity_field=cred.login_field,
             content_type=cred.login_content_type,
+            login_url_declared=bool(cred.login_url),
         )
 
         if not result.success:
@@ -3516,6 +3661,13 @@ class OrchestratorAgent:
                 "observations": observations,
                 "post_changed_nothing": result.post_changed_nothing,
                 "form_action_declared": result.form_action_declared,
+                "no_login_surface": result.no_login_surface,
+                "credential_refused": result.credential_refused,
+                "credential_refusal_evidence": (
+                    result.verdict_evidence if result.credential_refused else ""
+                ),
+                "second_factor_fields": list(result.second_factor_fields),
+                "scope_refusal": result.scope_refusal,
                 "assertion": AuthAssertion(
                     established=False,
                     why_unproven=(
@@ -3528,7 +3680,7 @@ class OrchestratorAgent:
             # The deterministic path has failed. Everything it learned on the
             # way is still in hand, and this is the one point at which a model
             # can propose something the parser could not read.
-            await self._adaptive_auth(cred, result, login_url)
+            await self._adaptive_auth(cred, result, page_url)
             return
 
         # The authenticator discovered this target's login route and the body
@@ -3610,7 +3762,7 @@ class OrchestratorAgent:
         ):
             # Remember what to re-authenticate with when the session is lost.
             self._reauth_credential = cred
-            self._reauth_login_url = login_url
+            self._reauth_login_url = page_url
 
     async def _seat_supplied_session(self, cred: RoleCredential, login_url: str) -> bool:
         """Put an operator-supplied session through the SAME assertion, and record it.
@@ -3694,7 +3846,9 @@ class OrchestratorAgent:
         primary = self._credentials.primary() if self._credentials else None
         if primary is not None and cred.role == primary.role:
             self._reauth_credential = cred
-            self._reauth_login_url = login_url if cred.secret() else ""
+            self._reauth_login_url = (
+                (login_url or self._primary_target_url()) if cred.secret() else ""
+            )
         return True
 
     def _absorb_recon_context(self, recon_result: dict[str, Any]) -> None:
@@ -3767,6 +3921,10 @@ class OrchestratorAgent:
                 base_url=self._primary_target_url().rstrip("/"),
                 components=self._recon_component_labels,
                 script_coverage_note=self._package_identity_coverage_note,
+                off_scope_sign_ins=[
+                    f"GET {requested} -> {status} {destination.split('?', 1)[0]}"
+                    for requested, destination, status in self._off_scope_login_redirects
+                ],
             )
             governor = get_active_governor()
             budget = (
@@ -3853,6 +4011,19 @@ class OrchestratorAgent:
             # the target's own bytes and the other one asked a model.
             "seated_by": "adaptive",
         }
+        # The destination the adaptive layer PROVED is an observed login, the same
+        # standing as a form the parser read. Recorded so the scan carries the
+        # login surface forward — with a JSON login there is no other source for
+        # it now that no route list stands in for one.
+        proven = next((a for a in reversed(transcript.attempts) if a.established), None)
+        if proven is not None and self._proven_login is None:
+            fields = [proven.proposal.identity_field, proven.proposal.secret_field]
+            self._proven_login = {
+                "url": proven.proposal.url,
+                "method": "POST",
+                "content_type": proven.proposal.content_type,
+                "fields": [f for f in dict.fromkeys(fields) if f],
+            }
         self._logger.warning(
             "ADAPTIVE AUTH SEATED THE SESSION for role %r — %s",
             cred.role,
@@ -3880,7 +4051,7 @@ class OrchestratorAgent:
             *(f"{base_url}{path}" for path in PROTECTED_PATH_CANDIDATES),
             f"{base_url}/",
             f"{base_url}/index.php",
-            login_url,
+            *([login_url] if login_url else []),
         ]
         assertion = await assert_authenticated(
             probe,
@@ -3923,6 +4094,17 @@ class OrchestratorAgent:
 
         The remedies are filtered the same way: the "supply an authenticated-only
         URL" line appears only for a run that actually reached the assertion.
+
+        **"The credentials are wrong" is EVIDENCE-GATED.** It was false three
+        times — after a POST that changed nothing, after a POST to a route that
+        answered 405, and on a separate-origin IdP no destination that could judge
+        the credential ever saw. It is now emitted only when a refusal
+        attributable to the credential was observed (``credential_refused``: a
+        ``401``, or a refusal marker the login page served without credentials
+        does not carry), and it quotes that observation. Every other failure
+        names what was actually seen: no login surface, a POST that changed
+        nothing, a sign-in on an origin outside scope, a second factor, a
+        captcha, a lockout.
         """
         lines = [
             "ABORTING: credentials were supplied but authenticated state could not be proven.",
@@ -3933,10 +4115,24 @@ class OrchestratorAgent:
             "",
             f"Target        : {base_url}",
             f"Auth mechanism: {getattr(detection, 'mechanism', '?')}",
-            f"Login URL     : {getattr(detection, 'login_url', '') or '(not found)'}",
-            "",
-            "Per role:",
+            f"Login URL     : {self._observed_login_url(detection) or '(none observed)'}",
         ]
+        # A sign-in on another origin is the one observation that explains a
+        # target with no login of its own, so it is stated before anything else.
+        off_scope = list(self._off_scope_login_redirects)
+        for role_session in self._role_sessions.values():
+            refused_to = role_session.get("scope_refusal", "")
+            if refused_to and all(dest != refused_to for _u, dest, _s in off_scope):
+                off_scope.append((role_session.get("posted_to", "") or "", refused_to, 0))
+        for requested, destination, status in off_scope:
+            how = f"GET {requested} answered {status}" if status else f"{requested or 'a POST'}"
+            lines.append(
+                f"Off-scope sign-in: {how} redirecting to {destination.split('?', 1)[0]} — "
+                "an origin "
+                "OUTSIDE the engagement scope. Not followed; no request and no credential "
+                "was sent there."
+            )
+        lines += ["", "Per role:"]
 
         any_reached_assertion = False
         any_dispatched = False
@@ -3945,7 +4141,25 @@ class OrchestratorAgent:
         # application did not act on.
         any_post_changed_nothing = False
         any_supplied_refused = False
+        credential_refusals: list[str] = []
+        # Credential POSTs only the adaptive layer sent. Kept apart from
+        # ``any_dispatched`` because the remedies differ: a deterministic POST
+        # that was refused for a non-credential reason "did not evaluate" the
+        # credential, while an adaptive POST may well have been evaluated and
+        # answered in a shape the loop could not carry.
+        any_adaptive_dispatched = False
+        second_factor: list[str] = []
+        all_no_surface = bool(self._role_sessions)
         for role, session in self._role_sessions.items():
+            if session.get("credential_refused"):
+                credential_refusals.append(
+                    f"[{role}] {session.get('credential_refusal_evidence') or 'refused'}"
+                )
+            second_factor += [
+                f for f in session.get("second_factor_fields") or [] if f not in second_factor
+            ]
+            if not session.get("no_login_surface") or session.get("posted_to"):
+                all_no_surface = False
             assertion: AuthAssertion = session["assertion"]
             login_url = session.get("login_url", "")
             posted_to = session.get("posted_to", "")
@@ -3994,11 +4208,23 @@ class OrchestratorAgent:
                 if len(assertion.attempted) > 8:
                     lines.append(f"        ... and {len(assertion.attempted) - 8} more")
             elif not posted_to:
-                # Nothing ever left the engine carrying these credentials.
-                lines.append(
-                    f"  [{role}] NO credential was ever offered to the application — the "
-                    "attempt ended before any login request was dispatched."
+                # The deterministic pass sent nothing. Whether the adaptive layer
+                # did is ITS count, and the sentence must not outrun it.
+                adaptive_posts = sum(
+                    t.credential_posts_dispatched for t in self._auth_transcripts if t.role == role
                 )
+                if adaptive_posts:
+                    any_adaptive_dispatched = True
+                    lines.append(
+                        f"  [{role}] the deterministic pass offered NO credential; the "
+                        f"adaptive layer dispatched {adaptive_posts} credential POST(s), "
+                        "reported below."
+                    )
+                else:
+                    lines.append(
+                        f"  [{role}] NO credential was ever offered to the application — "
+                        "no destination observed to be a login received one."
+                    )
                 lines.append(f"      reason: {assertion.why_unproven or 'not stated'}")
                 if login_url:
                     lines.append(f"      the login URL we would have used: {login_url}")
@@ -4044,6 +4270,8 @@ class OrchestratorAgent:
                             f"      turn {attempt.turn} reasoning: {attempt.proposal.rationale}"
                         )
 
+        stop_account, stop = self._credential_stop_evidence()
+
         lines += ["", "Fix one of:"]
         if any_supplied_refused:
             lines += [
@@ -4060,29 +4288,77 @@ class OrchestratorAgent:
                 # Every role was a supplied session: no login ran, so no login
                 # remedy below is a statement about anything that happened.
                 return "\n".join(lines)
-        if any_dispatched and not any_post_changed_nothing:
-            # Suppressed when the POST demonstrably changed nothing. A request
-            # the application did not act on has not evaluated a credential, so
-            # "the credentials are wrong" is a claim about something that never
-            # happened -- and it is the claim an operator acts on first.
-            lines.append("  - the credentials are wrong, or the account is locked")
+        if off_scope:
+            origins = sorted({self._origin_label(dest) for _u, dest, _s in off_scope})
+            lines.append(
+                f"  - the application signs users in at {', '.join(origins)}, outside the "
+                "engagement scope. Add that origin to scope if it is authorised, or supply "
+                'an authenticated session on the role ("session")'
+            )
+        if credential_refusals:
+            # The ONLY path to this sentence: an observation attributable to
+            # the credential itself. Quoted, so the operator can audit it.
+            lines.append("  - the credentials were refused by the application:")
+            lines += [f"      {refusal}" for refusal in credential_refusals]
+        if stop.kind is not None:
+            lines.append(
+                f"  - the login answered with a {stop.kind.value} ({stop.detail}) for "
+                f"{stop_account!r}; nothing after it evaluated the credential"
+            )
+        if second_factor:
+            lines.append(
+                "  - the login asked for a second factor "
+                f"({', '.join(repr(f) for f in second_factor)}); supply an authenticated "
+                'session on the role ("session") instead of a password'
+            )
         if any_post_changed_nothing:
             lines.append(
                 "  - the credential POST changed nothing observable, so nothing here is "
                 "evidence about the credentials themselves; the login route we found is "
                 "not the one this application authenticates on"
             )
-        lines.append(
-            '  - the login URL is wrong (set "login_url" on the role in the credential file)'
-        )
-        if not any_dispatched:
-            lines += [
-                '  - the login route was never found; declare it with "login_url", and '
-                '"login_api_url" when the JSON login route differs from the login page',
-                '  - the identity field is not "email"/"username"; declare it with "login_field"',
-                "  - the login expects a content type we did not send; declare it with "
-                '"login_content_type"',
-            ]
+        if (
+            any_dispatched
+            and not credential_refusals
+            and not any_post_changed_nothing
+            and stop.kind is None
+            and not second_factor
+        ):
+            lines.append(
+                "  - the destination that received the credential did not evaluate it "
+                '(see "reason" above); declare the login route with "login_url", and '
+                '"login_api_url" when the JSON login route differs from the login page'
+            )
+        # With an off-scope sign-in observed, the remedy above is the whole
+        # remedy: a declaration list would point at a login route on THIS origin,
+        # which the observation says does not exist, and following it walks back
+        # into the same refusal.
+        if any_adaptive_dispatched and not any_dispatched:
+            lines.append(
+                "  - the adaptive layer's credential POST(s) produced no session this "
+                "engine could carry (see its transcript above); declare the login route "
+                'with "login_url", and "login_api_url" when the JSON login route differs '
+                "from the login page"
+            )
+        elif not any_dispatched and not off_scope:
+            if all_no_surface:
+                # Nothing was posted, so neither a field name nor an encoding
+                # was ever tested; only the missing destination is a remedy.
+                lines += [
+                    f"  - no login surface was observed on {base_url}: no page rendered a "
+                    "password input and no login route was declared",
+                    '  - declare the login route with "login_url", and "login_api_url" when '
+                    "the JSON login route differs from the login page",
+                ]
+            else:
+                lines += [
+                    '  - declare the login route with "login_url", and "login_api_url" when '
+                    "the JSON login route differs from the login page",
+                    '  - the identity field is not "email"/"username"; declare it with '
+                    '"login_field"',
+                    "  - the login expects a content type we did not send; declare it with "
+                    '"login_content_type"',
+                ]
         if any_reached_assertion:
             # Only sayable because the comparison above actually happened.
             lines.append(
@@ -4090,6 +4366,14 @@ class OrchestratorAgent:
                 'differently when authenticated; supply one with "assert_url"'
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _origin_label(url: str) -> str:
+        """``scheme://host:port`` of *url*, for naming an origin in a message."""
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else url
 
     async def _reauthenticate_running_agents(self) -> None:
         """Verify the session the sentinel flagged, and refresh it if it is dead.
@@ -4166,8 +4450,17 @@ class OrchestratorAgent:
         from clinkz.tools.auth import WebAuthenticator
 
         authenticator = WebAuthenticator(scope=self._scope, engagement_id=self._engagement_id)
+        # The same declarations the first login carried. A re-login that
+        # dropped them would POST to the page alone, and a JSON route the
+        # operator named would never be offered the credential again.
         result = await authenticator.authenticate(
-            self._reauth_login_url, cred.username, cred.secret()
+            self._reauth_login_url,
+            cred.username,
+            cred.secret(),
+            api_login_url=cred.login_api_url,
+            identity_field=cred.login_field,
+            content_type=cred.login_content_type,
+            login_url_declared=bool(cred.login_url),
         )
         if not result.success:
             self._logger.error(

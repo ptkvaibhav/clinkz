@@ -493,7 +493,11 @@ class TestJsonApiAuth:
     async def test_falls_back_to_api_on_form_failure(
         self, auth: WebAuthenticator, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Form auth fails → JSON auth against /rest/user/login returns a JWT."""
+        """Form auth fails → JSON auth at the DECLARED route returns a JWT.
+
+        Undeclared, the JSON arm posts nowhere: a route nothing observed to be a
+        login receives no credential, and there is no conventional list.
+        """
 
         async def fake_execute(args: dict[str, Any]) -> str:
             return self._form_failure(args)
@@ -515,13 +519,24 @@ class TestJsonApiAuth:
         monkeypatch.setattr(auth, "execute", fake_execute)
         monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
 
-        result = await auth.authenticate("http://localhost:3000/", "admin@juice-sh.op", "admin123")
+        undeclared = await auth.authenticate(
+            "http://localhost:3000/", "admin@juice-sh.op", "admin123"
+        )
+        assert undeclared.success is False
+        assert calls == []
+
+        result = await auth.authenticate(
+            "http://localhost:3000/",
+            "admin@juice-sh.op",
+            "admin123",
+            api_login_url="http://localhost:3000/rest/user/login",
+        )
 
         assert result.success is True
         assert result.bearer_token == "JWT-OK"
         assert result.session_cookies == {}
-        # The Juice Shop route was actually exercised, against the right origin.
-        assert any(u == "http://localhost:3000/rest/user/login" for u, _ in calls)
+        # Only the declared route was exercised.
+        assert {u for u, _ in calls} == {"http://localhost:3000/rest/user/login"}
         # Email identifier → only the email-keyed body is sent.
         assert all("email" in p for _, p in calls)
 
@@ -586,7 +601,9 @@ class TestJsonApiAuth:
         monkeypatch.setattr(auth, "execute", self._form_failure_async())
         monkeypatch.setattr(auth, "_api_post_json", fake_api_post)
 
-        result = await auth.authenticate("http://localhost:3000/", "admin", "pass")
+        result = await auth.authenticate(
+            "http://localhost:3000/", "admin", "pass", login_url_declared=True
+        )
 
         assert result.success is True
         assert result.bearer_token == "T"

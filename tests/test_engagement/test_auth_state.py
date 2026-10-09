@@ -72,15 +72,18 @@ async def test_html_login_form_is_detected_by_a_password_input() -> None:
     assert detection.evidence
 
 
-async def test_json_api_login_route_is_detected_by_its_rejection() -> None:
-    """A route that 4xx's an empty credential POST exists and rejected it.
+async def test_no_json_route_is_probed_or_named() -> None:
+    """Detection names no JSON login route: a 4xx to an empty body is not a login.
 
-    404/405 would mean the route does not exist; a 401 means it does.
+    The route list this replaced led with ``/rest/user/login`` and its answer
+    became the credential's destination. A JSON login is declared or proven by
+    the adaptive layer, never guessed here.
     """
     probe = _FakeProbe({}, json_routes={"http://t/rest/user/login": ProbeResponse(status=401)})
     detection = await detect_auth_mechanism(probe, "http://t")
-    assert detection.mechanism is AuthMechanism.BEARER
-    assert detection.login_url == "http://t/rest/user/login"
+    assert detection.mechanism is not AuthMechanism.BEARER
+    assert detection.login_url == ""
+    assert not any("rest/user/login" in url for url in detection.probed)
 
 
 async def test_no_auth_surface_reports_none() -> None:

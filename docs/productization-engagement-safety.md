@@ -144,10 +144,34 @@ than no declaration, because the operator believes the engine knows.
 
 | Field | Declares | Discovery it replaces |
 |---|---|---|
-| `login_url` | The login **page** | Shape-probing the crawl and the conventional paths |
-| `login_api_url` | The JSON login **route**, when it is not the page | Six canned API routes |
+| `login_url` | The login **page** | Shape-probing the landing page's links, its scripts' path literals, and the conventional paths |
+| `login_api_url` | The JSON login **route**, when it is not the page | The adaptive layer (there is no route list) |
 | `login_field` | The identity field name | Reading it from the form, then `email`, then `username` |
 | `login_content_type` | The credential POST's encoding | The form's `enctype`, then a 415 negotiation |
+
+**A credential goes only to a destination something OBSERVED to be a login**
+(invariant 117): the action of a form the target rendered with a password input,
+a route the operator declared, or a route the adaptive layer proved. Two more
+used to exist and both are gone. `_establish_authenticated_state` ended its
+default with `or base_url`, so the site root received the credential whenever
+nothing was found; and `tools/auth.py` and `engagement/auth_state.py` each
+carried a six-entry route list led by `/rest/user/login` — a benchmark constant
+in production code. On the separate-origin IdP fixture they spent five
+credential POSTs per account on destinations nothing had shown to be a login. A
+page that is not an observed login is now READ and never posted to
+(`AuthResult.no_login_surface`), and a login-discovery GET answered with a
+redirect to an origin outside scope is recorded and named in the abort, not
+followed. The domain is computed: every call into a credential sender that takes
+a URL, classified by where its destination comes from
+(`tests/test_safety/test_credential_destination_domain.py`).
+
+**"The credentials are wrong" is evidence-gated.** It is emitted only when a
+refusal attributable to the credential was observed — a `401` from a login
+destination, or a refusal marker the login page served without credentials does
+not carry (`AuthResult.credential_refused`) — and it quotes that observation.
+Otherwise the abort names what was actually seen: no login surface, a POST that
+changed nothing, a sign-in on an origin outside scope, a second factor, a
+captcha or a lockout.
 
 `login_content_type` is validated at model construction against the types the
 authenticator can actually encode: declaring one it cannot produce would be
