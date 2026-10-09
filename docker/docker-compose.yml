@@ -186,6 +186,65 @@ services:
       - pentest-targets
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Northwind Notes + Keycloak - the SPA / separate-origin IdP authentication
+  # shape, and a permanent regression target for it.
+  #
+  # `spa-app` is a client-rendered SPA: every non-API path is a catch-all
+  # 200 index.html with no <form> and no password input. `GET /api/auth/login`
+  # answers 302 to `keycloak-idp` - a DIFFERENT origin (host and port) - with an
+  # authorization-code + PKCE request. The password form exists only on the IdP;
+  # this origin sets `nw_session` on the code exchange and never puts a token in
+  # a body. `/api/me` is the boundary: 401 anonymous, 200 with a session.
+  #
+  # Keycloak runs in production mode (`start`, not `start-dev`) with the realm
+  # imported from realm-northwind.json, and the client's direct access grant is
+  # OFF, so there is no password-grant shortcut. Accounts: alice /
+  # Quartz-Meadow-2291 and bob / Copper-Fjord-7734.
+  #
+  # Docker-mode targets are `http://spa-app:8000` and `http://keycloak-idp:8080`.
+  # Keycloak's issuer is pinned to `http://keycloak-idp:8080`, so its redirects
+  # resolve from clinkz-tools and NOT from the host; the host ports (8096, 8180)
+  # are for curl against the shell only.
+  # ---------------------------------------------------------------------------
+  spa-app:
+    build:
+      context: ./spa-keycloak
+      dockerfile: Dockerfile
+    image: clinkz-spa-app:latest
+    container_name: clinkz-spa-app
+    environment:
+      - NW_PUBLIC_URL=http://spa-app:8000
+      - NW_IDP_PUBLIC=http://keycloak-idp:8080
+      - NW_CLIENT_SECRET=northwind-fixture-client-secret
+    ports:
+      - "8096:8000"
+    networks:
+      pentest-targets:
+        aliases:
+          - spa-app
+    restart: unless-stopped
+
+  keycloak-idp:
+    image: quay.io/keycloak/keycloak:26.0.7
+    container_name: clinkz-keycloak
+    command: ["start", "--import-realm"]
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=kcadmin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=Ledger-Basalt-5512
+      - KC_HOSTNAME=http://keycloak-idp:8080
+      - KC_HTTP_ENABLED=true
+      - KC_HEALTH_ENABLED=true
+    volumes:
+      - ./spa-keycloak/realm-northwind.json:/opt/keycloak/data/import/realm-northwind.json:ro
+    ports:
+      - "8180:8080"
+    networks:
+      pentest-targets:
+        aliases:
+          - keycloak-idp
+    restart: unless-stopped
+
 networks:
   pentest-targets:
     driver: bridge

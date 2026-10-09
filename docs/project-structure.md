@@ -162,6 +162,10 @@ src/clinkz/
                       #   finding, report
 docker/  scripts/  tests/  docs/
                       #   docker/meridian  — the third AUTH shape (stdlib Python)
+                      #   docker/spa-keycloak — the fourth: a catch-all SPA whose
+                      #     login is a SEPARATE-ORIGIN Keycloak (code + PKCE, BFF
+                      #     cookie). Regression target for the declared boundary;
+                      #     see docs/analysis/spa-separate-origin-idp.md
                       #   docker/protopoll — the prototype-pollution target. NODE,
                       #     and deliberately: a Python fixture would have been a
                       #     MODEL of Object.prototype, which is the one property

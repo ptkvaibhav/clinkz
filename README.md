@@ -136,6 +136,11 @@ This brings up:
 - `clinkz-tools` — the sandboxed tool container (nmap, nuclei, ffuf, sqlmap, ...)
 - `clinkz-dvwa` on `http://localhost:8080`
 - `clinkz-juiceshop` on `http://localhost:3000`
+- `clinkz-spa-app` (`http://spa-app:8000`, host 8096) + `clinkz-keycloak`
+  (`http://keycloak-idp:8080`, host 8180) — the **fourth authentication shape**:
+  a client-rendered SPA with no form anywhere, whose login redirects to a
+  standard Keycloak on a separate origin. A permanent regression target for
+  that boundary — see `docs/analysis/spa-separate-origin-idp.md`.
 - `clinkz-meridian` on `http://localhost:8090` — the **third authentication
   shape** (JSON login at a non-obvious path, identity field `account`, a session
   cookie on a JSON response, protected routes that deny anonymously with 302 to
@@ -513,7 +518,8 @@ clinkz/
 │                        # models, orchestrator, safety, integration, skills_dvwa,
 │                        # skills_juiceshop
 ├── docker/              # Dockerfile.tools + Dockerfile.dvwa + meridian/ (the third
-│                        #   auth-shape target) + docker-compose.yml
+│                        #   auth-shape target) + spa-keycloak/ (the fourth: SPA +
+│                        #   separate-origin IdP) + docker-compose.yml
 └── docs/                # architecture, adding-tools, playbooks, analysis/*
 ```
 
