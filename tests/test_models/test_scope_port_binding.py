@@ -80,6 +80,17 @@ DECLARED: dict[str, tuple[str, str]] = {
         "the answer; a second implementation here would be a second rule",
     ),
     # ---------------------------------------------------------------- routed
+    "orchestrator/orchestrator.py::_note_off_scope_redirect": (
+        _How.ROUTED,
+        "asks EngagementScope.contains whether a login-discovery redirect's Location "
+        "leaves scope, so a redirect to an in-scope host on an unnamed port is recorded "
+        "as off scope exactly as a dispatch to it would be refused",
+    ),
+    "orchestrator/orchestrator.py::_observed_login_url": (
+        _How.ROUTED,
+        "holds detection's login URL to EngagementScope.contains before anything reads "
+        "it, because a redirect-derived Location is the target's choice of host and port",
+    ),
     "tools/base.py::_check_scope": (
         _How.ROUTED,
         "the raising gate every tool wrapper passes through; it asks contains() and "

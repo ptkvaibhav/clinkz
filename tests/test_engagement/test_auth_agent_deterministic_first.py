@@ -153,6 +153,7 @@ class TestItDoesNotEngageOnAWorkingLogin:
 
         agent = orch_module.OrchestratorAgent.__new__(orch_module.OrchestratorAgent)
         agent._auth_transcripts = []
+        agent._off_scope_login_redirects = []
         agent._role_sessions = {}
         agent._session_material_source = ""
         agent._proven_login = None
@@ -226,6 +227,7 @@ class TestItDoesNotEngageOnAWorkingLogin:
 
         agent = orch_module.OrchestratorAgent.__new__(orch_module.OrchestratorAgent)
         agent._auth_transcripts = []
+        agent._off_scope_login_redirects = []
         agent._role_sessions = {}
         agent._session_material_source = ""
         agent._recon_component_labels = []

@@ -677,7 +677,7 @@ under the repo root; the header table at the top of this file links them all.
 102. **A destination composed at runtime is not a reading problem, so the model
     PROPOSES and `assert_authenticated` DECIDES** (`engagement/auth_agent.py`),
     from two call sites both guarded by "no session was seated". **The model names
-    FIELDS; the engine supplies every VALUE.** Ten deterministic refusals gate every
+    FIELDS; the engine supplies every VALUE.** Eleven deterministic refusals gate every
     proposal; the episode carries its OWN jar, keyed by origin; an abstention names
     what was ABSENT. **The disclosure renders on a clean run too**, naming which
     layer seated the session. **Detail →
@@ -809,6 +809,18 @@ under the repo root; the header table at the top of this file links them all.
     (`RoleCredential.session`). Session-only ⇒ no credential is sent; an expiry
     mid-run HALTS (`supplied_session_expired`), because nothing renews it.
     **Detail → `docs/productization-engagement-safety.md`.**
+
+117. **A credential goes only to a destination something OBSERVED to be a login** —
+    a rendered password form's action, an operator declaration, or a route the
+    adaptive layer proved. No base-URL fallback, no route list; an unobserved page
+    is READ, never posted to (`no_login_surface`). Computed over every call into a
+    credential sender (`test_credential_destination_domain.py`). **Detail →
+    `docs/productization-engagement-safety.md`.**
+
+118. **"The credentials are wrong" requires a refusal ATTRIBUTABLE to the
+    credential** (`credential_refused`: a 401, or a marker the control lacks), and
+    quotes it. Otherwise the abort names what was seen — no login surface, a POST
+    that changed nothing, an off-scope sign-in, MFA, captcha, lockout.
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

@@ -1360,3 +1360,39 @@ producer passing it in `features`. Pinned by a round-trip test that reloads a
 `NAMED` POST from the store and asserts `_is_observed_write_surface` admits it
 while a verb-less row stays excluded — the reload tied directly to the routing it
 feeds, not asserted at the store seam alone.
+
+## R30 · Redaction rewrites a common-word password out of schema and protocol text — OPEN
+
+**Measured 2026-10-09, before any change** (the item in the brief that says to
+report first). `admin`/`password` is refused at intake because `password` equals
+a declared field name (invariant 110). The intake refusal was disabled for one
+process only (`secrets.collisions` patched to report nothing), and DVWA (`low`)
+was run end to end: engagement `e7bd146a`. It completed, and all three renders
+were written, so `model_validate` survived. The disclosure gate said CLEAN, with
+25 findings. **The artifacts were damaged anyway:**
+
+* **The client-facing report.** Both CSRF findings lose the form field NAMES
+  they cite as evidence: `['[REDACTED]_new', '[REDACTED]_conf', 'Change']` for
+  `password_new` / `password_conf`. Their remediation text, which the ENGINE
+  wrote, reads "changing a [REDACTED], an email address". Field names are
+  schema and are meant to survive (invariant 13).
+* **The replay corpus.** 218 of 1,758 invocation records are captured pages
+  whose `<input type="password">` became `type="[REDACTED]"`. **Zero records in
+  the bundle still show a password input.** `corpus-replay` over this bundle
+  therefore reads DVWA's login page as having no login form. That is the
+  offline parser gate, made blind by its own input.
+* **The trace and action log.** 363 rewrites in `trace.jsonl`: form-field-name
+  lists, PHP's `Undefined array key "password"`, DVWA's setup prose, and the
+  brute-force class's own probe values (`wrongpassword0` → `wrong[REDACTED]0`).
+  The record of what was sent is no longer what was sent.
+* **Not damaged:** no dict KEY was rewritten (invariant 108's
+  single-registration rule held), and no report field failed validation.
+
+**Verdict: harmful, and the defect is the redactor, not the operator's
+password.** Registered values are replaced as SUBSTRINGS of every string, so a
+credential that is an ordinary word is removed from field names, HTML attribute
+values and the engine's own prose. The same happens with `admin`, `welcome` or
+any dictionary password the intake vocabulary does not happen to contain. The
+intake refusal only covers the subset that collides with a declared field
+NAME. **Not changed here;** the refusal stays until the redactor stops
+substituting inside schema/protocol positions.

@@ -112,8 +112,8 @@ CLAUDE.md keeps a one-line index of the same set.
   a pass is the acceptance-criterion mistake itself; reporting it as a failure
   claims a measurement nobody made.
 - `python scripts/live_adaptive_auth_validation.py --target <url> --username <u>
-  --password <p> [--login-url <url>] [--assert-url <url>] [--exec-mode docker|local]
-  [--json]` —
+  --password <p> [--login-url <url>] [--login-api-url <url>] [--assert-url <url>]
+  [--exec-mode docker|local] [--json]` —
   **LIVE.** Drives the real authentication path against a target and prints the
   deterministic pass's observations beside the adaptive layer's transcript: what
   it read, what it proposed, what came back, what it concluded. Skips recon,

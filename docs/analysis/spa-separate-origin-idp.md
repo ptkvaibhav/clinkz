@@ -59,7 +59,24 @@ at both seams. That is correct behaviour, and it is also why this shape is a
 **declared boundary rather than a regression**: the login lives on an origin the
 operator did not authorise.
 
-## Defects the fixture surfaced (not fixed here)
+## Defects the fixture surfaced
+
+**Status, 2026-10-09:** D1, D2, D3 and D5 are CLOSED by invariants 117 and 118.
+D4 is OPEN. Re-run cold, the fixture sends **zero** credential POSTs. The abort
+names `GET /api/auth/login → 302 http://keycloak-idp:8080/…` as an off-scope
+sign-in, and its only remedy is the scope / supplied-session one. Every line of
+the message grades true against the table above:
+
+* the login-URL line now reads `(none observed)` and names the entry and the IdP;
+* the role line says no credential was offered (the governor counted zero);
+* the 405 line and the "loose inputs" line are gone, because nothing was posted
+  and the shell has no inputs;
+* `Server: nginx` and the adaptive summary are unchanged and true;
+* "the credentials are wrong" and "set `login_url`" are gone.
+
+The landing page's script literals are now login-discovery candidates, which is
+how `/api/auth/login` was reached deterministically. D4 is untouched: the model's
+READ still sees only the body's shape.
 
 * **D1. Credentials go to unproven destinations.** `_establish_authenticated_state`
   calls `_authenticate_role(cred, detection.login_url or discovered_login or

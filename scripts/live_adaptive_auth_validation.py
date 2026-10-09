@@ -63,6 +63,11 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="Operator declaration, passed through as RoleCredential.assert_url.",
     )
+    parser.add_argument(
+        "--login-api-url",
+        default="",
+        help="Operator declaration, passed through as RoleCredential.login_api_url.",
+    )
     parser.add_argument("--json", action="store_true", dest="as_json")
     return parser.parse_args()
 
@@ -98,6 +103,7 @@ async def _run(args: argparse.Namespace) -> int:
                 privilege=args.privilege,
                 login_url=args.login_url,
                 assert_url=args.assert_url,
+                login_api_url=args.login_api_url,
             )
         ]
     )
@@ -130,6 +136,13 @@ async def _run(args: argparse.Namespace) -> int:
     agent._recon_component_labels = []
     agent._package_identity_coverage_note = ""
     agent._primary_target_url = lambda: args.target
+    # Login discovery's own state, so the driver runs the engine's discovery
+    # rather than a copy of it (invariant 117: the destination must be OBSERVED).
+    agent._login_shape_cache = {}
+    agent._off_scope_login_redirects = []
+    from clinkz.orchestrator.orchestrator import LOGIN_SHAPE_PROBE_BUDGET
+
+    agent.LOGIN_SHAPE_PROBE_BUDGET = LOGIN_SHAPE_PROBE_BUDGET
     agent._logger = __import__("logging").getLogger("adaptive-auth-live")
 
     from clinkz.llm.factory import get_llm_client
@@ -146,7 +159,16 @@ async def _run(args: argparse.Namespace) -> int:
     print()
 
     cred = credentials.authenticating[0]
-    await agent._authenticate_role(cred, detection.login_url or args.target)
+    # Exactly the engine's default: what was OBSERVED to be a login, or nothing.
+    # The old ``or args.target`` here was the base-URL fallback the engine no
+    # longer has, and a driver that keeps it validates a path no run takes.
+    discovered = await agent._find_login_url({})
+    observed = agent._observed_login_url(detection) or discovered or ""
+    print(f"Observed login URL : {observed or '(none observed)'}")
+    for requested, destination, status in agent._off_scope_login_redirects:
+        print(f"  off-scope sign-in: GET {requested} -> {status} {destination}")
+    print()
+    await agent._authenticate_role(cred, observed)
 
     session = agent._role_sessions.get(cred.role, {})
     assertion = session.get("assertion")
@@ -208,6 +230,13 @@ async def _run(args: argparse.Namespace) -> int:
             f"RESULT: established={bool(session.get('established'))} "
             f"seated_by={session.get('seated_by', 'deterministic')}"
         )
+
+    if not session.get("established") and not args.as_json:
+        print()
+        print("=" * 72)
+        print("ABORT MESSAGE (as the engagement would raise it)")
+        print("=" * 72)
+        print(agent._auth_failure_message(args.target, detection))
 
     return 0 if session.get("established") else 1
 

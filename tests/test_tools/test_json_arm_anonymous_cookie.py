@@ -209,7 +209,7 @@ async def test_an_anonymous_session_cookie_on_a_login_page_is_not_a_login(
     base = f"http://{_HOST}:{session_starting.server_address[1]}"
     auth = WebAuthenticator(scope=_scope())
 
-    result = await auth._try_api_login(f"{base}/login.php", _USER, _WRONG)
+    result = await auth._try_api_login(f"{base}/login.php", _USER, _WRONG, login_url_declared=True)
 
     assert session_starting.credential_posts, "the arm never dispatched — vacuous test"
     assert result.success is False, (
@@ -233,7 +233,9 @@ async def test_a_json_api_that_answers_with_a_session_cookie_still_authenticates
     base = f"http://{_HOST}:{cookie_api.server_address[1]}"
     auth = WebAuthenticator(scope=_scope())
 
-    result = await auth._try_api_login(f"{base}/rest/user/login", _USER, "correct-horse")
+    result = await auth._try_api_login(
+        f"{base}/rest/user/login", _USER, "correct-horse", login_url_declared=True
+    )
 
     assert result.success is True, result.error
     assert result.session_cookies == {"api_session": "live-session-id"}

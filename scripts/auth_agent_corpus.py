@@ -267,6 +267,7 @@ def positive_control() -> tuple[bool, list[str]]:
         credential_budget_remaining=4,
         reads_remaining=4,
         already_refused=frozenset(),
+        off_scope_sign_in="",
     )
     if not permitted.allowed:
         problems.append(f"the gate refused a plainly-permissible proposal: {permitted.reason}")
@@ -278,6 +279,7 @@ def positive_control() -> tuple[bool, list[str]]:
         credential_budget_remaining=4,
         reads_remaining=4,
         already_refused=frozenset(),
+        off_scope_sign_in="",
     )
     if refused.allowed or refused.refusal is not ProposalRefusal.OUT_OF_SCOPE:
         problems.append("the gate permitted an out-of-scope proposal")
@@ -376,6 +378,7 @@ def exercise_gate(exchanges: list[Exchange]) -> Counter[str]:
                 in_scope=lambda url, this=origin: _origin(url) == this,
                 known_field_names=known,
                 already_refused=frozenset(),
+                off_scope_sign_in="",
                 **budgets,
             )
             tally[verdict.refusal.value if verdict.refusal else "ALLOWED"] += 1
@@ -389,6 +392,7 @@ def exercise_gate(exchanges: list[Exchange]) -> Counter[str]:
             credential_budget_remaining=4,
             reads_remaining=4,
             already_refused=frozenset({repeated.signature()}),
+            off_scope_sign_in="",
         )
         tally[repeat_verdict.refusal.value if repeat_verdict.refusal else "ALLOWED"] += 1
     return tally

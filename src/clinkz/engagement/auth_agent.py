@@ -230,6 +230,11 @@ class ProposalRefusal(StrEnum):
     READ_CEILING = "read_ceiling"
     REPEAT_OF_REFUSED = "repeat_of_refused"
     NO_IDENTITY_FIELD = "no_identity_field"
+    #: Login discovery saw this application send its sign-in to an origin
+    #: OUTSIDE scope. A credential POST on the in-scope origin is then a guess
+    #: against that observation (invariant 117), and the operator's remedy is a
+    #: declaration or a supplied session, not a model's next convention.
+    SIGN_IN_OFF_SCOPE = "sign_in_off_scope"
 
 
 class AuthObservation(BaseModel):
@@ -276,6 +281,9 @@ class AuthObservation(BaseModel):
         verdict: The credential exchange's own three-valued verdict.
         verdict_evidence: The observation behind it.
         failure_stage: Which step ended the deterministic attempt.
+        off_scope_sign_ins: Login-discovery GETs answered with a redirect to an
+            origin outside scope, as ``"<requested> -> <destination origin+path>"``.
+            Not followed. Non-empty arms :attr:`ProposalRefusal.SIGN_IN_OFF_SCOPE`.
     """
 
     base_url: str = ""
@@ -296,6 +304,7 @@ class AuthObservation(BaseModel):
     verdict: str = ""
     verdict_evidence: str = ""
     failure_stage: str = ""
+    off_scope_sign_ins: list[str] = Field(default_factory=list)
 
     def carryable_field_names(self) -> frozenset[str]:
         """Field names a proposal may reference, before any read has run.
@@ -324,13 +333,21 @@ class AuthObservation(BaseModel):
             f"Target base URL: {self.base_url}",
             f"Login page fetched from: {self.login_url}",
         ]
+        for sign_in in self.off_scope_sign_ins:
+            lines.append(
+                f"OBSERVED: {sign_in} — the application sends sign-in to an origin OUTSIDE "
+                "the engagement scope. It was not followed. The gate refuses every "
+                "credential POST on this origin; propose reads only, or nothing."
+            )
         if self.login_page_content_type:
             lines.append(f"The login page served itself as: {self.login_page_content_type}")
-        if not self.page_declared_a_form:
+        if not self.page_declared_a_form and self.form_field_names:
             lines.append(
                 "The login page served NO <form> element at all; the field names below "
                 "were read from inputs outside any form."
             )
+        elif not self.page_declared_a_form:
+            lines.append("The login page served NO <form> element and NO input at all.")
         elif not self.form_action_declared:
             lines.append(
                 "The login <form> declared NO action attribute. The credential POST was "
@@ -821,6 +838,7 @@ def observation_from_auth_result(
     base_url: str,
     components: list[str] | None = None,
     script_coverage_note: str = "",
+    off_scope_sign_ins: list[str],
 ) -> AuthObservation:
     """Build the briefing from the failed deterministic attempt.
 
@@ -840,6 +858,8 @@ def observation_from_auth_result(
             component list measured over part of the input is indeterminate, not
             a finding about the target (invariant 101), and an agent reasoning
             over the list has to be told which it is holding.
+        off_scope_sign_ins: What login discovery saw redirect off scope. No
+            default: an absent observation must not read as "none was made".
 
     Returns:
         An :class:`AuthObservation`.
@@ -863,6 +883,7 @@ def observation_from_auth_result(
         verdict=str(result.verdict),
         verdict_evidence=result.verdict_evidence,
         failure_stage=result.failure_stage,
+        off_scope_sign_ins=list(off_scope_sign_ins),
     )
 
 
@@ -884,6 +905,7 @@ def validate_proposal(
     credential_budget_remaining: int | None,
     reads_remaining: int,
     already_refused: frozenset[tuple[str, ...]],
+    off_scope_sign_in: str,
 ) -> GateVerdict:
     """Decide whether a proposal may be dispatched. Pure, and reads no model output.
 
@@ -913,6 +935,8 @@ def validate_proposal(
         already_refused: Signatures of proposals this episode has already
             settled — refused by this gate, or dispatched and answered. Both are
             questions whose answer is already held.
+        off_scope_sign_in: The first off-scope sign-in login discovery observed,
+            or ``""``. Required: a caller that never asked must say so.
 
     Returns:
         A :class:`GateVerdict`.
@@ -977,6 +1001,18 @@ def validate_proposal(
         return GateVerdict(allowed=True, reason=f"{method} {proposal.url} is a safe read in scope")
 
     # From here: a credential POST.
+    if off_scope_sign_in:
+        return GateVerdict(
+            allowed=False,
+            refusal=ProposalRefusal.SIGN_IN_OFF_SCOPE,
+            reason=(
+                f"login discovery observed {off_scope_sign_in}: this application signs "
+                "users in on an origin outside the engagement scope. A credential POST "
+                "here would be a guess against that observation, and a credential goes "
+                "only to a destination something observed to be a login"
+            ),
+        )
+
     if method != "POST":
         return GateVerdict(
             allowed=False,
@@ -1244,6 +1280,9 @@ class AuthAgentLoop:
                 ),
                 reads_remaining=self._max_reads - reads_used,
                 already_refused=frozenset(settled),
+                off_scope_sign_in=(
+                    observation.off_scope_sign_ins[0] if observation.off_scope_sign_ins else ""
+                ),
             )
             attempt = AuthAttempt(turn=turn, proposal=proposal, gate=gate)
 

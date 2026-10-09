@@ -296,7 +296,7 @@ def current_call_site() -> str:
     return _CURRENT_SITE.get()
 
 
-def effort_for_purpose(purpose: LLMCallPurpose, *, default: str, emit: str) -> str:
+def effort_for_purpose(purpose: LLMCallPurpose, *, default: str, emit: str, planning: str) -> str:
     """The ``output_config.effort`` a call of *purpose* runs under.
 
     Effort is the one large cost lever on this engine (output tokens are 94% of
@@ -323,16 +323,28 @@ def effort_for_purpose(purpose: LLMCallPurpose, *, default: str, emit: str) -> s
     value is used both to BUILD the request and to STAMP the call, so the
     disclosed level is the one that was sent.
 
+    **PLANNING has since been split out and raised.** A set-level re-grade of
+    the stored grid (effort-grid.md §6) found the high-effort planner dispatching
+    endpoints the low-effort one dropped — the grid's only confirmed
+    cross-principal write among them — so PLANNING takes its own *planning*
+    level. It is a keyword with no default: a resolver that silently fell back to
+    *default* for PLANNING would restore the low plan without anyone choosing it.
+
     Args:
         purpose: What the call's answer becomes (from :func:`current_call_purpose`).
-        default: The level for PLANNING and SUPPRESS.
+        default: The level for SUPPRESS.
         emit: The level for EMIT.
+        planning: The level for PLANNING.
 
     Returns:
         The effort string to carry, or ``""`` to omit the parameter and inherit
         the provider default.
     """
-    return emit if purpose is LLMCallPurpose.EMIT else default
+    if purpose is LLMCallPurpose.EMIT:
+        return emit
+    if purpose is LLMCallPurpose.PLANNING:
+        return planning
+    return default
 
 
 __all__ = [

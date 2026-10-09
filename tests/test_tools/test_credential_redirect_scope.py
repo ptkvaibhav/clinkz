@@ -447,11 +447,13 @@ class TestTheJsonArmRefusesTheSameWay:
     async def test_the_refusal_ends_the_route_walk(
         self, collector: ThreadingHTTPServer, scope: EngagementScope
     ) -> None:
-        """One route tried, not seven — and the result names the refusal."""
+        """One credential POST, not one per identity key — and the result names the refusal."""
         app = _serve(_json_app_handler(_url(collector, "/collect")), _APP_HOST)
         try:
             auth = WebAuthenticator(scope=scope)
-            result = await auth._try_api_login(_url(app, "/rest/user/login"), _USERNAME, _PASSWORD)
+            result = await auth._try_api_login(
+                _url(app, "/rest/user/login"), _USERNAME, _PASSWORD, login_url_declared=True
+            )
         finally:
             app.shutdown()
             app.server_close()

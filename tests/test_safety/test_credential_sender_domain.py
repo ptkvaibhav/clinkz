@@ -149,10 +149,6 @@ DECLARED: dict[str, tuple[str, str]] = {
         _Sender.NO_DISPATCH,
         "seeds catalogue rows into the local store ahead of the sweep that will try them",
     ),
-    "engagement/auth_state.py::detect_auth_mechanism": (
-        _Sender.NO_DISPATCH,
-        "classifies a response that was already fetched; it sends nothing itself",
-    ),
     "engagement/auth_state.py::serves_login_form": (
         _Sender.NO_DISPATCH,
         "reads an already-fetched body for an input of type password; a pure predicate",
