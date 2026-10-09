@@ -1483,3 +1483,43 @@ decision, and it wants the guard-domain shape: compute every direct
 carrier (allowed, with its reason) or a capability that must resolve, and fail on
 anything unclassified. CLAUDE.md invariant 4 now names the exception and points
 here.
+
+---
+
+## R29 · The only confirmed cross-principal write left the candidate set on the #145 ride-along
+
+**State: OPEN — measured, cause not determined.** Opened 2026-10-09 by the
+documentation truth pass, while checking a session note that read *"0 confirmed
+(as baseline)"* against the stored bundles. The note was wrong about the
+baseline, and the correction is the finding.
+
+**Measured, from the two stored bundles** (same Juice Shop profile, effort
+`low`, benchmark on):
+
+| | `f6ff1381` (baseline) | `d29c80ee` (#145 ride-along) |
+|---|---|---|
+| confirmed cross-principal write | **1** — `/api/Complaints` via `UserId` | **0** |
+| `write_crossing` union pass | kept 6, dropped 4 | kept 5, dropped 3 |
+| `/api/Complaints` in that union pass | kept, dispatched | **absent** — neither kept nor dropped |
+| trace records with `"method": "POST"` for it | 1 | **0** |
+| first (coverage) pass | dropped | dropped |
+
+So the endpoint carrying the engine's only confirmed write crossing was a
+candidate in the baseline and not a candidate at all on the later run. "kept 6 →
+5, candidate set essentially identical" undercounted this: the endpoint that
+differed is the one that mattered. The five abstention leads in `d29c80ee` are
+real, but none of them is about `/api/Complaints`.
+
+**Not determined.** The baseline has a POST record for the route and the
+ride-along has none, which fits two readings. (a) The verb was not read this time,
+so `method_evidence` is `UNREAD` and `_is_observed_write_surface` excluded it.
+That is the routing doing its job on an unread verb, and the defect would be
+upstream in verb discovery variance. (b) Discovery never produced the write at
+all. Telling them apart needs the scan-phase endpoint record for the route in
+both runs, not the trace's exploit events. Either way, a confirmed finding that
+one run produces and the next cannot reach is the reproducibility question the
+three-run envelope keeps returning to: plan allocation, not oracle variance.
+
+**Why it matters for the docs.** `write-crossings.md` §11 and `effort-grid.md`
+§3.2 state the `/api/Complaints` confirmation correctly. What is not established
+is that a fresh run reproduces it.
