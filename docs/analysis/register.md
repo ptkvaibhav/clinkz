@@ -18,6 +18,41 @@ differently and only one of them is waiting for a target.
 | **OPEN — trade** | the fix requires a decision with a real cost on the other side, not just work |
 | **UNREACHABLE PRECONDITION** | a gate needs evidence the engine can only produce by first passing that gate. Not *unexercised* — dispatched and measured. Not *not applicable* — the target may well carry the rule. It is a capability the engine does not have, and the deliverable must not describe it as a class waiting for a better target |
 
+## Walk — 2026-10-09, tree at `9a4f590` (documentation truth pass)
+
+Every entry re-checked against the tree, not against its own text. "Verified"
+below means the cited code was read in this walk; an entry whose evidence is a
+stored-bundle measurement keeps that measurement and is marked as carried.
+
+| entry | state | evidence in the tree, this walk |
+|---|---|---|
+| R1 | OPEN | `_url_shape.py::STATIC_ASSET_EXTENSIONS` still has no `js` |
+| R2 | OPEN — cause verified | `_test_javascript_attacks` returns before its methodology on `not page.forms` or no `<script>`; the phase events are emitted only inside `_run_js_attacks_methodology` (3 call sites), so every early return is silent |
+| R3 | RESOLVED | carried |
+| R4 | OPEN | `_xss_dom` + `_javascript_attacks` still appended to every non-static endpoint, after the precondition-graded classes |
+| R5 | OPEN — unverified | not re-measured |
+| R6 | OPEN | `_applicable_methods_for_endpoint` still names none of the three business-logic classes |
+| R7 | OPEN — partial | the marker-oracle call domain is guarded (`test_marker_oracle_controls.py::CONTROL_TAKERS`); the general MIXED/NEVER/ALWAYS/UNCALLED walk is still unwritten |
+| R8 | OPEN | no `provider_chain_observations`; `reset_account_disabled_providers()` still called from tests only |
+| R9 | CLOSED (split into R11, R12) | carried |
+| R10 | OPEN | `js_source_ingest.py` still `sorted(seen)` then `candidates[:_MAX_FILES]`, `_MAX_FILES = 2000` |
+| R11 | OPEN (disclosure half fixed) | carried |
+| R12 | OPEN | `_emit_business_logic` still files every non-confirmation `why="not_instrumentable"` |
+| R13 | UNREACHABLE PRECONDITION | carried |
+| R14 | CLOSED 2026-09-15 | carried |
+| R15 | OPEN | `artifact_scan.py` still detects by text through the shared shape vocabulary |
+| R16 | OPEN | neither batch driver calls `register_credential_set` |
+| R17 | RESOLVED (disclosure); re-sort deliberately not built | `BundleFetchTruncation` in `observability/plan_alarms.py` |
+| R18, R19 | RESOLVED | carried |
+| R20 | OPEN | `_read_files` still skips `*.min.js` |
+| R21 | OPEN | `PRIVATE_KEY_RE` still ends `(?:<END-banner>\|\Z)` under `re.DOTALL` |
+| R22 | RESOLVED in this push | spec now marks the pass SUPERSEDED |
+| R23 | RESOLVED | carried |
+| R24 | OPEN | `Finding.model_fields` — 14 fields, none names a class |
+| R25 | RESOLVED | `endpoints.method_evidence` column, persisted and reloaded |
+| R26 | RESOLVED | was the second "R13"; renumbered in this walk |
+| R27, R28, R29 | OPEN — new in this walk | below |
+
 ---
 
 ## R1 · `js` is absent from `STATIC_ASSET_EXTENSIONS`
@@ -67,6 +102,14 @@ one.
 **Reported, not verified here.** The class is dispatched and records nothing
 through `_trace_methodology_phase`, so the trace cannot distinguish "ran and
 found nothing" from "returned early".
+
+**Verified 2026-10-09.** The phase events exist — three
+`_trace_methodology_phase` calls inside `_run_js_attacks_methodology` — but
+`_test_javascript_attacks` returns an empty list before reaching it whenever
+`page.forms` is empty or the body carries no `<script>` block. `page.forms` is
+`[]` on every framework target (invariant 18), so on an SPA the class is
+dispatched, returns at its first line, and emits nothing at all. The fix is a
+phase-1 abstention event on each early return, not a change to the gate.
 
 Relevant context already in the tree: this is the one form-shaped class that
 CLAUDE.md invariant 18 exempts from reading `_injectable_forms`
@@ -884,8 +927,10 @@ call sites — the same law as every other domain here.
 
 ## R17 · The bundle-fetch cap has no ordering signal, and the measurement says it is not what binds
 
-**State: OPEN, with the options measured and none built.** Opened 2026-09-15 by
-the config-object round (`docs/analysis/spa-write-surface-blocker.md` §7.5).
+**State: RESOLVED — option (a), the disclosure; the re-sort deliberately not
+built** (see *RESOLVED* below). Opened 2026-09-15 by the config-object round
+(`docs/analysis/spa-write-surface-blocker.md` §7.5). The paragraphs before the
+resolution are the measurement that chose it, kept as written.
 
 `JSCallSiteDiscoverer` fetches `_MAX_BUNDLES = 12` of a target's chunk URLs — 53
 on cal.com, 27 on Juice Shop — in **queue order**, because
@@ -1252,6 +1297,10 @@ unprimed methodology checkpoints (item 2, `docs/analysis/cost-cap-and-system-pre
 superseded by the registry-remediation design — not wiring an LLM call into a
 stage whose zero-LLM property is a deliberate speed and honesty guarantee.
 
+**RESOLVED 2026-10-09** (documentation truth pass). `CLINKZ_V2_IMPLEMENTATION.md`
+marks the pass `[SUPERSEDED]` with this entry as the reason, REPORT is `[DONE]`,
+and *On the horizon* item 2 is struck through.
+
 *(Carried from #144's register as R10; renumbered to R22 because main's register
 reached R21 independently — same item, non-colliding number.)*
 
@@ -1299,7 +1348,11 @@ grading as the evidence.
 
 ---
 
-## R13 · A batch driver wrote its result row after a step that could raise
+## R26 · A batch driver wrote its result row after a step that could raise
+
+*(Filed as a second "R13" by the effort-grid round; renumbered 2026-10-09 because
+R13 is the business-logic UNREACHABLE PRECONDITION entry above. **State:
+RESOLVED** — the tag is sanitised.)*
 
 **Verified, and the cost was paid before it was found.** The effort-grid driver
 built each cell's log filename from the cell's own coordinates, and Juice Shop's
@@ -1360,3 +1413,113 @@ producer passing it in `features`. Pinned by a round-trip test that reloads a
 `NAMED` POST from the store and asserts `_is_observed_write_surface` admits it
 while a verb-less row stays excluded — the reload tied directly to the routing it
 feeds, not asserted at the store seam alone.
+
+---
+
+## R27 · The phase agents load a system prompt nothing sends, and three docstrings describe a dead executor
+
+**State: OPEN.** Opened 2026-10-09 by the documentation truth pass. A code-side
+divergence: the docs were corrected to what runs; the code still says otherwise.
+
+**Verified.** Each of `recon.py`, `scan.py`, `exploit.py`, `research.py`,
+`report.py` reads `prompts/<name>_system.md` at import into a module constant
+returned by `system_prompt`, and `orchestrator.py` reads
+`orchestrator/prompts/orchestrator_system.md` into `self._system_prompt`.
+Nothing reads either: `grep '\.system_prompt'` over `src/` finds no consumer,
+`_system_prompt` is assigned once and never read, and every phase-agent LLM call
+is `generate_text(<str>)` or `generate_text(PromptSegments(...))` — neither
+carries a system turn. `LLMClient.reason`, the one interface method that takes
+messages, has no caller outside `llm/`. The adaptive-auth agent is the single
+exception: it inlines `auth_agent_system.md` into its user prompt.
+
+And `BaseAgent._execute_tool` has **no caller in `src/` or `tests/`**, while three
+docstrings describe it as live: `agents/base.py`'s module docstring (*"BaseAgent
+now provides … tool execution (`_execute_tool`)"*, and line 5's *"system_prompt —
+loaded from agents/prompts/<name>.txt"*, which is neither the extension nor a
+path that is sent), `observability/trace.py:253` and `tools/base.py:168`. Two more
+docstrings describe a path that no longer runs: `agents/research.py`'s step 2
+(*"Research NEW vulns via web search"* — the phase is not web-grounded under
+routing v2) and `research/runtime_research.py` (*"The Exploit Agent calls this
+module"* — only `ResearchAgent` constructs it).
+
+**Why it matters.** `request_help` — the only `QUERY` constructor, and so the only
+way into the orchestrator's `RESPIN_*` branch — is reachable only through
+`_execute_tool`. The re-spin path is therefore dead two hops deep, not one. And a
+reader of `exploit_system.md` (15,519 chars of honesty rules) reasonably believes
+the methodology checkpoints are primed with it; they are not
+(`cost-cap-and-system-prefix.md` §2).
+
+**Why not fixed here.** A docs-only pass. The deletions — `_execute_tool`,
+`request_help`, `_handle_query`, the `RESPIN_*` constants, the five unread prompt
+loads — are the cleanup `a158ba4` explicitly scoped out, and they want the same
+dead-code commit shape. Whether the checkpoints SHOULD be primed is the prefix
+sweep variable, an open measurement, not a cleanup.
+
+---
+
+## R28 · Invariant 4 (no direct tool import) is unguarded and broken by the HTTP carrier
+
+**State: OPEN.** Opened 2026-10-09 by the documentation truth pass.
+
+**Verified.** `agents/exploit.py` imports `HTTPClientTool` directly inside eight
+functions — the `_http_*` carriers (`_http_get`, `_http_post`, `_http_post_json`,
+`_http_post_xml`, `_http_post_multipart`, `_http_get_anonymous`,
+`_http_send_anonymous`) and `_jwt_send_with_token` — plus `SESSION_NONE` /
+`SESSION_ISOLATED` and, at module level, `HTTPClientOutput`; the
+orchestrator constructs `HTTPClientTool` in its auth path (two sites) and imports
+`walk_redirects`; `agents/base.py` imports `ToolInstallerTool`. None goes through
+`ToolResolver.find_tool(capability="http_request")`, although `TOOL_CHAINS`
+declares that capability. No test computes the domain of direct `clinkz.tools.*`
+imports from agent or orchestrator code, so the invariant reads as enforced and
+is not.
+
+**Probably the INVARIANT is what needs to change, not the carrier.** The probe
+carrier is the engine's own instrument, not a substitutable tool: it owns
+`session_mode`, the governor slot, the destructive gate and the invocation
+record, and routing it through a resolver that could hand back a different
+`http_request` provider would weaken every oracle reading its envelope. That is a
+decision, and it wants the guard-domain shape: compute every direct
+`clinkz.tools.*` import from `agents/` and `orchestrator/`, classify each as the
+carrier (allowed, with its reason) or a capability that must resolve, and fail on
+anything unclassified. CLAUDE.md invariant 4 now names the exception and points
+here.
+
+---
+
+## R29 · The only confirmed cross-principal write left the candidate set on the #145 ride-along
+
+**State: OPEN — measured, cause not determined.** Opened 2026-10-09 by the
+documentation truth pass, while checking a session note that read *"0 confirmed
+(as baseline)"* against the stored bundles. The note was wrong about the
+baseline, and the correction is the finding.
+
+**Measured, from the two stored bundles** (same Juice Shop profile, effort
+`low`, benchmark on):
+
+| | `f6ff1381` (baseline) | `d29c80ee` (#145 ride-along) |
+|---|---|---|
+| confirmed cross-principal write | **1** — `/api/Complaints` via `UserId` | **0** |
+| `write_crossing` union pass | kept 6, dropped 4 | kept 5, dropped 3 |
+| `/api/Complaints` in that union pass | kept, dispatched | **absent** — neither kept nor dropped |
+| trace records with `"method": "POST"` for it | 1 | **0** |
+| first (coverage) pass | dropped | dropped |
+
+So the endpoint carrying the engine's only confirmed write crossing was a
+candidate in the baseline and not a candidate at all on the later run. "kept 6 →
+5, candidate set essentially identical" undercounted this: the endpoint that
+differed is the one that mattered. The five abstention leads in `d29c80ee` are
+real, but none of them is about `/api/Complaints`.
+
+**Not determined.** The baseline has a POST record for the route and the
+ride-along has none, which fits two readings. (a) The verb was not read this time,
+so `method_evidence` is `UNREAD` and `_is_observed_write_surface` excluded it.
+That is the routing doing its job on an unread verb, and the defect would be
+upstream in verb discovery variance. (b) Discovery never produced the write at
+all. Telling them apart needs the scan-phase endpoint record for the route in
+both runs, not the trace's exploit events. Either way, a confirmed finding that
+one run produces and the next cannot reach is the reproducibility question the
+three-run envelope keeps returning to: plan allocation, not oracle variance.
+
+**Why it matters for the docs.** `write-crossings.md` §11 and `effort-grid.md`
+§3.2 state the `/api/Complaints` confirmation correctly. What is not established
+is that a fresh run reproduces it.

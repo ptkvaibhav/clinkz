@@ -12,6 +12,22 @@ added, so cite one by its rule text where you can, the same way
 their forensic detail in a dedicated `docs/methodology/` file instead of a
 section here, and say so in CLAUDE.md: 86 (SCA catalogue breadth) is one.
 
+**Invariants with no section here** (index computed 2026-10-09 — every number
+1–114 was checked for a heading). Their incident lives where CLAUDE.md's
+`Detail →` points:
+
+| # | where the incident is recorded |
+|---|---|
+| 86 | [`methodology/sca-catalogue-breadth.md`](methodology/sca-catalogue-breadth.md) |
+| 105 | [`observability.md`](observability.md) (run auditability) |
+| 106 | [`analysis/probe-bound-ordering.md`](analysis/probe-bound-ordering.md) |
+| 107 | [`analysis/business-logic-verdict-trace.md`](analysis/business-logic-verdict-trace.md) |
+| 108, 110 | `.claude/skills/clinkz-dev/SKILL.md` §7; [`analysis/register.md`](analysis/register.md) R14 |
+| 109 | [`analysis/register.md`](analysis/register.md) R13 |
+| 111 | [`analysis/spa-write-surface-blocker.md`](analysis/spa-write-surface-blocker.md) §6 |
+| 113 | [`analysis/register.md`](analysis/register.md) R18 |
+| 114 | [`analysis/register.md`](analysis/register.md) R20 |
+
 ## Architecture, comms, and tool discovery
 
 ### 1. Deterministic steps + LLM checkpoints

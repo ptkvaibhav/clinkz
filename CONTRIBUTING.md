@@ -49,9 +49,16 @@ All tool wrappers must:
 ## Adding a New Agent
 
 1. Create `src/clinkz/agents/your_agent.py` inheriting from `BaseAgent`
-2. Write a system prompt in `src/clinkz/agents/prompts/your_agent_system.md`
-3. Implement the agent's ReAct loop logic (Observe → Reason → Act → Reflect)
-4. Register the agent in the Orchestrator's lifecycle manager
+2. Implement `run()` as a **fixed sequence of deterministic steps** with the LLM
+   invoked only at named checkpoints — there is no ReAct loop to plug into (it
+   was deleted). Each checkpoint calls `generate_text` inside
+   `llm_call_purpose(...)`, because an unclassified call site is a red build
+3. `BaseAgent` requires a `system_prompt` property (the existing agents load
+   `src/clinkz/agents/prompts/<name>_system.md`), but nothing reads it today: a
+   checkpoint sends only the prompt it is handed (`docs/analysis/register.md` R27)
+4. Register the agent in `orchestrator/lifecycle.py::_AGENT_CLASSES` **and** give
+   it a `_run_phase` call in `OrchestratorAgent.run()` — registration alone makes
+   an agent constructible, never called (the archived Critic)
 5. Add tests in `tests/test_agents/test_your_agent.py`
 
 Agents must never reference tools by name — use the Tool Resolver to find capabilities.
@@ -59,7 +66,10 @@ Agents must never reference tools by name — use the Tool Resolver to find capa
 ## Running Tests
 
 ```bash
-# Keyless gate — deterministic, container-free (excludes every live/container suite)
+# Keyless gate — deterministic, container-free (excludes every live/container suite).
+# Clear the provider keys first: config.py loads .env at import, so a present key
+# turns parts of this suite into LIVE model calls.
+ANTHROPIC_API_KEY="" GEMINI_API_KEY="" GOOGLE_API_KEY="" OPENAI_API_KEY="" \
 pytest tests/ -q --tb=short --ignore=tests/test_skills_dvwa --ignore=tests/test_skills_juiceshop --ignore=tests/test_pipeline_smoke --ignore=tests/test_integration
 
 # Container gate — live suites, require the target containers up (run serially)
@@ -84,8 +94,8 @@ pytest --cov=clinkz tests/
 - Lint and format with [Ruff](https://docs.astral.sh/ruff/):
 
 ```bash
-ruff check src/     # Lint
-ruff format src/    # Format
+ruff check src/ tests/            # Lint — CI pins ruff==0.15.22
+ruff format --check src/ tests/   # Format
 ```
 
 ## Key Rules

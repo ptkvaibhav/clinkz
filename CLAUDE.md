@@ -37,13 +37,13 @@ tools dynamically.
   `.githooks/pre-commit` runs the outputs/secret/gates/context-budget guards. That
   config is per-clone and never committed, so a fresh clone is unprotected until it
   runs (`/gates` reports `GATE0_hooksPath`). CI's `leak-guard` job is the only
-  fail-closed layer: no local config or `--no-verify` skips it. It inspects the
-  **tree**, so a sibling job `metadata-leak-guard` covers what a tree scan
-  structurally cannot see — session links in a PR title/body or a
-  `Claude-Session:` commit trailer. Commit attribution is suppressed at source by
+  fail-closed layer; `metadata-leak-guard` covers what a tree scan cannot see
+  (session links in a PR title/body or a commit trailer). Attribution is off at
+  source:
   `attribution: {commit: "", pr: "", sessionUrl: false}` in `.claude/settings.json`;
   `sessionUrl` is a separate boolean and the two strings do NOT imply it.
-  Use foreground commands only — no background scripts/polling.
+  Foreground commands only — except the keyless gate, which outruns the 600 s
+  tool cap: run it in the background and wait for its notification, never poll.
 
 **PLAN-FIRST WORKFLOW**
 - Every task begins with a brief implementation plan before any code, folding in
@@ -72,8 +72,8 @@ sequence, not LLM-mediated dynamic routing**: `OrchestratorAgent.run()` is a fix
 sequence of `_run_phase` calls and the bus carries `task` / `result` / `error` /
 `status`. The LLM-routed branch (`_handle_query`, `RESPIN_*`,
 `MAX_CROSS_PHASE_RESPINS`) is unreached code — its only `QUERY` constructor is
-`request_help`, which v2 never dispatches. Describing it as a capability is how
-three other claims in this file went stale.
+`request_help`, reachable only through `BaseAgent._execute_tool`, which has no
+caller (register R27).
 
 **Phase shape:** Recon (sequential) → **Scan + Research + Exploit concurrently**
 over shared SQLite state → Report (sequential). Exploit's only hard dependency is
@@ -81,22 +81,16 @@ Scan. **Credit pre-flight** (`llm/fallback.py::preflight_provider_available`)
 probes once at start; a depleted account is `KeyStatus.INVALID`, and the
 agreement between the two pre-flights is asserted.
 
-### Message format
-```python
-class AgentMessage(BaseModel):
-    id: str
-    from_agent: str        # "orchestrator", "recon", "scan", ...
-    to_agent: str
-    message_type: str      # "task" | "result" | "query" | "response" | "status"
-    content: dict
-    engagement_id: str
-    parent_message_id: str | None
-    timestamp: datetime
-```
+**Message format:** `comms/message.py::AgentMessage` — `from_agent`, `to_agent`,
+`message_type` (`MessageType`: task · result · query · response · status ·
+error), `content`, `engagement_id`, `parent_message_id`, `timestamp`.
 
 All v2 phase agents follow **deterministic steps + LLM checkpoints** — a fixed
 sequence of tool calls and code, LLM invoked only at named reasoning checkpoints.
-No free-form ReAct.
+No free-form ReAct: the generic loop is **deleted** (`a158ba4`). Every checkpoint
+is a bare `generate_text` prompt with **no system prompt** — the
+`prompts/*_system.md` files are loaded and never sent (R27); the adaptive-auth
+agent inlines its own.
 ## Agents
 
 **Detail → `docs/agents.md`.** Every role is Anthropic-primary
@@ -104,24 +98,27 @@ under routing v2 (`claude-sonnet-5` by default — **not Opus**).
 
 - **Orchestrator** — coordinator; delegates all tool work, opens the engagement
   gate first, before docker/state/packets.
-- **Recon (v2)** — ports → services → tech stack → package identity.
-  `_package_identity.py` names PACKAGES, not servers; a dependency **range** is
-  deliberately not read.
+- **Recon (v2)** — ports → services → tech stack → package identity. A service
+  is HTTP on PROTOCOL evidence (`ReconService.is_http`: an `-sV` status line),
+  the web-port list only the no-evidence fallback. `_package_identity.py` names
+  PACKAGES, not servers; a dependency **range** is deliberately not read.
 - **Scan (v2)** — budgets its own wall clock (`SCAN_TIME_BUDGET`), because the
   orchestrator's timeout DISCARDS the return value; four discoverers union into
   `endpoints`; safe methods only.
 - **Research (v2)** — **not web-grounded by default**; grounding is declared,
   weakest-wins, and stamped rather than absorbed.
-- **Exploit (v2)** — 26 adaptive `_test_*` methodologies by tier. The
-  deterministic check GATES the LLM; phase-3 ranking is `_plan_ranking.py`, not
-  the model's; P7 is the client-side oracle; TERMINAL classes dispatch last.
+- **Exploit (v2)** — `DISPATCHABLE_TEST_METHODS`: 29 `TIER1_TESTS` classes,
+  `_test_log4shell`, and two Tier-2/3 runbook executors that send nothing
+  (`NOT_IMPLEMENTED`). The deterministic check GATES the LLM; phase-3 ranking is
+  `_plan_ranking.py`; P7 is the client-side oracle; TERMINAL classes dispatch
+  last; write-family classes route on `_is_observed_write_surface`.
 - **Chaining** (`src/clinkz/chaining/`) — graded by its WEAKEST link; only ever ADDS.
 - **Business logic** — intent inferred from the app's own surface, with evidence.
-- **Critic** — **archived** (`agents/_archive/critic.py`); invoked in 0 of 2,774
-  recorded steps, its job done by deterministic gates on the emitting path.
+- **Critic** — **archived** (`agents/_archive/critic.py`); its job is done by
+  deterministic gates on the emitting path.
 - **Report** — **zero LLM calls**; JSON + Markdown + PDF in <30 s, all three
-  rendered from the SAME redacted structure. `report_llm_provider` exists for
-  interface symmetry and nothing reads it at runtime.
+  rendered from the SAME redacted structure; remediation is per class from the
+  registry. The spec's LLM remediation pass is SUPERSEDED, not pending (R22).
 ## Engagement Setup + Production Safety
 
 **Full detail → `docs/productization-engagement-safety.md`.**
@@ -201,12 +198,10 @@ facts that a later engagement recalls as a **prior** — it re-orders the tested
 but **never emits**.
 ## Tool Execution: Dynamic Discovery
 
-Agents never hardcode tool names — they call
-`ToolResolver.find_tool(capability="port_scanning")`. The resolver checks MCP
-servers first, then local CLI tools, then walks declared `TOOL_CHAINS` fallback
-orders. Every tool validates targets against scope **before any network activity**
-and returns Pydantic models, never raw strings. If nothing is found the agent
-reports the missing capability to the Orchestrator.
+Invariant 4. The resolver checks MCP servers, then local CLI tools, then the
+declared `TOOL_CHAINS` order. Every tool validates scope **before any network
+activity** and returns Pydantic models; a missing capability is reported to the
+Orchestrator.
 
 ## Tech Stack
 
@@ -217,23 +212,20 @@ reports the missing capability to the Orchestrator.
   outside `llm/`. **Routing v2: Anthropic is priority 1 for EVERY call on EVERY
   phase**; Gemini (`gemini-3.7-flash`, pinned) and OpenAI are the fallback tail;
   Ollama is a stub in no chain. Per-agent overrides via `LLM_PROVIDER_<AGENT>`.
-  Every rotation is a **disqualifying event**. **Detail →
-  `docs/provider-routing.md`.**
+  Every rotation is a **disqualifying event**. Effort is per call PURPOSE
+  (`LLM_EFFORT`, default `low`, for PLANNING/SUPPRESS; `LLM_EFFORT_EMIT` for EMIT,
+  provider default). `--token-cap` / `--spend-cap-usd` bound spend; a run the cap
+  halted is INDETERMINATE. **Detail → `docs/provider-routing.md`.**
 - **Operation-level timeouts** (per HTTP request, tool subprocess, and LLM call
   via `LLM_REQUEST_TIMEOUT`) are the safety valve — the exploit phase has no
   wall-clock deadline by default.
 - SQLite: `clinkz.db` (per-engagement state), `clinkz_knowledge.db` (cross-
   engagement KB incl. Layer-2 `capability_facts` / `capability_observations`).
-- **Playwright + Chromium** backs P7 and lives in `docker/Dockerfile.tools`. That
-  layer is **self-verifying** — it launches the browser at build time, because
-  `--with-deps` can exit 0 having installed a browser that never launches.
-  Optional for `TOOL_EXEC_MODE=local`; absent, the affected classes record
-  unproven leads exactly as before.
-- **ReportLab** renders the PDF and **pypdf** reads one back for the disclosure
-  gate. **Not WeasyPrint** — it resolves GTK/Pango at import and cannot run on the
-  machine that produces the bundle. `jinja2` remains declared and unused.
-- **Node** backs one TARGET, not the engine: `docker/protopoll` is a real
-  `Object.prototype`. Standard library only, no `package.json`.
+- **Playwright + Chromium** backs P7 in `docker/Dockerfile.tools`, which launches
+  the browser at build time (self-verifying); absent, classes record leads.
+- **ReportLab** renders the PDF, **pypdf** reads it back for the disclosure gate;
+  **not WeasyPrint** (no GTK on Windows). `jinja2` is declared and unused.
+- **Node** backs one TARGET (`docker/protopoll`), never the engine.
 - MCP Python SDK for tool servers; Docker for sandboxed tool execution
   (`clinkz-tools`; `TOOL_EXEC_MODE=local` for the in-process HTTP path).
 - Typer CLI; `clinkz trace inspect <engagement>` renders execution traces.
@@ -244,7 +236,8 @@ reports the missing capability to the Orchestrator.
 `agents/` (recon · scan · exploit · research · report + pure helpers),
 `orchestrator/`, `comms/`, `llm/`, `tools/`, `knowledge/`, `discovery/`,
 `chaining/`, `engagement/`, `safety/`, `browser/`, `oob/`, `observability/`,
-`models/`. Beside it: `docker/`, `scripts/`, `tests/`, `docs/`, and
+`models/`, `credentials/`, `research/` (the NVD feed). Beside it: `docker/`,
+`scripts/`, `tests/`, `docs/`, and
 `requirements-ci.lock` — the FULL resolved dependency set CI installs.
 ## Commands
 
@@ -279,18 +272,20 @@ LESSONS #17).
 
 ## Key Design Decisions (invariants — non-negotiable)
 
-**The rule is here; the incident that produced it is in `docs/invariants.md`,
-same order, same numbering.** Read the detail when you are about to change the
+**The rule is here; the incident is in `docs/invariants.md`, same numbering — or,
+for the numbers its index lists, in the doc a `Detail →` names.** Read the detail
+when you are about to change the
 code an invariant governs — not by default. A `Detail →` pointer names a path
 under the repo root; the header table at the top of this file links them all.
 
 1. **Deterministic steps + LLM checkpoints**; no free-form ReAct.
 2. **Orchestrator-mediated comms** — agents never talk directly. The router is the
-   deterministic phase sequence, NOT an LLM: `_handle_query`'s `RESPIN_*` branch
-   has never fired, and `MAX_CROSS_PHASE_RESPINS` bounds a path nothing reaches.
+   deterministic phase sequence, NOT an LLM (the `RESPIN_*` branch is unreached).
 3. **Agents are spun up/down on demand**, in the order the phase shape declares.
 4. **Dynamic tool discovery** — `ToolResolver.find_tool(capability=...)`, never a
-   tool name or direct import.
+   tool name or direct import. **Not yet true of the HTTP carrier**: exploit's
+   `_http_*` and the orchestrator's auth path construct `HTTPClientTool`
+   directly, unguarded (R28).
 5. **LLM-agnostic + per-agent providers** — never import a provider SDK outside
    `llm/`. Anthropic is priority 1 for every call on every phase; a discovered key
    confers *availability*, never a position.
@@ -556,8 +551,7 @@ under the repo root; the header table at the top of this file links them all.
     per-run, and is reconciled against the run-completion banner.
 81. **The prompt cache is a ledger component like any other, because it degraded
     exactly like one** — invoked every run, succeeded every time, contributed
-    zero. **OFF by default by measurement.** **A ledger where an alarm always
-    fires teaches the operator to stop reading it.**
+    zero. **OFF by default by measurement** (invariant 77's false-alarm rule).
 82. **A consumer never guesses a producer's field names.** Never
     `getattr(parsed, "field", default)` over a model — the default is what turns a
     typo into a permanently dead capability. **A mock mirrors the real model's
@@ -624,8 +618,8 @@ under the repo root; the header table at the top of this file links them all.
 
 94. **A verdict rule with no correct live firing is a dead instrument, and the
     corpus decides which.** Every `_login_verdict` rule is replayable over stored
-    curl dumps; the authenticated-page-marker rule fired 4 times in 762 POSTs, all
-    four wrong — deleted. A zero meaning *not yet reachable here* gets a fixture.
+    curl dumps; one that only ever fired wrong was deleted. A zero meaning *not
+    yet reachable here* gets a fixture.
     **Detail → `docs/methodology/authentication-shapes.md`.**
 
 95. **A measurement that refused itself is not a clean result, and a truncated
@@ -723,8 +717,7 @@ under the repo root; the header table at the top of this file links them all.
 107. **Registered, dispatched, and never able to begin is its own state.** A
     business-logic class that cannot evidence the application's intent declares an
     `InconclusiveMeasurement` — not a lead (it suspects nothing) and not
-    `not_applicable` (the endpoint may well carry the rule). 164 dispatches across
-    the corpus reached no verdict and said nothing. **Detail →
+    `not_applicable` (the endpoint may well carry the rule). **Detail →
     `docs/analysis/business-logic-verdict-trace.md`.**
 
 108. **A transformation applied to a whole structure distinguishes the
@@ -765,7 +758,9 @@ under the repo root; the header table at the top of this file links them all.
     `UNREAD`). `_applicable_methods_for_endpoint` is the ONLY producer of seven
     Tier-1 classes' buckets and it gates on the verb, so a `GET` standing in for
     an absence does not lower an endpoint's rank — it removes it. `UNREAD` never
-    admits an endpoint to a write class; it gets the route ASKED (unread first
+    admits an endpoint to a write class (`_is_observed_write_surface` reads the
+    evidence AND the verb; `state.py` persists it); it gets the route ASKED
+    (unread first
     in the `OPTIONS` sweep, **within its relevance grade**) and the gap
     DISCLOSED, on a clean run too. Every `Endpoint` producer declares, over an
     AST-computed domain. **Detail →
@@ -777,8 +772,8 @@ under the repo root; the header table at the top of this file links them all.
     first) and `route_declarations` separately. The disclosure's domain is calls
     HTTP by the CALLEE's name or a config argument's SHAPE — `map.get(k)` is not
     one. **The guard that keeps prose out is a POSITIVE shape test, never a
-    string-literal pre-pass**: quote-counting is unsound on minified JS and hid 30
-    of 88 readable call sites. A `{path, method}` manifest entry is held to the
+    string-literal pre-pass** — quote-counting is unsound on minified JS. A
+    `{path, method}` manifest entry is held to the
     call site's bar and claims NO body. **Detail →
     `docs/analysis/spa-write-surface-blocker.md` §7.**
 
@@ -795,8 +790,7 @@ under the repo root; the header table at the top of this file links them all.
     REFUSED rows off it. **Detail → `docs/analysis/register.md` R18.**
 
 114. **A pattern-based exclusion fails toward LESS output, so it needs a
-    DENOMINATOR control, not a shape control.** A quote-counting pre-pass hid 30 of
-    88 call sites and read as a cleaner target. A shape control proves the pattern
+    DENOMINATOR control, not a shape control.** A shape control proves the pattern
     handles the case you thought of; only a count against an independently-known
     total proves it has not stopped handling the rest. **Detail →
     `docs/analysis/register.md` R20.**
@@ -829,10 +823,8 @@ under the repo root; the header table at the top of this file links them all.
 4. **Context budget** — `python .claude/hooks/context_budget.py`. Every
    always-loaded instruction file must stay under its character budget.
    **This gate is the one gates 1–2 may not be skipped alongside**: doc-only edits
-   are what grow these files, and the failure it prevents is silent. `CLAUDE.md`
-   reached **152,205 characters against a ~150k load limit**, and that bound
-   degrades by *truncating quietly* — the first symptom would have been rules not
-   in effect. **A bound that degrades quietly is not a bound.** The domain is
+   are what grow these files, and the ~150k load limit degrades by *truncating
+   quietly*. **A bound that degrades quietly is not a bound.** The domain is
    **computed** (every `CLAUDE.md` in the tree, plus `.claude/LESSONS.md`), so a
    new always-loaded file cannot escape it.
 
@@ -853,5 +845,5 @@ if runtime behavior can change (new hook, permission, tool entry, payload).
   and its story in `docs/` — that is what keeps gate 4 green.
 
 Tool outputs are always parsed into Pydantic models (tested against real output in
-`tests/fixtures/`); agent system prompts live in `prompts/` `.md` files; run the
+`tests/fixtures/`); run the
 pre-push gates before every `git push`, and push after committing.
