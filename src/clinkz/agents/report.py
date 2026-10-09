@@ -2767,6 +2767,7 @@ class ReportAgent(BaseAgent):
                 )
                 for line in verdict.contradictions:
                     lines.append(f"  - {line}")
+            lines.extend(ReportAgent._render_supplied_sessions(auth))
             lines.extend(ReportAgent._render_adaptive_auth(auth))
 
         safety = report.safety_summary
@@ -2815,6 +2816,14 @@ class ReportAgent(BaseAgent):
             return []
 
         engaged = [e for e in episodes if e.get("outcome") != "not_engaged"]
+        supplied = auth.get("supplied_sessions") or {}
+        if not engaged and supplied and set(supplied) >= set(auth.get("seated_by") or {}):
+            # Every proven role was a session the operator supplied: no login
+            # path ran, deterministic or adaptive, so neither may be credited.
+            return [
+                "- **Adaptive authentication:** not engaged. No login was performed by "
+                "this engine; every session it used was supplied by the operator."
+            ]
         if not engaged:
             return [
                 "- **Adaptive authentication:** not engaged. The deterministic login "
@@ -2859,6 +2868,44 @@ class ReportAgent(BaseAgent):
         return lines
 
     @staticmethod
+    def _render_supplied_sessions(auth: dict[str, Any]) -> list[str]:
+        """State which roles ran on a session the OPERATOR supplied, and its fate.
+
+        A supplied session is proven by the same assertion as a seated one, so
+        the "PROVEN" line above is true either way. What it does not say is that
+        this engine never performed the login: the coverage is only as current
+        as the operator's browser session, and nothing here can renew it. Names
+        only — cookie and header VALUES never reach the report. An expiry is
+        stated with its time, beside the halt it caused.
+        """
+        supplied = auth.get("supplied_sessions") or {}
+        if not supplied:
+            return []
+        lines: list[str] = []
+        for role, record in sorted(supplied.items()):
+            names = [
+                *(f"cookie `{n}`" for n in record.get("cookie_names") or []),
+                *(f"header `{n}`" for n in record.get("header_names") or []),
+            ]
+            carried = ", ".join(names) or "no named material"
+            state = (
+                "PROVEN by the anonymous-control assertion"
+                if record.get("proven")
+                else "REFUSED by the anonymous-control assertion"
+            )
+            lines.append(
+                f"- **Session supplied by the operator ({role}):** {carried}. Not obtained "
+                f"by this engine and not trusted on that basis — {state}."
+            )
+            if record.get("expired_at"):
+                lines.append(
+                    f"  - **Expired mid-run** at {record['expired_at']}: it stopped passing "
+                    "the assertion and cannot be renewed by this engine, so the engagement "
+                    "HALTED. Everything not yet tested at that point is UNTESTED, not clean."
+                )
+        return lines
+
+    @staticmethod
     def _render_session_maintenance(auth: dict[str, Any]) -> list[str]:
         """Render session maintenance so the numbers explain themselves.
 
@@ -2875,6 +2922,7 @@ class ReportAgent(BaseAgent):
         pre_session = int(auth.get("pre_session_signals") or 0)
         checks = int(auth.get("session_checks_performed") or 0)
         false_alarms = int(auth.get("session_false_alarms") or 0)
+        unresolved = int(auth.get("session_checks_unresolved") or 0)
         reauths = int(auth.get("reauthentications") or 0)
         if not (losses or ignored or pre_session or checks or reauths):
             return []
@@ -2902,10 +2950,11 @@ class ReportAgent(BaseAgent):
                 "established session (login and mechanism-detection traffic) and are "
                 "not evidence of session loss either."
             )
-        if checks > reauths + false_alarms:
+        if unresolved:
             lines.append(
-                f"  - {checks - reauths - false_alarms} check(s) could not be resolved — "
-                "no usable credential, or re-authentication failed. Coverage after "
+                f"  - {unresolved} check(s) could not be resolved — "
+                "no usable credential, a failed re-authentication, or a supplied "
+                "session that expired. Coverage after "
                 "that point may be unauthenticated."
             )
         return lines

@@ -148,8 +148,12 @@ async def test_a_failed_relogin_is_not_reported_as_a_reauthentication(
     await orch._reauthenticate_running_agents()
 
     assert orch._session_sentinel.reauths_triggered == 0
-    assert orch._session_sentinel.false_alarms == 1
+    # A failed re-login is UNRESOLVED, not a false alarm: the session did not
+    # re-prove itself, and the report must not say it did.
+    assert orch._session_sentinel.false_alarms == 0
+    assert orch._session_sentinel.unresolved == 1
     summary = orch._authentication_summary()
+    assert summary["session_checks_unresolved"] == 1
     assert summary["reauthentications"] == 0
     assert summary["session_checks_performed"] == 1
 

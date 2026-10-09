@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,8 +66,10 @@ from clinkz.engagement.auth_agent import (
 )
 from clinkz.engagement.auth_state import (
     PROTECTED_PATH_CANDIDATES,
+    SEATED_BY_SUPPLIED,
     AuthAssertion,
     AuthMechanism,
+    SessionCheckOutcome,
     SessionSentinel,
     assert_authenticated,
     bearer_header,
@@ -136,7 +139,12 @@ from clinkz.oob import CallbackShape, OOBCollaborator
 from clinkz.orchestrator.lifecycle import AgentLifecycleManager
 from clinkz.orchestrator.target_resolver import resolve_target_for_docker_mode
 from clinkz.safety.benchmark import set_active_benchmark_profile
-from clinkz.safety.governor import EngagementGovernor, set_active_governor
+from clinkz.safety.governor import (
+    HALT_SUPPLIED_SESSION_EXPIRED,
+    EngagementGovernor,
+    get_active_governor,
+    set_active_governor,
+)
 from clinkz.safety.lockout import NO_LOCKOUT, LockoutSignal
 from clinkz.safety.scope_refusals import (
     ScopeRefusalLog,
@@ -497,6 +505,7 @@ class OrchestratorAgent:
         self._session_material_source: str = ""
         self._auth_mechanism: AuthMechanism = AuthMechanism.NONE
         self._reauth_credential: RoleCredential | None = None
+        self._supplied_session_expiry: dict[str, Any] = {}
         self._reauth_login_url: str = ""
         # The login request shape the authenticator PROVED against this target
         # (url + method + content type + body field names), handed to Scan so
@@ -3451,6 +3460,17 @@ class OrchestratorAgent:
         from clinkz.tools.auth import WebAuthenticator
 
         login_url = cred.login_url or default_login_url
+        if cred.session is not None:
+            if await self._seat_supplied_session(cred, login_url) or not cred.secret():
+                # Proven, or unprovable with nothing else to try. Either way no
+                # credential is sent: an operator who supplied only a session
+                # has told us the engine cannot log in here.
+                return
+            self._logger.warning(
+                "The session supplied for role '%s' did not pass the assertion; a "
+                "password was also supplied, so the ordinary login path runs next",
+                cred.role,
+            )
         authenticator = WebAuthenticator(scope=self._scope, engagement_id=self._engagement_id)
         # Every declaration the operator made travels to the authenticator. They
         # OVERRIDE discovery rather than seeding it: an operator who names their
@@ -3591,6 +3611,91 @@ class OrchestratorAgent:
             # Remember what to re-authenticate with when the session is lost.
             self._reauth_credential = cred
             self._reauth_login_url = login_url
+
+    async def _seat_supplied_session(self, cred: RoleCredential, login_url: str) -> bool:
+        """Put an operator-supplied session through the SAME assertion, and record it.
+
+        Supplied is not trusted. :func:`assert_authenticated` runs unchanged —
+        the same with-session / anonymous-control comparison that proves a
+        session the engine seated — so a stale, revoked or wrong-origin session
+        is refused here exactly as a failed login would be, and the engagement
+        aborts loudly rather than scan an authenticated application anonymously.
+
+        The record says WHO seated it (``seated_by: supplied``) because a reader
+        is entitled to know the engine never performed this login: the coverage
+        is only as current as the operator's browser session, and the run cannot
+        renew it. ``login_verdict`` is ``not_attempted`` rather than a verdict,
+        because no credential exchange happened to have one.
+
+        Args:
+            cred: The role, carrying ``session``.
+            login_url: The login URL in force, used only as the assertion's
+                last-resort candidate, as for every other role.
+
+        Returns:
+            Whether the assertion PROVED the supplied session.
+        """
+        assert cred.session is not None
+        cookies = cred.session.cookie_values()
+        headers = cred.session.header_values()
+        assertion = await self._assert_role_session(cred, cookies, headers, login_url)
+        if assertion.established and not self._session_material_source:
+            self._session_material_source = (
+                f"a session the operator supplied for role {cred.role!r} "
+                "(obtained outside this engine)"
+            )
+        self._role_sessions[cred.role] = {
+            "established": assertion.established,
+            "username": cred.username,
+            "cookies": cookies if assertion.established else {},
+            "headers": headers if assertion.established else {},
+            "login_url": login_url,
+            "posted_to": "",
+            "assertion": assertion,
+            "login_verdict": "not_attempted",
+            "login_verdict_evidence": (
+                "no credential was sent: the operator supplied session material "
+                f"({len(cookies)} cookie(s), {len(headers)} header(s))"
+            ),
+            "observations": [],
+            "post_changed_nothing": False,
+            "form_action_declared": False,
+            "seated_by": SEATED_BY_SUPPLIED,
+            "supplied_cookie_names": sorted(cookies),
+            "supplied_header_names": sorted(headers),
+        }
+        self._auth_transcripts.append(
+            AuthTranscript(
+                role=cred.role,
+                outcome=AuthAgentOutcome.NOT_ENGAGED,
+                outcome_reason=(
+                    "the operator supplied this role's session, so no login was "
+                    "performed and no model was consulted"
+                ),
+            )
+        )
+        if not assertion.established:
+            self._logger.error(
+                "The session SUPPLIED for role '%s' did not pass the authenticated "
+                "assertion — it may have expired, been revoked, or belong to another "
+                "origin: %s",
+                cred.role,
+                assertion.why_unproven,
+            )
+            return False
+        self._logger.info(
+            "Supplied session for role '%s' PROVEN — %s at %s (auth=%d anon=%d)",
+            cred.role,
+            assertion.discriminator,
+            assertion.url,
+            assertion.authenticated_status,
+            assertion.anonymous_status,
+        )
+        primary = self._credentials.primary() if self._credentials else None
+        if primary is not None and cred.role == primary.role:
+            self._reauth_credential = cred
+            self._reauth_login_url = login_url if cred.secret() else ""
+        return True
 
     def _absorb_recon_context(self, recon_result: dict[str, Any]) -> None:
         """Read the two recon facts the adaptive-auth briefing needs.
@@ -3839,10 +3944,24 @@ class OrchestratorAgent:
         # "the credentials are wrong" is not sayable about a request the
         # application did not act on.
         any_post_changed_nothing = False
+        any_supplied_refused = False
         for role, session in self._role_sessions.items():
             assertion: AuthAssertion = session["assertion"]
             login_url = session.get("login_url", "")
             posted_to = session.get("posted_to", "")
+
+            if session.get("seated_by") == SEATED_BY_SUPPLIED:
+                # No login happened, so no login remedy applies. What was tested
+                # is the operator's session material, by the same assertion.
+                any_supplied_refused = True
+                lines.append(
+                    f"  [{role}] the session the operator SUPPLIED did not pass the "
+                    "authenticated assertion. No credential was sent for this role."
+                )
+                lines.append(f"      reason: {assertion.why_unproven or 'not stated'}")
+                for attempt in assertion.attempted[:8]:
+                    lines.append(f"        {attempt}")
+                continue
 
             if assertion.attempted:
                 # The assertion ran. This is the ONLY case in which "no URL
@@ -3926,6 +4045,21 @@ class OrchestratorAgent:
                         )
 
         lines += ["", "Fix one of:"]
+        if any_supplied_refused:
+            lines += [
+                "  - the supplied session has expired or been revoked; sign in again in a "
+                "browser and supply the fresh cookies/headers",
+                "  - the supplied material belongs to another origin or path than the "
+                "target; copy it from the application's own origin",
+                '  - the protected surface is unconventional; name it with "assert_url"',
+            ]
+            if all(
+                session.get("seated_by") == SEATED_BY_SUPPLIED
+                for session in self._role_sessions.values()
+            ):
+                # Every role was a supplied session: no login ran, so no login
+                # remedy below is a statement about anything that happened.
+                return "\n".join(lines)
         if any_dispatched and not any_post_changed_nothing:
             # Suppressed when the POST demonstrably changed nothing. A request
             # the application did not act on has not evaluated a credential, so
@@ -4012,7 +4146,12 @@ class OrchestratorAgent:
                 "Session-loss signals did not survive verification — the session is "
                 "still authenticated; continuing without re-authenticating"
             )
-            self._session_sentinel.clear(reauthenticated=False)
+            self._session_sentinel.clear(SessionCheckOutcome.ALIVE)
+            return
+
+        if cred is not None and cred.session is not None and not cred.secret():
+            self._halt_on_supplied_session_expiry(cred)
+            self._session_sentinel.clear(SessionCheckOutcome.UNRESOLVED)
             return
 
         if cred is None or not self._reauth_login_url:
@@ -4020,7 +4159,7 @@ class OrchestratorAgent:
                 "Session loss detected but no credential is available to "
                 "re-authenticate with — continuing with the session we have"
             )
-            self._session_sentinel.clear(reauthenticated=False)
+            self._session_sentinel.clear(SessionCheckOutcome.UNRESOLVED)
             return
 
         self._logger.warning("Session lost — re-authenticating as '%s'", cred.username)
@@ -4036,7 +4175,7 @@ class OrchestratorAgent:
                 "may run unauthenticated; this is recorded in the report",
                 cred.username,
             )
-            self._session_sentinel.clear(reauthenticated=False)
+            self._session_sentinel.clear(SessionCheckOutcome.UNRESOLVED)
             return
 
         headers = bearer_header(result.bearer_token)
@@ -4057,12 +4196,43 @@ class OrchestratorAgent:
                     break
 
         pushed = self._push_session_to_agents(result.session_cookies, headers)
-        self._session_sentinel.clear(reauthenticated=True)
+        self._session_sentinel.clear(SessionCheckOutcome.REAUTHENTICATED)
         self._logger.info(
             "Re-authenticated as '%s' — session pushed to %d running agent(s)",
             cred.username,
             pushed,
         )
+
+    def _halt_on_supplied_session_expiry(self, cred: RoleCredential) -> None:
+        """Stop the engagement: the supplied session is dead and cannot be renewed.
+
+        A password-backed role re-logs-in here. A supplied session has no such
+        path, and the existing fallback — "continuing with the session we have"
+        — would run the rest of the engagement anonymously against an
+        authenticated application while the report still said "authenticated".
+        So the engagement HALTS, which is absence-generating by construction:
+        the halt detail says everything downstream is UNTESTED, never clean.
+        The expiry is recorded on the role so the report can state when.
+        """
+        detected_at = datetime.now(UTC).isoformat()
+        session = self._role_sessions.setdefault(cred.role, {})
+        session["supplied_session_expired_at"] = detected_at
+        self._supplied_session_expiry = {
+            "role": cred.role,
+            "detected_at": detected_at,
+            "losses_before_check": self._session_sentinel.losses_detected,
+        }
+        detail = (
+            f"The session the operator supplied for role {cred.role!r} stopped passing "
+            f"the authenticated assertion at {detected_at}, and this engine cannot renew "
+            "it — no password was supplied, by design. Every class not yet run, and "
+            "every authenticated observation after this point, is UNTESTED, not clean. "
+            "Supply a fresh session and re-run."
+        )
+        self._logger.error("SUPPLIED SESSION EXPIRED — %s", detail)
+        governor = get_active_governor()
+        if governor is not None:
+            governor.halt(HALT_SUPPLIED_SESSION_EXPIRED, detail)
 
     async def _session_still_proven(self, cred: RoleCredential | None) -> bool:
         """Whether the flagged session still passes the authenticated assertion.
@@ -4265,7 +4435,20 @@ class OrchestratorAgent:
             "pre_session_signals": self._session_sentinel.pre_session_signals,
             "session_checks_performed": self._session_sentinel.checks_requested,
             "session_false_alarms": self._session_sentinel.false_alarms,
+            "session_checks_unresolved": self._session_sentinel.unresolved,
             "reauthentications": self._session_sentinel.reauths_triggered,
+            # Which roles ran on a session the operator SUPPLIED, by cookie and
+            # header NAME (values never travel), and whether it expired mid-run.
+            "supplied_sessions": {
+                role: {
+                    "proven": bool(session.get("established")),
+                    "cookie_names": session.get("supplied_cookie_names") or [],
+                    "header_names": session.get("supplied_header_names") or [],
+                    "expired_at": session.get("supplied_session_expired_at", ""),
+                }
+                for role, session in sorted(self._role_sessions.items())
+                if session.get("seated_by") == SEATED_BY_SUPPLIED
+            },
             # WHICH layer seated each proven session. A run whose authentication
             # was recovered by the adaptive layer is a run whose authenticated
             # coverage rests on a model's proposal rather than on the target's

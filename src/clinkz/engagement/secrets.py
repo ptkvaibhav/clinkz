@@ -735,8 +735,19 @@ def register_credential_set(cred_set: CredentialSet) -> None:
         CredentialCollisionError: A credential collides with the engine's own
             declared field names or enum vocabularies.
     """
-    for cred in cred_set.credentials:
-        secret = cred.secret()
+
+    # A supplied session's cookie and header values are secrets on exactly the
+    # same terms as a password — a session token in an artifact is a login — so
+    # they pass the same collision check and land in the same registry.
+    def _role_secrets() -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        for cred in cred_set.credentials:
+            pairs.append((cred.role, cred.secret()))
+            if cred.session is not None:
+                pairs.extend((cred.role, value) for value in cred.session.secret_values())
+        return pairs
+
+    for role, secret in _role_secrets():
         if not secret or len(secret) < _MIN_REDACTABLE_LEN:
             # Too short to be registered at all, so too short to corrupt
             # anything. The warning for that case is below, on the same branch
@@ -744,10 +755,9 @@ def register_credential_set(cred_set: CredentialSet) -> None:
             continue
         found = collisions(secret)
         if found:
-            raise CredentialCollisionError(_collision_refusal(cred.role, found))
+            raise CredentialCollisionError(_collision_refusal(role, found))
 
-    for cred in cred_set.credentials:
-        secret = cred.secret()
+    for role, secret in _role_secrets():
         if not secret:
             continue
         if not register_secret(secret):
@@ -756,7 +766,7 @@ def register_credential_set(cred_set: CredentialSet) -> None:
                 "accepted but CANNOT be substring-redacted from artifacts. "
                 "Artifacts are still not written with credentials by design; this "
                 "only disables the second layer.",
-                cred.role,
+                role,
                 _MIN_REDACTABLE_LEN,
             )
 

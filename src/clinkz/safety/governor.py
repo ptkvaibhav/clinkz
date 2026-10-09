@@ -75,6 +75,10 @@ HALT_KILL_SWITCH = "kill_switch"
 HALT_WINDOW_CLOSED = "window_closed"
 HALT_TARGET_BLOCKING = "target_blocking"
 HALT_ACTION_CEILING = "state_change_ceiling"
+#: The operator-supplied session stopped passing the authenticated assertion,
+#: and nothing this engine holds can renew it. Testing past this point would be
+#: anonymous testing of an authenticated application.
+HALT_SUPPLIED_SESSION_EXPIRED = "supplied_session_expired"
 
 #: Refusal categories the governor itself produces (as opposed to the
 #: destructive classifier's categories).

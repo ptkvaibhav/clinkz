@@ -805,6 +805,11 @@ under the repo root; the header table at the top of this file links them all.
     CONFIRMED must be PLANNED later, else `truncated`/`absent`; no record ⇒ NOT
     DETERMINED. **Detail → `docs/analysis/r29-write-crossing-candidate-set.md`.**
 
+116. **A session the operator SUPPLIED is proven by the same assertion and never trusted**
+    (`RoleCredential.session`). Session-only ⇒ no credential is sent; an expiry
+    mid-run HALTS (`supplied_session_expired`), because nothing renews it.
+    **Detail → `docs/productization-engagement-safety.md`.**
+
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 
 1. **Lint + cleanup** — `ruff check src/ tests/` and `ruff format --check src/
