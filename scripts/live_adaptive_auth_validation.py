@@ -58,6 +58,11 @@ def _parse_args() -> argparse.Namespace:
             "OMIT IT to exercise discovery, which is the interesting case."
         ),
     )
+    parser.add_argument(
+        "--assert-url",
+        default="",
+        help="Operator declaration, passed through as RoleCredential.assert_url.",
+    )
     parser.add_argument("--json", action="store_true", dest="as_json")
     return parser.parse_args()
 
@@ -92,6 +97,7 @@ async def _run(args: argparse.Namespace) -> int:
                 password=args.password,
                 privilege=args.privilege,
                 login_url=args.login_url,
+                assert_url=args.assert_url,
             )
         ]
     )
@@ -143,6 +149,14 @@ async def _run(args: argparse.Namespace) -> int:
     await agent._authenticate_role(cred, detection.login_url or args.target)
 
     session = agent._role_sessions.get(cred.role, {})
+    assertion = session.get("assertion")
+    rule = (
+        f"{assertion.discriminator or '-'} at {assertion.url or '-'} "
+        f"(authenticated {assertion.authenticated_status} / "
+        f"anonymous {assertion.anonymous_status})"
+        if assertion is not None
+        else "(no assertion ran)"
+    )
     transcript = agent._auth_transcripts[0] if agent._auth_transcripts else None
 
     if args.as_json:
@@ -153,6 +167,7 @@ async def _run(args: argparse.Namespace) -> int:
                     "detected_login_url": detection.login_url,
                     "established": bool(session.get("established")),
                     "seated_by": session.get("seated_by", "deterministic"),
+                    "assertion": rule,
                     "transcript": transcript.redacted() if transcript else None,
                     "governor": _governor_view(governor.stats()),
                 },
@@ -168,6 +183,9 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"  posted to      : {session.get('posted_to') or '(nothing dispatched)'}")
         print(f"  login verdict  : {session.get('login_verdict', '?')}")
         print(f"  verdict says   : {session.get('login_verdict_evidence', '')}")
+        print(f"  established    : {bool(session.get('established'))}")
+        print(f"  seated by      : {session.get('seated_by', 'deterministic')}")
+        print(f"  assertion rule : {rule}")
         print()
         print("=" * 72)
         print("ADAPTIVE LAYER")

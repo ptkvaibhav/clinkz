@@ -1,0 +1,48 @@
+{
+  "realm": "northwind",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "clients": [
+    {
+      "clientId": "northwind-notes",
+      "name": "Northwind Notes",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "northwind-fixture-client-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://spa-app:8000/api/auth/callback"],
+      "webOrigins": ["http://spa-app:8000"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://spa-app:8000/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "email": "alice@northwind.example",
+      "firstName": "Alice",
+      "lastName": "Archer",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{"type": "password", "value": "Quartz-Meadow-2291", "temporary": false}]
+    },
+    {
+      "username": "bob",
+      "email": "bob@northwind.example",
+      "firstName": "Bob",
+      "lastName": "Baker",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{"type": "password", "value": "Copper-Fjord-7734", "temporary": false}]
+    }
+  ]
+}
