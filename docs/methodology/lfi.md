@@ -62,3 +62,45 @@ hiding two live-LLM misses:
 Re-validated on the **real pipeline** at all four levels: low/medium confirm the
 genuine `/etc/passwd` read, high confirms `file:///etc/passwd` (phase-2
 `wrappers=['file://']`, 2 real reads), impossible emits nothing.
+
+## Trailing-path-segment file read (`_test_lfi_path_traversal`, CVE-2020-17519)
+
+**The gap.** A route that reads a file named by its **trailing path segment**
+carries no query parameter and no declared `:placeholder`, so the per-parameter
+methodology has nothing to iterate. The file-server sub-methodology
+(`_test_lfi_file_server`) gates on a directory-NAME allowlist (`/ftp`, …) that
+cannot enumerate every such route. Apache Flink's `/jobmanager/logs/<file>` is
+exactly this shape, and `logs` is on no allowlist, so the black-box engine had no
+path to it.
+
+**The probe.** For a param-less route nested under a collection (at least two
+path segments, last segment not a static-asset extension —
+`_is_static_path_traversal_candidate`), `_test_lfi` also runs
+`_test_lfi_path_traversal`. For each canonical target and each traversal
+sequence, it appends the sequence × 8 + the target as one trailing segment through the existing path carrier (`_path_send_probe`;
+`_substitute_path_segment_raw` appends when there is no placeholder), with the
+slashes normalised to the carrier's encoded-slash token so the whole traversal
+stays ONE opaque segment. Queuing is a STRUCTURAL signal, not a directory-name
+list, and it is an independent branch, so it never shadows the session-setter
+SQLi route. Bounded at 25 routes per engagement, each probed once.
+
+**The confirmation.** A canonical-file signature (`_LFI_FILE_SIGNATURES`) in the
+traversal response is only a candidate. It confirms through `_run_control_arm`
+(invariant 27): the arm sends a benign trailing segment and must REFUSE, meaning
+the signature must be absent, so a route that echoes its segment or reads no file
+emits nothing. The finding names the file read and the control, never a version
+string. The version is never consulted.
+
+**Live.** Rediscovered black-box on Vulhub Flink 1.11.2: `GET /jobmanager/logs/`
+plus a double-encoded traversal segment returned `/etc/passwd`, and the control
+arm refused on a benign segment. It took two fixes: this probe, and recon's
+`ReconService.is_http` reading `-sV` protocol evidence. Before that, port 8081
+(nmap: `blackice-icecap`) was marked non-HTTP and drew zero exploit tasks.
+
+**Known gap, stated.** The candidate predicate's docstring says a static asset
+such as `/main.1a2b.js` is excluded. It is not: the check is
+`ext not in STATIC_ASSET_EXTENSIONS`, and `js` is absent from that set (register
+R1). So a nested `.js` bundle is a candidate. The control arm keeps this honest,
+because a bundle reads no file and so emits nothing, but a route that reads no file never short-circuits. It costs the
+full `|signatures| × |sequences|` probes (5 × 7 = 35 today) plus a slot of the 25-route budget. This should be
+fixed together with R1.

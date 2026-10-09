@@ -2,6 +2,11 @@
 
 > **Raw artifacts:** the `outputs/…` run artifacts cited below are local-only by policy — retained by the operator, not committed to the repo.
 
+> **Black-box since PR #147.** This slice reaches Flink through the SOURCE tree. The
+> same file read is now also rediscovered with no source at all, by
+> `_test_lfi_path_traversal` plus protocol-evidence HTTP detection in recon —
+> [`methodology/lfi.md`](methodology/lfi.md), last section.
+
 **The thesis test.** Slices 1–2 proved the discovery engine finds and confirms two
 different-codebase **SSRF**s (GeoServer CVE-2021-40822, Solr RemoteStreaming) from one
 `EGRESS_FETCH` catalog entry. That is transfer *within a class*. This slice is the
