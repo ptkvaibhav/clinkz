@@ -88,8 +88,15 @@ READ still sees only the body's shape.
 * **D3.** The abort does not name the separate-origin redirect, the one
   observation that explains the failure and points at the remedy
   (operator-supplied session, Part 1; or a declared IdP origin, Part 2).
-* **D4.** An adaptive READ returns the response's SHAPE (`1374 bytes of non-JSON
-  body`), not its text. The model read `app.js` twice and could not see the
+* **D4 — CLOSED as a declared boundary (2026-10-09).** Shape-only READs are
+  deliberate and now say so at `_teach`: the model's answer chooses where a
+  credential is sent, so target-authored text in that prompt would let the target
+  steer the destination. What reading would have added is solved structurally —
+  the token by `engagement/token_locator.py` (which is what actually stopped Juice
+  Shop seating cold: `{"authentication": {"token": …}}` read as "no token"), the
+  route by the deterministic script-literal discovery. Juice Shop now seats cold
+  with no `login_api_url`. Original finding: an adaptive READ returns the
+  response's SHAPE (`1374 bytes of non-JSON body`), not its text. The model read `app.js` twice and could not see the
   literal `/api/auth/login` in it. The JS miner's domain is HTTP callees, so
   `window.location.assign(...)` is outside it as well.
 * **D5.** The "loose inputs" observation is asserted without an input.

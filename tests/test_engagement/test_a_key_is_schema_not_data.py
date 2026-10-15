@@ -84,14 +84,27 @@ def test_the_class_identity_every_offline_driver_keys_on_survives() -> None:
 def test_a_key_that_is_nothing_but_a_secret_is_still_redacted() -> None:
     """The fix narrows the rule; it does not remove it.
 
-    A dict genuinely keyed BY credential material is not schema, and the whole
-    key being consumed by the redaction is exactly how that is recognised.
+    A dict genuinely keyed BY credential material is not schema, and a key that
+    IS a registered value, end to end, is how that is recognised — provided the
+    spelling is nobody's schema name (register R30).
     """
-    out = redact_structure({"admin": "counted", "test_start": "kept"})
-    assert "admin" not in out
-    assert "[REDACTED]" in out
+    register_secret("Tr0ub4dor&3")
+    out = redact_structure({"Tr0ub4dor&3": "counted", "test_start": "kept"})
+    assert "Tr0ub4dor&3" not in out
     assert out["[REDACTED]"] == "counted"
     assert out["test_start"] == "kept"
+
+
+def test_a_key_spelled_like_the_engines_own_schema_survives_registration() -> None:
+    """Register R30: ``{"password": …}`` lost its key on ``e7bd146a``.
+
+    ``admin`` and ``password`` are words the engine's own source uses as names, so
+    a key spelled that way is provably schema, whatever value the operator chose
+    for a password. Only a spelling that is nobody's name is read as the
+    credential itself.
+    """
+    out = redact_structure({"admin": "counted", "password": "hunter-x-2"})
+    assert set(out) == {"admin", "password"}
 
 
 def test_a_key_that_is_entirely_a_token_shape_is_redacted() -> None:

@@ -398,6 +398,14 @@ wrong question. **A guarantee asserted by the same logic that produces it is not
 checked at all.** The gate shares the shape *vocabulary* with the redactor (so the
 two cannot drift) but re-reads the bytes rather than trusting the write path.
 
+**Two verdicts, and CLEAN claims only the first** (invariant 120, register R30).
+CLEAN means no credential shape escaped and nothing went unread. INTACT /
+CORRUPTED is the second: a bare `[REDACTED]` glued to an identifier, as an HTML
+`type=` keyword, in a NAME position, or as a URL host is a redaction that
+rewrote structure, and such a bundle is NOT CERTIFIABLE whatever the leak check
+says. `e7bd146a` — DVWA as `admin`/`password` under the old substring redactor —
+is the positive control: CLEAN, and CORRUPTED at 1,134 sites. Exit 5 covers both.
+
 Two severities, and only one fails the gate:
 
 | Severity | What it is | Effect |

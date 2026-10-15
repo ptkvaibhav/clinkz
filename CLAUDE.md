@@ -132,11 +132,13 @@ The hard rules:
   into the state store, so this is structural, not disciplinary.
 - **Redaction removes what a secret IS and what it LOOKS LIKE**
   (`engagement/credential_shapes.py`, one vocabulary, always on). Cookie NAMES
-  survive, cookie VALUES do not; `redact_structure` is key-aware.
+  survive, cookie VALUES do not; `redact_structure` is key-aware. A registered
+  value is removed where it was PLACED, decided per occurrence (invariant 119).
 - **`engagement/artifact_scan.py` is the disclosure gate**, re-reading
   `outputs/<id>/` off disk rather than trusting the logic that wrote it. **One
   verdict, two regions**, every skipped file NAMED, an unexplained skip FAILS,
-  and a PDF is read through both its page-text and `/Info` channels.
+  and a PDF is read through both its page-text and `/Info` channels. Integrity
+  (INTACT/CORRUPTED) is a second verdict beside it (invariant 120).
 - **The engine's redaction reaches only where the engine writes** — `scripts/`
   drivers go through `scripts/_artifact_io.py`, and anything that assembles a
   credential set registers it (`register_credential_set`). Both are enforced
@@ -564,148 +566,28 @@ under the repo root; the header table at the top of this file links them all.
     `docs/methodology/authentication-shapes.md`.**
 
 99. **A remedy the run's own observations contradict is worse than no remedy.**
-    The deterministic pass carries its three login-page facts on `AuthResult`
-    (`deterministic_observations()`), and the abort message drops "the credentials
-    are wrong" whenever the POST demonstrably changed nothing.
-
-100. **A marker that survives an UNBLOCKED response is the application's own
-    vocabulary, not evidence of blocking** (`safety/governor.py`). The body arm
-    takes a control that costs no dispatch and NAMES what it discarded; **status
-    outranks keyword**; learning runs BEFORE the verdict. **A halt is an
-    ABSENCE-GENERATING event** — the halt detail says the classes downstream are
-    UNTESTED, not clean.
-
-101. **A zero measured over PART of the input is INDETERMINATE, never NOT
-    APPLICABLE** (`agents/_package_identity.py`). The denominator is measured before
-    truncation, `indeterminate_reason` is consulted AHEAD of both benign branches,
-    and `coverage_note` renders on a clean run too.
-
-102. **A destination composed at runtime is not a reading problem, so the model
-    PROPOSES and `assert_authenticated` DECIDES** (`engagement/auth_agent.py`),
-    from two call sites both guarded by "no session was seated". **The model names
-    FIELDS; the engine supplies every VALUE.** Ten deterministic refusals gate every
-    proposal; the episode carries its OWN jar, keyed by origin; an abstention names
-    what was ABSENT. **The disclosure renders on a clean run too**, naming which
-    layer seated the session. **Detail →
-    `docs/methodology/adaptive-authentication.md`.**
-
-103. **Session material has TWO carriers, and the response declares which** — a
-    `Set-Cookie` or a body token (`DispatchResponse.session_headers`). A carrier
-    the loop does not present is a session the oracle is told does not exist, and
-    a token is redacted at the site that read it out by NAME, never left to shape
-    matching. **A failure to obtain a model answer is three failures** —
-    unreachable, CUT OFF (`stop_reason` the provider DECLARED, never inferred),
-    and answered-but-unusable; only the last is a statement about the target.
-    **Detail → `docs/methodology/adaptive-authentication.md`.**
-
-104. **A gate refuses to grade evidence it does not hold, and an absent
-    measurement is never a permissive one.** Every evidence parameter of a shared
-    gate is three-state with NO default, because the two absences fail in
-    OPPOSITE directions: an empty body disables a veto outright, while a `False`
-    measurement licenses one about an effect nobody asked about. `None` is
-    "this class does not hold this" and it REFUSES. A gate presented as shared
-    that applies three of its four conditions to one of its three callers is
-    grading on a default.
-
-105. **A tool execution that leaves no invocation record is an unauditable run,
-    and every execution mode is asserted to emit** (`tools/base.py::_emit_trace_records`
-    / `_emit_inprocess_invocation`). The domain is COMPUTED from
-    `config.TOOL_EXEC_MODES`; a mode that emits nothing is a red build, not a
-    quiet gap. `transport` is declared with NO default and every reader branches
-    on it — `--replay` refuses an in-process record, and the corpus parser does
-    not hand an envelope to the curl parser. **Zero records beside non-zero
-    executions is INDETERMINATE** (`observability/audit.py`), withdrawing
-    `baseline_eligible` at the build and BOTH render seams, one-way. **Detail →
-    `docs/observability.md`.**
-
-106. **A bound that selects by SPELLING lets the alphabet decide coverage**
-    (`agents/_api_schema.py::_select_routes`). Surface-mapping sweeps order by
-    `crawl_visit_priority` and tie-break on the route, so no bundle set of any size
-    displaces an application route; the drop is disclosed by relevance grade, and
-    *truncated* stays a separate number from *ordering_failure* because a larger
-    budget fixes only the first. The domain is every bounded slice over a `sorted()`
-    result, AST-computed. **Detail → `docs/analysis/probe-bound-ordering.md`.**
-
-107. **Registered, dispatched, and never able to begin is its own state.** A
-    business-logic class that cannot evidence the application's intent declares an
-    `InconclusiveMeasurement` — not a lead (it suspects nothing) and not
-    `not_applicable` (the endpoint may well carry the rule). **Detail →
-    `docs/analysis/business-logic-verdict-trace.md`.**
-
-108. **A transformation applied to a whole structure distinguishes the
-    structure's own vocabulary from the content it carries** — a KEY is schema, a
-    value is data, and a walk that never asked has answered "content"
-    (`engagement/secrets.py::_redact_key`). A key is rewritten only when a
-    SINGLE redaction consumed it end to end; two registrations that TILE a key
-    COLLIDE two fields into one. The domain is every recursive container walk,
-    AST-computed, and exactly one member may rewrite keys. **A guard that damages
-    the artifact it protects protects nothing**, and its positive control must
-    exercise the real seam — `model_dump → redact → model_validate` over the
-    model's OWN declared vocabulary, never a hand-picked key. **Detail →
-    `.claude/skills/clinkz-dev/SKILL.md` §7.**
-
-109. **A gate that needs evidence only passing the gate can produce is its own
-    state — UNREACHABLE PRECONDITION, not unexercised and not not-applicable.**
-    The domain is computed from precondition SOURCES: an attribute a gate reads
-    whose every informative writer is downstream of a gate; an `= []` initialiser
-    is an absence, not a source. The disclosure names WHOSE limit it is — a class
-    that cannot begin is a capability the engine lacks, never a reading of the
-    endpoint. **Detail → `docs/analysis/register.md` R13.**
-
-110. **A registration is scoped to WHERE the secret can appear, and a credential
-    that spells the engine's own schema is refused at INTAKE.** A swept guess is
-    armed for its attempt and released when it fails (`provisional_secret`); one
-    that WORKS is kept. The registry is COUNTED, so one source's release cannot
-    disarm another's. A credential equal to a declared field name, or inside a
-    declared enum value, is REFUSED at intake naming the colliding key
-    (`engagement/schema_vocabulary.py`, computed from the models — the catalogue
-    words collide with nothing and are the OTHER half's job). And the closed
-    vocabulary the ENGINE declares is schema in a VALUE's position too, matched
-    EXACTLY: containment would hand the target a suppression primitive.
-    **Detail → `.claude/skills/clinkz-dev/SKILL.md` §7,
-    `docs/analysis/register.md` R14.**
-
-111. **A verb the engine could not READ is its own state, never a GET it
-    measured** (`models/scan.py::MethodEvidence`; `NAMED` / `PLATFORM_DEFAULT` /
-    `UNREAD`). `_applicable_methods_for_endpoint` is the ONLY producer of seven
-    Tier-1 classes' buckets and it gates on the verb, so a `GET` standing in for
-    an absence does not lower an endpoint's rank — it removes it. `UNREAD` never
-    admits an endpoint to a write class (`_is_observed_write_surface` reads the
-    evidence AND the verb; `state.py` persists it); it gets the route ASKED
-    (unread first
-    in the `OPTIONS` sweep, **within its relevance grade**) and the gap
-    DISCLOSED, on a clean run too. Every `Endpoint` producer declares, over an
-    AST-computed domain. **Detail →
-    `docs/analysis/spa-write-surface-blocker.md` §6.**
-
-112. **A call site we SAW and could not address is a third state, and a route the
-    source DECLARES is a different fact from a call it MAKES.** `MiningResult`
-    carries resolved calls, `UnresolvedCallSite`s (three reasons; `naming_a_write`
-    first) and `route_declarations` separately. The disclosure's domain is calls
-    HTTP by the CALLEE's name or a config argument's SHAPE — `map.get(k)` is not
-    one. **The guard that keeps prose out is a POSITIVE shape test, never a
-    string-literal pre-pass** — quote-counting is unsound on minified JS. A
-    `{path, method}` manifest entry is held to the
-    call site's bar and claims NO body. **Detail →
-    `docs/analysis/spa-write-surface-blocker.md` §7.**
-
-113. **The target may not author the structure of the document that judges it**
-    (`engagement/render_safety.py`). Neutralised at the PRODUCER — one pass at the
-    report seam, so all **180** Markdown sites and every future sink inherit it;
-    `_report_pdf`'s sink-side escaping stays a floor, because a sink-side fix is a
-    guard whose domain is every future sink. **Keys untouched, and the JSON
-    artifact untouched** — JSON encoding is already the guard and those bytes are
-    what the replay drivers read. An inline value loses its line breaks; the one
-    declared BLOCK field keeps them and its fence ADAPTS, so no content can close
-    it. `ActionRecord` neutralises at construction: `clinkz actions` prints a
-    target-chosen URL to a terminal, where an erase-line sequence scrolls the
-    REFUSED rows off it. **Detail → `docs/analysis/register.md` R18.**
-
-114. **A pattern-based exclusion fails toward LESS output, so it needs a
-    DENOMINATOR control, not a shape control.** A shape control proves the pattern
-    handles the case you thought of; only a count against an independently-known
-    total proves it has not stopped handling the rest. **Detail →
-    `docs/analysis/register.md` R20.**
+100. **A marker that survives an UNBLOCKED response is the application's own vocabulary, not evidence of blocking** (`safety/governor.py`).
+101. **A zero measured over PART of the input is INDETERMINATE, never NOT APPLICABLE** (`agents/_package_identity.py`).
+102. **A destination composed at runtime is not a reading problem, so the model PROPOSES and `assert_authenticated` DECIDES** (`engagement/auth_agent.py`), from two call sites both guarded by "no session was seated". → `docs/methodology/adaptive-authentication.md`
+103. **Session material has TWO carriers, and the response declares which** — a `Set-Cookie` or a body token (`DispatchResponse.session_headers`). → `docs/methodology/adaptive-authentication.md`
+104. **A gate refuses to grade evidence it does not hold, and an absent measurement is never a permissive one.**
+105. **A tool execution that leaves no invocation record is an unauditable run, and every execution mode is asserted to emit** (`tools/base.py::_emit_trace_records` / `_emit_inprocess_invocation`). → `docs/observability.md`
+106. **A bound that selects by SPELLING lets the alphabet decide coverage** (`agents/_api_schema.py::_select_routes`). → `docs/analysis/probe-bound-ordering.md`
+107. **Registered, dispatched, and never able to begin is its own state.** → `docs/analysis/business-logic-verdict-trace.md`
+108. **A transformation applied to a whole structure distinguishes the structure's own vocabulary from the content it carries** — a KEY is schema, a value is data, and a walk that never asked has answered "content" (`engagement/secrets.py::_redact_key`).
+109. **A gate that needs evidence only passing the gate can produce is its own state — UNREACHABLE PRECONDITION, not unexercised and not not-applicable.**
+110. **A registration is scoped to WHERE the secret can appear** — a swept guess for its attempt only; the registry is COUNTED. (The intake refusal is retired by 119.)
+111. **A verb the engine could not READ is its own state, never a GET it measured** (`models/scan.py::MethodEvidence`; `NAMED` / `PLATFORM_DEFAULT` / `UNREAD`).
+112. **A call site we SAW and could not address is a third state, and a route the source DECLARES is a different fact from a call it MAKES.**
+113. **The target may not author the structure of the document that judges it** (`engagement/render_safety.py`).
+114. **A pattern-based exclusion fails toward LESS output, so it needs a DENOMINATOR control, not a shape control.**
+115. **A regression check compares SETS, not counts** — every pair a baseline CONFIRMED must be PLANNED later, else `truncated`/`absent`; no record ⇒ NOT DETERMINED, so a run that never planned records an EMPTY plan with its reason. → `docs/analysis/r29-write-crossing-candidate-set.md`
+116. **A session the operator SUPPLIED is proven by the same assertion and never trusted** (`RoleCredential.session`). → `docs/productization-engagement-safety.md`
+117. **A credential goes only to a destination something OBSERVED to be a login** — a rendered password form's action, an operator declaration, or a route the adaptive layer proved. → `docs/productization-engagement-safety.md`
+118. **"The credentials are wrong" requires a refusal ATTRIBUTABLE to the credential** (`credential_refused`: a 401, or a marker the control lacks), and quotes it.
+119. **Redaction is decided by PROVENANCE, per occurrence, and fails closed** (`engagement/secret_provenance.py`) — a credential-field value always; never a name, identifier fragment, URL host or a unit the target served without the credential. → `docs/analysis/register.md` R30
+120. **The disclosure gate claims only what it checks** — CLEAN is the leak check; INTACT/CORRUPTED is a second verdict read off the bytes, and a CORRUPTED bundle is not certifiable.
+121. **A session token is found by STRUCTURE** (`engagement/token_locator.py`), **and the adaptive model sees a READ's SHAPE, never its text** — an injection boundary, not a gap.
 
 ## Pre-Push Verification (four gates; never bypass — no `--no-verify`, no blanket `# noqa`/skip)
 

@@ -474,18 +474,16 @@ under the repo root; the header table at the top of this file links them all.
     that cannot begin is a capability the engine lacks, never a reading of the
     endpoint. **Detail → `docs/analysis/register.md` R13.**
 
-110. **A registration is scoped to WHERE the secret can appear, and a credential
-    that spells the engine's own schema is refused at INTAKE.** A swept guess is
-    armed for its attempt and released when it fails (`provisional_secret`); one
-    that WORKS is kept. The registry is COUNTED, so one source's release cannot
-    disarm another's. A credential equal to a declared field name, or inside a
-    declared enum value, is REFUSED at intake naming the colliding key
-    (`engagement/schema_vocabulary.py`, computed from the models — the catalogue
-    words collide with nothing and are the OTHER half's job). And the closed
-    vocabulary the ENGINE declares is schema in a VALUE's position too, matched
-    EXACTLY: containment would hand the target a suppression primitive.
-    **Detail → `.claude/skills/clinkz-dev/SKILL.md` §7,
-    `docs/analysis/register.md` R14.**
+110. **A registration is scoped to WHERE the secret can appear.** A swept guess
+    is armed for its attempt and released when it fails (`provisional_secret`);
+    one that WORKS is kept. The registry is COUNTED, so one source's release
+    cannot disarm another's. The closed vocabulary the ENGINE declares is schema
+    in a VALUE's position too, matched EXACTLY: containment would hand the target
+    a suppression primitive. *Amended 2026-10-09 (register R30):* a credential
+    that spells the engine's own schema is no longer refused at intake — the
+    refusal existed only because redaction was a substring replacement, and
+    invariant 119 retired that. **Detail → `.claude/skills/clinkz-dev/SKILL.md`
+    §7, `docs/analysis/register.md` R14, R30.**
 
 111. **A verb the engine could not READ is its own state, never a GET it
     measured** (`models/scan.py::MethodEvidence`; `NAMED` / `PLATFORM_DEFAULT` /
@@ -530,7 +528,10 @@ under the repo root; the header table at the top of this file links them all.
 
 115. **A regression check compares SETS, not counts** — every pair a baseline
     CONFIRMED must be PLANNED later, else `truncated`/`absent`; no record ⇒ NOT
-    DETERMINED. **Detail → `docs/analysis/r29-write-crossing-candidate-set.md`.**
+    DETERMINED. **And NOT DETERMINED stays rare:** when the exploit agent never
+    planned (never dispatched, raised, stopped first), the orchestrator writes an
+    EMPTY plan-set record naming why (`unplanned_reason`), which a comparison can
+    grade — an empty plan is a fact, a missing one is not. **Detail → `docs/analysis/r29-write-crossing-candidate-set.md`.**
 
 116. **A session the operator SUPPLIED is proven by the same assertion and never trusted**
     (`RoleCredential.session`). Session-only ⇒ no credential is sent; an expiry
@@ -549,3 +550,36 @@ under the repo root; the header table at the top of this file links them all.
     quotes it. Otherwise the abort names what was seen — no login surface, a POST
     that changed nothing, an off-scope sign-in, MFA, captcha, lockout.
 
+119. **Redaction is decided by PROVENANCE, per occurrence, and fails closed**
+    (`engagement/secret_provenance.py`; register R30). A registered value is the
+    secret where the engine PLACED it — the value of a credential-named field,
+    exact — and is redacted there unconditionally. It is NOT the secret inside a
+    longer identifier (`password_new`), in a NAME position whose spelling a
+    declared field or the engine's source uses, as a URL host label, as an HTML
+    `type=` keyword, inside engine-authored source text, or in a unit the target
+    served to a request that did not carry it (`observe_control`: the login GET
+    and every `session_mode='none'` response). Anything no rule claims is
+    redacted. An echo — a unit the anonymous target never produced — stays
+    redacted, and its positive control is red with the default removed. A key is
+    rewritten only by a shape, or when it IS a registered value nobody's schema
+    spells. **Detail → `docs/analysis/register.md` R30.**
+
+120. **The disclosure gate claims only what it checks, and the record's integrity is
+    a second verdict** (`engagement/artifact_scan.py::scan_integrity`). CLEAN means
+    no credential shape escaped and nothing went unread; it never meant the bundle
+    is still the record of the run. A redaction marker where a value cannot be —
+    glued to an identifier, as an HTML `type=` keyword, in a NAME position, as a
+    URL host — makes the bundle CORRUPTED and NOT CERTIFIABLE whatever the leak
+    check says, read off the bytes and never off the redactor. Exit 5 covers both;
+    both verdicts are stated on every summary line. `e7bd146a` is the positive
+    control (CLEAN, 1,134 sites CORRUPTED). **Detail → `docs/analysis/register.md`
+    R30.**
+
+121. **A session token is found by the response's STRUCTURE, and the adaptive
+    layer's model sees a READ's SHAPE, never its text**
+    (`engagement/token_locator.py`). A JWT by form, or a value under a
+    token-naming key, at any depth; a refresh token is never the bearer; no
+    benchmark's nesting appears in any list. The shape-only READ is an injection
+    boundary, not a gap: the model's answer chooses where a credential goes, so
+    target-authored text may not be in its prompt. **Detail →
+    `docs/methodology/adaptive-authentication.md`.**

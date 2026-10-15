@@ -24,7 +24,6 @@ from pydantic import ValidationError
 from clinkz.agents.report import ReportAgent
 from clinkz.engagement.auth_state import SEATED_BY_SUPPLIED, AuthAssertion
 from clinkz.engagement.secrets import (
-    CredentialCollisionError,
     clear_secrets,
     redact,
     register_credential_set,
@@ -157,12 +156,13 @@ def test_supplied_values_are_registered_for_redaction_including_a_bare_token() -
         clear_secrets()
 
 
-def test_a_supplied_value_that_spells_schema_is_refused_like_a_password() -> None:
+def test_a_supplied_value_that_spells_schema_is_registered_like_a_password() -> None:
+    """Register R30: the intake refusal is gone for supplied sessions too."""
     clear_secrets()
     try:
         cred = RoleCredential(role="user", session=SuppliedSession(cookies={"sid": "password"}))
-        with pytest.raises(CredentialCollisionError):
-            register_credential_set(CredentialSet(credentials=[cred]))
+        register_credential_set(CredentialSet(credentials=[cred]))
+        assert redact("sid=password") == "sid=[REDACTED]"
     finally:
         clear_secrets()
 

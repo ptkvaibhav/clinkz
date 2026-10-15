@@ -76,6 +76,8 @@ from urllib.parse import urlencode, urljoin, urlparse
 
 from pydantic import BaseModel
 
+from clinkz.engagement.secrets import observe_control
+from clinkz.engagement.token_locator import locate_token
 from clinkz.safety.governor import (
     REFUSED_CREDENTIAL_BUDGET,
     REFUSED_CREDENTIAL_STOPPED,
@@ -117,20 +119,6 @@ _CONTENT_TYPE_BODY_PATHS: tuple[tuple[str, ...], ...] = (
     ("expected", "contentType"),
     ("accepts",),
     ("expects",),
-)
-
-# JSON paths searched (in order) for an auth token in an API login response.
-# Each tuple is a nested-key path walked into the parsed JSON object.
-_TOKEN_JSON_PATHS: tuple[tuple[str, ...], ...] = (
-    ("authentication", "token"),  # Juice Shop
-    ("data", "authentication", "token"),
-    ("data", "token"),
-    ("token",),
-    ("access_token",),
-    ("accessToken",),
-    ("jwt",),
-    ("id_token",),
-    ("idToken",),
 )
 
 # ---------------------------------------------------------------------------
@@ -2042,35 +2030,21 @@ class WebAuthenticator(ToolBase):
 
     @staticmethod
     def _extract_token(response_body: str) -> str:
-        """Extract an auth token from a JSON login response body.
+        """Extract an auth token from a JSON login response body, by STRUCTURE.
 
-        Walks each path in ``_TOKEN_JSON_PATHS`` into the parsed JSON object
-        and returns the first non-empty string value found.
+        Delegates to :func:`~clinkz.engagement.token_locator.locate_token`: a
+        JWT-shaped value anywhere in the tree, or a value under a key that names
+        a token, at any depth. It used to walk a list of key paths whose first
+        entry was a benchmark's own nesting, so a target nested one level
+        differently returned nothing.
 
         Args:
             response_body: Raw response body (expected to be JSON).
 
         Returns:
-            The token string, or "" if none of the known shapes matched.
+            The token string, or "" if the body carries none.
         """
-        try:
-            data = json.loads(response_body)
-        except (json.JSONDecodeError, TypeError):
-            return ""
-        if not isinstance(data, dict):
-            return ""
-
-        for path in _TOKEN_JSON_PATHS:
-            cursor: Any = data
-            for key in path:
-                if isinstance(cursor, dict) and key in cursor:
-                    cursor = cursor[key]
-                else:
-                    cursor = None
-                    break
-            if isinstance(cursor, str) and cursor.strip():
-                return cursor.strip()
-        return ""
+        return locate_token(response_body)[0]
 
     async def verify_session(
         self,
@@ -2315,6 +2289,10 @@ class WebAuthenticator(ToolBase):
                             session_cookies={c.key: c.value for c in session.cookie_jar},
                         )
                     login_html = get_walk.response.payload or ""
+                    # The login page, fetched before any credential was offered:
+                    # the control that tells the target's own vocabulary
+                    # (``type="password"``) from an echo of the secret (R30).
+                    observe_control(login_html, request_text=login_url)
                     get_status = get_walk.response.status
                     # The URL that actually SERVED the form. A relative form
                     # ``action`` resolves against this and not against the URL we
@@ -2859,6 +2837,8 @@ class WebAuthenticator(ToolBase):
             # the first blank line would take the 3xx's empty body whenever the
             # login page sat behind a redirect.
             login_html = get_walk.response.payload or ""
+            # The redaction control, as in the aiohttp arm (register R30).
+            observe_control(login_html, request_text=login_url)
 
             # Step 2: Parse form fields
             form = _parse_form_fields(login_html)

@@ -635,16 +635,16 @@ the client's system.
 > through its own fix, which is the shape worth checking for every time a global
 > gets a release path.
 
-**Spelling — can this value damage the structures we write?** That is knowable at
-intake, from the models, so it is REFUSED there rather than discovered at render
-time after a full engagement has run. The vocabulary is computed
-(`engagement/schema_vocabulary.py`) and the two predicates differ because the two
-mechanisms do: a **field name** collides on *equality* (only a single
-registration consuming a key end to end rewrites one; a proper substring leaves
-residue and the key survives), an **enum value** on *containment* (it is data and
-keeps substring redaction, so any substring is enough).
-
-And the refusal's **boundary is a test, not a footnote**: `admin`, `root` and
-`test` collide with nothing declared here, and they are exactly the words that
-did the 711,918. The intake refusal cannot help them and must not look as though
-it does — pin it, so the two halves are never mistaken for one.
+**Spelling — retired (register R30).** A credential that spelled a field name
+or sat inside an enum value used to be REFUSED at intake, because substring
+replacement rewrote that schema out of every dump. The fix that replaced it is
+the general one: an occurrence is redacted by PROVENANCE
+(`engagement/secret_provenance.py`) — the value of a credential field always,
+and never a field NAME, an identifier fragment, a URL host, an enum leaf, or a
+unit the target served without the credential. With the substring gone the
+refusal guarded nothing, and it came out after DVWA ran as `admin`/`password`
+with every acceptance number held. The lesson worth keeping: a refusal at intake
+was a workaround for a redactor answering the wrong question ("does this text
+contain these characters?" instead of "did the secret get here?"), and the
+workaround's own boundary test (`admin`, `root`) was the evidence it could not
+be the fix.

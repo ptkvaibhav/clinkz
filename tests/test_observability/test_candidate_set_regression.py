@@ -165,3 +165,68 @@ def test_the_driver_exit_code_is_the_verdict(tmp_path: Path) -> None:
     assert run(["b", "ok", "--outputs", str(tmp_path)]) == 0
     assert run(["b", "lost", "--outputs", str(tmp_path)]) == 1
     assert run(["b", "old", "--outputs", str(tmp_path)]) == 2
+
+
+# --------------------------------------------- every run records a plan (item 3)
+
+
+def _orchestrator_fallback(tmp_path: Path, summary: dict[str, object]) -> Path:
+    """Run the orchestrator's end-of-run fallback against a real TraceWriter."""
+    from clinkz.observability.trace import TraceWriter
+    from clinkz.orchestrator.orchestrator import OrchestratorAgent
+
+    writer = TraceWriter("e1", outputs_root=tmp_path)
+    OrchestratorAgent._ensure_plan_sets_recorded(object.__new__(OrchestratorAgent), writer, summary)
+    writer.close()
+    return tmp_path / "e1"
+
+
+@pytest.mark.parametrize(
+    ("summary", "fragment"),
+    [
+        ({"phases": {}}, "never dispatched"),
+        (
+            {"phases": {"exploit": {"status": "error", "error": "boom"}}},
+            "failed before planning: boom",
+        ),
+        ({"phases": {"exploit": {"status": "timeout"}}}, "without recording a plan"),
+    ],
+)
+def test_a_run_whose_exploit_phase_never_planned_still_records_a_judgeable_plan(
+    tmp_path: Path, summary: dict[str, object], fragment: str
+) -> None:
+    """An empty plan with its reason is a fact; a missing record is NOT DETERMINED."""
+    later = load_plan_sets(_orchestrator_fallback(tmp_path, summary))
+    assert later is not None
+    assert later.planned == frozenset()
+    assert fragment in later.unplanned_reason
+
+    baseline = PlanSets(
+        planned=frozenset({_COMPLAINTS}),
+        candidates=frozenset({_COMPLAINTS}),
+        confirmed=frozenset({_COMPLAINTS}),
+    )
+    result = compare_plan_sets(baseline, later)
+    assert result.verdict is Verdict.REGRESSION
+    assert fragment in result.reason
+
+
+def test_the_fallback_never_overwrites_the_agents_own_record(tmp_path: Path) -> None:
+    from clinkz.observability.trace import TraceWriter
+    from clinkz.orchestrator.orchestrator import OrchestratorAgent
+
+    writer = TraceWriter("e2", outputs_root=tmp_path)
+    writer.methodology_phase(
+        stage="exploit",
+        skill="plan_coverage",
+        phase_number=0,
+        phase_name=PLAN_SETS_PHASE,
+        extra={"planned": [list(_COMPLAINTS)], "candidates": [list(_COMPLAINTS)]},
+    )
+    OrchestratorAgent._ensure_plan_sets_recorded(
+        object.__new__(OrchestratorAgent), writer, {"phases": {}}
+    )
+    writer.close()
+    sets = load_plan_sets(tmp_path / "e2")
+    assert sets is not None and sets.planned == frozenset({_COMPLAINTS})
+    assert sets.unplanned_reason == ""

@@ -500,6 +500,60 @@ def _call_domain() -> set[str]:
 #: "password".
 DECLARED_CALL_SENDERS: dict[str, tuple[str, str]] = {
     # ------------------------------------------------------------- no dispatch
+    "engagement/secret_provenance.py::_is_glued_left": (
+        _Sender.NO_DISPATCH,
+        "a redaction predicate: is the occurrence glued to an identifier on its left; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secret_provenance.py::_is_glued_right": (
+        _Sender.NO_DISPATCH,
+        "a redaction predicate: is the occurrence glued to an identifier on its right; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secret_provenance.py::_literals_containing": (
+        _Sender.NO_DISPATCH,
+        "filters the engine's own source literals by spelling, for the redactor; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secret_provenance.py::control_units": (
+        _Sender.NO_DISPATCH,
+        "reads an already-fetched anonymous body to learn the target's vocabulary; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secret_provenance.py::in_engine_literal": (
+        _Sender.NO_DISPATCH,
+        "a redaction predicate over the engine's own source text; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secret_provenance.py::is_embedded": (
+        _Sender.NO_DISPATCH,
+        "a redaction predicate: is the occurrence part of a longer identifier; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secret_provenance.py::is_schema_name": (
+        _Sender.NO_DISPATCH,
+        "a redaction predicate: is this spelling a declared field or engine word; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secret_provenance.py::is_secret_occurrence": (
+        _Sender.NO_DISPATCH,
+        "decides whether one occurrence in an artifact string is redacted; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secret_provenance.py::iter_occurrences": (
+        _Sender.NO_DISPATCH,
+        "finds offsets in a string about to be written to an artifact; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secret_provenance.py::occurrence_signature": (
+        _Sender.NO_DISPATCH,
+        "computes the comparison key of an occurrence for the redactor; "
+        "it reads text bound for an artifact and sends nothing to any target",
+    ),
+    "engagement/secrets.py::_redact_occurrences": (
+        _Sender.NO_DISPATCH,
+        "rewrites secrets out of a string on the way to an artifact; the opposite direction",
+    ),
     "agents/exploit.py::_jwt_sign": (
         _Sender.NO_DISPATCH,
         "signs a token with a candidate key so the JWT class can test whether the "

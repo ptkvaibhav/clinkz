@@ -237,10 +237,15 @@ LITERAL_TESTS: dict[str, tuple[str, str]] = {
         "target that authenticates in one execution mode and not the other is a "
         "defect the mode hides.",
     ),
-    "clinkz.tools.auth:WebAuthenticator._extract_token": (
+    "clinkz.engagement.token_locator:is_jwt": (
         "response_key_name",
-        "Walks _TOKEN_JSON_PATHS into the parsed JSON body — key names in a "
-        "document, not a URL. A missing key ends that path and nothing else.",
+        "Asks whether a JWT header, base64url-decoded, is a JSON object naming "
+        "'alg' — the JOSE header's own key name, not a URL or a page's wording.",
+    ),
+    "clinkz.engagement.token_locator:locate_token": (
+        "response_key_name",
+        "Skips a value whose key path names a 'refresh' token — key names in the "
+        "login response's own JSON document, never a destination or prose.",
     ),
     "clinkz.tools.auth:WebAuthenticator._negotiated_content_type": (
         "media_type",

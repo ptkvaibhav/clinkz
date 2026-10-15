@@ -1414,112 +1414,89 @@ producer passing it in `features`. Pinned by a round-trip test that reloads a
 while a verb-less row stays excluded — the reload tied directly to the routing it
 feeds, not asserted at the store seam alone.
 
----
+## R30 · Redaction rewrites a common-word password out of schema and protocol text — RESOLVED
 
-## R27 · The phase agents load a system prompt nothing sends, and three docstrings describe a dead executor
+**Measured 2026-10-09, before any change** (the item in the brief that says to
+report first). `admin`/`password` is refused at intake because `password` equals
+a declared field name (invariant 110). The intake refusal was disabled for one
+process only (`secrets.collisions` patched to report nothing), and DVWA (`low`)
+was run end to end: engagement `e7bd146a`. It completed, and all three renders
+were written, so `model_validate` survived. The disclosure gate said CLEAN, with
+25 findings. **The artifacts were damaged anyway:**
 
-**State: OPEN.** Opened 2026-10-09 by the documentation truth pass. A code-side
-divergence: the docs were corrected to what runs; the code still says otherwise.
+* **The client-facing report.** Both CSRF findings lose the form field NAMES
+  they cite as evidence: `['[REDACTED]_new', '[REDACTED]_conf', 'Change']` for
+  `password_new` / `password_conf`. Their remediation text, which the ENGINE
+  wrote, reads "changing a [REDACTED], an email address". Field names are
+  schema and are meant to survive (invariant 13).
+* **The replay corpus.** 218 of 1,758 invocation records are captured pages
+  whose `<input type="password">` became `type="[REDACTED]"`. **Zero records in
+  the bundle still show a password input.** `corpus-replay` over this bundle
+  therefore reads DVWA's login page as having no login form. That is the
+  offline parser gate, made blind by its own input.
+* **The trace and action log.** 363 rewrites in `trace.jsonl`: form-field-name
+  lists, PHP's `Undefined array key "password"`, DVWA's setup prose, and the
+  brute-force class's own probe values (`wrongpassword0` → `wrong[REDACTED]0`).
+  The record of what was sent is no longer what was sent.
+* **Not damaged:** no dict KEY was rewritten (invariant 108's
+  single-registration rule held), and no report field failed validation.
 
-**Verified.** Each of `recon.py`, `scan.py`, `exploit.py`, `research.py`,
-`report.py` reads `prompts/<name>_system.md` at import into a module constant
-returned by `system_prompt`, and `orchestrator.py` reads
-`orchestrator/prompts/orchestrator_system.md` into `self._system_prompt`.
-Nothing reads either: `grep '\.system_prompt'` over `src/` finds no consumer,
-`_system_prompt` is assigned once and never read, and every phase-agent LLM call
-is `generate_text(<str>)` or `generate_text(PromptSegments(...))` — neither
-carries a system turn. `LLMClient.reason`, the one interface method that takes
-messages, has no caller outside `llm/`. The adaptive-auth agent is the single
-exception: it inlines `auth_agent_system.md` into its user prompt.
+**Verdict: harmful, and the defect is the redactor, not the operator's
+password.** Registered values are replaced as SUBSTRINGS of every string, so a
+credential that is an ordinary word is removed from field names, HTML attribute
+values and the engine's own prose. The same happens with `admin`, `welcome` or
+any dictionary password the intake vocabulary does not happen to contain. The
+intake refusal only covers the subset that collides with a declared field
+NAME. **Not changed here;** the refusal stays until the redactor stops
+substituting inside schema/protocol positions.
 
-And `BaseAgent._execute_tool` has **no caller in `src/` or `tests/`**, while three
-docstrings describe it as live: `agents/base.py`'s module docstring (*"BaseAgent
-now provides … tool execution (`_execute_tool`)"*, and line 5's *"system_prompt —
-loaded from agents/prompts/<name>.txt"*, which is neither the extension nor a
-path that is sent), `observability/trace.py:253` and `tools/base.py:168`. Two more
-docstrings describe a path that no longer runs: `agents/research.py`'s step 2
-(*"Research NEW vulns via web search"* — the phase is not web-grounded under
-routing v2) and `research/runtime_research.py` (*"The Exploit Agent calls this
-module"* — only `ResearchAgent` constructs it).
+**Resolved 2026-10-09 — redaction by provenance (invariants 119, 120).** Each
+occurrence of a registered value is now decided by where it sits
+(`engagement/secret_provenance.py`): the value of a credential-named field is
+redacted unconditionally; an identifier fragment, a NAME a declared field or the
+engine's source spells, a URL host label, an HTML `type=` keyword, engine source
+text, and a unit the target served WITHOUT the credential (the login GET and every
+`session_mode='none'` response, via `observe_control`) are not; anything else is
+redacted. The echo case — a unit the anonymous target never served — stays
+redacted, and its positive control goes red with the fail-closed default removed.
 
-**Why it matters.** `request_help` — the only `QUERY` constructor, and so the only
-way into the orchestrator's `RESPIN_*` branch — is reachable only through
-`_execute_tool`. The re-spin path is therefore dead two hops deep, not one. And a
-reader of `exploit_system.md` (15,519 chars of honesty rules) reasonably believes
-the methodology checkpoints are primed with it; they are not
-(`cost-cap-and-system-prefix.md` §2).
+**Acceptance, same conditions as `e7bd146a`** (DVWA `low`, `admin`/`password`,
+intake refusal patched off for the process): engagement `857a881c`.
 
-**Why not fixed here.** A docs-only pass. The deletions — `_execute_tool`,
-`request_help`, `_handle_query`, the `RESPIN_*` constants, the five unread prompt
-loads — are the cleanup `a158ba4` explicitly scoped out, and they want the same
-dead-code commit shape. Whether the checkpoints SHOULD be primed is the prefix
-sweep variable, an open measurement, not a cleanup.
-
----
-
-## R28 · Invariant 4 (no direct tool import) is unguarded and broken by the HTTP carrier
-
-**State: OPEN.** Opened 2026-10-09 by the documentation truth pass.
-
-**Verified.** `agents/exploit.py` imports `HTTPClientTool` directly inside eight
-functions — the `_http_*` carriers (`_http_get`, `_http_post`, `_http_post_json`,
-`_http_post_xml`, `_http_post_multipart`, `_http_get_anonymous`,
-`_http_send_anonymous`) and `_jwt_send_with_token` — plus `SESSION_NONE` /
-`SESSION_ISOLATED` and, at module level, `HTTPClientOutput`; the
-orchestrator constructs `HTTPClientTool` in its auth path (two sites) and imports
-`walk_redirects`; `agents/base.py` imports `ToolInstallerTool`. None goes through
-`ToolResolver.find_tool(capability="http_request")`, although `TOOL_CHAINS`
-declares that capability. No test computes the domain of direct `clinkz.tools.*`
-imports from agent or orchestrator code, so the invariant reads as enforced and
-is not.
-
-**Probably the INVARIANT is what needs to change, not the carrier.** The probe
-carrier is the engine's own instrument, not a substitutable tool: it owns
-`session_mode`, the governor slot, the destructive gate and the invocation
-record, and routing it through a resolver that could hand back a different
-`http_request` provider would weaken every oracle reading its envelope. That is a
-decision, and it wants the guard-domain shape: compute every direct
-`clinkz.tools.*` import from `agents/` and `orchestrator/`, classify each as the
-carrier (allowed, with its reason) or a capability that must resolve, and fail on
-anything unclassified. CLAUDE.md invariant 4 now names the exception and points
-here.
-
----
-
-## R29 · The only confirmed cross-principal write left the candidate set on the #145 ride-along
-
-**State: OPEN — measured, cause not determined.** Opened 2026-10-09 by the
-documentation truth pass, while checking a session note that read *"0 confirmed
-(as baseline)"* against the stored bundles. The note was wrong about the
-baseline, and the correction is the finding.
-
-**Measured, from the two stored bundles** (same Juice Shop profile, effort
-`low`, benchmark on):
-
-| | `f6ff1381` (baseline) | `d29c80ee` (#145 ride-along) |
+| | `e7bd146a` (substring) | `857a881c` (provenance) |
 |---|---|---|
-| confirmed cross-principal write | **1** — `/api/Complaints` via `UserId` | **0** |
-| `write_crossing` union pass | kept 6, dropped 4 | kept 5, dropped 3 |
-| `/api/Complaints` in that union pass | kept, dispatched | **absent** — neither kept nor dropped |
-| trace records with `"method": "POST"` for it | 1 | **0** |
-| first (coverage) pass | dropped | dropped |
+| `[REDACTED]_new` | 126 | **0** |
+| invocation records with a password input kept / lost | 0 / 218 | **257 / 0** |
+| brute-force probes intact / rewritten | 0 / 32 | **32 / 0** |
+| secret in a credential position (field value, userinfo, Basic) | 0 | **0** |
+| findings | 25 | 25 (CSRF evidence names `password_new`, `password_conf`) |
+| gate | CLEAN, CORRUPTED (1,134 sites) | **CLEAN, INTACT** |
+| plan-set regression vs `e7bd146a` | — | PASS |
 
-So the endpoint carrying the engine's only confirmed write crossing was a
-candidate in the baseline and not a candidate at all on the later run. "kept 6 →
-5, candidate set essentially identical" undercounted this: the endpoint that
-differed is the one that mattered. The five abstention leads in `d29c80ee` are
-real, but none of them is about `/api/Complaints`.
+The in-run gate exited 5: three invocation files returned `Errno 22` on read
+while a keyless test run was saturating the disk, and the gate failed closed on
+them as unexplained skips. A re-scan read all 1,540 files: CLEAN and INTACT.
 
-**Not determined.** The baseline has a POST record for the route and the
-ride-along has none, which fits two readings. (a) The verb was not read this time,
-so `method_evidence` is `UNREAD` and `_is_observed_write_surface` excluded it.
-That is the routing doing its job on an unread verb, and the defect would be
-upstream in verb discovery variance. (b) Discovery never produced the write at
-all. Telling them apart needs the scan-phase endpoint record for the route in
-both runs, not the trace's exploit events. Either way, a confirmed finding that
-one run produces and the next cannot reach is the reproducibility question the
-three-run envelope keeps returning to: plan allocation, not oracle variance.
+**The intake refusal came out** after the run (`CredentialCollisionError`,
+`schema_vocabulary.collisions` removed); a credential that spells schema now
+registers like any other, and the dump round-trip it protected is pinned in
+`test_whole_structure_transformations.py`.
 
-**Why it matters for the docs.** `write-crossings.md` §11 and `effort-grid.md`
-§3.2 state the `/api/Complaints` confirmation correctly. What is not established
-is that a fresh run reproduces it.
+**`scripts/auth_agent_corpus.py` failed on main because of this defect.** Engagement
+`e5d6901e` (umami, stock password `umami`) had its HOSTNAME substring-redacted out
+of every stored URL — `http://[REDACTED]:3000/login` — and `urlparse` raises on a
+bracketed host that is not an IP. The URL-host rule closes it going forward, the
+integrity check names it (`host_rewritten`), and the driver now sets a corrupted
+exchange aside by name instead of dying (401 replayed, 1 set aside).
+
+**The integrity check over the stored corpus** flagged 31 bundles, every sampled
+one genuine damage: the pre-scoping DVWA ladder runs, cal.diy `918e2b71` (the
+711k-site run), a hash with a secret cut out of it (`094c7312`), and a `password`
+KEY rewritten while the swept value survived (`74dcbe93`). Those bundles are now
+reported NOT CERTIFIABLE.
+
+**Residual, stated.** Target prose on an authenticated page that uses the word
+bare (`Undefined array key "password"`, `id='password'` on the brute-force page)
+is still redacted when no anonymous response served the same unit — fail closed,
+and not structural damage the integrity check can see. A secret the target glues
+to identifier characters is not redacted.

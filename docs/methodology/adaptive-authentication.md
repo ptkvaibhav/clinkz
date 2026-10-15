@@ -109,6 +109,25 @@ the model is shown the names only. That is what makes an application whose
 credential exchange needs a fetched token reachable at all — without the model
 ever authoring the token.
 
+**A READ is shown to the model as SHAPE, never as text — deliberately (D4).**
+Status, content type, cookie names, JSON key names and a byte count. The model's
+next answer chooses where a credential is sent, so a body the target authored,
+placed in that prompt, would let the target steer the destination. What reading
+the text would have added is solved without a model: the session token a
+credential POST returns is located by STRUCTURE
+(`engagement/token_locator.py::locate_token` — a JWT by form, or a value under a
+token-naming key, at any depth; a refresh token is never the bearer), and the
+same locator serves the deterministic JSON arm, replacing a key-path list whose
+first entry was a benchmark's own nesting. Juice Shop returns
+`{"authentication": {"token": …}}`; the top-level reader called that "no token",
+and that — not the route — is what kept it from seating cold. Live, 2026-10-09:
+cold, no `login_api_url`, one credential POST to `/rest/user/login`, PROVEN by
+`status_class` at `/api/users` (authenticated 200, anonymous 401). Stated
+plainly: the route was the model's proposal, and its rationale names the
+application ("OWASP Juice Shop, a known Angular+Express application"). That is
+the layer's designed job — propose from what the stack is — but it means this
+run measures a target the model already knows, not route discovery.
+
 ### 3. Every proposal passes a deterministic gate before anything is sent
 
 `validate_proposal` is pure, reads no model output but the proposal it is

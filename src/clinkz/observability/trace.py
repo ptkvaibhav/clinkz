@@ -144,6 +144,10 @@ class TraceWriter:
         #: Events actually written. Read by :meth:`close` — an opened trace that
         #: received nothing is a broken evidence chain, not an idle engagement.
         self._events_written = 0
+        # ``(skill, phase_name)`` of every methodology-phase record written, so a
+        # caller can ask whether a record a consumer depends on exists before the
+        # file closes. See :meth:`has_methodology_phase`.
+        self._methodology_phases: set[tuple[str, str]] = set()
         self.invocations = ToolInvocationRecorder(
             engagement_id=engagement_id,
             outputs_root=self.outputs_root,
@@ -517,6 +521,11 @@ class TraceWriter:
         if extra:
             payload.update(extra)
         self.write(stage=stage, category=TraceCategory.METHODOLOGY_PHASE, payload=payload)
+        self._methodology_phases.add((skill, phase_name))
+
+    def has_methodology_phase(self, skill: str, phase_name: str) -> bool:
+        """Whether a methodology-phase record with this skill and name was written."""
+        return (skill, phase_name) in self._methodology_phases
 
     def data_handoff(
         self,
