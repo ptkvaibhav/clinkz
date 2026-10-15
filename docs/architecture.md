@@ -3,9 +3,9 @@
 ## Overview
 
 Clinkz is an autonomous, agentic AI system for black-box penetration testing.
-It takes a scope definition as input and produces a pentest report (JSON +
-Markdown today; HTML/PDF on the W3 horizon) with no human intervention during
-the test.
+It takes a scope definition as input and produces a pentest report (JSON,
+Markdown and PDF, all three rendered from one redacted structure) with no human
+intervention during the test.
 
 ## Phase shape (v2)
 
@@ -15,16 +15,19 @@ Orchestrator
     ▼
 ReconAgent             (sequential — full TCP scan + service/version + tech stack)
     │
-    ├──► WebAuthenticator  (deterministic default-credential testing)
+    ├──► Authentication    (supplied credentials first, PROVEN by
+    │                       assert_authenticated; the default-credential sweep
+    │                       only when none were supplied; the adaptive auth
+    │                       agent only when the deterministic pass seated nothing)
     │
     ▼
 ┌─────────────────────────── concurrent ───────────────────────────┐
 │                                                                  │
 │   ScanAgent       ResearchAgent       ExploitAgent               │
 │   (HTTP + FTP +   (persistent KB +    (LLM plans;                │
-│    SSH + SMB +     web research;       deterministic _test_*     │
-│    DB methods)     writes runbook)     execute; adaptive XSS     │
-│                                        and SQLi methodologies)   │
+│    SSH + SMB +     NVD feed; NOT       deterministic _test_*     │
+│    DB methods)     web-grounded;       execute — every class is  │
+│                    writes runbook)     an adaptive methodology)  │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
     │                       │                  │
@@ -34,24 +37,38 @@ ReconAgent             (sequential — full TCP scan + service/version + tech st
                   Persistent KB (clinkz_knowledge.db)
     │
     ▼
-ReportAgent      (zero LLM calls — emits JSON + Markdown)
+ReportAgent      (zero LLM calls — emits JSON + Markdown + PDF)
 ```
 
 Exploit's only hard dependency is Scan: it starts as soon as Scan completes
 and never blocks on Research. Research's runbook is folded into Exploit only if
 Research has already finished; otherwise Exploit starts immediately and Research
 is collected for the report afterwards. Research self-caps at
-`RESEARCH_TIME_BUDGET` so it can never hold the engagement open. Cross-phase
-re-spins (e.g. Exploit asks for more recon) are capped at
-`MAX_CROSS_PHASE_RESPINS = 3` per engagement.
+`RESEARCH_TIME_BUDGET` so it can never hold the engagement open. The
+cross-phase re-spin branch (`_handle_query`, `MAX_CROSS_PHASE_RESPINS = 3`) is
+**unreached**: its only `QUERY` constructor is `request_help`, reachable only
+through `BaseAgent._execute_tool`, which nothing calls (register R27).
 
 ## Deterministic agents with LLM checkpoints
 
-The v2 phase agents do **not** run a free-form ReAct loop. Each follows a
-fixed step sequence, and the LLM is invoked only at named reasoning
-checkpoints.
+The v2 phase agents do **not** run a free-form ReAct loop — the generic
+`_react_loop` was deleted (`a158ba4`). Each follows a fixed step sequence, and
+the LLM is invoked only at named reasoning checkpoints. Every checkpoint is a
+`generate_text` call carrying the prompt alone: **no system prompt is sent**.
+Each agent's `prompts/<name>_system.md` is loaded into `system_prompt` and read
+by nothing (register R27); the methodology checkpoints run unprimed
+([`analysis/cost-cap-and-system-prefix.md`](analysis/cost-cap-and-system-prefix.md)
+§2). The one LLM caller that sends its prompt file is the adaptive-auth agent,
+which inlines it into the user prompt.
 
 ### Recon (`agents/recon.py`)
+
+A service is web-recon-eligible on **protocol evidence**, not on its port:
+`ReconService.is_http` accepts a canonical HTTP service name, then an HTTP status
+line in the `-sV` fingerprint (`scripts_output`), and only then the tight
+known-web-port list as the no-evidence fallback. A port allow-list cannot
+enumerate every alt-HTTP port — Flink's REST API on 8081, which nmap labels
+`blackice-icecap`, was skipped by it and received zero exploit tasks.
 
 ```
 1. Full TCP port scan                  (TOOL — deterministic, ToolResolver)
@@ -235,18 +252,26 @@ discovers mid-engagement.
      Tier 3: experimental from runbook
 3. LLM reasons through results         (REASONING checkpoint)
 4. Adaptive retry / bypass             (TOOL + REASONING)
-5. Record technique success/failure    (DETERMINISTIC)
-   to persistent KB
+5. Write a capability fact to the       (DETERMINISTIC — discovery-originated
+   persistent KB (Layer-2, YES-only)      confirmations only)
 6. Structure output                    (CODE)
 ```
 
-Adaptive methodologies (W2.1) layer multi-phase synthesis on top of two
-deterministic skills:
+The older per-technique success loop (`record_technique_result`, recomputing
+`success_rate`) is **retired** — the method survives in `persistent_kb.py` and
+nothing calls it.
 
-- `_test_xss_reflected` — reflection-context mapping → character-survival
-  fingerprint → LLM-driven payload synthesis → bypass attempt
-- `_test_sqli` — dialect fingerprint → injection primitive enumeration →
-  LLM-driven injection-type selection → payload synthesis
+What step 2 dispatches is `DISPATCHABLE_TEST_METHODS`: the 29 per-class
+methodologies in `TIER1_TESTS` (each an adaptive multi-phase methodology — the
+six-phase injection family and the four-phase behavioural family),
+`_test_log4shell` (discovery-originated), and `_test_tier2_technique` /
+`_test_tier3_technique`, which send nothing and are registered
+`NOT_IMPLEMENTED`. The seven write-family classes — `csrf`, `file_upload`,
+`xss_stored`, `brute_force`, and (also admitted by an observed form)
+`input_validation`, `mass_assignment`, `write_crossing` — are routed on
+`_is_observed_write_surface`: a write verb **and** `method_evidence` that is not
+`UNREAD` — the engine never dispatches a mutating class against a route whose
+verb it could not read.
 
 Per-phase intermediate results are modelled in `models/methodology.py`
 (`ReflectionPoint`, `CharacterMap`, `SynthesizedPayload`,
@@ -255,7 +280,8 @@ Per-phase intermediate results are modelled in `models/methodology.py`
 ### Report
 
 - **Report** makes **zero LLM calls** — it pulls findings from the state store
-  and emits JSON + Markdown in <30 s. `report_llm_provider` exists for interface
+  and emits JSON + Markdown + PDF in <30 s, remediation attached per class from
+  `models/vuln_classes.py`. `report_llm_provider` exists for interface
   symmetry and nothing reads it at runtime; the LLM-driven multi-pass narrative
   has never been built, and describing it as a phase of the pipeline made the
   report look like something a model wrote.
@@ -280,15 +306,18 @@ All LLM calls go through `src/clinkz/llm/base.py`:
 
 ```python
 class LLMClient(ABC):
-    async def reason(messages, tools) -> AgentAction   # tool calling
-    async def research(query) -> str                   # web-grounded research
-    async def generate_text(prompt) -> str             # plain generation
+    async def reason(messages, tools) -> AgentAction   # tool calling — no caller outside llm/
+    async def research(query) -> str                   # grounding DECLARED per client
+    async def generate_text(prompt) -> str             # every phase checkpoint
 ```
 
 `llm/factory.py` returns the right client per provider. `llm/fallback.py`
 wraps it in a `ResilientLLMClient` that rotates providers on rate-limit /
 timeout, with per-provider retry budgets (`LLM_MAX_RETRIES`,
-`LLM_RETRY_BASE_DELAY`, `LLM_RETRY_MAX_DELAY`).
+`LLM_RETRY_BASE_DELAY`, `LLM_RETRY_MAX_DELAY`). Effort is resolved per call
+PURPOSE (`effort_for_purpose`): `LLM_EFFORT` (default `low`) for PLANNING and
+SUPPRESS, `LLM_EFFORT_EMIT` (provider default) for EMIT, and the level sent is
+the level stamped on the call.
 
 **Routing v2: every agent leads with Anthropic.** Full rationale and the
 call-purpose rule → [`provider-routing.md`](provider-routing.md).
@@ -370,9 +399,11 @@ before any network activity occurs.
 | engagements  | Engagement metadata and status                |
 | targets      | Discovered hosts (`Host` models as JSON)      |
 | findings     | Vulnerabilities (`Finding` models as JSON)    |
-| endpoints    | Scan-discovered endpoints (Exploit polls)     |
+| research_leads | Unproven cross-service research leads        |
+| endpoints    | Scan-discovered endpoints incl. `method_evidence` |
 | runbook      | Research-Agent-emitted technique entries      |
-| messages     | Agent message log (orchestrator-mediated)     |
+| agent_messages | Agent message log (orchestrator-mediated)   |
+| sessions     | Established sessions handed to later phases   |
 | actions      | Every tool invocation with inputs/outputs     |
 | attempts     | Retry tracking for failed tool calls          |
 
@@ -380,14 +411,17 @@ before any network activity occurs.
 
 | Table                  | Purpose                                       |
 |------------------------|-----------------------------------------------|
-| playbook_entries       | Tier 1 / 2 / 3 techniques, success rates      |
+| playbook_entries       | Tier 1 / 2 / 3 techniques (`success_rate` frozen) |
 | past_engagements       | Historical engagements (target, techs, count) |
-| technique_results      | Per-engagement per-technique outcomes         |
-| technology_relations   | Tech similarity edges for cross-tech transfer |
+| technique_results      | Per-technique outcomes — no live writer        |
+| technology_relations   | Tech similarity / transfer edges              |
+| capability_facts       | Layer-2: YES-only per-technology capability facts |
+| capability_observations | Layer-2: the observations behind each fact   |
 
-The persistent KB is what makes Clinkz get smarter over time: every
-technique result is recorded, success rates are recomputed, and future
-engagements query the KB before reaching for the web.
+What makes a later engagement different is **Layer-2 capability memory**: a
+confirmed discovery-originated finding writes a capability fact, and a later
+engagement recalls it as a PRIOR that re-orders the tested set and never emits.
+The technique-success loop the first three tables were built for is retired.
 
 ## Observability
 
@@ -397,7 +431,7 @@ Each engagement writes `outputs/<engagement_id>/trace.jsonl`. Categories:
 - `llm_call` — provider, model, prompt size, tokens, latency
 - `agent_step` — deterministic step boundary (`recon.port_scan_full`, ...)
 - `data_handoff` — Scan→Exploit endpoint write, Research→Exploit runbook write
-- `methodology_phase` — adaptive XSS / SQLi phase results
+- `methodology_phase` — per-class methodology phase results
 
 Inspect with:
 

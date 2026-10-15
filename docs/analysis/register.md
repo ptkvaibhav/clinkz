@@ -18,6 +18,41 @@ differently and only one of them is waiting for a target.
 | **OPEN — trade** | the fix requires a decision with a real cost on the other side, not just work |
 | **UNREACHABLE PRECONDITION** | a gate needs evidence the engine can only produce by first passing that gate. Not *unexercised* — dispatched and measured. Not *not applicable* — the target may well carry the rule. It is a capability the engine does not have, and the deliverable must not describe it as a class waiting for a better target |
 
+## Walk — 2026-10-09, tree at `9a4f590` (documentation truth pass)
+
+Every entry re-checked against the tree, not against its own text. "Verified"
+below means the cited code was read in this walk; an entry whose evidence is a
+stored-bundle measurement keeps that measurement and is marked as carried.
+
+| entry | state | evidence in the tree, this walk |
+|---|---|---|
+| R1 | OPEN | `_url_shape.py::STATIC_ASSET_EXTENSIONS` still has no `js` |
+| R2 | OPEN — cause verified | `_test_javascript_attacks` returns before its methodology on `not page.forms` or no `<script>`; the phase events are emitted only inside `_run_js_attacks_methodology` (3 call sites), so every early return is silent |
+| R3 | RESOLVED | carried |
+| R4 | OPEN | `_xss_dom` + `_javascript_attacks` still appended to every non-static endpoint, after the precondition-graded classes |
+| R5 | OPEN — unverified | not re-measured |
+| R6 | OPEN | `_applicable_methods_for_endpoint` still names none of the three business-logic classes |
+| R7 | OPEN — partial | the marker-oracle call domain is guarded (`test_marker_oracle_controls.py::CONTROL_TAKERS`); the general MIXED/NEVER/ALWAYS/UNCALLED walk is still unwritten |
+| R8 | OPEN | no `provider_chain_observations`; `reset_account_disabled_providers()` still called from tests only |
+| R9 | CLOSED (split into R11, R12) | carried |
+| R10 | OPEN | `js_source_ingest.py` still `sorted(seen)` then `candidates[:_MAX_FILES]`, `_MAX_FILES = 2000` |
+| R11 | OPEN (disclosure half fixed) | carried |
+| R12 | OPEN | `_emit_business_logic` still files every non-confirmation `why="not_instrumentable"` |
+| R13 | UNREACHABLE PRECONDITION | carried |
+| R14 | CLOSED 2026-09-15 | carried |
+| R15 | OPEN | `artifact_scan.py` still detects by text through the shared shape vocabulary |
+| R16 | OPEN | neither batch driver calls `register_credential_set` |
+| R17 | RESOLVED (disclosure); re-sort deliberately not built | `BundleFetchTruncation` in `observability/plan_alarms.py` |
+| R18, R19 | RESOLVED | carried |
+| R20 | OPEN | `_read_files` still skips `*.min.js` |
+| R21 | OPEN | `PRIVATE_KEY_RE` still ends `(?:<END-banner>\|\Z)` under `re.DOTALL` |
+| R22 | RESOLVED in this push | spec now marks the pass SUPERSEDED |
+| R23 | RESOLVED | carried |
+| R24 | OPEN | `Finding.model_fields` — 14 fields, none names a class |
+| R25 | RESOLVED | `endpoints.method_evidence` column, persisted and reloaded |
+| R26 | RESOLVED | was the second "R13"; renumbered in this walk |
+| R27, R28, R29 | OPEN — new in this walk | below |
+
 ---
 
 ## R1 · `js` is absent from `STATIC_ASSET_EXTENSIONS`
@@ -67,6 +102,14 @@ one.
 **Reported, not verified here.** The class is dispatched and records nothing
 through `_trace_methodology_phase`, so the trace cannot distinguish "ran and
 found nothing" from "returned early".
+
+**Verified 2026-10-09.** The phase events exist — three
+`_trace_methodology_phase` calls inside `_run_js_attacks_methodology` — but
+`_test_javascript_attacks` returns an empty list before reaching it whenever
+`page.forms` is empty or the body carries no `<script>` block. `page.forms` is
+`[]` on every framework target (invariant 18), so on an SPA the class is
+dispatched, returns at its first line, and emits nothing at all. The fix is a
+phase-1 abstention event on each early return, not a change to the gate.
 
 Relevant context already in the tree: this is the one form-shaped class that
 CLAUDE.md invariant 18 exempts from reading `_injectable_forms`
@@ -884,8 +927,10 @@ call sites — the same law as every other domain here.
 
 ## R17 · The bundle-fetch cap has no ordering signal, and the measurement says it is not what binds
 
-**State: OPEN, with the options measured and none built.** Opened 2026-09-15 by
-the config-object round (`docs/analysis/spa-write-surface-blocker.md` §7.5).
+**State: RESOLVED — option (a), the disclosure; the re-sort deliberately not
+built** (see *RESOLVED* below). Opened 2026-09-15 by the config-object round
+(`docs/analysis/spa-write-surface-blocker.md` §7.5). The paragraphs before the
+resolution are the measurement that chose it, kept as written.
 
 `JSCallSiteDiscoverer` fetches `_MAX_BUNDLES = 12` of a target's chunk URLs — 53
 on cal.com, 27 on Juice Shop — in **queue order**, because
@@ -1252,6 +1297,10 @@ unprimed methodology checkpoints (item 2, `docs/analysis/cost-cap-and-system-pre
 superseded by the registry-remediation design — not wiring an LLM call into a
 stage whose zero-LLM property is a deliberate speed and honesty guarantee.
 
+**RESOLVED 2026-10-09** (documentation truth pass). `CLINKZ_V2_IMPLEMENTATION.md`
+marks the pass `[SUPERSEDED]` with this entry as the reason, REPORT is `[DONE]`,
+and *On the horizon* item 2 is struck through.
+
 *(Carried from #144's register as R10; renumbered to R22 because main's register
 reached R21 independently — same item, non-colliding number.)*
 
@@ -1299,7 +1348,11 @@ grading as the evidence.
 
 ---
 
-## R13 · A batch driver wrote its result row after a step that could raise
+## R26 · A batch driver wrote its result row after a step that could raise
+
+*(Filed as a second "R13" by the effort-grid round; renumbered 2026-10-09 because
+R13 is the business-logic UNREACHABLE PRECONDITION entry above. **State:
+RESOLVED** — the tag is sanitised.)*
 
 **Verified, and the cost was paid before it was found.** The effort-grid driver
 built each cell's log filename from the cell's own coordinates, and Juice Shop's

@@ -38,13 +38,13 @@ tools dynamically.
   `.githooks/pre-commit` runs the outputs/secret/gates/context-budget guards. That
   config is per-clone and never committed, so a fresh clone is unprotected until it
   runs (`/gates` reports `GATE0_hooksPath`). CI's `leak-guard` job is the only
-  fail-closed layer: no local config or `--no-verify` skips it. It inspects the
-  **tree**, so a sibling job `metadata-leak-guard` covers what a tree scan
-  structurally cannot see — session links in a PR title/body or a
-  `Claude-Session:` commit trailer. Commit attribution is suppressed at source by
+  fail-closed layer; `metadata-leak-guard` covers what a tree scan cannot see
+  (session links in a PR title/body or a commit trailer). Attribution is off at
+  source:
   `attribution: {commit: "", pr: "", sessionUrl: false}` in `.claude/settings.json`;
   `sessionUrl` is a separate boolean and the two strings do NOT imply it.
-  Use foreground commands only — no background scripts/polling.
+  Foreground commands only — except the keyless gate, which outruns the 600 s
+  tool cap: run it in the background and wait for its notification, never poll.
 
 **PLAN-FIRST WORKFLOW**
 - Every task begins with a brief implementation plan before any code, folding in
@@ -73,8 +73,8 @@ sequence, not LLM-mediated dynamic routing**: `OrchestratorAgent.run()` is a fix
 sequence of `_run_phase` calls and the bus carries `task` / `result` / `error` /
 `status`. The LLM-routed branch (`_handle_query`, `RESPIN_*`,
 `MAX_CROSS_PHASE_RESPINS`) is unreached code — its only `QUERY` constructor is
-`request_help`, which v2 never dispatches. Describing it as a capability is how
-three other claims in this file went stale.
+`request_help`, reachable only through `BaseAgent._execute_tool`, which has no
+caller (register R27).
 
 **Phase shape:** Recon (sequential) → **Scan + Research + Exploit concurrently**
 over shared SQLite state → Report (sequential). Exploit's only hard dependency is
@@ -82,22 +82,16 @@ Scan. **Credit pre-flight** (`llm/fallback.py::preflight_provider_available`)
 probes once at start; a depleted account is `KeyStatus.INVALID`, and the
 agreement between the two pre-flights is asserted.
 
-### Message format
-```python
-class AgentMessage(BaseModel):
-    id: str
-    from_agent: str        # "orchestrator", "recon", "scan", ...
-    to_agent: str
-    message_type: str      # "task" | "result" | "query" | "response" | "status"
-    content: dict
-    engagement_id: str
-    parent_message_id: str | None
-    timestamp: datetime
-```
+**Message format:** `comms/message.py::AgentMessage` — `from_agent`, `to_agent`,
+`message_type` (`MessageType`: task · result · query · response · status ·
+error), `content`, `engagement_id`, `parent_message_id`, `timestamp`.
 
 All v2 phase agents follow **deterministic steps + LLM checkpoints** — a fixed
 sequence of tool calls and code, LLM invoked only at named reasoning checkpoints.
-No free-form ReAct.
+No free-form ReAct: the generic loop is **deleted** (`a158ba4`). Every checkpoint
+is a bare `generate_text` prompt with **no system prompt** — the
+`prompts/*_system.md` files are loaded and never sent (R27); the adaptive-auth
+agent inlines its own.
 ## Agents
 
 **Detail → `docs/agents.md`.** Every role is Anthropic-primary
@@ -105,24 +99,27 @@ under routing v2 (`claude-sonnet-5` by default — **not Opus**).
 
 - **Orchestrator** — coordinator; delegates all tool work, opens the engagement
   gate first, before docker/state/packets.
-- **Recon (v2)** — ports → services → tech stack → package identity.
-  `_package_identity.py` names PACKAGES, not servers; a dependency **range** is
-  deliberately not read.
+- **Recon (v2)** — ports → services → tech stack → package identity. A service
+  is HTTP on PROTOCOL evidence (`ReconService.is_http`: an `-sV` status line),
+  the web-port list only the no-evidence fallback. `_package_identity.py` names
+  PACKAGES, not servers; a dependency **range** is deliberately not read.
 - **Scan (v2)** — budgets its own wall clock (`SCAN_TIME_BUDGET`), because the
   orchestrator's timeout DISCARDS the return value; four discoverers union into
   `endpoints`; safe methods only.
 - **Research (v2)** — **not web-grounded by default**; grounding is declared,
   weakest-wins, and stamped rather than absorbed.
-- **Exploit (v2)** — 26 adaptive `_test_*` methodologies by tier. The
-  deterministic check GATES the LLM; phase-3 ranking is `_plan_ranking.py`, not
-  the model's; P7 is the client-side oracle; TERMINAL classes dispatch last.
+- **Exploit (v2)** — `DISPATCHABLE_TEST_METHODS`: 29 `TIER1_TESTS` classes,
+  `_test_log4shell`, and two Tier-2/3 runbook executors that send nothing
+  (`NOT_IMPLEMENTED`). The deterministic check GATES the LLM; phase-3 ranking is
+  `_plan_ranking.py`; P7 is the client-side oracle; TERMINAL classes dispatch
+  last; write-family classes route on `_is_observed_write_surface`.
 - **Chaining** (`src/clinkz/chaining/`) — graded by its WEAKEST link; only ever ADDS.
 - **Business logic** — intent inferred from the app's own surface, with evidence.
-- **Critic** — **archived** (`agents/_archive/critic.py`); invoked in 0 of 2,774
-  recorded steps, its job done by deterministic gates on the emitting path.
+- **Critic** — **archived** (`agents/_archive/critic.py`); its job is done by
+  deterministic gates on the emitting path.
 - **Report** — **zero LLM calls**; JSON + Markdown + PDF in <30 s, all three
-  rendered from the SAME redacted structure. `report_llm_provider` exists for
-  interface symmetry and nothing reads it at runtime.
+  rendered from the SAME redacted structure; remediation is per class from the
+  registry. The spec's LLM remediation pass is SUPERSEDED, not pending (R22).
 ## Engagement Setup + Production Safety
 
 **Full detail → `docs/productization-engagement-safety.md`.**
@@ -204,12 +201,10 @@ facts that a later engagement recalls as a **prior** — it re-orders the tested
 but **never emits**.
 ## Tool Execution: Dynamic Discovery
 
-Agents never hardcode tool names — they call
-`ToolResolver.find_tool(capability="port_scanning")`. The resolver checks MCP
-servers first, then local CLI tools, then walks declared `TOOL_CHAINS` fallback
-orders. Every tool validates targets against scope **before any network activity**
-and returns Pydantic models, never raw strings. If nothing is found the agent
-reports the missing capability to the Orchestrator.
+Invariant 4. The resolver checks MCP servers, then local CLI tools, then the
+declared `TOOL_CHAINS` order. Every tool validates scope **before any network
+activity** and returns Pydantic models; a missing capability is reported to the
+Orchestrator.
 
 ## Tech Stack
 
@@ -220,23 +215,20 @@ reports the missing capability to the Orchestrator.
   outside `llm/`. **Routing v2: Anthropic is priority 1 for EVERY call on EVERY
   phase**; Gemini (`gemini-3.7-flash`, pinned) and OpenAI are the fallback tail;
   Ollama is a stub in no chain. Per-agent overrides via `LLM_PROVIDER_<AGENT>`.
-  Every rotation is a **disqualifying event**. **Detail →
-  `docs/provider-routing.md`.**
+  Every rotation is a **disqualifying event**. Effort is per call PURPOSE
+  (`LLM_EFFORT`, default `low`, for PLANNING/SUPPRESS; `LLM_EFFORT_EMIT` for EMIT,
+  provider default). `--token-cap` / `--spend-cap-usd` bound spend; a run the cap
+  halted is INDETERMINATE. **Detail → `docs/provider-routing.md`.**
 - **Operation-level timeouts** (per HTTP request, tool subprocess, and LLM call
   via `LLM_REQUEST_TIMEOUT`) are the safety valve — the exploit phase has no
   wall-clock deadline by default.
 - SQLite: `clinkz.db` (per-engagement state), `clinkz_knowledge.db` (cross-
   engagement KB incl. Layer-2 `capability_facts` / `capability_observations`).
-- **Playwright + Chromium** backs P7 and lives in `docker/Dockerfile.tools`. That
-  layer is **self-verifying** — it launches the browser at build time, because
-  `--with-deps` can exit 0 having installed a browser that never launches.
-  Optional for `TOOL_EXEC_MODE=local`; absent, the affected classes record
-  unproven leads exactly as before.
-- **ReportLab** renders the PDF and **pypdf** reads one back for the disclosure
-  gate. **Not WeasyPrint** — it resolves GTK/Pango at import and cannot run on the
-  machine that produces the bundle. `jinja2` remains declared and unused.
-- **Node** backs one TARGET, not the engine: `docker/protopoll` is a real
-  `Object.prototype`. Standard library only, no `package.json`.
+- **Playwright + Chromium** backs P7 in `docker/Dockerfile.tools`, which launches
+  the browser at build time (self-verifying); absent, classes record leads.
+- **ReportLab** renders the PDF, **pypdf** reads it back for the disclosure gate;
+  **not WeasyPrint** (no GTK on Windows). `jinja2` is declared and unused.
+- **Node** backs one TARGET (`docker/protopoll`), never the engine.
 - MCP Python SDK for tool servers; Docker for sandboxed tool execution
   (`clinkz-tools`; `TOOL_EXEC_MODE=local` for the in-process HTTP path).
 - Typer CLI; `clinkz trace inspect <engagement>` renders execution traces.
@@ -247,7 +239,8 @@ reports the missing capability to the Orchestrator.
 `agents/` (recon · scan · exploit · research · report + pure helpers),
 `orchestrator/`, `comms/`, `llm/`, `tools/`, `knowledge/`, `discovery/`,
 `chaining/`, `engagement/`, `safety/`, `browser/`, `oob/`, `observability/`,
-`models/`. Beside it: `docker/`, `scripts/`, `tests/`, `docs/`, and
+`models/`, `credentials/`, `research/` (the NVD feed). Beside it: `docker/`,
+`scripts/`, `tests/`, `docs/`, and
 `requirements-ci.lock` — the FULL resolved dependency set CI installs.
 ## Commands
 
@@ -282,18 +275,27 @@ LESSONS #17).
 
 ## Key Design Decisions (invariants — non-negotiable)
 
-**Each line is the RULE, and it binds as written. The full rule text is in
-[`docs/invariants-rules.md`](docs/invariants-rules.md) and the incident that
-produced it in [`docs/invariants.md`](docs/invariants.md) — same numbering.**
-Read both before changing the code an invariant governs; not by default. A new
-invariant lands here as ONE line and in both docs in full.
+**The rule is here; the incident is in `docs/invariants.md`, same numbering — or,
+for the numbers its index lists, in the doc a `Detail →` names.** Read the detail
+when you are about to change the
+code an invariant governs — not by default. A `Detail →` pointer names a path
+under the repo root; the header table at the top of this file links them all.
 
 1. **Deterministic steps + LLM checkpoints**; no free-form ReAct.
-2. **Orchestrator-mediated comms** — agents never talk directly.
+2. **Orchestrator-mediated comms** — agents never talk directly. The router is the
+   deterministic phase sequence, NOT an LLM (the `RESPIN_*` branch is unreached).
 3. **Agents are spun up/down on demand**, in the order the phase shape declares.
-4. **Dynamic tool discovery** — `ToolResolver.find_tool(capability=...)`, never a tool name or direct import.
-5. **LLM-agnostic + per-agent providers** — never import a provider SDK outside `llm/`. Anthropic is priority 1 for every call on every phase.
-6. **A fallback is a disqualifying event, and on an emit or suppress path it is refused outright — in BOTH run modes** (`llm/call_purpose.py`).
+4. **Dynamic tool discovery** — `ToolResolver.find_tool(capability=...)`, never a
+   tool name or direct import. **Not yet true of the HTTP carrier**: exploit's
+   `_http_*` and the orchestrator's auth path construct `HTTPClientTool`
+   directly, unguarded (R28).
+5. **LLM-agnostic + per-agent providers** — never import a provider SDK outside
+   `llm/`. Anthropic is priority 1 for every call on every phase; a discovered key
+   confers *availability*, never a position.
+6. **A fallback is a disqualifying event, and on an emit or suppress path it is
+   refused outright — in BOTH run modes** (`llm/call_purpose.py`). A stamp can
+   disclose reduced coverage; it cannot disclose a finding that was suppressed.
+   Every call site declares its purpose; an unclassified one is a red build.
 7. **A run where NOTHING answered is not a clean run** (`llm/degradation.py`).
 8. **A report about a run that did not happen must say so** — `run_completed` / `incomplete_reason`; incomplete + zero findings rates **`Not assessed`**, never "Informational", which is a verdict about the target.
 9. **A capability lost to routing is STATED, never absorbed.**
@@ -331,61 +333,238 @@ invariant lands here as ONE line and in both docs in full.
 41. **Silence from a detection path is not evidence of cleanliness.**
 42. **Suppress, never annotate** — a believed false positive is **demoted**, never emitted as confirmed carrying a caveat.
 43. **One engagement is one target state, so a confirmation SUPERSEDES its lead.**
-44. **The suppression runs the same direction as emission: an LLM never overrules a deterministic oracle.**
-45. **A veto that reads the model's PROSE applies only to an effect nobody witnessed.**
-46. **An execution-type branch is a CLAIM, and it confirms only on the observation that proves ITS effect.**
-47. **A thin-but-real measurement carries its own control** — a differential is proof when it is *reproducible*, not when it is large.
-48. **Attack the handler, not the listing** — decided on **what came back**, never on the path.
-49. **A deterministic observation gates the LLM's list, not just its verdict**, and severity is recomputed from the surviving set.
-50. **A class whose input is fully observed asks no model, and a baseline carries the model that produced it.**
-51. **Coverage truncation is never silent** — per class, how many candidates were dropped and the first omitted endpoint; every applicable class is guaranteed one task before the cap.
-52. **A phase-3 ranking is a function of the phase-2 FINGERPRINT, and the bound on it is the fingerprint too** (`agents/_plan_ranking.py`). → `docs/methodology/plan-ranking.md`
-53. **The plan order is a function of the endpoint SET, never of the crawl's order** — a concurrent crawler emits a different sequence each run.
-54. **`verification_strength` decides emission, and it is a closed vocabulary** — classified explicitly in both directions; a test fails on any unclassified literal.
-55. **A guard never parses text the target controls.**
-56. **Persistent KB feedback loop (Layer-2)** — YES-only, a decayed corroboration prior that never gates emission.
-57. **A CVE match on a version string is a LEAD, never a finding** (`knowledge/component_cves.py`).
-58. **The fourth plan source RESERVES its slots, and spends them by version provenance.**
-59. **A plan source that gets no slots must still say so** — the tier-2/3 research source is always computed and its candidates join the truncation buckets.
-60. **The PRODUCER declares what it fingerprinted, too** (`detected_components()` / `declares_components()`).
-61. **A tool named in a `TOOL_CHAINS` entry must DECLARE that capability, and the resolver reads the declared ORDER.**
-62. **Resolving is not the same as being used, and an unused capability states its reason** — verified against the source so it cannot become documentation of a wish.
-63. **One origin fence** (`agents/_origin.py`) — the host comparison is the obvious half, and each new call site re-derives only the obvious half.
-64. **"Is this the same string" is the right question for a FENCE and the wrong one for a finding's IDENTITY** (`OriginIdentity`).
-65. **A phase stopped at its own wall clock is not a run that did not happen.**
-66. **A mock at a tool or parser seam returns the REAL output model.**
-67. **A guard's DOMAIN is computed from the same source of truth as the thing it guards; only the CLASSIFICATION is hand-maintained.** → `.claude/skills/clinkz-dev/SKILL.md`
-68. **Two confirmed findings do not imply the chain between them, and neither does a successful second request.**
-69. **A yield is what a class's confirmation PROVES, never what the class is named after** (`chaining/vocabulary.py::NO_YIELD_REASON`).
-70. **Business-logic intent must be EVIDENCED from the application's own surface** — unevidenced ⇒ a lead.
-71. **The destructive refusal is the contract, and the benchmark profile does not loosen it.** Session destruction, security-posture toggles and cross-principal writes are never permittable on any target.
-72. **A total is not evidence about its parts** (`observability/ledger.py`). → `docs/observability.md`
-73. **A benchmark number a client sees must be what TESTING earned.**
-74. **A batch is unattended, so a credit lapse must stop it rather than fill it** (`scripts/three_run_envelope.py`).
-75. **A recon component that RAISED must not look like a target with nothing to find.**
-76. **A ledger VIEW is not a second population.**
-77. **"Correctly found nothing" is a fifth fact, and it is NOT an alarm.**
-78. **A component the ledger never hears from is not measurable, so every component is DECLARED at engagement start** (`observability/component_registry.py`), over three **computed** domains plus one declared half held to a bidirectional AST assertion.
-79. **"Declared and never invoked" has two opposite readings, so reachability is a COMPUTED PREDICATE and its TIMING is split from the declaration's.**
-80. **A predicate may only be evaluated against a producer that SPOKE, so there is a FOURTH state: NOT DETERMINED.**
-81. **The prompt cache is a ledger component like any other, because it degraded exactly like one** — invoked every run, succeeded every time, contributed zero.
-82. **A consumer never guesses a producer's field names.**
-83. **A parser never assumes it owns the process's stdout, and the fixture must be the bytes the tool WRITES.**
-84. **An auth bypass is a defining effect no injection oracle can see, so it gets its own indicator** (`agents/_auth_bypass.py`). → `docs/methodology/auth-bypass.md`
+    Directional: a witnessed effect outranks the absence of one, and there is no
+    path by which a lead suppresses a finding.
+44. **The suppression runs the same direction as emission: an LLM never overrules
+    a deterministic oracle.** The FP cross-check may demote ONLY by naming a
+    deterministic contradiction the code itself verified.
+45. **A veto that reads the model's PROSE applies only to an effect nobody
+    witnessed.** Phase 5 records `literal_landing_witnessed`; a skipped veto is
+    logged and traced.
+46. **An execution-type branch is a CLAIM, and it confirms only on the observation
+    that proves ITS effect.** A branch that cannot prove its effect must never
+    pre-empt one that can.
+47. **A thin-but-real measurement carries its own control** — a differential is
+    proof when it is *reproducible*, not when it is large. Strengthen the proof
+    rather than loosen the gate.
+48. **Attack the handler, not the listing** — decided on **what came back**, never
+    on the path.
+49. **A deterministic observation gates the LLM's list, not just its verdict**,
+    and severity is recomputed from the surviving set.
+50. **A class whose input is fully observed asks no model, and a baseline carries
+    the model that produced it.** `security_headers` phase 3 is deterministic end
+    to end, asserted on the CALL. Ladder invariance is pinned on fixed
+    observations, **and** the shared verdict is pinned.
+51. **Coverage truncation is never silent** — per class, how many candidates were
+    dropped and the first omitted endpoint; every applicable class is guaranteed
+    one task before the cap. A drop on an endpoint carrying the class's **own**
+    surface is a separate **RANKING FAILURE**.
+52. **A phase-3 ranking is a function of the phase-2 FINGERPRINT, and the bound on
+    it is the fingerprint too** (`agents/_plan_ranking.py`). A ranking returns the
+    order AND `supported`; `attempt_window` never truncates a supported type. The
+    tail is never empty. **Detail →
+    `docs/methodology/plan-ranking.md`.**
+53. **The plan order is a function of the endpoint SET, never of the crawl's
+    order** — a concurrent crawler emits a different sequence each run. Ties break
+    on structural identity, never traversal order.
+54. **`verification_strength` decides emission, and it is a closed vocabulary** —
+    classified explicitly in both directions; a test fails on any unclassified
+    literal.
+55. **A guard never parses text the target controls.** A suppression primitive
+    handed to the target is worse than the phantom the guard prevents.
+56. **Persistent KB feedback loop (Layer-2)** — YES-only, a decayed corroboration
+    prior that never gates emission.
+57. **A CVE match on a version string is a LEAD, never a finding**
+    (`knowledge/component_cves.py`). **Affected ranges are half-open**
+    `[introduced, fixed)`, pinned as PROPERTIES over a generated universe.
+    **Provenance gates the CLAIM, never the TEST.** A match becomes an
+    `ExploitTask` for a class whose oracle can witness that effect, or an
+    `UnprovenExploitLead`. A third outcome does not exist.
+58. **The fourth plan source RESERVES its slots, and spends them by version
+    provenance.** A run that matched no CVE reserves zero and plans
+    byte-identically. Provenance is declared by the PRODUCER
+    (`VersionProvenance`), ordered ahead of published severity.
+59. **A plan source that gets no slots must still say so** — the tier-2/3 research
+    source is always computed and its candidates join the truncation buckets.
+60. **The PRODUCER declares what it fingerprinted, too** (`detected_components()`
+    / `declares_components()`). A non-declaring wrapper is a loud `DEAD_SEAM`.
+61. **A tool named in a `TOOL_CHAINS` entry must DECLARE that capability, and the
+    resolver reads the declared ORDER.**
+62. **Resolving is not the same as being used, and an unused capability states its
+    reason** — verified against the source so it cannot become documentation of a
+    wish.
+63. **One origin fence** (`agents/_origin.py`) — the host comparison is the
+    obvious half, and each new call site re-derives only the obvious half.
+64. **"Is this the same string" is the right question for a FENCE and the wrong
+    one for a finding's IDENTITY** (`OriginIdentity`). The alias is OBSERVED,
+    never inferred; **name-based virtual hosting fails SAFE**, because
+    over-merging HIDES a finding and emitting one twice does not.
+65. **A phase stopped at its own wall clock is not a run that did not happen.** A
+    timeout WITH a result did its work; a timeout with NOTHING still trips the
+    banner. **A banner that fires on a third of good runs is one a reader learns
+    to skip.**
+66. **A mock at a tool or parser seam returns the REAL output model.** A test that
+    can only pass against a fiction is worse than no test, because it is counted
+    as coverage.
+67. **A guard's DOMAIN is computed from the same source of truth as the thing it
+    guards; only the CLASSIFICATION is hand-maintained.** Both directions are
+    asserted; an exemption is an allow-list entry with a substantive reason, never
+    a silent skip. **And the domain is over the CALL whenever the property is a
+    property of the call** — a control that is an optional parameter with a
+    permissive default makes an oracle only as controlled as its least careful
+    caller, and no domain computed over callee bodies can see a caller. **Detail →
+    `.claude/skills/clinkz-dev/SKILL.md`.**
+68. **Two confirmed findings do not imply the chain between them, and neither does
+    a successful second request.** A carriage is proven against a decoy the target
+    never issued. Decoy accepted too ⇒ a `ChainResearchLead`, never a finding with
+    a caveat.
+69. **A yield is what a class's confirmation PROVES, never what the class is named
+    after** (`chaining/vocabulary.py::NO_YIELD_REASON`). The carried VALUE is
+    excluded from serialisation.
+70. **Business-logic intent must be EVIDENCED from the application's own surface**
+    — unevidenced ⇒ a lead. **The status code is never the effect** — the
+    read-back is.
+71. **The destructive refusal is the contract, and the benchmark profile does not
+    loosen it.** **Session destruction, security-posture toggles and
+    cross-principal writes are never permittable on any target** — they damage
+    the ENGAGEMENT, not the target.
+72. **A total is not evidence about its parts** (`observability/ledger.py`). Four
+    alarm classes stay apart because they have different fixes; *declared but
+    never invoked* is tracked separately. **Absent by default**, and it never
+    raises from the data path. **Detail →
+    `docs/observability.md`.**
+73. **A benchmark number a client sees must be what TESTING earned.** The floor is
+    **measured, never declared**, KEYED by credential set, and no floor ⇒
+    `solved_by_testing: null`, not zero. **A solve binds to a FINDING, not to a
+    class** — a positive reading that outlives its own evidence is a phantom
+    wearing a category label.
+74. **A batch is unattended, so a credit lapse must stop it rather than fill it**
+    (`scripts/three_run_envelope.py`). A terminal account state refuses the batch;
+    an unserved stage ends it. **A metric no run REPORTED is `null`, not zero.**
+75. **A recon component that RAISED must not look like a target with nothing to
+    find.** Every `except` inside a component-bearing method must reach the ledger
+    or carry an allow-list entry with its reason.
+76. **A ledger VIEW is not a second population.** The distinction decides whether
+    a consumer may SUM.
+77. **"Correctly found nothing" is a fifth fact, and it is NOT an alarm.** The
+    claim must be **falsifiable, never a self-assessment** — candidates found and
+    none emitted is the ffuf shape and stays SILENT. **A permanent false alarm
+    trains an operator to skim the section where a real one will appear.**
+78. **A component the ledger never hears from is not measurable, so every
+    component is DECLARED at engagement start**
+    (`observability/component_registry.py`), over three **computed** domains plus
+    one declared half held to a bidirectional AST assertion. Methodology `items`
+    count DISPATCHES, not findings.
+79. **"Declared and never invoked" has two opposite readings, so reachability is a
+    COMPUTED PREDICATE and its TIMING is split from the declaration's.** Existence
+    is knowable at engagement start; reachability is not. No predicate declarable
+    ⇒ a build failure, not a runtime branch.
+80. **A predicate may only be evaluated against a producer that SPOKE, so there is
+    a FOURTH state: NOT DETERMINED.** A counter left at its default is
+    byte-identical to one a producer set to zero. The gate is per-PREDICATE, not
+    per-run, and is reconciled against the run-completion banner.
+81. **The prompt cache is a ledger component like any other, because it degraded
+    exactly like one** — invoked every run, succeeded every time, contributed
+    zero. **OFF by default by measurement** (invariant 77's false-alarm rule).
+82. **A consumer never guesses a producer's field names.** Never
+    `getattr(parsed, "field", default)` over a model — the default is what turns a
+    typo into a permanently dead capability. **A mock mirrors the real model's
+    contract**, never the consumer's assumption about it.
+83. **A parser never assumes it owns the process's stdout, and the fixture must be
+    the bytes the tool WRITES.** Whole-blob `json.loads` is correct ONLY for JSON
+    the wrapper itself serialised; every parser declares which case it is.
+84. **An auth bypass is a defining effect no injection oracle can see, so it gets
+    its own indicator** (`agents/_auth_bypass.py`). Three arms; **never
+    200-plus-a-cookie**. The identity suppression keys on credential POSSESSION,
+    not identity coincidence. **Detail →
+    `docs/methodology/auth-bypass.md`.**
 85. **Execution traces** — each engagement writes `outputs/<id>/trace.jsonl`.
-86. **Naming an oracle is half a claim; the other half is whether we can DELIVER the CVE's input to it** (`KnownComponentCVE.vector`, `CARRIABLE_VECTORS`). → `docs/methodology/sca-catalogue-breadth.md`
-87. **When the payload's effect outlives the request, the CONTROL runs first** (`_run_control_arm_first`) — a control dispatched afterwards observes the change the payload made and kills the true positive it exists to license.
-88. **A class whose effect outlives the RUN is TERMINAL, dispatched last, and a transient task after one is a stop-the-run condition** (`TERMINAL_DISPATCH_CLASSES` / `TRANSIENT_DISPATCH_CLASSES`; `assert_terminal_dispatch_order`).
-89. **A change TESTING made that the target cannot undo is stated in the client-facing document, naming the key** (`ResidualMutation`) — recorded on the WITNESSED effect, on every landed write whichever arm made it. → `docs/methodology/prototype-pollution.md`
-90. **A write is a crossing when a SEPARATE read attributes the persisted object to another principal** (`agents/_write_crossing.py`) — never the status code, never the create's own body. → `docs/methodology/write-crossings.md`
-91. **"The POST set no cookie" has TWO causes and a boolean collapses them** — an empty `Set-Cookie` delta beside a non-empty carried jar is `INDETERMINATE` (`LoginVerdict`) and DEFERS to `assert_authenticated`, bounded by `_session_survived`. → `docs/methodology/authentication-shapes.md`
-92. **A credential POST is bounded by the component that can see it, and the stop the TARGET declares outranks the budget WE assumed.** → `docs/methodology/credential-attempts-and-lockout.md`
-93. **An absence that holds only up to N is reported WITH N, and N is ours** (`attempt_ceiling`). → `docs/methodology/brute-force.md`
-94. **A verdict rule with no correct live firing is a dead instrument, and the corpus decides which.** → `docs/methodology/authentication-shapes.md`
-95. **A measurement that refused itself is not a clean result, and a truncated sweep is not a negative.**
-96. **A bound the budget cannot SEE bounds nothing, so every credential sender is classified.** → `docs/methodology/credential-attempts-and-lockout.md`
-97. **A scope entry that names a port BINDS that port** (`models/scope.py::declared_port` / `_port_binds`). → `docs/productization-engagement-safety.md`
-98. **The authentication path gets the control arm the exploit path already has.** → `docs/methodology/authentication-shapes.md`
+    `outputs/` is local-only by policy — never committed.
+86. **Naming an oracle is half a claim; the other half is whether we can DELIVER
+    the CVE's input to it** (`KnownComponentCVE.vector`, `CARRIABLE_VECTORS`).
+    Lead-only is declared at WRITE time; three lead reasons, never merged; **Band
+    C** is permanently lead-only. **Detail →
+    `docs/methodology/sca-catalogue-breadth.md`.**
+87. **When the payload's effect outlives the request, the CONTROL runs first**
+    (`_run_control_arm_first`) — a control dispatched afterwards observes the change
+    the payload made and kills the true positive it exists to license. The seam owns
+    the order, not the class; write crossings hit the same constraint.
+88. **A class whose effect outlives the RUN is TERMINAL, dispatched last, and a
+    transient task after one is a stop-the-run condition**
+    (`TERMINAL_DISPATCH_CLASSES` / `TRANSIENT_DISPATCH_CLASSES`;
+    `assert_terminal_dispatch_order`). A wildcard authorization does not cover a
+    terminal class; among them the order is the table's DECLARATION order.
+    **Terminals DRAIN, they do not rotate** — rotation interleaves them by
+    construction, so the tail narrows to ONE class until its queue is empty
+    (`terminal_drain_order`). **Being last is what starves them, so they RESERVE
+    plan slots in pass 0** — a floor, never a ceiling.
+89. **A change TESTING made that the target cannot undo is stated in the
+    client-facing document, naming the key** (`ResidualMutation`) — recorded on the
+    WITNESSED effect, on every landed write whichever arm made it. **Detail →
+    `docs/methodology/prototype-pollution.md`.**
+90. **A write is a crossing when a SEPARATE read attributes the persisted object
+    to another principal** (`agents/_write_crossing.py`) — never the status code,
+    never the create's own body. Six probes in a DECLARED order, asserted on what
+    was dispatched; every precondition ABSTAINS with nothing sent;
+    `CATEGORY_CROSS_PRINCIPAL_WRITE` is never-overridable. **Detail →
+    `docs/methodology/write-crossings.md`.**
+91. **"The POST set no cookie" has TWO causes and a boolean collapses them** —
+    an empty `Set-Cookie` delta beside a non-empty carried jar is `INDETERMINATE`
+    (`LoginVerdict`) and DEFERS to `assert_authenticated`, bounded by
+    `_session_survived`. A cookie the server issues to ANY caller is not evidence
+    about a credential, and a guessed one may not ride the deferral. **A login
+    declared failed names the evidence that was ABSENT and never asserts the
+    credentials were wrong.** **Detail →
+    `docs/methodology/authentication-shapes.md`.**
+92. **A credential POST is bounded by the component that can see it, and the stop
+    the TARGET declares outranks the budget WE assumed.** The governor slot is taken
+    at each credential POST, which NAMES the account
+    (`SafetyPolicy.max_credential_attempts_per_account`, default 8, keyed on
+    origin+account). `safety/lockout.py` is the one lockout vocabulary; the sweep
+    stops on the first evidence for ANY account. **Detail →
+    `docs/methodology/credential-attempts-and-lockout.md`.**
+
+93. **An absence that holds only up to N is reported WITH N, and N is ours**
+    (`attempt_ceiling`). Title, description and evidence each name it, and the class
+    may never render as "no protection exists". **A flag that cannot take its other
+    value where it is read is a comment** — replaced by `BruteForceEmissionError`.
+    **Detail → `docs/methodology/brute-force.md`.**
+
+94. **A verdict rule with no correct live firing is a dead instrument, and the
+    corpus decides which.** Every `_login_verdict` rule is replayable over stored
+    curl dumps; one that only ever fired wrong was deleted. A zero meaning *not
+    yet reachable here* gets a fixture.
+    **Detail → `docs/methodology/authentication-shapes.md`.**
+
+95. **A measurement that refused itself is not a clean result, and a truncated
+    sweep is not a negative.** An `INCONCLUSIVE` series RAN, so it is declared
+    (`InconclusiveMeasurement`) and rendered; a sweep the target stopped names that
+    it stopped, why, and the pairs never sent — **by account and technology, never
+    by password**, which was never registered for redaction.
+
+96. **A bound the budget cannot SEE bounds nothing, so every credential sender is
+    classified.** The per-account budget is spent only where an account is NAMED
+    (`credential_account`, assigned once). `_test_brute_force` is EXEMPT
+    deliberately, and the exemption is DECLARED over an AST-computed domain, because
+    literal dict keys cannot see the variable-keyed loop that sends the most.
+    **Detail →
+    `docs/methodology/credential-attempts-and-lockout.md`.**
+
+97. **A scope entry that names a port BINDS that port**
+    (`models/scope.py::declared_port` / `_port_binds`). Only a port the operator
+    TYPED binds; a dispatch naming no port is decided by host; the docker
+    published-port match crosses a namespace and is a named exemption. A refusal
+    NAMES which half refused (`refusal_reason`). **Detail →
+    `docs/productization-engagement-safety.md`.**
+
+98. **The authentication path gets the control arm the exploit path already
+    has.** `_login_verdict` and `classify_lockout` both take a `control_body`, and a
+    marker present in BOTH is discarded and NAMED. **Session material outranks a
+    keyword**, and **identical byte length is its own verdict**, ahead of the
+    INDETERMINATE deferral. The domain of every marker oracle is COMPUTED and
+    classified. **Detail →
+    `docs/methodology/authentication-shapes.md`.**
+
 99. **A remedy the run's own observations contradict is worse than no remedy.**
 100. **A marker that survives an UNBLOCKED response is the application's own vocabulary, not evidence of blocking** (`safety/governor.py`).
 101. **A zero measured over PART of the input is INDETERMINATE, never NOT APPLICABLE** (`agents/_package_identity.py`).
@@ -438,10 +617,8 @@ invariant lands here as ONE line and in both docs in full.
 4. **Context budget** — `python .claude/hooks/context_budget.py`. Every
    always-loaded instruction file must stay under its character budget.
    **This gate is the one gates 1–2 may not be skipped alongside**: doc-only edits
-   are what grow these files, and the failure it prevents is silent. `CLAUDE.md`
-   reached **152,205 characters against a ~150k load limit**, and that bound
-   degrades by *truncating quietly* — the first symptom would have been rules not
-   in effect. **A bound that degrades quietly is not a bound.** The domain is
+   are what grow these files, and the ~150k load limit degrades by *truncating
+   quietly*. **A bound that degrades quietly is not a bound.** The domain is
    **computed** (every `CLAUDE.md` in the tree, plus `.claude/LESSONS.md`), so a
    new always-loaded file cannot escape it.
 
@@ -463,5 +640,5 @@ if runtime behavior can change (new hook, permission, tool entry, payload).
   `docs/invariants.md` — that is what keeps gate 4 green.
 
 Tool outputs are always parsed into Pydantic models (tested against real output in
-`tests/fixtures/`); agent system prompts live in `prompts/` `.md` files; run the
+`tests/fixtures/`); run the
 pre-push gates before every `git push`, and push after committing.

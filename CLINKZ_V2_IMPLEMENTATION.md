@@ -14,14 +14,17 @@ A multi-agent system where:
   named reasoning checkpoints — no free-form ReAct.
 - **Skills are contracts.** If the vulnerability is present and the skill
   runs, the skill MUST find it. CI proves this against DVWA and Juice Shop.
-- **The system grows smarter with every engagement.** Every technique result
-  (success or miss) is recorded to a persistent KB. Future engagements query
-  the KB before reaching for the web.
+- **The system grows smarter with every engagement.** *As built:* Layer-2
+  capability memory — a confirmed discovery-originated finding writes a YES-only
+  capability fact that a later engagement recalls as a prior. The original
+  per-technique success loop is retired, and research is not web-grounded under
+  routing v2 (§3, `docs/provider-routing.md` §8).
 - **Tools are substitutable.** Agents request capabilities, not tools. Every
   capability has a ranked fallback chain.
-- **LLMs are substitutable.** Agents are pinned to providers that suit their
-  workload (cheap/high-volume vs. complex reasoning), but a resilient client
-  rotates providers on rate-limit / timeout.
+- **LLMs are substitutable.** *As built (routing v2):* Anthropic is priority 1
+  for every call on every phase; the resilient client still rotates on
+  rate-limit / timeout, and every rotation is a disqualifying event — refused
+  outright on an emit or suppress path (`docs/provider-routing.md`).
 
 ## Key architectural decisions
 
@@ -52,6 +55,10 @@ TOOL_CHAINS = {
     "sql_injection_testing":  ["sqlmap", "ghauri"],
     "web_fingerprinting":     ["whatweb", "wappalyzer", "httpx"],
     "waf_detection":          ["wafw00f"],
+    "subdomain_discovery":    ["subfinder", "amass", "knockpy"],
+    "http_request":           ["http_client"],
+    "client_side_execution":  ["playwright_chromium", "playwright_firefox",
+                               "selenium_chromium"],
 }
 ```
 
@@ -108,8 +115,10 @@ Repository ships with:
 ORCHESTRATOR
   1. Parse scope, enforce boundaries                              [DONE]
   2. Recon (sequential)                                           [DONE]
-  3. Default credential testing (WebAuthenticator, deterministic; [DONE]
-     cookie/form + JSON/bearer API auth → session_headers handoff)
+  3. Authentication: supplied credentials FIRST, proven by        [DONE]
+     assert_authenticated (cookie or bearer); default-credential
+     sweep only when none were supplied; adaptive auth agent only
+     when the deterministic pass seated nothing
   4. Concurrent: Scan + Research + Exploit                        [DONE]
   5. Monitor completion                                           [DONE]
   6. Report (sequential)                                          [DONE]
@@ -126,15 +135,15 @@ SCAN (service-specific methods + LLM supervision)                [DONE]
          expand via fallback chain if insufficient → ScanResult
 
 RESEARCH (concurrent, persistent brain)                          [DONE]
-  Steps: query persistent KB → web search new vulns → LLM
-         synthesize techniques → query related techs → LLM
-         adapt past techniques → persist to engagement +
-         persistent KB
+  Steps: query persistent KB → NVD feed + LLM lookup (NOT
+         web-grounded under routing v2; stamped) → LLM synthesize
+         techniques → query related techs → LLM adapt past
+         techniques → persist to engagement + persistent KB
 
 EXPLOIT (LLM plans, deterministic skills execute)                [DONE]
   Steps: LLM plans tasks from scan + research → execute by tier →
-         LLM reasons through results → adaptive retry → record
-         success/failure to KB
+         LLM reasons through results → adaptive retry → Layer-2
+         capability fact on a discovery-originated confirmation
   Adaptive methodologies (W2.1):
     - _test_xss_reflected: reflection mapping + char fingerprint +
       LLM-driven payload synthesis + bypass                      [DONE]
@@ -161,12 +170,18 @@ EXPLOIT (LLM plans, deterministic skills execute)                [DONE]
       fetch internal/metadata addresses; in-band only, blind SSRF
       deferred to OOB infra; see docs/ROADMAP.md)
     - Other _test_* skills are also adaptive methodologies       [DONE]
+      (29 per-class methodologies in TIER1_TESTS; Tier-2/3 runbook
+      executors send nothing and are registered NOT_IMPLEMENTED)
 
-REPORT                                                           [partial]
+REPORT                                                           [DONE]
   - Pulls findings from state store                              [DONE]
   - Emits JSON + Markdown + PDF from ONE redacted structure      [DONE]
   - Control-arm section per confirmed finding (agents/_report_pdf) [DONE]
-  - LLM-driven narrative + remediation pass                      [PENDING — W3]
+  - LLM-driven narrative + remediation pass                      [SUPERSEDED]
+    Remediation is per vulnerability CLASS (`VulnClass.remediation`),
+    attached deterministically; the stage makes zero LLM calls by design
+    (register R22) — a model pass after the gates could only rephrase or
+    contradict them.
 ```
 
 ## Implementation phases — status
@@ -250,12 +265,9 @@ REPORT                                                           [partial]
     would give one label a second route whose phase 4 has no deterministic
     build, so the payload would be a model's invention rather than a harvested
     token.
-- Adaptive methodologies (W2.1):
-  - XSS-reflected — done
-  - SQLi — done
-  - **Pending**: XSS-stored, command injection, LFI, file-upload,
-    weak-session, JS-attacks, IDOR, brute-force, open-redirect,
-    security-headers — currently still deterministic-only
+- Adaptive methodologies (W2.1) — done for every per-class `_test_*`
+  methodology (29 in `TIER1_TESTS`); four of them (`security_headers`, `csrf`,
+  `weak_session`, `brute_force`) decide with no model at all, by design
 - Target of 12+/14 DVWA findings — measured per run via `/run-dvwa` skill
 
 ### Phase 4: Consistency + Skills — **partial**
@@ -313,19 +325,13 @@ deliberately-vulnerable benchmark. Full detail →
 
 In rough priority order:
 
-1. **Adaptive methodologies for the rest of the `_test_*` family.** XSS-reflected
-   and SQLi proved the pattern (multi-phase, LLM at synthesis checkpoints,
-   intermediate results persisted to trace). Apply the same shape to
-   command-injection escape contexts, LFI traversal payload synthesis, file-
-   upload bypass selection, and weak-session entropy analysis.
-2. **LLM-driven reporting.** Today's report agent is zero-LLM: it renders
-   JSON, Markdown and PDF from one already-redacted `PentestReport`. The
-   remaining v2 ambition is the multi-pass narrative generator
-   (assemble → narrative → remediation → quality review); the RENDERING half is
-   done, in ReportLab rather than the Jinja + WeasyPrint pipeline this plan
-   named — WeasyPrint resolves GTK/Pango at import and does not import on
-   Windows, so it could not be executed or verified on the machine that
-   produces the bundle.
+1. ~~**Adaptive methodologies for the rest of the `_test_*` family.**~~ Done —
+   every per-class methodology is adaptive and multi-phase.
+2. ~~**LLM-driven reporting.**~~ **Superseded** (register R22). The report is
+   zero-LLM by design: JSON, Markdown and PDF from one already-redacted
+   `PentestReport`, remediation per class from the registry. The rendering is
+   ReportLab, not the Jinja + WeasyPrint pipeline this plan named — WeasyPrint
+   resolves GTK/Pango at import and does not import on Windows.
 3. **Consistency drill.** Run 5 consecutive DVWA engagements end-to-end and
    measure category-level coverage variance. Lock in any remaining flaky
    skills.
@@ -333,9 +339,10 @@ In rough priority order:
    non-HTTP services (SMB share enumeration, SSH key reuse, AD-style
    credential chaining). Validates Scan's non-HTTP service methods end-to-
    end.
-5. **Cross-engagement learning validation.** After the consistency drill,
-   verify that techniques flagged successful in run N actually shorten
-   run N+1 by being picked up via the persistent KB instead of re-discovered
-   via web search.
+5. **Cross-engagement learning validation.** Layer-2 recall is
+   live-validated for the discovery path
+   (`docs/discovery-engine-capability-recall-slice2-validation.md`); the
+   black-box path writes no capability facts, so run N+1 of a black-box
+   engagement is not yet shaped by run N.
 6. **Ollama client.** Currently a stub. Wiring it into the resilient client
    chain unblocks fully-offline / privacy-sensitive engagements.
