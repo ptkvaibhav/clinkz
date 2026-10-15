@@ -163,6 +163,37 @@ _INTEGRITY_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("host_rewritten", re.compile(r"://(?:[^/@\s\"'\\]*@)?" + _BARE_MARKER)),
 )
 
+#: The line the Markdown renderer closes every report with. Its absence from the
+#: END of a report is what a deletion-to-end looks like on disk (register R21):
+#: a redaction that matched to end-of-string removed the sentinel along with
+#: *What was NOT tested*, the ledger and the run audit, and the leak check graded
+#: the result CLEAN because there was nothing left to leak.
+REPORT_END_SENTINEL: Final = "*End of report.*"
+
+#: The ``## `` headings ``ReportAgent._render_markdown`` writes on EVERY run, in
+#: document order. Asserted against the renderer in both directions
+#: (``test_redaction_is_bounded``), so this list cannot claim a section the
+#: renderer omits on some runs, nor miss one it always writes.
+REPORT_REQUIRED_SECTIONS: Final[tuple[str, ...]] = (
+    "## Authorization",
+    "## Engagement window",
+    "## Scope",
+    "## Summary",
+    "## Findings",
+    "## What was NOT tested",
+    "## Provider routing",
+    "## Run auditability",
+    "## Scope enforcement",
+    "## Surface-mapping probe coverage",
+)
+
+#: A Markdown report's filename, the one file this completeness check reads.
+_MARKDOWN_REPORT_RE: Final = re.compile(r"(?:^|/)report_[^/]+\.md$")
+
+#: The summary's own finding count, and a numbered finding heading.
+_FINDING_COUNT_RE: Final = re.compile(r"^- \*\*Confirmed findings:\*\* (\d+)$")
+_FINDING_HEADING_RE: Final = re.compile(r"^## (\d+)\. ")
+
 #: Region: inside the engagement's own artifact directory.
 REGION_BUNDLE: Final = "bundle"
 
@@ -446,7 +477,10 @@ class ArtifactScanReport(BaseModel):
     def _integrity_clause(self) -> str:
         """The second verdict, always stated — intact or CORRUPTED, never silent."""
         if not self.corrupted:
-            return "; INTEGRITY INTACT - no redaction rewrote schema or target vocabulary"
+            return (
+                "; INTEGRITY INTACT - no redaction rewrote schema or target vocabulary, "
+                "and every Markdown report is complete"
+            )
         kinds = Counter(f.kind for f in self.integrity_findings)
         breakdown = ", ".join(f"{n}x {kind}" for kind, n in sorted(kinds.items()))
         files = len({f.path for f in self.integrity_findings})
@@ -681,6 +715,97 @@ def scan_integrity(
     return found
 
 
+def _unfenced_lines(text: str) -> list[str]:
+    """Every line outside a fenced code block, tracked the way CommonMark does.
+
+    A fence closes only on a run of at least the opening length, which is how
+    ``render_safety.fence_for`` keeps target bytes inside one. Lines inside a
+    fence are the target's, and a heading there is not the document's.
+    """
+    out: list[str] = []
+    open_len = 0
+    for line in text.splitlines():
+        match = re.fullmatch(r"\s*(`{3,})\s*", line)
+        if match:
+            run = len(match.group(1))
+            if open_len == 0:
+                open_len = run
+            elif run >= open_len:
+                open_len = 0
+            continue
+        if open_len == 0:
+            out.append(line)
+    return out
+
+
+def scan_report_completeness(
+    text: str, *, path: str = "<text>", region: str = REGION_BUNDLE
+) -> list[ArtifactFinding]:
+    """Locate every way a Markdown report is missing part of itself (register R21).
+
+    Deletion is corruption too. A redaction that removes a value leaves a marker
+    where the value was; one that removes the rest of the document leaves a
+    marker and nothing after it, and the R30 patterns — which look at what is
+    AROUND a marker — see a well-formed marker. So this reads what the document
+    must CONTAIN, off the bytes:
+
+    * ``report_truncated`` — the last unfenced line is not the end sentinel;
+    * ``report_section_missing`` — a heading the renderer always writes is
+      absent, or out of order, outside a fence;
+    * ``report_finding_count_mismatch`` — the summary's own finding count
+      disagrees with the numbered finding headings, so findings were cut from
+      the middle.
+
+    Called only on a file the gate read whole: a report the size cap truncated
+    is already listed as truncated, and grading it incomplete would say the
+    same thing twice under a different name.
+    """
+    lines = _unfenced_lines(text)
+    found: list[ArtifactFinding] = []
+    # Every finding points at where the document stops: the defect is an
+    # absence, and the last line is the only position an absence has.
+    last_line = text.count("\n") + 1
+
+    def flag(kind: str, detail: str) -> None:
+        found.append(
+            ArtifactFinding(
+                path=path,
+                line=last_line,
+                column=1,
+                kind=kind,
+                detail=detail,
+                length=0,
+                severity=SEVERITY_INTEGRITY,
+                region=region,
+            )
+        )
+
+    tail = [line for line in lines if line.strip()]
+    if not tail or tail[-1].strip() != REPORT_END_SENTINEL:
+        flag("report_truncated", "the report does not end with its end-of-report line")
+
+    headings = [line.rstrip() for line in lines if line.startswith("## ")]
+    cursor = 0
+    for required in REPORT_REQUIRED_SECTIONS:
+        try:
+            cursor = headings.index(required, cursor) + 1
+        except ValueError:
+            flag("report_section_missing", f"{required!r} is absent or out of order")
+
+    declared = next(
+        (int(m.group(1)) for line in lines if (m := _FINDING_COUNT_RE.match(line.strip()))),
+        None,
+    )
+    numbered = [int(m.group(1)) for line in lines if (m := _FINDING_HEADING_RE.match(line))]
+    if declared is not None and numbered != list(range(1, declared + 1)):
+        flag(
+            "report_finding_count_mismatch",
+            f"the summary declares {declared} finding(s); {len(numbered)} numbered heading(s) "
+            "rendered",
+        )
+    return found
+
+
 def is_engagement_dir(path: Path) -> bool:
     """Whether *path* is some engagement's artifact directory.
 
@@ -838,6 +963,10 @@ def _scan_one_file(path: Path, relative: str, report: ArtifactScanReport, *, reg
     report.findings.extend(findings)
     report.suspicions.extend(suspicions)
     report.integrity_findings.extend(scan_integrity(text, path=relative, region=region))
+    if _MARKDOWN_REPORT_RE.search(relative) and relative not in report.files_truncated:
+        report.integrity_findings.extend(
+            scan_report_completeness(text, path=relative, region=region)
+        )
 
 
 def skip_reason(path: Path) -> str | None:
@@ -997,6 +1126,8 @@ def load_scan_report(root: Path | str) -> ArtifactScanReport | None:
 
 
 __all__ = [
+    "REPORT_END_SENTINEL",
+    "REPORT_REQUIRED_SECTIONS",
     "REGION_BUNDLE",
     "REGION_COMPANION",
     "SCAN_REPORT_FILENAME",
@@ -1011,6 +1142,8 @@ __all__ = [
     "run_disclosure_gate",
     "scan_artifact_tree",
     "scan_companion_artifacts",
+    "scan_integrity",
+    "scan_report_completeness",
     "scan_text",
     "shannon_entropy",
     "skip_reason",

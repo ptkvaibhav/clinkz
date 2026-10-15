@@ -30,7 +30,7 @@ stored-bundle measurement keeps that measurement and is marked as carried.
 | R2 | OPEN — cause verified | `_test_javascript_attacks` returns before its methodology on `not page.forms` or no `<script>`; the phase events are emitted only inside `_run_js_attacks_methodology` (3 call sites), so every early return is silent |
 | R3 | RESOLVED | carried |
 | R4 | OPEN | `_xss_dom` + `_javascript_attacks` still appended to every non-static endpoint, after the precondition-graded classes |
-| R5 | OPEN — unverified | not re-measured |
+| R5 | RESOLVED | DNS stubbed in `tests/test_orchestrator/conftest.py`; suite ~19 s |
 | R6 | OPEN | `_applicable_methods_for_endpoint` still names none of the three business-logic classes |
 | R7 | OPEN — partial | the marker-oracle call domain is guarded (`test_marker_oracle_controls.py::CONTROL_TAKERS`); the general MIXED/NEVER/ALWAYS/UNCALLED walk is still unwritten |
 | R8 | OPEN | no `provider_chain_observations`; `reset_account_disabled_providers()` still called from tests only |
@@ -45,7 +45,7 @@ stored-bundle measurement keeps that measurement and is marked as carried.
 | R17 | RESOLVED (disclosure); re-sort deliberately not built | `BundleFetchTruncation` in `observability/plan_alarms.py` |
 | R18, R19 | RESOLVED | carried |
 | R20 | OPEN | `_read_files` still skips `*.min.js` |
-| R21 | OPEN | `PRIVATE_KEY_RE` still ends `(?:<END-banner>\|\Z)` under `re.DOTALL` |
+| R21 | RESOLVED | `PRIVATE_KEY_RE` bounded to key-line shape; report end-sentinel + `scan_report_completeness` grade a deletion CORRUPTED |
 | R22 | RESOLVED in this push | spec now marks the pass SUPERSEDED |
 | R23 | RESOLVED | carried |
 | R24 | OPEN | `Finding.model_fields` — 14 fields, none names a class |
@@ -1267,6 +1267,37 @@ as loud as a truncation that dropped a candidate; that is the same rule as every
 bound in `plan_alarms.py`.
 
 **Related:** invariant 55, R18 (the same seam, the opposite direction), R14.
+
+**RESOLVED (this round, R21).** The fix took the recommended shape and went one
+step further on the audit side:
+
+* **Bounded by the key's SHAPE, not a length cap.** `PRIVATE_KEY_RE` no longer
+  ends `(?:END|\Z)` under `re.DOTALL`. It matches the BEGIN banner, the base64 on
+  its line, then each following line that is WHOLLY a key token (base64 or an RFC
+  1421 encapsulated header), stopping at the first line that is not — so prose
+  after an unterminated banner, and prose between a banner in one response and an
+  END in a later one, both survive. A length cap would have been arbitrary; the
+  line-shape bound is exact and still linear. Half a key is still removed.
+* **An unterminated block announces itself.** A block with no END banner redacts
+  to `[REDACTED:PRIVATE_KEY unterminated]` (`PRIVATE_KEY_UNTERMINATED_LABEL`),
+  the "as loud as a truncation" the recommendation asked for.
+* **Deletion is graded CORRUPTED, not just prevented.** The recommendation
+  stopped at the redactor; the integrity verdict (invariant 120) was still blind
+  to a deletion, because the R30 patterns inspect what SURROUNDS a marker and a
+  marker with nothing after it is well-formed. So the Markdown renderer now closes
+  every report with an end-of-report sentinel, and `artifact_scan`'s
+  `scan_report_completeness` grades a report CORRUPTED when it does not end with
+  that sentinel, omits a heading the renderer always writes, or declares more
+  findings than it numbers. The pre-fix output is now graded CLEAN-but-CORRUPTED
+  and not certifiable — proven in `tests/test_engagement/test_redaction_is_bounded.py`,
+  which reconstructs the legacy pattern and asserts both the deletion AND the
+  verdict.
+* **The unbounded-pattern domain is computed.** The same test parses every
+  pattern in the redaction + render-safety vocabulary and fails the build on any
+  that can consume to end-of-input (an explicit `\Z`, or an unbounded repeat whose
+  body crosses a line break) without a classification. `PRIVATE_KEY_RE` is the one
+  entry, classified; the inline header rules were tightened from `\s` to `[ \t]`
+  so a `Cookie:` at a line end can no longer claim the next line as its value.
 
 ---
 

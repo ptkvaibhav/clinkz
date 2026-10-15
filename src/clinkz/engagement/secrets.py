@@ -351,7 +351,11 @@ def _redact_occurrences(text: str, secret: str) -> str:
 #: ``[REDACTED:JWT sha256=… alg=HS256 claims=[sub]]``. A pattern that stopped at
 #: the first ``]`` would leave the outer bracket as residue and read a key that
 #: was nothing but a token as schema.
-_REDACTION_SPAN_RE: Final = re.compile(r"\[REDACTED(?:[^\[\]]|\[[^\]]*\])*\]")
+#:
+#: Never across a line break (register R21). No marker this engine writes spans
+#: one, and a span that did would EXCLUDE every occurrence inside it from value
+#: redaction — so the bound fails closed: an unlabelled stretch is redacted.
+_REDACTION_SPAN_RE: Final = re.compile(r"\[REDACTED(?:[^\[\]\r\n]|\[[^\]\r\n]*\])*\]")
 
 
 def _redact_key(key: Any) -> Any:

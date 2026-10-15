@@ -310,3 +310,20 @@ async def test_url_path_and_query_preserved(monkeypatch: pytest.MonkeyPatch) -> 
         out = await resolve_target_for_docker_mode(scope)
 
     assert out.targets[0].value == "http://clinkz-dvwa:80/login.php?foo=bar#section"
+
+
+def test_name_resolution_is_stubbed_in_this_package() -> None:
+    """Register R5: a non-local name fails at once rather than reaching a resolver.
+
+    Pinned so the stub in ``conftest.py`` cannot be removed without this going
+    red — the slowness it prevents is invisible on a resolver that is already
+    fast, which is every machine the suite was not slow on.
+    """
+    import socket
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(socket.gaierror):
+        socket.getaddrinfo("app", 3000)
+    assert time.monotonic() - started < 0.5
+    assert socket.getaddrinfo("127.0.0.1", 80)
