@@ -166,7 +166,7 @@ class Settings(BaseModel):
             raise ValueError(f"llm_provider_priority has a repeated provider: {value}")
         return value
 
-    @field_validator("llm_effort", "llm_effort_emit")
+    @field_validator("llm_effort", "llm_effort_emit", "llm_effort_planning")
     @classmethod
     def _effort_is_in_the_closed_vocabulary(cls, value: str, info: ValidationInfo) -> str:
         """Refuse an effort level the API would reject at call time.
@@ -322,8 +322,27 @@ class Settings(BaseModel):
     llm_effort: str = Field(
         default="low",
         description=(
-            "output_config.effort for PLANNING/SUPPRESS calls: "
+            "output_config.effort for SUPPRESS calls (PLANNING reads "
+            "llm_effort_planning): "
             "'' (provider default) | low|medium|high|xhigh|max"
+        ),
+    )
+
+    #: The PLANNING level, split out of ``llm_effort`` and RAISED back to ``high``
+    #: by a set-level re-grade of the stored effort grid
+    #: (``docs/analysis/effort-grid.md`` §6). Findings were flat, but on the Juice
+    #: Shop pair the high-effort planner dispatched endpoints the low-effort one
+    #: never did: ``_test_write_crossing`` on ``/api/Cards``, ``/api/Complaints``
+    #: and ``/api/Feedbacks``, and ``_test_csrf`` on five routes — and
+    #: ``/api/Complaints`` is where the grid's only confirmed cross-principal write
+    #: came from. A plan that omits an endpoint is a coverage loss no oracle can
+    #: recover, so the cheap direction is not free on PLANNING. SUPPRESS stays on
+    #: ``llm_effort`` (``low``): a refused suppression leaves the finding standing.
+    llm_effort_planning: str = Field(
+        default="high",
+        description=(
+            "output_config.effort for PLANNING calls: '' (provider default) | "
+            "low|medium|high|xhigh|max"
         ),
     )
 
@@ -597,6 +616,9 @@ class Settings(BaseModel):
             # the carve-out and inherits the provider default unless declared.
             llm_effort=os.getenv("LLM_EFFORT", "low"),
             llm_effort_emit=os.getenv("LLM_EFFORT_EMIT", ""),
+            # PLANNING was raised back to high by the set-level re-grade (see the
+            # field): a high-effort plan reached endpoints a low one dropped.
+            llm_effort_planning=os.getenv("LLM_EFFORT_PLANNING", "high"),
             llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
             llm_retry_base_delay=float(os.getenv("LLM_RETRY_BASE_DELAY", "2.0")),
             llm_retry_max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "30.0")),

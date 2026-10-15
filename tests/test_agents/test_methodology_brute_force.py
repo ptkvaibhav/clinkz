@@ -108,12 +108,30 @@ class TestPhase1Hypothesis:
         ok, _ev = agent._brute_force_phase1_hypothesis(page, _login_form())
         assert ok is True
 
-    def test_path_match_alone_qualifies(self) -> None:
+    def test_path_match_alone_does_not_qualify(self) -> None:
+        """A path that SPELLS a login is not a destination observed to be one.
+
+        This class sends eight passwords. With no identity/password fields
+        observed, it would be inventing both the shape and the destination.
+        """
         agent = _make_agent()
-        page = PageAnalysis(url="http://example.com/rest/user/login", body="", status=200)
-        # An API endpoint may not expose a login-shape HTML form, but the
-        # path alone is enough to qualify.
-        form = {"method": "POST", "action": "/rest/user/login", "fields": []}
+        page = PageAnalysis(url="http://example.com/api/session/login", body="", status=200)
+        form = {"method": "POST", "action": "/api/session/login", "fields": []}
+        ok, ev = agent._brute_force_phase1_hypothesis(page, form)
+        assert ok is False
+        assert ev["path_match"] is True  # still recorded as evidence
+
+    def test_observed_json_login_body_qualifies(self) -> None:
+        agent = _make_agent()
+        page = PageAnalysis(url="http://example.com/api/session/login", body="", status=200)
+        form = {
+            "method": "POST",
+            "action": "/api/session/login",
+            "fields": [
+                {"name": "email", "type": "email"},
+                {"name": "password", "type": "password"},
+            ],
+        }
         ok, _ev = agent._brute_force_phase1_hypothesis(page, form)
         assert ok is True
 

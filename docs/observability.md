@@ -303,6 +303,20 @@ provenance ordering by checking the match list was sorted by
 `match_components` sorts on: the check passed with the rank table inverted.
 Asserting the two provenance values by name is what gave it teeth.
 
+## A regression check compares SETS, not counts
+
+`observability/candidate_regression.py`, `scripts/candidate_set_regression.py`.
+
+`kept_by_class` is a total per class, and a total is not evidence about its
+parts: on the #145 ride-along write-crossing went 6 → 5 and the one endpoint
+that left carried the engine's only confirmed cross-principal write (R29). The
+exploit phase therefore traces the final plan and the deterministic candidate
+pool as members (`plan_coverage` / `plan_sets`) and attributes each confirmed
+finding to its task (`plan_coverage` / `confirmed_finding`). The comparator
+fails when a baseline-confirmed pair is not planned by the later run, naming
+`truncated` or `absent`; a bundle without the records is NOT DETERMINED, never
+a pass. Detail → `docs/analysis/r29-write-crossing-candidate-set.md`.
+
 ## A bound that decides coverage belongs in the DELIVERABLE, not just the log
 
 `observability/plan_alarms.py`.

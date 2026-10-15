@@ -147,7 +147,9 @@ src/clinkz/
 │                     #   at report time), plan_alarms.py (what the task cap
 │                     #   DROPPED, and separately whether the ORDERING held; plus
 │                     #   how each endpoint's VERB was known, and how much of the
-│                     #   frontend's declared call surface we could ADDRESS)
+│                     #   frontend's declared call surface we could ADDRESS),
+│                     #   candidate_regression.py (baseline-confirmed pairs vs a later
+│                     #   run's plan, by SET — truncated / absent / NOT DETERMINED)
 └── models/           # scope, engagement (authorization/window/credentials/policy),
                       #   vuln_classes (+ ControlArm: which of a class's OWN channels
                       #   dispatch their own control; + MultiPrincipalRequirement:
@@ -160,6 +162,10 @@ src/clinkz/
                       #   finding, report
 docker/  scripts/  tests/  docs/
                       #   docker/meridian  — the third AUTH shape (stdlib Python)
+                      #   docker/spa-keycloak — the fourth: a catch-all SPA whose
+                      #     login is a SEPARATE-ORIGIN Keycloak (code + PKCE, BFF
+                      #     cookie). Regression target for the declared boundary;
+                      #     see docs/analysis/spa-separate-origin-idp.md
                       #   docker/protopoll — the prototype-pollution target. NODE,
                       #     and deliberately: a Python fixture would have been a
                       #     MODEL of Object.prototype, which is the one property

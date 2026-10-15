@@ -17,7 +17,7 @@ intentionally vulnerable — it exercises the *authentication path*, nothing els
 | Property | Value | What it defeats |
 |---|---|---|
 | Login page | `/portal/gateway` | Every list of login path names |
-| Login API | `POST /portal/v3/session-open`, reached only via the form's `action` | Six canned API routes |
+| Login API | `POST /portal/v3/session-open`, reached only via the form's `action` | Any route list (the six canned routes were deleted by invariant 117) |
 | Identity field | `account` | `email` / `username` auto-detection |
 | Session | `Set-Cookie` on a **JSON** response, no token anywhere | A token-only extractor |
 | Anonymous denial | **302 to the login page**, not 401/403 | A status-class oracle |
@@ -564,7 +564,7 @@ Per `authenticate()` call, one role, one login URL, no operator declarations:
 |---|---|---|
 | form, aiohttp (`local`) | 1-4 | `max_attempts = 2`, and each attempt may re-POST once under a 415-negotiated type |
 | form, curl (`docker`, the default) | 1-2 | single shot, plus the same 415 re-POST |
-| JSON (`_try_api_login`, runs whenever the form arm fails) | 7-24, typically 14 | `routes × bodies`: up to 8 routes (declared + `login_url` + 6 canned, deduped) × up to 3 identity keys (declared, `email`, `username`). Every non-2xx `continue`s, so the loop runs to completion |
+| JSON (`_try_api_login`, runs whenever the form arm fails) | 0-6 since invariant 117 (was 7-24) | `routes × bodies`: DECLARED routes only (`login_api_url`, and `login_url` when declared) × up to 3 identity keys (declared, `email`, `username`). Undeclared, it dispatches nothing |
 
 **One `authenticate()` is therefore 16-18 credential POSTs against one account in
 the ordinary failing case, and up to 28.**

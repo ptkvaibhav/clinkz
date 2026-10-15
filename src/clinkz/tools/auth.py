@@ -10,15 +10,12 @@ Handles the full CSRF-aware login flow as CODE, not LLM reasoning:
 This eliminates the failure mode where the LLM forgets to chain cookies
 between GET and POST or misses CSRF tokens.
 
-In addition to the cookie/form flow above, ``authenticate()`` falls back to a
-**JSON/API auth** path when the form flow fails: it POSTs the credentials as
-JSON to common API login routes (``/rest/user/login``, ``/api/login``, ...)
-and extracts a token from the JSON response. This handles SPA targets such as
-OWASP Juice Shop, which has no HTML login form and authenticates via
-``POST /rest/user/login`` returning ``{authentication: {token}}``, used on
-later requests as ``Authorization: Bearer <token>``. The two paths are
-additive — the cookie/form flow is tried first and DVWA's behaviour is
-unchanged.
+In addition to the cookie/form flow above, ``authenticate()`` has a
+**JSON/API auth** arm: it POSTs the credentials as JSON to a route the operator
+DECLARED (``login_api_url``, or a declared ``login_url``) and extracts a token
+from the JSON response, used on later requests as
+``Authorization: Bearer <token>``. It never POSTs to a conventional route list:
+a credential goes only to a destination something observed to be a login.
 
 A login is called successful only on POSITIVE evidence — session material,
 or a redirect that actually occurred. A 4xx is never success, and a final URL
@@ -93,17 +90,6 @@ from clinkz.tools.redirect_walk import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Common JSON/API login routes tried (in order) when the cookie/form flow
-# fails. Derived against the target's own origin only — never cross-origin.
-_API_LOGIN_ROUTES: tuple[str, ...] = (
-    "/rest/user/login",  # OWASP Juice Shop
-    "/api/login",
-    "/api/auth/login",
-    "/api/v1/auth/login",
-    "/auth/login",
-    "/login",
-)
 
 #: Governor refusal categories that mean "stop offering this account a password",
 #: as opposed to "this one request was refused". Imported by value rather than
@@ -219,6 +205,54 @@ class LoginJudgement(NamedTuple):
 
     verdict: LoginVerdict
     evidence: str
+    #: Whether a REFUSED verdict rests on an observation attributable to the
+    #: credential itself — a ``401``, or a refusal marker the control does not
+    #: carry. A ``405``, a byte-identical page or an absence of session material
+    #: refuses nothing about the password, and only this flag licenses saying so.
+    credential_refused: bool = False
+
+
+#: Input NAME tokens that ask for a one-time code. Matched on the field NAME, which
+#: is schema the application chose, and only counted when the login page served
+#: without credentials did not carry the same field.
+_SECOND_FACTOR_NAME_TOKENS: tuple[str, ...] = (
+    "otp",
+    "totp",
+    "mfa",
+    "2fa",
+    "one_time",
+    "onetime",
+    "verification_code",
+    "authenticator_code",
+    "two_factor",
+)
+
+_INPUT_TAG_RE = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
+_INPUT_NAME_RE = re.compile(r"""\bname\s*=\s*["']?([^"'\s>]+)""", re.IGNORECASE)
+
+
+def _second_factor_fields(body: str, control_body: str) -> list[str]:
+    """One-time-code inputs the credential response carries and the control does not.
+
+    ``autocomplete="one-time-code"`` is the HTML standard's own token for the
+    field, so it is a protocol artifact rather than a guess; the name tokens are
+    the fallback for pages that predate it. A field present in the login page
+    as served without credentials is the page's furniture, not a prompt the
+    credential produced.
+    """
+
+    def _fields(html: str) -> set[str]:
+        found: set[str] = set()
+        for tag in _INPUT_TAG_RE.findall(html or ""):
+            name_match = _INPUT_NAME_RE.search(tag)
+            name = name_match.group(1) if name_match else ""
+            low_tag = tag.lower()
+            low_name = name.lower()
+            if "one-time-code" in low_tag or any(t in low_name for t in _SECOND_FACTOR_NAME_TOKENS):
+                found.add(name or "autocomplete=one-time-code")
+        return found
+
+    return sorted(_fields(body) - _fields(control_body))
 
 
 class AuthResult(BaseModel):
@@ -335,6 +369,22 @@ class AuthResult(BaseModel):
     # has no un-credentialed baseline for and would otherwise be stopped by the
     # same string that stopped the deterministic arm.
     login_page_lockout_markers: list[str] = []
+    # ---- Where the credential was allowed to go, and what refused it --------
+    # The page at ``login_url`` rendered no password input and nothing DECLARED
+    # it a login, so no credential was sent to it. A credential goes only to a
+    # destination something observed to be a login — a rendered form's action,
+    # a route the adaptive layer proved, an operator declaration — and the site
+    # root a caller fell back to is none of them.
+    no_login_surface: bool = False
+    # A refusal ATTRIBUTABLE to the credential was observed: a ``401`` from a
+    # login destination, or a refusal marker the login page served without
+    # credentials does not carry. Only this licenses "the credentials are
+    # wrong"; every other failure is a statement about the exchange.
+    credential_refused: bool = False
+    # The response to the credential POST asked for a second factor (an
+    # ``autocomplete="one-time-code"`` input, or a one-time-code-shaped field
+    # the login page did not carry). Names only, never values.
+    second_factor_fields: list[str] = []
 
     def deterministic_observations(self) -> list[str]:
         """The facts the login page itself stated, as sentences.
@@ -350,11 +400,18 @@ class AuthResult(BaseModel):
             deterministically off the login-page GET or the credential POST.
         """
         facts: list[str] = []
-        if not self.page_declared_a_form:
+        if self.no_login_surface:
+            facts.append(
+                f"{self.login_url or 'the page read'} rendered no password input and "
+                "nothing declared it a login, so no credential was sent to it"
+            )
+        elif not self.page_declared_a_form and self.form_field_names:
             facts.append(
                 "the login page served no <form> element at all, so the field names and "
                 "the destination were taken from loose inputs rather than from a form"
             )
+        elif not self.page_declared_a_form:
+            facts.append("the login page served no <form> element and no input at all")
         elif not self.form_action_declared:
             facts.append(
                 f"the <form> declared no action, so the credential POST was defaulted to "
@@ -372,6 +429,12 @@ class AuthResult(BaseModel):
             facts.append(
                 f"the page carried the CSRF-shaped field(s) {names} and issued no cookie of "
                 f"that shape, so only half of a double-submit token was ever in hand"
+            )
+        if self.second_factor_fields:
+            facts.append(
+                f"the response to the credential POST asked for a second factor "
+                f"({', '.join(repr(f) for f in self.second_factor_fields)}), which the login "
+                f"page served without credentials did not"
             )
         if self.framework_fingerprint:
             facts.append(f"the login page headers identify the stack: {self.framework_fingerprint}")
@@ -951,6 +1014,15 @@ class WebAuthenticator(ToolBase):
                         ),
                         "default": "",
                     },
+                    "login_url_declared": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether the operator DECLARED login_url. Undeclared, a "
+                            "credential is POSTed only to a form the page renders with a "
+                            "password input."
+                        ),
+                        "default": False,
+                    },
                 },
                 "required": ["login_url", "username", "password"],
             },
@@ -974,6 +1046,7 @@ class WebAuthenticator(ToolBase):
             "username_field": args.get("username_field", ""),
             "password_field": args.get("password_field", ""),
             "content_type": (args.get("content_type", "") or "").split(";")[0].strip().lower(),
+            "login_url_declared": bool(args.get("login_url_declared", False)),
         }
 
     async def execute(self, args: dict[str, Any]) -> str:
@@ -1222,6 +1295,9 @@ class WebAuthenticator(ToolBase):
             login_page_content_type=data.get("login_page_content_type", ""),
             referenced_scripts=data.get("referenced_scripts", []),
             login_page_lockout_markers=data.get("login_page_lockout_markers", []),
+            no_login_surface=data.get("no_login_surface", False),
+            credential_refused=data.get("credential_refused", False),
+            second_factor_fields=data.get("second_factor_fields", []),
         )
         return AuthOutput(
             tool_name=self.name,
@@ -1244,6 +1320,7 @@ class WebAuthenticator(ToolBase):
         api_login_url: str = "",
         identity_field: str = "",
         content_type: str = "",
+        login_url_declared: bool = False,
     ) -> AuthResult:
         """Perform a full login and return structured AuthResult.
 
@@ -1254,8 +1331,17 @@ class WebAuthenticator(ToolBase):
         1. **Cookie/form auth** (``execute()``) — the CSRF-aware GET→POST flow,
            now with a 415 retry under the media type the server names.
         2. **JSON/API auth** (``_try_api_login()``) — POST the credentials as
-           JSON, to the operator's declared route first and the canned ones
-           after.
+           JSON, to a route the operator DECLARED and nowhere else.
+
+        **A credential goes only to a destination something observed to be a
+        login**: a rendered form's action (a password input on the page), a
+        route the operator declared, or — one layer up — a route the adaptive
+        layer proved. There used to be two more: the site root a caller fell
+        back to, and six canned routes led by ``/rest/user/login``, a benchmark
+        constant in production code. On a separate-origin IdP fixture they spent
+        five credential POSTs per account on destinations nothing had shown to
+        be a login. A page that is not an observed login is READ, never posted
+        to (``no_login_surface``).
 
         Running the form arm unconditionally was a small waste on a JSON API and
         a real problem on one that answers a form POST with something the form
@@ -1301,6 +1387,9 @@ class WebAuthenticator(ToolBase):
                 conventional ``email``/``username`` shapes.
             content_type: Operator-declared content type for the credential
                 POST. Overrides the form's ``enctype`` and any negotiation.
+            login_url_declared: Whether the OPERATOR declared ``login_url``. A
+                declared URL may receive a credential whatever it renders; an
+                undeclared one only through a password form it renders.
 
         Returns:
             AuthResult — on success, carries ``session_cookies`` (cookie/form or
@@ -1325,6 +1414,7 @@ class WebAuthenticator(ToolBase):
                     password,
                     identity_field=identity_field,
                     content_type=content_type,
+                    login_url_declared=login_url_declared,
                 )
                 result = form_result
             else:
@@ -1335,6 +1425,7 @@ class WebAuthenticator(ToolBase):
                     api_login_url=api_login_url,
                     identity_field=identity_field,
                     control_body=order.login_page,
+                    login_url_declared=login_url_declared,
                 )
                 result = api_result
 
@@ -1380,6 +1471,7 @@ class WebAuthenticator(ToolBase):
         *,
         identity_field: str = "",
         content_type: str = "",
+        login_url_declared: bool = False,
     ) -> AuthResult:
         """The cookie/form arm, validated and parsed, never raising."""
         try:
@@ -1390,6 +1482,7 @@ class WebAuthenticator(ToolBase):
                     "password": password,
                     "username_field": identity_field,
                     "content_type": content_type,
+                    "login_url_declared": login_url_declared,
                 }
             )
             raw = await self.execute(validated)
@@ -1441,6 +1534,43 @@ class WebAuthenticator(ToolBase):
                     f"returned {result.status_code} and set no cookie and returned no "
                     "token — there is nothing to authenticate with"
                 ),
+            }
+        )
+
+    def _no_login_surface_result(
+        self,
+        *,
+        login_url: str,
+        username: str,
+        status: int,
+        page_facts: dict[str, Any],
+    ) -> str:
+        """The envelope for a page that is not an observed login: nothing was sent."""
+        self._logger.warning(
+            "%s rendered no password input and nothing declared it a login — NO "
+            "credential was sent to it",
+            login_url,
+        )
+        return json.dumps(
+            {
+                "success": False,
+                "verdict": LoginVerdict.REFUSED.value,
+                "verdict_evidence": (
+                    f"GET {login_url} answered {status} with no password input, and the "
+                    "operator did not declare it a login"
+                ),
+                "session_cookies": {},
+                "redirect_url": "",
+                "login_url": login_url,
+                "username": username,
+                "status_code": status,
+                "posted_to": "",
+                "no_login_surface": True,
+                "failure_stage": (
+                    f"no credential POST was dispatched: {login_url} rendered no login form "
+                    "and no login destination was observed or declared"
+                ),
+                **page_facts,
             }
         )
 
@@ -1501,8 +1631,9 @@ class WebAuthenticator(ToolBase):
         api_login_url: str = "",
         identity_field: str = "",
         control_body: str = "",
+        login_url_declared: bool = False,
     ) -> AuthResult:
-        """Attempt JSON/API authentication, declarations first.
+        """Attempt JSON/API authentication, at DECLARED routes only.
 
         **The route the operator declared is tried before anything canned.**
         This arm used to take ``login_url``, keep only its origin, and iterate
@@ -1515,9 +1646,13 @@ class WebAuthenticator(ToolBase):
         Order:
 
         1. ``api_login_url`` — declared, absolute, tried alone first.
-        2. ``login_url`` itself — discovered, and an observation about this
-           target either way.
-        3. :data:`_API_LOGIN_ROUTES` — conventions, tried last.
+        2. ``login_url`` — only when the operator DECLARED it.
+
+        **There is no third.** A conventional route list used to follow —
+        ``/rest/user/login`` first, Juice Shop's route — and a JSON POST to a
+        route nothing showed to be a login is a credential offered to whatever
+        answers there. A JSON login nobody declared is found by the adaptive
+        layer, whose proposals ``assert_authenticated`` decides.
 
         **A session cookie is a session — unless the response is a denial.**
         Success used to require a token, so an API that answers a JSON login
@@ -1538,6 +1673,8 @@ class WebAuthenticator(ToolBase):
                 discovery; tried first.
             identity_field: Operator-declared identity field name. Overrides the
                 conventional shapes; tried first.
+            login_url_declared: Whether the operator declared ``login_url``;
+                undeclared, it is never a JSON destination.
             control_body: The login page as served WITHOUT a credential, from
                 the encoding-order probe that already fetched it. Handed to the
                 lockout classifier so a phrase this target ships in every
@@ -1564,12 +1701,21 @@ class WebAuthenticator(ToolBase):
                     "to resolve a login route against"
                 ),
             )
-        base = f"{parsed.scheme}://{parsed.netloc}"
-
         routes: list[str] = []
-        for candidate in (api_login_url, login_url, *(f"{base}{r}" for r in _API_LOGIN_ROUTES)):
+        for candidate in (api_login_url, login_url if login_url_declared else ""):
             if candidate and candidate not in routes:
                 routes.append(candidate)
+        if not routes:
+            return AuthResult(
+                success=False,
+                login_url=login_url,
+                username=username,
+                error="No JSON login destination was declared",
+                failure_stage=(
+                    "the JSON arm dispatched nothing: no JSON login route was declared, "
+                    "and a route nothing observed to be a login receives no credential"
+                ),
+            )
 
         # Identity key: declared first, then email-keyed (most JSON APIs, incl.
         # Juice Shop), then username-keyed when the identifier is not an email.
@@ -1580,6 +1726,9 @@ class WebAuthenticator(ToolBase):
         bodies = [{key: username, "password": password} for key in keys]
 
         last_status = 0
+        # A 401 from a DECLARED login route is the one answer here that is about
+        # the credential; every other non-2xx is about the route or the shape.
+        credential_refused = False
         attempted: list[str] = []
         # The first route that could not be told apart from a promoted session.
         # Held rather than returned, because a LATER route may still prove one
@@ -1653,6 +1802,8 @@ class WebAuthenticator(ToolBase):
                     continue
                 last_status = status or last_status
                 attempted.append(f"POST {url} {sorted(body)} -> {status or 'error'}")
+                if status == 401:
+                    credential_refused = True
                 if status < 200 or status >= 300:
                     continue
                 token = self._extract_token(resp_body)
@@ -1767,6 +1918,7 @@ class WebAuthenticator(ToolBase):
             status_code=last_status,
             posted_to=routes[0] if routes else "",
             error="No API login route returned an auth token or a session cookie",
+            credential_refused=credential_refused,
             failure_stage=(
                 "the JSON arm dispatched "
                 + (
@@ -2097,6 +2249,7 @@ class WebAuthenticator(ToolBase):
         username_field_override = args.get("username_field", "")
         password_field_override = args.get("password_field", "")
         declared_content_type = args.get("content_type", "")
+        login_url_declared = bool(args.get("login_url_declared", False))
 
         timeout = aiohttp.ClientTimeout(total=self.timeout)
 
@@ -2219,6 +2372,19 @@ class WebAuthenticator(ToolBase):
                     if page_facts["framework_fingerprint"]:
                         self._logger.info(
                             "Login page stack (headers): %s", page_facts["framework_fingerprint"]
+                        )
+
+                    # The destination gate. A credential goes only to a form the
+                    # page RENDERED as a login — a password input — or to a URL
+                    # the operator declared. Anything else is a page a caller
+                    # fell back to, and the POST would offer the engagement's
+                    # credential to a route nobody showed to be a login.
+                    if not form.password_field and not login_url_declared:
+                        return self._no_login_surface_result(
+                            login_url=login_url,
+                            username=username,
+                            status=get_status,
+                            page_facts=page_facts,
                         )
 
                     # Determine field names (override > auto-detect > fallback)
@@ -2491,6 +2657,8 @@ class WebAuthenticator(ToolBase):
                             "failure_stage": ("" if success else judgement.evidence),
                             **page_facts,
                             "post_changed_nothing": len(post_body) == len(login_html),
+                            "credential_refused": judgement.credential_refused,
+                            "second_factor_fields": _second_factor_fields(post_body, login_html),
                         }
                     )
 
@@ -2732,6 +2900,15 @@ class WebAuthenticator(ToolBase):
                     "Login page stack (headers): %s", page_facts["framework_fingerprint"]
                 )
 
+            # The destination gate; the aiohttp arm's, for the same reason.
+            if not form.password_field and not args.get("login_url_declared", False):
+                return self._no_login_surface_result(
+                    login_url=login_url,
+                    username=username,
+                    status=get_walk.response.status,
+                    page_facts=page_facts,
+                )
+
             ufield = username_field_override or form.username_field or "username"
             pfield = password_field_override or form.password_field or "password"
 
@@ -2926,6 +3103,8 @@ class WebAuthenticator(ToolBase):
                     "failure_stage": ("" if success else judgement.evidence),
                     **page_facts,
                     "post_changed_nothing": len(post_response_body) == len(login_html),
+                    "credential_refused": judgement.credential_refused,
+                    "second_factor_fields": _second_factor_fields(post_response_body, login_html),
                 }
             )
 
@@ -3120,10 +3299,15 @@ class WebAuthenticator(ToolBase):
         # A 4xx or 5xx is the server refusing. Nothing after this point can make
         # it a success, so nothing after this point gets to run.
         if status_code >= 400:
+            # Only a 401 is the server saying the CREDENTIAL failed. A 403 is
+            # also every CSRF rejection a framework issues, and a 404/405/415 is
+            # a statement about the route or the encoding — none of them has
+            # judged a password.
             return LoginJudgement(
                 LoginVerdict.REFUSED,
                 f"the credential POST was answered {status_code}, which is the server "
                 f"refusing the request rather than issuing a session",
+                credential_refused=status_code == 401,
             )
 
         body_lower = (response_body or "").lower()
@@ -3178,6 +3362,9 @@ class WebAuthenticator(ToolBase):
                 LoginVerdict.REFUSED,
                 f"the response body carries the refusal marker {matched!r}, which the "
                 f"login page served without credentials does not",
+                # Attributable only against a control that was actually held: a
+                # marker nothing was compared with may be the page's furniture.
+                credential_refused=bool(control_body),
             )
 
         # 3. A redirect that ACTUALLY occurred, to somewhere other than login.

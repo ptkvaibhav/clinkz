@@ -15,6 +15,7 @@ tools dynamically.
 > | Need | Read |
 > |---|---|
 > | Why an invariant exists — the incident behind it | [`docs/invariants.md`](docs/invariants.md) |
+> | Every invariant's full rule text (this file keeps the headline) | [`docs/invariants-rules.md`](docs/invariants-rules.md) |
 > | The four condensed sections below, in full | [`docs/architecture-core.md`](docs/architecture-core.md) |
 > | What each agent does, and the corrections it carries | [`docs/agents.md`](docs/agents.md) |
 > | Every CLI command and offline driver, in full | [`docs/commands.md`](docs/commands.md) |
@@ -258,7 +259,7 @@ state-changing request; `artifact-scan <id>` re-runs the disclosure gate;
 Offline drivers in `scripts/`: `regrade_stored_bundles.py`, `regrade_idor_arms.py`,
 `plan_variance_corpus.py`, `cve_reservation_corpus.py`,
 `record_protopoll_fixtures.py`, `juiceshop_benchmark_run.py --record-floor`,
-`auth_agent_corpus.py`. **Live:** `three_run_envelope.py`,
+`auth_agent_corpus.py`, `candidate_set_regression.py`. **Live:** `three_run_envelope.py`,
 `live_adaptive_auth_validation.py`.
 `docker compose -f docker/docker-compose.yml up -d` starts the test targets.
 ## Code Style
@@ -294,130 +295,41 @@ under the repo root; the header table at the top of this file links them all.
    disclose reduced coverage; it cannot disclose a finding that was suppressed.
    Every call site declares its purpose; an unclassified one is a red build.
 7. **A run where NOTHING answered is not a clean run** (`llm/degradation.py`).
-   Three kinds degrade — `SUBSTITUTION`, `TERMINAL_EXCLUSION`, `CHAIN_EXHAUSTED`;
-   `baseline_eligible` FOLLOWS `degraded` rather than re-deriving it. Two
-   witnesses: the register, and `model_stamp` for a STORED bundle.
-8. **A report about a run that did not happen must say so** — `run_completed` /
-   `incomplete_reason`; incomplete + zero findings rates **`Not assessed`**, never
-   "Informational", which is a verdict about the target.
-9. **A capability lost to routing is STATED, never absorbed.** Research grounding
-   is declared by the producer, reported as the WEAKEST any call ran under,
-   carried on every runbook entry, and rendered either way. `undeclared` counts as
-   ungrounded.
-10. **A section that reads one field and contradicts the document's own contents
-    is worse than a missing section** (`agents/_report_integrity.py`). Every
-    reconciliation is pure, reads only engine-declared fields, only ever TIGHTENS,
-    and runs at BOTH the build and render seams. **Detail →
-    `docs/report-integrity.md`.**
-11. **A session the engine GUESSED is still a session, and the record has to say
-    so** — swept credentials file under `SWEPT_CREDENTIAL_ROLE`; `established`
-    stays False, because holding session material and having PROVEN a session are
-    different facts.
-12. **A class the never-sent rule does not bind is not a class with no control —
-    it is a class whose control is a DIFFERENT rule, and the row names it**
-    (`VulnClass.control_arm.governing_rule` + `evidence_key`).
-13. **An IDOR finding proves attribution with NAMES and FINGERPRINTS, never
-    values.** The field NAME survives because it is schema, not data.
-14. **A bound that decides coverage is reported in the DELIVERABLE, not just the
-    log** (`observability/plan_alarms.py`). Truncation and ranking inversions stay
-    separate numbers with separate renderings because they have different fixes;
-    `kept_breakdown_present` is consulted FIRST, ahead of every benign branch.
-15. **The crawl's enrichment budget is that same bound, one layer earlier**
-    (`CrawlBudgetTruncation`) — rendered on a clean run too. One href is one
-    candidate (`crawl_dedup_key`).
-16. **Crawl-safety / session hygiene** — `is_state_changing_url` guards every
-    crawl visit, endpoint emission and plan entry; `is_destructive_form_submission`
-    guards every submit. **A probe never destroys target state**, and a field the
-    methodology did not intend to set is omitted, never sent empty-but-present.
-17. **A new injection *shape* gets a DEDICATED carrier**; leave the shared
-    string-only `_send_probe` untouched.
-18. **How a class READS the target is not the class's business** — a form-shaped
-    class reads `_injectable_forms`, a probing class carries through `_send_probe`,
-    never the raw layer beneath (`page.forms` is `[]` on any framework target).
-    Enforced by an AST guard. `_test_javascript_attacks` is the one that does not
-    migrate, and says why.
-19. **An upload point is declared by a protocol artifact, never by a URL that
-    sounds like one** — a declared `multipart/*` content type plus an
-    upload-shaped field name.
-20. **A body field is a PATH, not a name** (`agents/_json_body.py`). Only leaves
-    are written and **every sibling keeps a benign value** — a rejected request
-    never reaches the sink.
-21. **Surface mapping never writes to the target.** Every API schema learner takes
-    a probe restricted to `GET`/`HEAD`/`OPTIONS`, asserted at the seam.
-22. **Stack-conditioned branches** are backed by a deterministic protocol artifact
-    — never the flaky LLM tech list alone (LESSONS #28).
-23. **P7 confirms a CLIENT-SIDE effect, and only ever PROMOTES**
-    (`src/clinkz/browser/`). Everything the page authors is evidence, never a
-    verdict input. **A missing browser costs coverage, never honesty** — there is
-    no path from a P7 verdict to demoting or suppressing anything. **Detail →
-    `docs/methodology/client-side-execution-p7.md`.**
-24. **An oracle must observe from a machine that can REACH the target.** The
-    browser runtime is tied to `TOOL_EXEC_MODE`, never configured separately, so
-    the one combination that silently fails every navigation cannot be selected.
-25. **A browser is a new destructive surface, and its rails are structural** —
-    scope before launch, the governor authorizes, every navigation logged. A safe
-    method is not automatically safe. Nothing is clicked, filled or submitted.
-26. **Deterministic skills as contracts** — if the vuln is present, the `_test_*`
-    method MUST find it. **Never write an observation into evidence that was not
-    made**; an unwitnessed effect is an `UnprovenExploitLead`.
-27. **No marker oracle confirms without a dispatched control arm that REFUSED**
-    (`agents/_control_arm.py`). The control must **round-trip like the payload**.
-    `MARKER_ORACLE_CLASSES` / `DIFFERENTIAL_CONTROL_CLASSES` /
-    `CONTROL_EXEMPT_CLASSES` partition every dispatchable class; an unclassified
-    one is a red build. **Detail →
-    `docs/methodology/never-sent-control.md`.**
-28. **Every kill discloses, wherever it happens** — the lead is written inside
-    `_run_control_arm`, the one seam every arm passes, so a class cannot forget
-    because a class does not do it. The lead says the class could not PROVE the
-    vulnerability, never that the endpoint is clean.
-29. **The arm's lookup key is DECLARED by the emitting site, never re-derived.** A
-    miss while a sibling arm exists on the same `(test_method, endpoint)` is a
-    traced `control_arm_key_mismatch` that still refuses.
-30. **An oracle confirms on its class's DEFINING effect, and the arm is what
-    proves it does.** **Detail →
-    `docs/methodology/defining-effect-oracles.md`.**
-31. **Whose object is this? is a relation, not a property of a response** —
-    four dispatched arms (`self` / `crossing` / `nonexistent` / `anonymous`) plus
-    B's own authorized read. The control round-trips like the payload. Reflection
-    is deliberately NOT covered by it and keeps its own guard. **Detail →
-    `docs/methodology/idor.md`.**
-32. **A class that needs two identities declares it in the registry, and the code
-    READS the declaration** (`MultiPrincipalRequirement`). Tier 1 multi-role MAY
-    CONFIRM; Tier 2 single-role MAY ONLY LEAD. A limitation only the report knows
-    about is a disclaimer.
-33. **`ref(A)` is a reference the CALLER owns, or the class abstains — and
-    attribution comes off the OBJECT, never off a comparison.** `ref(A)` is
-    DISCOVERED by probing as A; unanchorable ⇒ ABSTAIN. The claim rests on an
-    OWNING FIELD; no owning field ⇒ ABSTAIN.
-34. **An anonymous 200 on `ref(B)` is DISQUALIFYING, full stop.** An arm never
-    DISPATCHED refused nothing and abstains.
-35. **An acceptance test that reads only an external grader cannot detect an
-    oracle that reached the right verdict by the wrong arm.** The criterion must
-    assert the ARMS — which request went out, as whom, carrying what.
-36. **A crossing arm is evidence only when it runs UPHILL, and which way is up is
-    the operator's to declare.** A is the LEAST privileged identity; rank is
-    DECLARED (`privilege`), never inferred from a role LABEL. Undeclared bounds
-    the verdict to a lead (ground 10).
-37. **A request carries the ENGAGEMENT's session, a NAMED principal's, or none —
-    one field, three values** (`session_mode`). Only an `ambient` response is
-    `session_bearing`. `_as_principal` is not re-entrant.
-38. **A control arm's outcome is the PROOF, so a consumer must know WHICH arm it
-    read.** The producer declares (`VulnClass.control_arm`); a guard reads only
-    what the engine declared, never the `Response:` entry the host controls.
+8. **A report about a run that did not happen must say so** — `run_completed` / `incomplete_reason`; incomplete + zero findings rates **`Not assessed`**, never "Informational", which is a verdict about the target.
+9. **A capability lost to routing is STATED, never absorbed.**
+10. **A section that reads one field and contradicts the document's own contents is worse than a missing section** (`agents/_report_integrity.py`). → `docs/report-integrity.md`
+11. **A session the engine GUESSED is still a session, and the record has to say so** — swept credentials file under `SWEPT_CREDENTIAL_ROLE`; `established` stays False, because holding session material and having PROVEN a session are different facts.
+12. **A class the never-sent rule does not bind is not a class with no control — it is a class whose control is a DIFFERENT rule, and the row names it** (`VulnClass.control_arm.governing_rule` + `evidence_key`).
+13. **An IDOR finding proves attribution with NAMES and FINGERPRINTS, never values.**
+14. **A bound that decides coverage is reported in the DELIVERABLE, not just the log** (`observability/plan_alarms.py`).
+15. **The crawl's enrichment budget is that same bound, one layer earlier** (`CrawlBudgetTruncation`) — rendered on a clean run too.
+16. **Crawl-safety / session hygiene** — `is_state_changing_url` guards every crawl visit, endpoint emission and plan entry; `is_destructive_form_submission` guards every submit. **A probe never destroys target state.**
+17. **A new injection *shape* gets a DEDICATED carrier**; leave the shared string-only `_send_probe` untouched.
+18. **How a class READS the target is not the class's business** — a form-shaped class reads `_injectable_forms`, a probing class carries through `_send_probe`, never the raw layer beneath (`page.forms` is `[]` on any framework target).
+19. **An upload point is declared by a protocol artifact, never by a URL that sounds like one** — a declared `multipart/*` content type plus an upload-shaped field name.
+20. **A body field is a PATH, not a name** (`agents/_json_body.py`).
+21. **Surface mapping never writes to the target.**
+22. **Stack-conditioned branches** are backed by a deterministic protocol artifact — never the flaky LLM tech list alone (LESSONS #28).
+23. **P7 confirms a CLIENT-SIDE effect, and only ever PROMOTES** (`src/clinkz/browser/`). → `docs/methodology/client-side-execution-p7.md`
+24. **An oracle must observe from a machine that can REACH the target.**
+25. **A browser is a new destructive surface, and its rails are structural** — scope before launch, the governor authorizes, every navigation logged.
+26. **Deterministic skills as contracts** — if the vuln is present, the `_test_*` method MUST find it.
+27. **No marker oracle confirms without a dispatched control arm that REFUSED** (`agents/_control_arm.py`). → `docs/methodology/never-sent-control.md`
+28. **Every kill discloses, wherever it happens** — the lead is written inside `_run_control_arm`, the one seam every arm passes, so a class cannot forget because a class does not do it.
+29. **The arm's lookup key is DECLARED by the emitting site, never re-derived.**
+30. **An oracle confirms on its class's DEFINING effect, and the arm is what proves it does.** → `docs/methodology/defining-effect-oracles.md`
+31. **Whose object is this? is a relation, not a property of a response** — four dispatched arms (`self` / `crossing` / `nonexistent` / `anonymous`) plus B's own authorized read. → `docs/methodology/idor.md`
+32. **A class that needs two identities declares it in the registry, and the code READS the declaration** (`MultiPrincipalRequirement`).
+33. **`ref(A)` is a reference the CALLER owns, or the class abstains — and attribution comes off the OBJECT, never off a comparison.**
+34. **An anonymous 200 on `ref(B)` is DISQUALIFYING, full stop.**
+35. **An acceptance test that reads only an external grader cannot detect an oracle that reached the right verdict by the wrong arm.**
+36. **A crossing arm is evidence only when it runs UPHILL, and which way is up is the operator's to declare.**
+37. **A request carries the ENGAGEMENT's session, a NAMED principal's, or none — one field, three values** (`session_mode`).
+38. **A control arm's outcome is the PROOF, so a consumer must know WHICH arm it read.**
 39. **An observation must be attributable to the payload that produced it.**
-40. **A deterministic guard whose value is that it needs no model is never gated
-    by one.** All **ten** grounds run unconditionally at `_persist_finding`. An
-    LLM can no longer suppress anything the code did not already suppress, and
-    every ground's `why_unconfirmed` must be in `UNPROVEN_WHY_UNCONFIRMED`.
-41. **Silence from a detection path is not evidence of cleanliness.** A review
-    that ANSWERED and named nothing is `correctly_empty`; one that never ran is
-    `ALL_FAILED`. Both control-flow exceptions are `BaseException`; they differ in
-    *who* catches them, not in whether anyone can.
-42. **Suppress, never annotate** — a believed false positive is **demoted**, never
-    emitted as confirmed carrying a caveat. Four shapes can never confirm: a
-    conditional execution claim, a reflection inside a framework error page, a
-    check that determines it is not applicable, and a description of a client-side
-    control.
+40. **A deterministic guard whose value is that it needs no model is never gated by one.** All ten grounds run unconditionally at `_persist_finding`.
+41. **Silence from a detection path is not evidence of cleanliness.**
+42. **Suppress, never annotate** — a believed false positive is **demoted**, never emitted as confirmed carrying a caveat.
 43. **One engagement is one target state, so a confirmation SUPERSEDES its lead.**
     Directional: a witnessed effect outranks the absence of one, and there is no
     path by which a lead suppresses a finding.
@@ -841,8 +753,9 @@ if runtime behavior can change (new hook, permission, tool entry, payload).
   find it.
 - Hardcode a target/benchmark value in a methodology (no DVWA/Juice Shop string
   baked in) — discover the app's own tokens at runtime.
-- Grow this file with narrative. A new incident writes its rule here in one line
-  and its story in `docs/` — that is what keeps gate 4 green.
+- Grow this file with narrative. A new invariant writes its headline here in one
+  line, its full text in `docs/invariants-rules.md` and its story in
+  `docs/invariants.md` — that is what keeps gate 4 green.
 
 Tool outputs are always parsed into Pydantic models (tested against real output in
 `tests/fixtures/`); run the

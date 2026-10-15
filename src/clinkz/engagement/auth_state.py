@@ -67,18 +67,6 @@ _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 #: response is the discriminator — presence in both proves nothing.
 _SESSION_MARKERS = ("logout", "log out", "sign out", "signout", "my account", "log off")
 
-#: Routes probed when looking for a JSON/API login endpoint. Same list the
-#: WebAuthenticator uses, kept in step deliberately: detection and execution must
-#: agree about what an API login looks like.
-_API_LOGIN_ROUTES: tuple[str, ...] = (
-    "/rest/user/login",
-    "/api/login",
-    "/api/auth/login",
-    "/api/v1/auth/login",
-    "/auth/login",
-    "/login",
-)
-
 #: Paths probed when looking for an HTML login form.
 _FORM_LOGIN_PATHS: tuple[str, ...] = (
     "/login.php",
@@ -310,15 +298,22 @@ async def detect_auth_mechanism(
     Probes, in order:
 
       1. Candidate HTML login paths — a ``type="password"`` input is the
-         deterministic form signal.
-      2. Candidate JSON login routes — a route that answers a credential-shaped
-         POST with 4xx (rather than 404/405) is an API login endpoint that
-         exists and rejected our empty credentials, which is exactly what an
-         unauthenticated probe should see.
-      3. The base URL's ``Set-Cookie`` — a session cookie issued with no
-         discoverable form means cookie auth by some other route.
+         deterministic form signal, and the only one that yields a
+         ``login_url``.
+      2. The base URL's ``Set-Cookie`` — a session cookie issued with no
+         discoverable form means cookie auth by some other route. It names the
+         MECHANISM and no login URL: the root that issued a cookie is not a
+         login, and whatever ``login_url`` says is where a credential goes.
 
-    Nothing here submits real credentials; detection is read-only.
+    **There is no JSON-route probe.** One used to POST empty credentials at six
+    canned routes led by ``/rest/user/login`` and accept any 400/401/403/422 as
+    "a login that exists" — and the route it named then received the real
+    credential. A 4xx to an empty body is not an observation that a route is a
+    login; on the separate-origin IdP fixture it named none and the fallback
+    after it named the site root. A JSON login is DECLARED by the operator or
+    proven by the adaptive layer.
+
+    Nothing here submits credentials; detection is read-only.
 
     Args:
         probe: HTTP capability.
@@ -350,24 +345,7 @@ async def detect_auth_mechanism(
                 probed=probed,
             )
 
-    # 2. JSON/API login route.
-    for route in _API_LOGIN_ROUTES:
-        url = f"{root}{route}"
-        resp = await probe.post_json(url, {"email": "", "password": ""})
-        probed.append(url)
-        if resp.status in (400, 401, 403, 422):
-            evidence.append(
-                f"POST {url} with empty credentials -> {resp.status} "
-                "— an API login route that exists and rejected them"
-            )
-            return AuthDetection(
-                mechanism=AuthMechanism.BEARER,
-                login_url=url,
-                evidence=evidence,
-                probed=probed,
-            )
-
-    # 3. Session cookie without a discoverable form.
+    # 2. Session cookie without a discoverable form.
     root_resp = await probe.get(root or "/", follow_redirects=False)
     probed.append(root or "/")
     set_cookie = ""
@@ -380,7 +358,6 @@ async def detect_auth_mechanism(
         evidence.append(f"GET {root} issued a session cookie '{cookie_name}' with no login form")
         return AuthDetection(
             mechanism=AuthMechanism.COOKIE,
-            login_url=root,
             evidence=evidence,
             probed=probed,
         )
@@ -716,6 +693,19 @@ def looks_unauthenticated(status: int, headers: dict[str, str], body: str) -> bo
     return bool(body) and resp.serves_login_form
 
 
+#: ``seated_by`` for a session the operator SUPPLIED rather than one a login
+#: produced. Beside ``deterministic`` and ``adaptive``; rendered in the report.
+SEATED_BY_SUPPLIED = "supplied"
+
+
+class SessionCheckOutcome(StrEnum):
+    """What a flagged session check found. Each value is its own counter."""
+
+    ALIVE = "alive"
+    REAUTHENTICATED = "reauthenticated"
+    UNRESOLVED = "unresolved"
+
+
 class SessionSentinel:
     """Watches responses for session loss and asks for re-authentication.
 
@@ -775,6 +765,12 @@ class SessionSentinel:
             was established. Also reported, for the same reason.
         checks_requested: Times the flag was raised.
         reauths_triggered: Times re-authentication actually SUCCEEDED.
+        unresolved: Times the flag was raised, the session was NOT re-proved,
+            and no re-authentication succeeded — no credential to log in
+            with, a failed re-login, or a supplied session that expired.
+            Kept apart from :attr:`false_alarms`: it used to be counted as
+            one, and the report then told a client a dead session had
+            re-proved itself.
         false_alarms: Times the flag was raised and the assertion found the
             session alive after all.
     """
@@ -792,6 +788,7 @@ class SessionSentinel:
         self.checks_requested = 0
         self.reauths_triggered = 0
         self.false_alarms = 0
+        self.unresolved = 0
 
     @property
     def armed(self) -> bool:
@@ -865,23 +862,26 @@ class SessionSentinel:
             how,
         )
 
-    def clear(self, *, reauthenticated: bool) -> None:
+    def clear(self, outcome: SessionCheckOutcome) -> None:
         """Reset after the Orchestrator has resolved the flag.
 
         Args:
-            reauthenticated: ``True`` when a re-authentication actually
-                succeeded; ``False`` when the assertion found the session alive,
-                or when re-authentication was impossible or failed. Only a
-                genuine success increments :attr:`reauths_triggered` — a counter
-                that logs an event which did not happen is worse than no
-                counter, because the report then asserts a recovery nobody made.
+            outcome: What the check FOUND — never what was attempted. Three
+                values because there are three facts: the session re-proved
+                itself (:attr:`false_alarms`), a re-login succeeded
+                (:attr:`reauths_triggered`), or neither (:attr:`unresolved`).
+                A boolean collapsed the first and third, so a session nobody
+                could renew was reported as one that had been fine all along.
         """
         self._consecutive = 0
         self._since_check = 0
-        if self._reauth_needed and not reauthenticated:
-            self.false_alarms += 1
-        if reauthenticated:
-            self.reauths_triggered += 1
+        if self._reauth_needed:
+            if outcome is SessionCheckOutcome.ALIVE:
+                self.false_alarms += 1
+            elif outcome is SessionCheckOutcome.REAUTHENTICATED:
+                self.reauths_triggered += 1
+            else:
+                self.unresolved += 1
         self._reauth_needed = False
 
 
@@ -904,6 +904,8 @@ __all__ = [
     "AuthStateError",
     "HttpProbe",
     "ProbeResponse",
+    "SEATED_BY_SUPPLIED",
+    "SessionCheckOutcome",
     "SessionSentinel",
     "assert_authenticated",
     "bearer_header",

@@ -120,6 +120,19 @@ LITERAL_KINDS: frozenset[str] = frozenset(
 #: against a string literal. The detector computes the domain and the flag; this
 #: table is the only hand-maintained half.
 LITERAL_TESTS: dict[str, tuple[str, str]] = {
+    "clinkz.tools.auth:_second_factor_fields": (
+        "body_marker",
+        "Tests the NAME of an input in the credential response against one-time-code "
+        "tokens, and counts only names the login page served without credentials "
+        "lacks. It decides no session verdict: it names a second-factor prompt in the "
+        "abort so the operator is not told the password was wrong.",
+    ),
+    "clinkz.orchestrator.orchestrator:OrchestratorAgent._primary_target_url": (
+        "url_syntax",
+        "Tests whether a scope value already carries a scheme ('://') before "
+        "prefixing one. Grammar, not naming; it is reached from _authenticate_role "
+        "because the root is the page READ when no login was observed.",
+    ),
     "clinkz.agents._auth_bypass:_looks_like_session_cookie": (
         "cookie_name",
         "Tests the NAME of a cookie the response set against session-cookie "

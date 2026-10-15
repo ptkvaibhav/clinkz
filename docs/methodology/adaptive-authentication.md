@@ -741,3 +741,17 @@ call's numbers.
 Each case names a cause somebody can act on, and only one of them is a statement
 about the target — the other three are statements about this engine, which is
 what makes reporting the difference worth the code.
+
+## Since invariant 117: the cold seats moved
+
+The canned route list (`_API_LOGIN_ROUTES`) is deleted from both
+`tools/auth.py` and `engagement/auth_state.py`. Two statements above described
+cold runs that the list solved, and they no longer hold. Re-measured on
+2026-10-09 with `scripts/live_adaptive_auth_validation.py`, no declarations:
+
+| target | before | now |
+|---|---|---|
+| umami | deterministic, via `/api/auth/login` in the list | **adaptive**: one credential POST to `/api/auth/login`, proved by `assert_authenticated` |
+| Juice Shop | deterministic, via `/rest/user/login` in the list | **not seated cold.** The adaptive layer reaches `/rest/user/login`, but the token is nested (`authentication.token`) and the loop carries top-level tokens only. The operator declares `login_api_url`, and the deterministic JSON arm then seats it with one POST |
+| Northwind (`docker/spa-keycloak`) | 5 deterministic POSTs (root ×3, `/rest/user/login` ×2) | **0 credential POSTs.** The off-scope sign-in is observed and named, and the eleventh gate refusal (`sign_in_off_scope`) closes the adaptive path |
+| cal.diy, Meridian, DVWA | seated | seated, unchanged (Meridian now also seats cold, from the landing page's link) |

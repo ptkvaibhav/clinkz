@@ -144,15 +144,85 @@ than no declaration, because the operator believes the engine knows.
 
 | Field | Declares | Discovery it replaces |
 |---|---|---|
-| `login_url` | The login **page** | Shape-probing the crawl and the conventional paths |
-| `login_api_url` | The JSON login **route**, when it is not the page | Six canned API routes |
+| `login_url` | The login **page** | Shape-probing the landing page's links, its scripts' path literals, and the conventional paths |
+| `login_api_url` | The JSON login **route**, when it is not the page | The adaptive layer (there is no route list) |
 | `login_field` | The identity field name | Reading it from the form, then `email`, then `username` |
 | `login_content_type` | The credential POST's encoding | The form's `enctype`, then a 415 negotiation |
+
+**A credential goes only to a destination something OBSERVED to be a login**
+(invariant 117): the action of a form the target rendered with a password input,
+a route the operator declared, or a route the adaptive layer proved. Two more
+used to exist and both are gone. `_establish_authenticated_state` ended its
+default with `or base_url`, so the site root received the credential whenever
+nothing was found; and `tools/auth.py` and `engagement/auth_state.py` each
+carried a six-entry route list led by `/rest/user/login` — a benchmark constant
+in production code. On the separate-origin IdP fixture they spent five
+credential POSTs per account on destinations nothing had shown to be a login. A
+page that is not an observed login is now READ and never posted to
+(`AuthResult.no_login_surface`), and a login-discovery GET answered with a
+redirect to an origin outside scope is recorded and named in the abort, not
+followed. The domain is computed: every call into a credential sender that takes
+a URL, classified by where its destination comes from
+(`tests/test_safety/test_credential_destination_domain.py`).
+
+**"The credentials are wrong" is evidence-gated.** It is emitted only when a
+refusal attributable to the credential was observed — a `401` from a login
+destination, or a refusal marker the login page served without credentials does
+not carry (`AuthResult.credential_refused`) — and it quotes that observation.
+Otherwise the abort names what was actually seen: no login surface, a POST that
+changed nothing, a sign-in on an origin outside scope, a second factor, a
+captcha or a lockout.
 
 `login_content_type` is validated at model construction against the types the
 authenticator can actually encode: declaring one it cannot produce would be
 silently ignored, which is the failure the field exists to end. `extra="forbid"`
 already catches a misspelled KEY; this catches a misspelled VALUE.
+
+### Operator-supplied session (`session`)
+
+For an application whose login this engine cannot perform, the operator signs in
+in a browser and supplies what the browser holds. The cases are a
+separate-origin identity provider (the `docker/spa-keycloak` fixture), MFA, a
+CAPTCHA, or WebAuthn.
+
+```json
+{"credentials": [
+  {"role": "user", "privilege": 0, "username": "alice",
+   "session": {"cookies": {"nw_session": "..."}},
+   "assert_url": "https://app.example.com/api/me"},
+  {"role": "admin", "privilege": 10,
+   "session": {"headers": {"Authorization": "Bearer ..."}}}
+]}
+```
+
+**Supplied is not trusted.** The material goes through `assert_authenticated`
+UNCHANGED, the same anonymous-control comparison that proves a session the
+engine seated itself. If it does not pass, the engagement aborts exactly as a
+failed login does (exit 3), and the message names the supplied session rather
+than the credentials. With no `password`, **no credential is ever sent** for
+that role. With a password as well, the ordinary login runs if the supplied
+session is refused.
+
+* **Intake.** Values are `SecretStr` and are registered for redaction like a
+  password, including an `Authorization` value's bare credential part. They go
+  through the same schema-collision refusal (invariant 110). Names must be
+  tokens. `Cookie`, `Host` and the framing headers are refused: cookies go under
+  `cookies`.
+* **Disclosure.** The report's Authentication section (Markdown and PDF) names
+  each supplied role and the cookie/header NAMES it carried, never the values,
+  and says the engine did not perform that login. `seated_by` is `supplied`
+  beside `deterministic` and `adaptive`.
+* **Expiry mid-run.** The session sentinel works as it does for any session.
+  When its flag is raised and the assertion no longer proves the session, a
+  supplied session cannot be re-logged-in. The engagement therefore **halts**
+  (`supplied_session_expired`), and the halt detail says everything after it is
+  UNTESTED, not clean. The report states when it expired.
+* **The sentinel's three outcomes.** A flagged check now ends `ALIVE` (false
+  alarm), `REAUTHENTICATED`, or `UNRESOLVED`. It used to be a boolean, so a
+  session nobody could renew, or a failed re-login, was counted and rendered as
+  "re-proved the session was still authenticated".
+* Supply `username` too if the access-control classes should recognise the
+  role's own records. A cookie-only session asserts no readable identity.
 
 An operator who declares none of them loses nothing — the engine reads the form
 its login page serves, follows the `action`, and renegotiates on a 415. **Detail

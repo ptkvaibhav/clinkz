@@ -75,7 +75,10 @@ def test_nothing_dispatched_says_so_and_claims_no_comparison() -> None:
         }
     )
     assert "NO credential was ever offered to the application" in message
-    assert "before any login request was dispatched" in message
+    assert "no destination observed to be a login received one" in message
+    # Nothing evaluated the credential, so nothing may be said about it.
+    assert "credentials were refused" not in message
+    assert "credentials are wrong" not in message
     assert _NEGATIVE_ABOUT_A_COMPARISON not in message, (
         "the message asserted a negative about a comparison that never ran:\n" + message
     )
@@ -94,6 +97,11 @@ def test_a_dispatched_and_refused_post_names_where_it_went() -> None:
                 "username": "acct-4417",
                 "login_url": "http://app:8090/portal/gateway",
                 "posted_to": "http://app:8090/portal/v3/session-open",
+                "credential_refused": True,
+                "credential_refusal_evidence": (
+                    "the credential POST was answered 401, which is the server refusing "
+                    "the request rather than issuing a session"
+                ),
                 "assertion": AuthAssertion(
                     established=False,
                     why_unproven=(
@@ -110,8 +118,73 @@ def test_a_dispatched_and_refused_post_names_where_it_went() -> None:
     # The distinction an operator cannot make from "login failed at <login page>".
     assert "that is not http://app:8090/portal/gateway" in message
     assert _NEGATIVE_ABOUT_A_COMPARISON not in message
-    # Wrong credentials IS a live possibility here, and only here.
-    assert "the credentials are wrong" in message
+    # A 401 from the login destination is attributable to the credential, so
+    # here — and only on evidence like it — the message may say so, quoting it.
+    assert "the credentials were refused by the application" in message
+    assert "answered 401" in message
+
+
+def test_a_refusal_not_attributable_to_the_credential_never_blames_it() -> None:
+    """A 405 is about the route. The third time this sentence was false."""
+    message = _message(
+        {
+            "operator": {
+                "established": False,
+                "username": "acct-4417",
+                "login_url": "http://app:8090/portal/gateway",
+                "posted_to": "http://app:8090/portal/gateway",
+                "credential_refused": False,
+                "assertion": AuthAssertion(
+                    established=False,
+                    why_unproven=(
+                        "the credential POST was answered 405, which is the server "
+                        "refusing the request rather than issuing a session"
+                    ),
+                ),
+            }
+        }
+    )
+    assert "a credential POST WAS dispatched" in message
+    assert "credentials were refused" not in message
+    assert "credentials are wrong" not in message
+    assert "did not evaluate it" in message
+
+
+def test_an_off_scope_sign_in_is_named_and_the_credential_is_not_blamed() -> None:
+    """The separate-origin IdP shape: no login on this origin, one on another."""
+    agent = OrchestratorAgent(llm=_SilentLLM())
+    agent._scope = SCOPE
+    agent._off_scope_login_redirects = [
+        (
+            "http://app:8090/api/auth/login",
+            "http://idp.example:8080/realms/northwind/protocol/openid-connect/auth",
+            302,
+        )
+    ]
+    agent._role_sessions = {
+        "alice": {
+            "established": False,
+            "username": "alice",
+            "login_url": "",
+            "posted_to": "",
+            "no_login_surface": True,
+            "assertion": AuthAssertion(
+                established=False,
+                why_unproven=(
+                    "no credential POST was dispatched: http://app:8090/ rendered no "
+                    "login form and no login destination was observed or declared"
+                ),
+            ),
+        }
+    }
+    message = agent._auth_failure_message("http://app:8090", _Detection())
+    assert "Login URL     : (none observed)" in message
+    assert "GET http://app:8090/api/auth/login answered 302" in message
+    assert "http://idp.example:8080" in message
+    assert "outside the engagement scope" in message
+    assert "credentials" not in message.split("Fix one of:")[1].split("supply")[0]
+    assert "credentials were refused" not in message
+    assert "credentials are wrong" not in message
 
 
 def test_only_a_run_that_reached_the_assertion_may_blame_the_urls() -> None:

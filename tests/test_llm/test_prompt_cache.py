@@ -86,6 +86,7 @@ async def _call(client: Any, prompt: Any, **setting_overrides: Any) -> dict[str,
         "llm_output_headroom_alarm_ratio": 0.8,
         "llm_effort": "",
         "llm_effort_emit": "",
+        "llm_effort_planning": "",
     }
     defaults.update(setting_overrides)
     with patch("clinkz.llm.anthropic_client.settings", SimpleNamespace(**defaults)):
@@ -401,6 +402,7 @@ class TestUsageAccounting:
                 llm_output_headroom_alarm_ratio=0.8,
                 llm_effort="",
                 llm_effort_emit="",
+                llm_effort_planning="",
             ),
         ):
             with patch.object(

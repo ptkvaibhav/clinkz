@@ -136,6 +136,11 @@ This brings up:
 - `clinkz-tools` — the sandboxed tool container (nmap, nuclei, ffuf, sqlmap, ...)
 - `clinkz-dvwa` on `http://localhost:8080`
 - `clinkz-juiceshop` on `http://localhost:3000`
+- `clinkz-spa-app` (`http://spa-app:8000`, host 8096) + `clinkz-keycloak`
+  (`http://keycloak-idp:8080`, host 8180) — the **fourth authentication shape**:
+  a client-rendered SPA with no form anywhere, whose login redirects to a
+  standard Keycloak on a separate origin. A permanent regression target for
+  that boundary — see `docs/analysis/spa-separate-origin-idp.md`.
 - `clinkz-meridian` on `http://localhost:8090` — the **third authentication
   shape** (JSON login at a non-obvious path, identity field `account`, a session
   cookie on a JSON response, protected routes that deny anonymously with 302 to
@@ -281,6 +286,7 @@ a key at the wrong level is refused by name rather than silently ignored.
 | `username` / `password` | The credentials. `password` is a `SecretStr` and is registered for redaction on intake. | Any authenticating role. Omit both for `anonymous`. **`username` is also how the access-control classes recognise a role's own records in the target's data** — with a bearer-token login the identity claims are read from the token itself, but a cookie-only session asserts nothing readable, and a role whose identity cannot be read anchors nothing and abstains ([detail](docs/methodology/idor.md)). |
 | `login_url` | Where to authenticate **this role**. Overrides the login endpoint discovery found. | The app's login is not at a conventional path (`/login`, `/signin`, `/api/auth`, `/rest/user/login`), or it differs per role. Without it, an undiscoverable login means the engagement **aborts** rather than scanning blind — see below. |
 | `assert_url` | A URL known to behave differently authenticated vs anonymous. Tried **first** by the authenticated-state assertion. | The protected surface is named something unconventional, so the assertion's fallback guesses will not find it. |
+| `session` | Session material you obtained in a browser: `{"cookies": {name: value}, "headers": {name: value}}`. Verified by the same assertion as a login, never trusted; with no `password`, no credential is sent. The engagement **halts** if it expires mid-run ([detail](docs/productization-engagement-safety.md)). | The login happens somewhere this engine cannot reach: a separate-origin IdP, MFA, CAPTCHA, WebAuthn. |
 | `description` | Free-text note, echoed nowhere sensitive. | Documentation for whoever reads the file next. |
 
 **When the login page does not say where the credential goes, an agent proposes
@@ -520,7 +526,8 @@ clinkz/
 │                        # models, orchestrator, safety, integration, skills_dvwa,
 │                        # skills_juiceshop
 ├── docker/              # Dockerfile.tools + Dockerfile.dvwa + meridian/ (the third
-│                        #   auth-shape target) + docker-compose.yml
+│                        #   auth-shape target) + spa-keycloak/ (the fourth: SPA +
+│                        #   separate-origin IdP) + docker-compose.yml
 └── docs/                # architecture, adding-tools, playbooks, analysis/*
 ```
 

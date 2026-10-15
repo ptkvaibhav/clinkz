@@ -575,10 +575,12 @@ class AnthropicClient(LLMClient):
     def _resolved_effort() -> str:
         """The effort this call runs under, resolved by its declared PURPOSE.
 
-        PLANNING and SUPPRESS take ``settings.llm_effort`` (default ``"low"`` by
-        the effort grid); EMIT takes ``settings.llm_effort_emit``, the carve-out
-        left at the provider default because lowering the finding-shaping path
-        was never isolated in measurement. Read from the per-task purpose
+        SUPPRESS takes ``settings.llm_effort`` (default ``"low"`` by the effort
+        grid); PLANNING takes ``settings.llm_effort_planning`` (default ``"high"``,
+        raised by the grid's set-level re-grade); EMIT takes
+        ``settings.llm_effort_emit``, the carve-out left at the provider default
+        because lowering the finding-shaping path was never isolated in
+        measurement. Read from the per-task purpose
         context var, so the concurrent phase runners each resolve their own.
         Both the request builder and the usage stamp call this, so the level
         disclosed is the level sent.
@@ -587,6 +589,7 @@ class AnthropicClient(LLMClient):
             current_call_purpose(),
             default=settings.llm_effort,
             emit=settings.llm_effort_emit,
+            planning=settings.llm_effort_planning,
         )
 
     @classmethod

@@ -496,6 +496,91 @@ class SafetyPolicy(BaseModel):
     adaptive_auth_credential_reserve: int = Field(default=3, ge=0)
 
 
+#: Header names a supplied session may not set. ``Cookie`` has its own field,
+#: so the names stay schema the report can show; the rest are framing the
+#: transport owns, and a supplied value would desynchronise the request.
+_SUPPLIED_HEADER_REFUSED: frozenset[str] = frozenset(
+    {"cookie", "host", "content-length", "content-type", "connection", "transfer-encoding"}
+)
+
+#: RFC 6265 cookie-name / RFC 7230 token characters.
+_TOKEN_CHARS = frozenset(
+    "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
+
+class SuppliedSession(BaseModel):
+    """Session material the operator obtained OUTSIDE the engine.
+
+    For an application whose login the engine cannot perform — a separate-origin
+    identity provider, MFA, a CAPTCHA, a WebAuthn prompt — the operator signs in
+    in a browser and hands over what the browser holds. **Supplied is not
+    trusted.** The material is put through the same anonymous-control assertion
+    as a session the engine seated itself (``assert_authenticated``, unchanged),
+    the report states that the operator supplied it, and when it stops passing
+    that assertion mid-run the engagement halts rather than continue
+    unauthenticated: a supplied session cannot be renewed by this engine.
+
+    Values are :class:`~pydantic.SecretStr` and are registered for redaction at
+    intake exactly as a password is. Names are schema and survive into the
+    report; values never do.
+
+    Attributes:
+        cookies: Cookie NAME -> VALUE, as the browser's storage shows them.
+        headers: Header NAME -> VALUE, e.g. ``Authorization: Bearer …``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cookies: dict[str, SecretStr] = Field(default_factory=dict)
+    headers: dict[str, SecretStr] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _well_formed(self) -> SuppliedSession:
+        if not self.cookies and not self.headers:
+            raise ValueError(
+                "a supplied session must carry at least one cookie or header; an empty "
+                "one would be asserted as an anonymous session and refused anyway"
+            )
+        for kind, names in (("cookie", self.cookies), ("header", self.headers)):
+            for name in names:
+                if not name or any(ch not in _TOKEN_CHARS for ch in name):
+                    raise ValueError(f"supplied {kind} name {name!r} is not a valid token")
+                if not names[name].get_secret_value():
+                    raise ValueError(f"supplied {kind} {name!r} has an empty value")
+        refused = sorted(n for n in self.headers if n.lower() in _SUPPLIED_HEADER_REFUSED)
+        if refused:
+            raise ValueError(
+                f"supplied header(s) {refused} cannot be set this way — put cookies under "
+                "'cookies'; the others are framing the transport owns"
+            )
+        return self
+
+    def cookie_values(self) -> dict[str, str]:
+        """The cookie jar as plaintext. Every caller is a place a secret leaves."""
+        return {k: v.get_secret_value() for k, v in self.cookies.items()}
+
+    def header_values(self) -> dict[str, str]:
+        """The headers as plaintext. Every caller is a place a secret leaves."""
+        return {k: v.get_secret_value() for k, v in self.headers.items()}
+
+    def secret_values(self) -> list[str]:
+        """Every value to register for redaction.
+
+        An ``Authorization`` value is registered whole AND as its credential
+        part: the token travels without its scheme in a decoded JWT, a body echo
+        or a query string, and the whole-value registration alone would miss
+        every one of those.
+        """
+        values: list[str] = []
+        for value in [*self.cookie_values().values(), *self.header_values().values()]:
+            values.append(value)
+            scheme, _, credential = value.partition(" ")
+            if credential and scheme.isalpha():
+                values.append(credential.strip())
+        return values
+
+
 class RoleCredential(BaseModel):
     """One labelled credential set.
 
@@ -539,6 +624,10 @@ class RoleCredential(BaseModel):
             will fail that guess — and the engagement then aborts rather than
             scanning blind, which is correct but unhelpful if the operator
             already knew the answer. This is where they say it.
+        session: Optional session material the operator obtained outside the
+            engine (:class:`SuppliedSession`). Verified by the same assertion as
+            a seated session and never trusted on its own; with no password the
+            engine sends no credential at all for this role.
         privilege: Optional rank in the application's OWN role hierarchy — lower
             is less privileged. Only the relative order matters, so any integers
             work (``0`` for a customer, ``10`` for an administrator).
@@ -572,6 +661,7 @@ class RoleCredential(BaseModel):
     login_field: str = ""
     login_content_type: str = ""
     assert_url: str = ""
+    session: SuppliedSession | None = None
     privilege: int | None = None
     description: str = ""
 
@@ -604,7 +694,9 @@ class RoleCredential(BaseModel):
     @property
     def is_anonymous(self) -> bool:
         """Whether this entry names the unauthenticated baseline."""
-        return self.role == "anonymous" or not self.username
+        if self.role == "anonymous":
+            return True
+        return not self.username and self.session is None
 
     def secret(self) -> str:
         """Return the plaintext password.
@@ -691,7 +783,11 @@ class CredentialSet(BaseModel):
 
     def secrets(self) -> list[str]:
         """Every plaintext secret in the set — for redaction registration only."""
-        return [c.secret() for c in self.credentials if c.secret()]
+        values = [c.secret() for c in self.credentials if c.secret()]
+        for cred in self.credentials:
+            if cred.session is not None:
+                values.extend(cred.session.secret_values())
+        return values
 
 
 __all__ = [

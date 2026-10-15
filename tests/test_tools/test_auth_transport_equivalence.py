@@ -115,6 +115,9 @@ class Scenario:
     scope_refusal: str = ""
     divergence: str = ""
     posted_fields: frozenset[str] | None = field(default=None)
+    #: Whether the operator DECLARED ``login_path`` as the login. Undeclared, a
+    #: page rendering no password input receives no credential.
+    declared: bool = False
 
     def __post_init__(self) -> None:
         # A scenario that declares only the boolean gets the unambiguous
@@ -226,7 +229,40 @@ _TWO_FORMS = (
     "</body></html>"
 )
 
+_SPA_SHELL = '<html><body><div id="root"></div><script src="/app.js"></script></body></html>'
+
 SCENARIOS: tuple[Scenario, ...] = (
+    # The destination gate (invariant 117). A page that renders no password
+    # input and that nobody declared is READ and never posted to — on both
+    # transports — and the same page, DECLARED, is a destination.
+    Scenario(
+        name="undeclared_page_without_a_password_form_receives_nothing",
+        login_path="/",
+        script={("GET", "/"): [Reply(200, _SPA_SHELL, (("Content-Type", _HTML),))]},
+        success=False,
+        cookies={},
+        posted_to_path="",
+        aiohttp_attempts=0,
+        curl_attempts=0,
+    ),
+    Scenario(
+        name="declared_page_without_a_password_form_is_a_destination",
+        login_path="/",
+        script={
+            ("GET", "/"): [Reply(200, _SPA_SHELL, (("Content-Type", _HTML),))],
+            ("POST", "/"): [Reply(401, "", (("Content-Type", _HTML),))],
+        },
+        success=False,
+        cookies={},
+        posted_to_path="/",
+        aiohttp_attempts=2,
+        curl_attempts=1,
+        declared=True,
+        divergence=(
+            "Same retry asymmetry as the rejected-credential scenario: the aiohttp "
+            "arm takes a second attempt on failure and the curl arm does not."
+        ),
+    ),
     Scenario(
         name="dvwa_form_302_to_index",
         login_path="/login.php",
@@ -529,6 +565,7 @@ async def _run(
                 "login_url": f"{base}{scenario.login_path}",
                 "username": _USERNAME,
                 "password": _PASSWORD,
+                "login_url_declared": scenario.declared,
             }
         )
         runner = auth._execute_aiohttp if transport == "aiohttp" else auth._execute_curl

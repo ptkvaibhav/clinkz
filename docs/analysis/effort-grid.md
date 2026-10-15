@@ -213,3 +213,60 @@ its terminal tail at all.
   see the difference. The engine was right and the grading script was wrong — the
   absence-as-measurement shape, in the measurement rather than the engine.
 * **Write the result row before anything that can raise.** See register R13.
+
+## 6 · Set-level re-grade, 2026-10-09: PLANNING goes back up
+
+§3 compared findings and dispatch COUNTS. R29 showed counts can hide the one
+thing that matters: which endpoints a class was pointed at. So the stored grid
+was re-graded by set, low vs high per target, with stored bundles only.
+
+**`scripts/candidate_set_regression.py` says NOT DETERMINED on all ten directed
+comparisons** (five targets, both directions). Every grid bundle predates the
+`plan_sets` trace record, and a count comparison is not a substitute. That
+verdict is correct, and it is not a pass.
+
+The dispatched sets are partly recoverable anyway. A class's phase-1
+`methodology_phase` record names its endpoint (`url` / `collection` / `action`
+/ `login_url` / …) or only its parameter. The injection classes record only the
+parameter, so for them this is a `(class, param)` set. Nine classes record
+neither on some cells (`jwt`, `xxe`, `p7_client_execution`, …), and those stay
+unrecoverable rather than counted as equal.
+
+**Juice Shop (`d8f615b9` low vs `f6ff1381` high), planner-chosen endpoints:**
+
+| class | dispatched at high only | dispatched at low only |
+|---|---|---|
+| `write_crossing` | `/api/Cards`, **`/api/Complaints`**, `/api/Feedbacks` | — |
+| `csrf` | `/api/Complaints`, `/api/Feedbacks`, `/api/Recycles`, `/rest/deluxe-membership`, `/rest/memories` | — |
+| `mass_assignment` | `/api/Addresss/:p3`, `/api/BasketItems/:p3` | — |
+| `business_logic_*` | 9 action routes | 6 action routes |
+| `prototype_pollution` | — | `/api/Users`, `/rest/basket/:p3/checkout` |
+| `idor` (by param) | `couponData`, `email`, `key`, `orderDetails`, `p4` | — |
+
+The plan-stage counts agree. The union pass kept **49** tasks beyond the
+deterministic pass at high and **33** at low. `idor` went 26→39, `csrf` 9→19,
+`jwt` 4→8 and `write_crossing` 3→6.
+
+**`/api/Complaints` under `write_crossing` is the grid's only confirmed
+cross-principal write**, and the low-effort plan never dispatched it. That is
+the condition the re-grade was run to test: high effort found an endpoint low
+effort dropped. So **PLANNING goes back up**. `llm_effort_planning` is a new
+setting, defaulting to `high`, with this section as its recorded reason.
+SUPPRESS stays on `llm_effort=low`, because a refused suppression leaves the
+finding standing. EMIT keeps its own carve-out.
+
+**Two caveats travel with this decision.**
+
+* These are single runs per cell, and plan allocation is the residual the
+  three-run envelope found not to reproduce. The DVWA curves show set churn in
+  both directions at every level, with no confirmed-finding consequence. The
+  decision rests on the one difference that carried a confirmed finding, not on
+  churn.
+* R29 (PR #149) separately moved `/api/Complaints` from 18th to 6th of 36 in the
+  deterministic write-crossing ranking. The deterministic pass therefore no
+  longer needs the planner for that one endpoint. It does not cover
+  `/api/Cards`, `/api/Feedbacks` or the CSRF routes, which is why the setting
+  moves anyway.
+
+The next grid should be run on bundles that carry `plan_sets`. Then the same
+comparison is a computed set difference rather than a reconstruction.
