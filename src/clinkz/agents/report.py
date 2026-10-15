@@ -45,6 +45,7 @@ from clinkz.agents._report_integrity import (
     spend_cost_line,
     testing_window,
 )
+from clinkz.engagement.artifact_scan import REPORT_END_SENTINEL
 from clinkz.engagement.render_safety import fence_for, neutralise_structure
 from clinkz.engagement.secrets import redact, redact_structure
 from clinkz.knowledge.component_cves import (
@@ -1310,7 +1311,7 @@ class ReportAgent(BaseAgent):
             ReportAgent._render_method_provenance(lines, report)
             ReportAgent._render_research_grounding(lines, report)
             ReportAgent._render_llm_spend(lines, report)
-            return "\n".join(lines)
+            return ReportAgent._close_markdown(lines)
 
         lines.extend(["## Findings", ""])
 
@@ -1363,7 +1364,17 @@ class ReportAgent(BaseAgent):
         ReportAgent._render_method_provenance(lines, report)
         ReportAgent._render_research_grounding(lines, report)
         ReportAgent._render_llm_spend(lines, report)
-        return "\n".join(lines)
+        return ReportAgent._close_markdown(lines)
+
+    @staticmethod
+    def _close_markdown(lines: list[str]) -> str:
+        """Join the document and close it with the end-of-report line.
+
+        The sentinel is what makes a deletion-to-end visible on disk: the
+        disclosure gate grades a report whose last line is anything else
+        CORRUPTED (``artifact_scan.scan_report_completeness``, register R21).
+        """
+        return "\n".join([*lines, "", "---", "", REPORT_END_SENTINEL, ""])
 
     @staticmethod
     def _render_residual_mutations(lines: list[str], report: PentestReport) -> None:

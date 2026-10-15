@@ -107,8 +107,8 @@ _AUTH_SCHEMES: Final = ("bearer", "basic", "token", "apikey", "digest", "negotia
 #: ``Authorization: Bearer xyz`` appearing inline in text — a raw header block,
 #: a joined curl argv, an LLM prompt echoing a request.
 AUTH_INLINE_RE: Final = re.compile(
-    r"(?i)\b((?:proxy-)?authorization\s*:\s*)"
-    r"((?:" + "|".join(_AUTH_SCHEMES) + r")\s+)?"
+    r"(?i)\b((?:proxy-)?authorization[ \t]*:[ \t]*)"
+    r"((?:" + "|".join(_AUTH_SCHEMES) + r")[ \t]+)?"
     r"([^\s,;\"']+)"
 )
 
@@ -120,11 +120,16 @@ AUTH_VALUE_RE: Final = re.compile(
 )
 
 #: ``Cookie:`` / ``Set-Cookie:`` inline in text. Values go, names stay.
-COOKIE_INLINE_RE: Final = re.compile(r"(?i)\b((?:set-)?cookie\s*:\s*)([^\r\n]+)")
+#:
+#: Every inline rule separates label from value with ``[ \t]``, never ``\s``:
+#: a header's value is on the header's line, and ``\s*`` let ``Cookie:`` at the
+#: end of one line take the NEXT line of the document as its value (register
+#: R21's computed domain, ``test_redaction_is_bounded``).
+COOKIE_INLINE_RE: Final = re.compile(r"(?i)\b((?:set-)?cookie[ \t]*:[ \t]*)([^\r\n]+)")
 
 #: curl's cookie and userinfo flags in a joined argv.
-CURL_COOKIE_RE: Final = re.compile(r"(?<!\S)(-b|--cookie)\s+(\S+)")
-CURL_USERPWD_RE: Final = re.compile(r"(?<!\S)(-u|--user)\s+(\S+)")
+CURL_COOKIE_RE: Final = re.compile(r"(?<!\S)(-b|--cookie)[ \t]+(\S+)")
+CURL_USERPWD_RE: Final = re.compile(r"(?<!\S)(-u|--user)[ \t]+(\S+)")
 
 #: A single ``name=value`` pair inside a cookie string.
 _COOKIE_PAIR_RE: Final = re.compile(r"([^=;,\s]+)=([^;,\r\n]*)")
@@ -142,12 +147,68 @@ API_KEY_RES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("gitlab", re.compile(r"glpat-[A-Za-z0-9_-]{20,}")),
 )
 
+#: The pieces of a PEM private-key block. A body line is base64 or one of the
+#: two RFC 1421 encapsulated headers OpenSSL writes; a line break is a real one
+#: or the two-character ``\n`` escape a key carries inside a JSON string.
+_PEM_BEGIN: Final = r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+_PEM_END: Final = r"-----END [A-Z0-9 ]*PRIVATE KEY-----"
+#: A base64 run, and the truncation marker a summary leaves on the end of one:
+#: a key line cut to ``MIIEow...`` is still a key line, and still a leak.
+_PEM_B64: Final = r"[A-Za-z0-9+/=]+(?:\.\.\.|\u2026)?"
+_PEM_TOKEN: Final = r"(?:(?:Proc-Type|DEK-Info):[^\r\n\\]*|" + _PEM_B64 + r")"
+_PEM_BREAK: Final = r"(?:[ \t]*(?:\r?\n|\\r\\n|\\n))+[ \t]*"
+#: Nothing but blanks, then a line break, an END banner, or the end of input.
+_PEM_LINE_END: Final = r"(?![ \t]*(?!-----END )(?:[^ \t\r\n\\]|\\[^rn]))"
+
 #: A PEM private-key block. The whole block, not just the banner: half a key in
 #: an artifact is still a leaked key.
+#:
+#: **Bounded by the SHAPE of a key, never by the end of the input** (register
+#: R21). This used to be ``BEGIN.*?(?:END|\Z)`` under ``re.DOTALL``, so a BEGIN
+#: banner with no END after it matched to end-of-string — and the post-render
+#: ``redact()`` pass over the Markdown deleted *What was NOT tested*, the ledger
+#: and the run audit because a target served one 29-character line. A guard
+#: that hands the target a deletion primitive is invariant 55's failure.
+#:
+#: The match is: the BEGIN banner; the base64 on the banner's own line; every
+#: following line that is WHOLLY one key token, stopping at the first line that
+#: is not; then the END banner if it comes next. Half a key is still removed —
+#: an unterminated block loses its body — and the document after it is not.
+#: Prose between two banners is not a key line, so a BEGIN in one response and
+#: an END in a later one cannot delete the findings between them either. The
+#: ``end`` group is empty for a block with no END banner, and the replacement
+#: says so (``unterminated``) rather than cutting silently.
+#:
+#: Linear: a base64 run is always followed by a character that is not base64,
+#: so no split of the input is ever retried.
 PRIVATE_KEY_RE: Final = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)",
-    re.DOTALL,
+    _PEM_BEGIN
+    + r"(?:[ \t]*"
+    + _PEM_B64
+    + r"(?:[ \t]+"
+    + _PEM_B64
+    + r")*)?(?:"
+    + _PEM_BREAK
+    + _PEM_TOKEN
+    + _PEM_LINE_END
+    + r")*(?:(?:"
+    + _PEM_BREAK
+    + r"|[ \t]*)(?P<end>"
+    + _PEM_END
+    + r"))?"
 )
+
+#: Replacement label for a block whose END banner was never found — the
+#: redaction is bounded, and it announces that it was.
+PRIVATE_KEY_UNTERMINATED_LABEL: Final = f"{REDACTION_MARKER}PRIVATE_KEY unterminated]"
+
+
+def _private_key_repl(match: re.Match[str]) -> str:
+    """The marker for one PEM block, naming a block that had no END banner."""
+    if match.group("end"):
+        return f"{REDACTION_MARKER}PRIVATE_KEY]"
+    return PRIVATE_KEY_UNTERMINATED_LABEL
+
 
 #: Dict keys whose VALUE is credential material regardless of what it looks
 #: like. Consulted by the key-aware structure walker in
@@ -425,7 +486,7 @@ def redact_shapes(text: str) -> str:
         out = JWT_RE.sub(jwt_repl, out)
 
     if "-----begin" in lowered:
-        out = PRIVATE_KEY_RE.sub(f"{REDACTION_MARKER}PRIVATE_KEY]", out)
+        out = PRIVATE_KEY_RE.sub(_private_key_repl, out)
 
     if "authorization" in lowered:
 
@@ -565,7 +626,11 @@ def find_shapes(text: str) -> list[ShapeHit]:
             hits.append(
                 ShapeHit(
                     kind="private_key",
-                    detail="PEM private key block",
+                    detail=(
+                        "PEM private key block"
+                        if match.group("end")
+                        else "PEM private key block (no END banner)"
+                    ),
                     fingerprint=fingerprint(match.group(0)),
                     start=match.start(),
                     length=len(match.group(0)),
@@ -712,6 +777,7 @@ __all__ = [
     "CREDENTIAL_HEADER_KEYS",
     "JWT_RE",
     "PRIVATE_KEY_RE",
+    "PRIVATE_KEY_UNTERMINATED_LABEL",
     "REDACTION_MARKER",
     "ShapeHit",
     "find_shapes",

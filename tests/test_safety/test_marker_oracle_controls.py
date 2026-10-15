@@ -161,6 +161,13 @@ DECLARED: dict[str, tuple[str, str]] = {
         "reads the weakness strings this engine wrote about a CSP it already parsed, not "
         "a body the target controls; it grades a finding that is already decided",
     ),
+    "engagement/artifact_scan.py::scan_report_completeness": (
+        _Control.SAFE_DIRECTION,
+        "reads a rendered report for markers the ENGINE chose — its end-of-report "
+        "sentinel and the headings its own renderer always writes (register R21) — and a "
+        "false positive grades the bundle CORRUPTED, i.e. refuses to certify it; it has "
+        "no path to a confirmed finding, only to withholding a clean verdict",
+    ),
     # --------------------------------------------------------- not a target body
     "tools/sqlmap.py::parse_output": (
         _Control.NOT_A_TARGET_BODY,
