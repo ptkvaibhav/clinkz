@@ -3,9 +3,11 @@
 Durable plan-of-record for growing the Exploit agent's vuln-class coverage. This is the
 sequence we execute; it is not a backlog of ideas. Keep it lean.
 
-> **Current position:** Tier-1 and Tier-2 primitives complete — **JWT and SSRF shipped** (the two
-> Tier-2 primitives). **Next is making Tier-2/3 real** (Research crafts a methodology from KB/web
-> findings). The original methodology set was 14, now 19.
+> **Current position (verified against the tree 2026-10-09):** 29 per-class methodologies in
+> `TIER1_TESTS`, plus discovery-originated `_test_log4shell`. Chaining, business logic, the P6
+> out-of-band collaborator and the P7 browser oracle are BUILT. **Tier-2/3 is still not real**:
+> `_test_tier2_technique` / `_test_tier3_technique` delegate to `_apply_technique`, which sends no
+> request, and both are registered `NOT_IMPLEMENTED`. The original methodology set was 14.
 
 ## Guiding principle
 
@@ -21,10 +23,12 @@ exactly the way the original methodologies were. Three non-negotiables:
 
 ## Coverage map
 
-### CONFIRMED — 19 adaptive methodologies (shipped)
+### CONFIRMED — 29 adaptive methodologies (shipped)
 `sqli`, `nosqli`, `ssti`, `xxe`, `jwt`, `ssrf`, `xss_reflected`, `xss_stored`, `xss_dom`, `cmdi`,
 `lfi`, `file_upload`, `csrf`, `brute_force`, `open_redirect`, `idor`, `security_headers`,
-`weak_session`, `javascript_attacks`.
+`weak_session`, `javascript_attacks`, `csp`, `crypto`, `input_validation`, `mass_assignment`,
+`secrets_exposure`, `state_sequence`, `constraint_violation`, `repeatability`,
+`prototype_pollution` (TERMINAL), `write_crossing` (TERMINAL). Plus `log4shell` (P6, discovery).
 
 ### TIER-1 PRIMITIVES — reuse the six-phase injection family (all shipped)
 - ~~**NoSQL injection** — MongoDB-style operator/`$where` injection.~~ *(shipped)*
@@ -39,7 +43,11 @@ exactly the way the original methodologies were. Three non-negotiables:
   target). In-band confirmation — cloud-metadata / IAM signature, `file://` read, or reflected
   internal/loopback content. Blind SSRF is deferred (see OOB collaborator below).~~ *(shipped)*
 
-### DEFERRED — out-of-band (OOB) collaborator infrastructure *(tracked, build later)*
+### OOB collaborator — BUILT for blind SSRF and Log4Shell; blind XXE and blind SQLi still deferred
+`oob/collaborator.py` (P6, `docs/methodology/out-of-band-p6.md`) confirms blind SSRF and Log4Shell
+by an unforgeable-nonce callback. XXE still filters `OOB_EXFIL` out of its ranking and blind/time-only
+SQLi has no OOB arm, so the paragraph below remains true for those two.
+
 A listener service (DNS/HTTP callback, in the Burp-Collaborator / interactsh mould) that confirms a
 vuln by an **out-of-band callback** instead of an in-band reflection. **Blind SSRF, blind XXE
 (`oob_exfil`), and blind/time-only SQLi all need it** — today each degrades to its in-band path and
@@ -48,7 +56,9 @@ channel is blind. Deliberately not built yet: it is shared infrastructure, seque
 in-band primitives — and it lifts all three blind paths at once.
 
 ### HARDER — need a reasoning layer / chaining
-- Deserialization → RCE, business-logic flaws, broken-auth flows, crypto misuse.
+- Deserialization → RCE — not built.
+- Business-logic flaws — three classes built; two cannot evidence intent on an action endpoint
+  (register R13, UNREACHABLE PRECONDITION). Chaining — built (`src/clinkz/chaining/`).
 
 ### SPECIALIZED — Research/KB-driven or domain-specific
 - Sensitive-data exposure, security misconfiguration,
@@ -62,8 +72,8 @@ in-band primitives — and it lifts all three blind paths at once.
 3. **Make Tier-2/3 real** (`_apply_technique`; Research crafts a methodology from KB/web findings) —
    **← current focus.** The highest-leverage step: a self-extending capability that covers the long
    tail without hand-coding every vuln class.
-4. **Vulnerability chaining** — last. It is multiplicative on the primitives above and needs the
-   reasoning layer Tier-2/3 provides (e.g. SQLi → cred dump → auth → upload → RCE).
+4. ~~**Vulnerability chaining**~~ — built ahead of Tier-2/3, graded by its weakest link and
+   proven against a decoy (`docs/methodology/chaining-and-business-logic.md`).
 
 ## Tracking
 

@@ -27,6 +27,14 @@ structural view — module layout, phase steps, data flow — see
   analyses ports → service/version detection → LLM extracts tech stack →
   web-specific recon → **package identity** → LLM synthesizes → `ReconResult`.
   Tools always via `ToolResolver.find_tool(capability=...)`.
+  **Web recon is gated on PROTOCOL evidence, not on a port**
+  (`models/recon.py::ReconService.is_http`): a canonical HTTP service name, then
+  an HTTP status line in the `-sV` fingerprint (`scripts_output`), and only then
+  the tight known-web-port list as the no-evidence fallback. Flink's JobManager
+  REST API on 8081 — which nmap labels `blackice-icecap` from `/etc/services` —
+  was marked non-HTTP by the allow-list, skipped web recon, and dispatched zero
+  exploit tasks against a known-vulnerable target; it answered `HTTP/1.1 404` to
+  the `-sV` probes the whole time.
   **`agents/_package_identity.py` is the third component source, and it names
   PACKAGES where the other two name SERVERS.** `whatweb` reads headers and page
   markers, `nmap -sV` resolves a banner through its signature database, and
@@ -101,8 +109,9 @@ structural view — module layout, phase steps, data flow — see
   `ANTHROPIC_MODEL` resolves to — `claude-sonnet-5` by default. **Not Opus**: this
   line said Opus and no configuration ever selected it. LLM
   plans exploits from scan+research → deterministic `_test_*` methods by tier →
-  LLM reasons through results → adaptive retry/bypass → records capability outcome
-  to the persistent KB. **Phase 3 — which exploitation types a parameter is worth
+  LLM reasons through results → adaptive retry/bypass → a confirmed
+  discovery-originated finding writes a Layer-2 capability fact (the older
+  per-technique success loop is retired and has no caller). **Phase 3 — which exploitation types a parameter is worth
   attempting — is `agents/_plan_ranking.py`, not the model's to answer alone**
   (**detail → [`docs/methodology/plan-ranking.md`](docs/methodology/plan-ranking.md)**). **P7** (`src/clinkz/browser/`) is the client-side
   execution oracle the DOM-XSS, client-rendered XSS and CSP classes confirm
@@ -113,13 +122,22 @@ structural view — module layout, phase steps, data flow — see
   `CLIENT_ORACLE_MODE` is `auto` by default — the Orchestrator provisions it for
   every engagement, while a **directly invoked** agent (unit suite, replay,
   smoke cell) never self-resolves one, so the black-box floor stays
-  byte-identical. All 26 `_test_*` methods are adaptive multi-phase
-  methodologies (six-phase injection family; four-phase behavioral family). The
+  byte-identical. The dispatchable set is `DISPATCHABLE_TEST_METHODS` (32): the
+  29 per-class methodologies in `TIER1_TESTS`, each adaptive and multi-phase
+  (six-phase injection family; four-phase behavioral family), `_test_log4shell`
+  (discovery-originated), and `_test_tier2_technique` / `_test_tier3_technique`,
+  which send nothing and are registered `NOT_IMPLEMENTED`. **Write-family classes
+  are routed on the OBSERVED write verb** (`_is_observed_write_surface`): a
+  `POST`/`PUT`/`PATCH` whose `method_evidence` is not `UNREAD`. An unread verb is
+  no evidence the route writes, and the exclusion reads the evidence rather than
+  relying on the miner's old habit of spelling an unread verb `GET`;
+  `state.py` persists `method_evidence` (default `unread`, OR-merged so a read
+  verb is never downgraded) so a store reload routes the same way. The
   **deterministic check GATES the LLM** — no LLM verdict emits on its own; when
   phase-2 has empirically confirmed the primitive, phase-4 prefers the
   deterministic build.
 
-  Two of the 26 are **TERMINAL**. `_test_prototype_pollution` writes a key onto
+  Two of them are **TERMINAL**. `_test_prototype_pollution` writes a key onto
   the target process's own `Object.prototype`, which changes how the
   application answers requests the class never made and persists until the
   process restarts. `_test_write_crossing` creates an object attributed to a
